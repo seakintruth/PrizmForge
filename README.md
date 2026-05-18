@@ -13,9 +13,9 @@ PrizmForge solves the fundamental problem of **safe autonomous code modification
 
 ## Architecture
 
-### System Architecture
+### System Architecture Diagram
 
-```mermaid
+|||mermaid
 flowchart TB
     subgraph PrizmForge["PrizmForge System"]
         direction TB
@@ -30,30 +30,31 @@ flowchart TB
         Governed --> DB
         Parallel --> DB
         Resource --> Parallel
+        
+        %% Autonomous loop - Orchestrator reads proposals/tasks from DB (unattended mode)
+        DB --> MainOrch
     end
 
-    User["Developer / Human"] --> MainOrch
+    User["Developer / Human"] -.->|Optional: High-level goals & oversight| MainOrch
     LLM["LLM Endpoints\n(OpenAI, Gemini, etc.)"] <--> MainOrch
     LLM <--> Parallel
-```
+|||
 
 ### Agent Classes
 
-PrizmForge organizes agents into three distinct classes. Reviews from Class 3 are automatically triggered upon file commits from Class 1.
-
-```mermaid
+|||mermaid
 flowchart BT
-    subgraph Class1["Class 1: Strict File Edit Cycle"]
+    subgraph Class3["Class 3: Specialist Review Agents"]
         direction TB
-        Orchestrator["Orchestrator"]
-        Developer["Developer"]
-        Reviewer["Reviewer"]
-        DBMat["DB + File Materialization"]
+        JrReviewer["jr_reviewer"]
+        Security["security_reviewer"]
+        TechWriter["tech_writer"]
+        JrResearcher["jr_researcher"]
 
-        Orchestrator --> Developer
-        Developer --> Reviewer
-        Reviewer --> DBMat
-        DBMat --> Files["Project Files"]
+        JrReviewer --> Feedback["Feedback Store"]
+        Security --> Feedback
+        TechWriter --> Feedback
+        JrResearcher --> Feedback
     end
 
     subgraph Class2["Class 2: Tool-Enabled Parallel Agents"]
@@ -63,33 +64,38 @@ flowchart BT
         ReportBuilder["Report Builder"]
         ResourceCtrl["Resource Controller"]
 
-        Prioritizer --> Feedback["Feedback Store"]
+        Prioritizer --> Feedback
         Archivist --> Feedback
         ReportBuilder --> Reports["Report Files"]
-        ResourceCtrl --> Throttling["Throttling"]
+        ResourceCtrl --> Throttling["Throttling & Prioritization"]
     end
 
-    subgraph Class3["Class 3: Specialist Review Agents"]
+    subgraph Class1["Class 1: Strict File Edit Cycle"]
         direction TB
-        JrReviewer["jr_reviewer"]
-        Security["security_reviewer"]
-        TechWriter["tech_writer"]
-        JrResearcher["jr_researcher"]
+        Orchestrator["Orchestrator"]
+        Developer["Developer"]
+        Reviewer["Reviewer"]
+        DBMat["DB + File Materialization"]
 
-        JrReviewer --> Feedback
-        Security --> Feedback
-        TechWriter --> Feedback
-        JrResearcher --> Feedback
+        Orchestrator --> Feedback
+        Orchestrator --> Developer
+        Developer --> Reviewer
+        Reviewer --> DBMat
+        DBMat --> Files["Project Files"]
+
+        Files -.->|Triggers review upon commit| Class3
     end
 
-    %% Key flows
-    Files -.->|Triggers review upon commit| Class3
     Feedback --> Orchestrator
-    Class2 --> Feedback
     Class3 --> Feedback
+    Class2 --> Feedback
 
     Class2 --> Class1
-```
+    Class1 --> Class2
+
+    Reports["Report Files"]
+    Throttling["Throttling & Prioritization"]
+|||
 
 ## Current File Editing Methodology (Governed Editing)
 
@@ -159,13 +165,14 @@ The project includes a growing test suite focused on:
 - Schema initialization
 - JSON parsing and truncation detection
 - Token estimation and budgeting
-- Resource Controller data structures
+- Resource Controller data structures and logic
+- Endpoint Manager, Proposal Builder, Task Runner, Agent Execution, and Parallel Workers (including race conditions)
 
 Run tests with:
 
-```bash
+|||bash
 pytest tests/ -q
-```
+|||
 
 ## Getting Started
 
@@ -173,15 +180,15 @@ pytest tests/ -q
 2. Install dependencies (see `requirements.txt` or equivalent)
 3. Initialize the database:
 
-```bash
+|||bash
 python -c "from core.db import init_db; init_db()"
-```
+|||
 
 4. Start in interactive mode:
 
-```bash
+|||bash
 python interactive.py
-```
+|||
 
 ## Project Status
 
@@ -191,8 +198,5 @@ For detailed architecture, see `architecture.md`.
 
 ## License
 
+MIT
 See repository for license information.
-
----
-
-**Note**: This README reflects the current governed file editing architecture (post-Sprint 6 consolidation). Earlier versions used simpler diff-based approaches.
