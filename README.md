@@ -15,7 +15,7 @@ PrizmForge solves the fundamental problem of **safe autonomous code modification
 
 ### System Architecture Diagram
 
-|||mermaid
+```mermaid
 flowchart TB
     subgraph PrizmForge["PrizmForge System"]
         direction TB
@@ -38,11 +38,11 @@ flowchart TB
     User["Developer / Human"] -.->|Optional: High-level goals & oversight| MainOrch
     LLM["LLM Endpoints\n(OpenAI, Gemini, etc.)"] <--> MainOrch
     LLM <--> Parallel
-|||
+```
 
 ### Agent Classes
 
-|||mermaid
+```mermaid
 flowchart BT
     subgraph Class3["Class 3: Specialist Review Agents"]
         direction TB
@@ -95,7 +95,7 @@ flowchart BT
 
     Reports["Report Files"]
     Throttling["Throttling & Prioritization"]
-|||
+```
 
 ## Current File Editing Methodology (Governed Editing)
 
@@ -170,9 +170,9 @@ The project includes a growing test suite focused on:
 
 Run tests with:
 
-|||bash
+```bash
 pytest tests/ -q
-|||
+```
 
 ## Getting Started
 
@@ -180,15 +180,15 @@ pytest tests/ -q
 2. Install dependencies (see `requirements.txt` or equivalent)
 3. Initialize the database:
 
-|||bash
+```bash
 python -c "from core.db import init_db; init_db()"
-|||
+```
 
 4. Start in interactive mode:
 
-|||bash
+```bash
 python interactive.py
-|||
+```
 
 ## Project Status
 
