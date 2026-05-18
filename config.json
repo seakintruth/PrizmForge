@@ -1,0 +1,174 @@
+{
+  "project_directory": "C:\\git\\home\\user\\developer\\prizmForge_working\\branch_experimental",
+  "git": true,
+  "git_auto_commit": true,
+  "default_iteration_minutes": 5,
+  "min_iterations_before_complete": 3,
+  "background_agents_enabled": true,
+  "cli_mode": {
+    "mode": "semi_attended",
+    "unattended": {
+      "max_duration_hours": 8.0,
+      "auto_continue": true,
+      "checkpoint_interval_minutes": 30,
+      "max_iterations_per_task": 20,
+      "min_idle_minutes": 5.0,
+      "auto_generate_tasks": true,
+      "prioritize_critical_issues": true
+    }
+  },
+  "endpoints": {
+    "gemini": {
+      "base_url": "https://api.example.com/v1/chat/completions",
+      "api_key_name": "gemini_api_key",
+      "key_management_url": "https://ai-portal.example.com/user-ui/keys",
+      "include_model_in_payload": true,
+      "response_path": ["choices", 0, "message", "content"],
+      "description": "Enterprise Gemini endpoint",
+      "priority": 20,
+      "rate_limit_per_minute": 118
+    },
+    "databricks": {
+      "base_url": "https://databricks.example.com/serving-endpoints/claude-sonnet/invocations",
+      "api_key_name": "databricks_token",
+      "key_management_url": "https://docs.databricks.com/en/dev-tools/auth/pat.html",
+      "include_model_in_payload": false,
+      "response_path": ["choices", 0, "message", "content"],
+      "description": "Enterprise Databricks endpoint",
+      "priority": 10,
+      "rate_limit_per_minute": 60
+    }
+  },
+  "default_endpoint": "databricks",
+  "fallback_settings": {
+    "enabled": true,
+    "max_fallback_attempts": 2,
+    "cooldown_on_exhaustion_minutes": 5,
+    "cooldown_on_lock_minutes": 1,
+    "cooldown_on_rate_limit_minutes": 1,
+    "cooldown_on_error_minutes": 5,
+    "prefer_same_provider": false,
+    "log_fallbacks": true
+  },
+  "models": {
+    "gemini-3.1-pro-preview": {
+      "endpoint": "gemini",
+      "max_output_tokens": 16384,
+      "temperature": 0.5,
+      "description": "Most capable Gemini, best for complex reasoning"
+    },
+    "gemini-2.5-pro": {
+      "endpoint": "gemini",
+      "max_output_tokens": 16384,
+      "temperature": 0.5,
+      "description": "Strong reasoning, good balance"
+    },
+    "gemini-3-flash-preview": {
+      "endpoint": "gemini",
+      "max_output_tokens": 16384,
+      "temperature": 0.7,
+      "description": "Fast and cost-effective"
+    },
+    "databricks-claude-sonnet-4-5": {
+      "endpoint": "databricks",
+      "max_output_tokens": 16384,
+      "temperature": 0.5,
+      "description": "Claude Sonnet via Databricks"
+    }
+  },
+  "agent_model_preferences": {
+    "orchestrator": "gemini-3.1-pro-preview",
+    "developer": "gemini-3.1-pro-preview",
+    "reviewer": "gemini-3.1-pro-preview",
+    "researcher": "gemini-3-flash-preview",
+    "prioritizer": "gemini-3.1-pro-preview",
+    "jr_reviewer": "gemini-3-flash-preview",
+    "jr_researcher": "gemini-3-flash-preview",
+    "tech_writer": "gemini-3-flash-preview",
+    "file_manager": "gemini-3.1-pro-preview",
+    "archivist": "gemini-3.1-pro-preview",
+    "project_reporter": "gemini-3-flash-preview",
+    "resource_controller": "gemini-3.1-pro-preview",
+    "deployment_validator": "gemini-3.1-pro-preview",
+    "security_reviewer": "gemini-3-flash-preview"
+  },
+  "proxy": {
+    "http": "http://proxy.example.com:8080",
+    "https": "http://proxy.example.com:8443"
+  },
+  "token_budget": {
+    "max_tokens_per_4h": 30000000
+  },
+  "reporter": {
+    "enabled": true,
+    "interval_minutes": 60,
+    "change_threshold_percent": 5.0,
+    "change_threshold_lines": 2000,
+    "output_directory": ".PrizmForge/reports",
+    "include_git_commits": true,
+    "include_agent_activity": true,
+    "max_reports_to_keep": 300,
+    "report_trigger_cooldown_minutes": 15
+  },
+  "resource_controller": {
+    "enabled": true,
+    "check_interval_seconds": 30,
+    "max_tokens_per_day": 50000000,
+    "aggressive_throttling_threshold": 0.75,
+    "project_goals": {
+      "max_daily_cost_usd": 200,
+      "priority_focus": ["security", "performance"],
+      "human_only_adjust": true,
+      "notes": "ONLY HUMANS may edit this section. Agents must treat it as immutable."
+    }
+  },
+  "background_agents": {
+    "jr_reviewer": {
+      "enabled": true,
+      "on_modification": true,
+      "random_review": true,
+      "random_files_per_cycle": 3
+    },
+    "jr_researcher": {
+      "enabled": true,
+      "on_modification": false,
+      "random_review": true,
+      "random_files_per_cycle": 2
+    },
+    "tech_writer": {
+      "enabled": true,
+      "on_modification": false,
+      "random_review": true,
+      "random_files_per_cycle": 2
+    },
+    "security_reviewer": {
+      "enabled": true,
+      "on_modification": true,
+      "random_review": true,
+      "random_files_per_cycle": 2
+    },
+    "deployment_validator": {
+      "enabled": true,
+      "on_modification": true,
+      "random_review": false,
+      "confidence_threshold": 0.7
+    }
+  },
+  "background_feeder": {
+    "interval_seconds": 30,
+    "files_per_agent_default": 3
+  },
+  "file_operations": {
+    "max_file_size_kb": 1000,
+    "ignore_patterns": [
+      "*.pyc",
+      "__pycache__",
+      ".git",
+      "node_modules",
+      ".env",
+      "*.db",
+      "venv",
+      ".venv"
+    ]
+  }
+}
