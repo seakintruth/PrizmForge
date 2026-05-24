@@ -22,7 +22,7 @@ It draws inspiration from systems like mydeadinternet.com while remaining focuse
 | [`territory_core_details.md`](territory_core_details.md) | Detailed definitions of Core Philosophies |
 | [`territory_role_details.md`](territory_role_details.md) | Detailed definitions of Roles |
 | [`territory_model.md`](territory_model.md) | Explanation of the hybrid Territory design |
-| [`system_mental_model_progression_plans.md`](system_mental_model_progression_plans.md) | Evolution stages from current PrizmForge to Forge Federation |
+| [`system_mental_model_progression_plans.md`](../system_mental_model_progression_plans.md) | Evolution stages from current PrizmForge to Forge Federation |
 
 ## Current Status
 
