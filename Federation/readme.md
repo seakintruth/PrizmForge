@@ -1,3 +1,5 @@
+![PrizmForge Logo](../assets/logos/logo.png)
+
 # Forge Federation
 
 **Documentation for the long-term vision of Forge Federation** — a Stewardship-oriented Constitutional Polycentric Republic for governed, multi-paradigm code improvement.
