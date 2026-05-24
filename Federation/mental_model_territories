@@ -1,0 +1,142 @@
+# Mental Model Territories
+
+**Project:** Forge Federation (working name)  
+**Framing:** A Stewardship-oriented Constitutional Polycentric Republic for multi-agent code improvement.
+
+---
+
+## Overview
+
+Forge Federation is designed as a **Stewardship-oriented Constitutional Polycentric Republic**. Multiple distinct mental models operate as semi-sovereign **Territories** with protected autonomy, while a higher **Stewardship Governance layer** provides constitutional constraints and long-term orientation. A **Spider Web discrimination layer** runs across the system to distinguish high-value output from noise.
+
+This architecture allows different reasoning paradigms to coexist and compete without any single model permanently dominating governance or evaluation.
+
+---
+
+## Core Architecture Layers
+
+### 1. Stewardship Governance Layer (Constitutional Layer)
+
+This is the **main governance layer**. It sits above the Territories and defines the system’s long-term values and hard constraints.
+
+**Core Principles (Secular Stewardship):**
+- Protect long-term maintainability and future maintainers
+- Preserve optionality and reversibility of changes
+- Resist short-term optimization that creates long-term harm
+- Protect the autonomy and diversity of multiple mental models
+- Maintain accountability through real stakes and feedback
+
+**Key Mechanisms:**
+- **Moots**: Deliberative processes for changing constitutional rules. Moots have deliberation periods and trust-weighted voting, with auto-execution for approved changes.
+- Constitutional constraints that are deliberately difficult to override.
+- Oversight of system-level rules while allowing day-to-day autonomy within Territories.
+
+This layer draws from polycentric governance principles while adding an explicit long-term custodial orientation.
+
+### 2. Spider Web Discrimination Layer (Cross-Cutting)
+
+This layer provides the system’s **sensing and filtering capability**. It is not a Territory itself but a set of mechanisms that run across all Territories and the shared infrastructure.
+
+**Core Idea:** A multi-agent system is only as reliable as its ability to distinguish valuable results from noise.
+
+**Key Capabilities:**
+- Multi-stage validation (generate → critique → verify → accept/reject/repair)
+- Explicit signals (confidence, citations, execution results, cross-checks)
+- Selective response protocols (discard, repair, escalate, or rebuild)
+- Repair and pruning mechanisms
+- Adversarial evaluation stages
+
+This layer prevents low-quality output and compounding errors from propagating through the system.
+
+### 3. Territories (Mental Model Ecosystems)
+
+Territories are semi-sovereign groups of agents that operate according to a distinct mental model or reasoning paradigm. They have protected autonomy but operate under the constitutional constraints of the Stewardship Governance layer.
+
+Each Territory can:
+- Develop its own internal strategies and evaluation preferences
+- Propose changes to the codebase
+- Critique proposals from other Territories
+- Participate in moots when system-level rules are being decided
+
+**Current Territories:**
+
+| Territory                        | Core Focus                              | Strengths                              | Risks                              | Role in MVP |
+|----------------------------------|-----------------------------------------|----------------------------------------|------------------------------------|-------------|
+| **Evolutionary**                 | Mutation, selection, population-based improvement | Escapes local optima                   | Compute heavy, short-term bias     | Yes         |
+| **Adversarial / Debate**         | Structured critique and red-teaming     | Surfaces flaws                         | Can become performative            | Yes         |
+| **Self-Referential / Meta**      | Improving the improvement process       | Long-term capability growth            | Instability, goal drift            | Later       |
+| **Regenerative**                 | Intent extraction + periodic regeneration | Reduces technical debt                 | Risk of losing implicit behavior   | Later       |
+| **Scientific Mutual Benefit**    | Evidence-based, measurable improvement  | Empirical grounding                    | Hard to measure some qualities     | Yes         |
+| **Stewardship**                  | Long-term care and future maintainers   | Protects against short-termism         | Can become overly conservative     | Core (Governance) |
+| **Polycentric**                  | Decentralized coordination + exit rights| High resilience                        | Coordination failures              | Later       |
+| **Market / Incentive**           | Resource allocation through incentives  | Efficient effort allocation            | Externalities, maintenance neglect | Later       |
+
+---
+
+## Proposed MVP Architecture
+
+For the initial version, we will implement a focused subset of the full model.
+
+### MVP Scope
+
+- **Governance Layer**: Lightweight Stewardship principles + basic Moot mechanism for constitutional changes.
+- **Discrimination Layer**: Multi-stage evaluation with critic/verifier agents and basic selective response.
+- **Territories**: Start with **3 Territories**:
+  1. Evolutionary
+  2. Adversarial / Debate
+  3. Scientific Mutual Benefit
+- **Coordination**: Message bus + structured cycles (suggest → evaluate → decide).
+- **Code Materialization**: Full file replacement initially (for speed and reliability).
+- **Trust / Reputation**: Basic scoring between Territories based on proposal success rate.
+
+### MVP Goals
+
+- Demonstrate multiple mental models operating with protected autonomy.
+- Show basic constitutional governance through moots.
+- Implement functional discrimination (quality filtering) between proposal and materialization.
+- Produce verifiable code changes with clear provenance.
+- Establish sustainable development rhythm through short sprints.
+
+### Out of Scope for MVP
+
+- Full Spider Web repair and pruning mechanisms
+- Advanced resource markets between Territories
+- Self-referential meta-improvement Territory
+- Regenerative Territory
+- Sophisticated social ecology or gift economy mechanics
+- Production-grade stability and observability
+
+---
+
+## How the Layers Interact
+
+- **Territories** propose and critique changes according to their mental model.
+- The **Spider Web layer** evaluates proposals for quality, risk, and alignment before they advance.
+- The **Stewardship Governance layer** sets the boundaries and can be invoked through moots when fundamental rules need to change.
+- Influence between Territories is mediated through **trust/reputation** and success in producing accepted improvements.
+- Constitutional changes require going through the Moot process rather than being decided by any single Territory.
+
+---
+
+## Development Approach
+
+We will build this iteratively using short, focused sprints rather than attempting to implement the full architecture at once. Each sprint will deliver a working increment while keeping the broader constitutional polycentric structure in view.
+
+Key priorities in early sprints:
+- Working multi-Territory coordination
+- Basic evaluation and discrimination
+- Simple moot-style governance
+- End-to-end code materialization
+
+---
+
+## Open Questions
+
+- How strictly should the Stewardship layer constrain individual Territories in the MVP?
+- What is the minimum viable version of a Moot process?
+- How should trust/reputation between Territories be calculated initially?
+- Should the Spider Web discrimination layer be centralized or distributed across Territories in the MVP?
+
+---
+
+*This document reflects the current architectural direction and will be updated as we learn from implementation.*
