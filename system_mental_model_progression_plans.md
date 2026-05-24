@@ -1,70 +1,66 @@
 # System Mental Model Progression Plans
 
 **Purpose**  
-This document defines the high-level mental model and evolution path for PrizmForge. It distinguishes between the working codebase and the longer-term architectural vision.
+This document defines the evolution path of PrizmForge from its current state toward a more capable governed system. It separates the active codebase from the longer-term vision and provides clear criteria for progressing between stages.
 
 **Important Distinction**
-- The main **PrizmForge** directory contains the active, production codebase.
-- The **`federation/`** directory contains **only documentation** describing the future vision. No implementation code for the full Federation model currently lives in the main codebase.
-
-We expect to remain on **Stage 0** for the next several sprints while making targeted, high-value improvements.
+- The main `PrizmForge/` directory contains the working codebase.
+- The `federation/` directory contains **only documentation** of the future vision.
 
 ---
 
-## Current Stage: Stage 0 – Legacy PrizmForge
+## Current State: Stage 0 – Legacy PrizmForge
 
 **Mental Model**: Single-threaded governed editor with parallel observers and explicit flow control.
 
-### Characteristics
-- One `Developer` agent performs all code mutations (primary bottleneck).
-- Background agents (Class 2 and Class 3) generate ideas and feedback in parallel.
-- **Explicit governance** exists through Layer 2 agents, particularly the **Resource Controller** and **Prioritizer**.
-- The **Resource Manager** actively throttles idea generation when the idea stack reaches capacity (approximately 100–200 ideas), preventing uncontrolled growth.
-- The **Prioritizer + Archivist** work together to consolidate, rank, and archive ideas, providing structured flow control.
-- All changes still flow through a strict, serial pipeline with strong safety guarantees (line GUIDs, optimistic concurrency, content hashing, and reviewer gate).
-- Despite governance mechanisms, idea adoption remains low relative to generation volume (\~100:1 ratio).
+### Key Characteristics
+- A single `Developer` agent performs all code mutations (primary bottleneck).
+- Background agents generate a high volume of ideas (\~100:1 idea-to-adoption ratio).
+- The **Resource Controller** throttles new idea generation once the idea stack reaches \~100–200 items.
+- The **Prioritizer + Archivist** consolidate and manage the idea queue.
+- All changes go through a strict serial pipeline with strong safety (line GUIDs, optimistic concurrency, content hashing, and reviewer gate).
 
-### Current Strengths
-- Strong safety and auditability through the governed editing pipeline.
-- Explicit resource and idea flow management via the Resource Controller and Prioritizer.
-- Clear separation between proposal creation and materialization.
-- Some consolidation and archival of ideas through the Archivist.
+### Primary Problems
+This stage has two distinct issues:
 
-### Current Weaknesses
-- Implementation remains serialized through a single Developer agent.
-- Even with throttling and prioritization, the volume of ideas significantly outpaces the rate of adoption and implementation.
-- Governance and prioritization are focused more on controlling input volume than on increasing safe implementation throughput.
-- Limited ability to safely parallelize code changes across multiple developers or agents.
+1. **Filtering Problem**: Too many low-value or low-priority ideas reach the implementation stage.
+2. **Throughput Problem**: Even good ideas move slowly because implementation is serialized through one Developer agent.
 
-**Status**: Active codebase. This is where all near-term development will occur.
+**Status**: Active development. This is where work will remain for the next several sprints.
 
 ---
 
 ## Stage 1 – Enhanced PrizmForge (Next Target)
 
-**Mental Model**: Enhanced single-Territory governed system with improved filtering and light parallelism.
+**Mental Model**: Strengthened single-Territory system with better filtering and controlled parallelism.
 
 ### Goals
-- Reduce the implementation bottleneck without compromising safety.
-- Improve the ratio of ideas that get adopted.
-- Add lightweight governance and quality mechanisms.
-- Create a stable base that can later support additional Territories.
+- Improve the idea adoption ratio by strengthening filtering and prioritization.
+- Increase implementation throughput without breaking safety guarantees.
+- Introduce lightweight governance mechanisms.
+- Create a stable foundation before considering multiple Territories.
 
 ### Planned Improvements
-- Explicitly treat the current system as **one Territory**.
-- Strengthen upstream filtering and prioritization (building on the existing Prioritizer and Resource Controller).
-- Introduce basic work partitioning so the Developer can safely handle non-overlapping changes.
-- Add lightweight governance capabilities (simple moot-style or review mechanisms for higher-level decisions).
-- Improve quality evaluation incrementally (multi-stage evaluation without over-engineering).
-- Maintain the existing governed editing pipeline as the foundation.
 
-### Constraints for Stage 1
-- Stay within the existing PrizmForge codebase.
-- Apply **YAGNI** strictly — only add what is necessary to improve throughput and quality.
-- Do **not** build full multi-Territory support yet.
-- Focus on measurable improvements to code change velocity and reliability.
+| Area                    | Approach                                      | Notes |
+|-------------------------|-----------------------------------------------|-------|
+| **Filtering**           | Enhance Prioritizer + early discrimination    | Focus on reducing low-value ideas upstream |
+| **Implementation**      | Introduce basic work partitioning             | Allow non-overlapping changes to proceed with minimal conflict risk |
+| **Governance**          | Add lightweight moot-style mechanisms         | Used for prioritization decisions and conflict resolution |
+| **Quality**             | Incremental multi-stage evaluation            | Build on existing reviewer patterns |
 
-**Status**: Planning / Early implementation. This is the focus for the next several sprints.
+### Stage 1 Success Metrics
+- Improve idea adoption ratio (target: move meaningfully below 100:1)
+- Increase number of implemented changes per sprint
+- Maintain or improve safety metrics (zero governance-related rollbacks)
+- Reduce average time from idea generation to implementation decision
+
+### Key Risks & Assumptions
+- **Risk**: Work partitioning may introduce subtle race conditions or increase proposal rejection rate.
+- **Risk**: "Lightweight governance" could become heavier than intended.
+- **Assumption**: The biggest limiter is currently implementation capacity rather than idea quality.
+
+**Status**: Target for the next several sprints. All changes remain in the main `PrizmForge/` codebase.
 
 ---
 
@@ -73,64 +69,55 @@ We expect to remain on **Stage 0** for the next several sprints while making tar
 **Mental Model**: Stewardship-oriented Constitutional Polycentric Republic.
 
 ### Core Concepts
-- **Stewardship Governance Layer** (top layer): Provides long-term values and constitutional constraints. Uses moots for rule changes.
-- **Spider Web Discrimination Layer** (cross-cutting): Stronger, multi-stage quality filtering, critique, and selective response.
-- **Multiple Territories**: Different mental models operating as semi-sovereign ecosystems that can propose, critique, and implement changes.
-- **Federated Coordination**: Structured interaction between Territories rather than pure emergence.
-- Strong application of **YAGNI** — additional complexity is only added when clearly justified by results.
+- **Stewardship Governance Layer**: Explicit constitutional rules and moots for system-level decisions.
+- **Spider Web Discrimination Layer**: Robust, multi-stage quality filtering and selective response.
+- **Multiple Territories**: Semi-sovereign mental models that can specialize and interact.
+- Strong emphasis on **YAGNI** — complexity is only added when it delivers clear value.
 
-### Key Differences from Stage 0/1
-- Multiple mental models can contribute to code changes.
-- Governance is explicit and constitutional.
-- Better balance between idea generation and disciplined implementation.
-- Designed for long-term evolution rather than short-term safety alone.
-
-**Status**: Documentation only.
-
-All exploration and documentation for Stage 2 lives in the **`federation/`** directory. No implementation of the full Federation model will be added to the main PrizmForge codebase until Stage 1 is stable and the value of expansion is proven.
+**Status**: Documentation only. All planning and exploration for this stage lives in the `federation/` directory.
 
 ---
 
-## Development Philosophy
+## Development Principles
 
-- **Start Simple**: Begin with one Territory and only expand when there is clear evidence of benefit.
-- **YAGNI First**: Avoid speculative complexity. Every new mechanism must justify itself.
-- **Protect the Core**: The governed editing safety model (line GUIDs, proposals, optimistic concurrency) remains foundational.
-- **Measure Real Outcomes**: Success is defined by improvements in code quality and implementation throughput, not by architectural sophistication or number of agents.
-- **Separate Concerns**: The working codebase (Stage 0 → Stage 1) and the future vision (Stage 2) are intentionally separated.
+- **YAGNI First**: Only add mechanisms when there is evidence they are needed.
+- **Protect Safety**: The governed editing model (line GUIDs, optimistic concurrency, reviewer gates) remains non-negotiable.
+- **Measure Outcomes**: Success is judged by code quality and implementation throughput, not architectural complexity.
+- **Start Narrow**: Begin with one Territory. Expand only when justified by results.
 
 ---
 
 ## Where Things Live
 
-| Component                        | Location                  | Notes |
-|----------------------------------|---------------------------|-------|
-| Current PrizmForge codebase      | Root of `PrizmForge/`     | Active development (Stage 0 → Stage 1) |
-| Stage 1 improvements             | Root of `PrizmForge/`     | Pragmatic enhancements to existing system |
-| Federation vision & documentation| `federation/` directory   | Documentation and planning only |
-| Full multi-Territory implementation | Not yet started        | Will only be introduced after Stage 1 proves value |
+| Item                              | Location                  | Purpose |
+|-----------------------------------|---------------------------|--------|
+| Active PrizmForge codebase        | `PrizmForge/`             | Current working system |
+| Stage 1 improvements              | `PrizmForge/`             | Pragmatic enhancements |
+| Federation vision & planning      | `federation/`             | Future architecture documentation only |
+| Key Components                    | `core/`, `agents/`, etc.  | Resource Controller, Prioritizer, Governed Editing Pipeline |
 
 ---
 
-## Current Sprint Focus
+## Stage Transition Criteria
 
-For the next several sprints, the team will remain focused on **Stage 0 → Stage 1** improvements inside the main PrizmForge codebase. This includes:
+**Move from Stage 0 to Stage 1 when:**
+- The Resource Controller and Prioritizer are effectively managing idea flow.
+- We have a workable approach for safe work partitioning.
+- We can demonstrate improved idea adoption or implementation velocity.
 
-- Building on the existing Resource Controller and Prioritizer to further improve idea quality and flow.
-- Introducing light work partitioning to reduce the single Developer bottleneck.
-- Adding lightweight governance and enhanced quality mechanisms.
-- Maintaining strong safety while increasing implementation throughput.
-
-Expansion into multiple Territories and the full Federation model is intentionally deferred.
+**Move from Stage 1 to Stage 2 when:**
+- Stage 1 improvements have delivered clear gains in throughput or quality.
+- There is evidence that a single Territory is becoming a constraint.
+- The cost of adding and coordinating additional Territories is justified.
 
 ---
 
 ## Summary
 
-| Stage | Name                    | # of Territories | Focus                              | Location of Work      | Expected Duration |
-|-------|-------------------------|------------------|------------------------------------|-----------------------|-------------------|
-| 0     | Legacy PrizmForge       | 1 (implicit)     | Safe single-threaded editing with explicit flow control | Main codebase     | Current           |
-| 1     | Enhanced PrizmForge     | 1 (explicit)     | Throughput + quality improvements  | Main codebase         | Next several sprints |
-| 2     | Forge Federation        | 1 → Many         | Multi-paradigm governed improvement| `federation/` (docs)  | Future            |
+| Stage | Name                    | Territories | Primary Focus                     | Risk Level | Location          |
+|-------|-------------------------|-------------|-----------------------------------|------------|-------------------|
+| 0     | Legacy PrizmForge       | 1           | Safe governed editing             | Low        | Main codebase     |
+| 1     | Enhanced PrizmForge     | 1           | Throughput + filtering            | Medium     | Main codebase     |
+| 2     | Forge Federation        | 1 → Many    | Multi-paradigm governed evolution | Higher     | `federation/` (docs) |
 
-This progression keeps the project grounded, reduces risk of over-engineering, and provides a clear path from the current working system toward the longer-term vision.
+This document will be updated as we progress and learn.
