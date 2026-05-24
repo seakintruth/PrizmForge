@@ -5,129 +5,107 @@
 
 ## Overview
 
-Forge Federation builds on the original PrizmForge foundation by introducing multiple semi-sovereign **mental model ecosystems** (Territories) coordinated through a higher **Stewardship Governance layer** and supported by a **Spider Web discrimination layer**.
+Forge Federation builds on the existing PrizmForge foundation. Rather than immediately building a multi-Territory system, we will first enhance the current PrizmForge codebase with better governance and quality mechanisms while treating it as **a single Territory**.
 
-The system is designed to allow different reasoning paradigms to operate with protected autonomy while maintaining long-term orientation, quality control, and constitutional constraints.
+The longer-term vision is to support multiple semi-sovereign mental model ecosystems (Territories) coordinated through a **Stewardship Governance layer** and a **Spider Web discrimination layer**. However, we will only expand beyond a single Territory when there is clear evidence that doing so improves outcomes.
 
-Development will follow a flexible, sprint-based approach rather than rigid long-term timelines.
+Development will follow a flexible, sprint-based approach with a strong emphasis on **YAGNI** (You Aren't Gonna Need It) to avoid over-engineering.
 
 ## Development Philosophy
 
-- Work in short, focused sprints (typically 1–3 weeks of effort).
-- Prioritize **working, demonstrable increments** over complete architecture.
-- Keep scope narrow enough to finish something meaningful in each sprint.
-- Heavily leverage existing permissive-license frameworks (CrewAI, LangGraph, etc.).
-- Use the work API budget primarily for high-value reasoning and evaluation.
-- Use local hardware for volume, persistence, and lower-stakes background work.
+- Work in short, focused sprints.
+- Prioritize **working, demonstrable improvements** to the existing system over architectural ambition.
+- Apply **YAGNI** aggressively — only add complexity when it is clearly justified by results.
+- Protect against “Tamagotchi” development by keeping experimentation contained and measurable.
+- Use the **commercial LLM API** primarily for high-value reasoning and evaluation.
+- Use local hardware for volume, persistence, and lower-stakes work.
 - Reassess scope and direction after each sprint.
-- Draw useful patterns from systems like mydeadinternet.com while adapting them to code improvement needs.
 
 ## Architecture Alignment
 
-The plan is organized around three core layers:
+We are following a staged evolution:
 
-- **Stewardship Governance Layer** — Constitutional layer. Provides long-term values and hard constraints. Uses moots for changing system-level rules.
-- **Spider Web Discrimination Layer** — Cross-cutting quality and filtering layer. Focuses on distinguishing valuable output from noise and enabling selective response.
-- **Territories** — Semi-sovereign mental model ecosystems that propose, critique, and implement changes under constitutional constraints.
+- **Stage 0 (Current)**: Legacy PrizmForge with a single implicit Territory and explicit flow control via the Resource Controller and Prioritizer.
+- **Stage 1 (Next)**: Enhanced single-Territory system with improved filtering, light work partitioning, and basic governance.
+- **Stage 2 (Future)**: Full Forge Federation with multiple Territories using a hybrid **Core Philosophy + Role** model.
 
-Early sprints will focus on getting these layers working together at a basic level rather than implementing every Territory or advanced mechanism immediately.
+Early work will focus on strengthening the existing system rather than building out multiple Territories.
 
 ## Sprint Guidelines
 
-- Define one clear outcome per sprint.
-- Explicitly state what is **in scope** and what is **out of scope**.
-- Prefer small, shippable progress over large redesigns.
-- Document key decisions and learnings at the end of each sprint.
+- Define one clear, narrow outcome per sprint.
+- Explicitly state what is in scope and out of scope.
+- Prefer small, shippable improvements over large redesigns.
+- Document decisions and learnings at the end of each sprint.
 - Adjust scope between sprints based on what was learned.
 
 ## Phased Direction (Flexible)
 
-These phases are directional and will be adjusted as needed.
-
-### Phase 1: Foundation (First 3–4 sprints)
-**Goal:** Establish a working multi-ecosystem system with basic coordination and code changes.
+### Phase 1: Enhance Existing PrizmForge (Next Several Sprints)
+**Goal:** Improve throughput and quality on the current system while maintaining strong safety.
 
 **Focus:**
-- Select core orchestration tools (CrewAI + LangGraph)
-- Create 2–3 initial Territories with distinct focuses
-- Build a basic message bus and coordination cycles
-- Implement end-to-end proposal → evaluation → materialization flow (starting with full file replacement)
-- Establish basic logging and visibility
+- Strengthen upstream filtering and prioritization (building on the existing Resource Controller and Prioritizer).
+- Introduce basic work partitioning to reduce the single Developer bottleneck.
+- Add lightweight governance mechanisms (e.g., simple moot-style processes for prioritization and conflict resolution).
+- Improve evaluation and discrimination capabilities incrementally.
+- Maintain the existing governed editing pipeline.
 
 **Success Criteria:**
-- Multiple Territories can propose and apply changes
-- Basic coordination exists between them
-- Changes can be safely written to disk with clear provenance
+- Measurable improvement in idea quality reaching implementation.
+- Reduced friction in the implementation path through better partitioning or filtering.
+- Introduction of lightweight governance without excessive complexity.
 
-### Phase 2: Governance Layer (Next 2–3 sprints)
-**Goal:** Introduce constitutional mechanisms and basic inter-Territory dynamics.
+### Phase 2: Evaluate Expansion (When Ready)
+**Goal:** Determine whether moving beyond a single Territory provides meaningful value.
 
 **Focus:**
-- Lightweight Moot-style process for constitutional changes
-- Basic trust/reputation scoring between Territories
-- Initial territory-style organization
-- Simple claims or proposal tracking with consequences
+- Compare outcomes between the enhanced single-Territory system and limited multi-Territory experiments.
+- Refine the Spider Web discrimination layer.
+- Assess governance needs as complexity increases.
 
 **Success Criteria:**
-- There is a working mechanism for proposing and enacting higher-order rules
-- Territories have measurable influence based on outcomes
-- Basic accountability exists between ecosystems
+- Clear data on whether additional Territories improve code improvement outcomes enough to justify added complexity.
 
-### Phase 3: Discrimination & Robustness (Following sprints)
-**Goal:** Strengthen quality control and self-correction.
+### Phase 3: Broader Federation Capabilities (Future)
+**Goal:** Move toward the full Forge Federation vision if justified.
 
-**Focus:**
-- Multi-stage evaluation using Spider Web principles
-- Adversarial critique stages
-- Basic maintenance and pruning behaviors
-- Improved observability
-
-**Success Criteria:**
-- The system can filter low-quality proposals more reliably
-- Clear visibility into why proposals succeed or fail
-
-### Phase 4: Expansion & Hardening
-**Goal:** Expand capabilities and stabilize the core system.
-
-**Focus:**
-- Evaluate adding additional Territories
-- Refine interaction patterns between Territories
-- Improve documentation and long-term maintainability
-- Decide on final name and long-term scope
+This phase will only be pursued after Phase 1 and Phase 2 demonstrate clear value.
 
 ## Resource Strategy
 
-| Work Type                              | Primary Location          | Notes |
-|----------------------------------------|---------------------------|-------|
-| High-value reasoning & evaluation      | Work API (50M tokens/day) | Proposals, critique, synthesis, and moots |
-| High-volume / background agents        | Local CPUs                | Heartbeat agents, monitoring, simple tasks |
-| Lighter specialized models             | 1080ti                    | Quantized models where suitable |
-| Persistent / always-on processes       | Local                     | Minimize API usage for long-running agents |
+| Work Type                              | Primary Location              | Notes |
+|----------------------------------------|-------------------------------|-------|
+| High-value reasoning & evaluation      | Commercial LLM API            | Used for proposals, critique, synthesis, and governance logic |
+| High-volume / background agents        | Local CPUs                    | Monitoring, simple maintenance, and supporting processes |
+| Lighter specialized models             | 1080ti                        | Where suitable for lower-stakes tasks |
+| Persistent / always-on processes       | Local                         | Minimize unnecessary API usage |
 
-**Guiding Rule:** Use the API budget for anything that directly affects code quality or governance decisions. Use local hardware for volume and persistence.
+**Guiding Rule:** Use the commercial LLM API for anything that directly affects code quality or governance decisions. Use local hardware for volume and persistence.
 
-## Current Priorities (Starting Point)
+## Current Priorities
 
-1. Define the minimum interesting MVP after the first 2–3 sprints.
-2. Finalize core technical stack for orchestration and coordination.
-3. Create the first 2–3 Territories with clear differentiation.
-4. Deliver a working proposal → evaluation → materialization loop.
-5. Establish sprint rhythm and lightweight documentation habits.
+1. Focus on enhancing the **existing PrizmForge system** (Stage 0 → Stage 1).
+2. Improve filtering and prioritization to address the high idea-to-adoption ratio.
+3. Introduce light work partitioning and basic governance mechanisms.
+4. Maintain strong safety while increasing implementation throughput.
+5. Apply YAGNI discipline — avoid building multi-Territory support until it is clearly needed.
 
 ## Open Questions
 
-- How formal should the initial Moot process be?
-- What is the right balance between autonomy and coordination in early sprints?
-- How should trust/reputation between Territories be calculated initially?
-- When should we expand beyond the initial three Territories?
-- How aggressively should we incorporate Spider Web discrimination mechanisms in the first few sprints?
+- What is the minimum effective form of governance to add in the near term?
+- How should we measure whether work partitioning is successful?
+- When (if ever) should we introduce a second Territory?
+- How aggressively should we expand the Spider Web discrimination layer?
+- What specific metrics will we use to decide whether to move beyond a single Territory?
 
 ## Working Agreements
 
-- Scope can and should be adjusted between sprints.
-- We will favor consistent, visible progress over attempting to build everything at once.
-- We will regularly ask whether current direction still serves the long-term vision of a Stewardship-oriented Constitutional Polycentric Republic.
+- We will treat added complexity as a cost that must be justified.
+- We will prioritize improvements to the existing PrizmForge system over building new architectural layers.
+- Scope will be actively managed to avoid speculative generalization.
+- Success is defined by better code improvement outcomes, not by the number of Territories or architectural sophistication.
 
 ---
 
-This plan is intentionally lightweight and meant to evolve. It provides enough structure to maintain momentum while remaining flexible to new learnings and constraints.
+This plan is intentionally lightweight and meant to evolve. It prioritizes pragmatic improvement of the current system while keeping the door open for the longer-term Forge Federation vision.
