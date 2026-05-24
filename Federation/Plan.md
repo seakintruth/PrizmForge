@@ -1,120 +1,133 @@
 # Flexible Plan — Forge Federation
 
-**Working Name:** Forge Federation (name still under discussion)  
-**Goal:** Build a governed, multi-paradigm agent system for reliable, long-term improvement of existing codebases.  
-**Approach:** Short, focused sprints with clear deliverables. Avoid long-term rigid planning.
+**Working Name:** Forge Federation  
+**Framing:** A Stewardship-oriented Constitutional Polycentric Republic for multi-paradigm, governed code improvement.
+
+## Overview
+
+Forge Federation builds on the original PrizmForge foundation by introducing multiple semi-sovereign **mental model ecosystems** (Territories) coordinated through a higher **Stewardship Governance layer** and supported by a **Spider Web discrimination layer**.
+
+The system is designed to allow different reasoning paradigms to operate with protected autonomy while maintaining long-term orientation, quality control, and constitutional constraints.
+
+Development will follow a flexible, sprint-based approach rather than rigid long-term timelines.
 
 ## Development Philosophy
 
-- Work in **short, focused sprints** (typically 1–3 weeks of real effort).
-- Prioritize **working prototypes** over perfect architecture early on.
+- Work in short, focused sprints (typically 1–3 weeks of effort).
+- Prioritize **working, demonstrable increments** over complete architecture.
 - Keep scope narrow enough to finish something meaningful in each sprint.
-- Leverage existing permissive-license frameworks heavily (CrewAI, LangGraph, etc.).
-- Use the work API budget for high-value reasoning and evaluation.
-- Use local hardware (120 CPU cores + 1080ti) for volume, persistence, and lower-stakes work.
-- Reassess direction after each sprint based on what was actually built and learned.
-- Draw inspiration from mydeadinternet.com (moots, territories, claims, trust, adversarial design) and game systems like Endless Sky, while adapting them to code improvement.
+- Heavily leverage existing permissive-license frameworks (CrewAI, LangGraph, etc.).
+- Use the work API budget primarily for high-value reasoning and evaluation.
+- Use local hardware for volume, persistence, and lower-stakes background work.
+- Reassess scope and direction after each sprint.
+- Draw useful patterns from systems like mydeadinternet.com while adapting them to code improvement needs.
+
+## Architecture Alignment
+
+The plan is organized around three core layers:
+
+- **Stewardship Governance Layer** — Constitutional layer. Provides long-term values and hard constraints. Uses moots for changing system-level rules.
+- **Spider Web Discrimination Layer** — Cross-cutting quality and filtering layer. Focuses on distinguishing valuable output from noise and enabling selective response.
+- **Territories** — Semi-sovereign mental model ecosystems that propose, critique, and implement changes under constitutional constraints.
+
+Early sprints will focus on getting these layers working together at a basic level rather than implementing every Territory or advanced mechanism immediately.
 
 ## Sprint Guidelines
 
-- Define a **single, clear outcome** per sprint.
-- Define what “done” looks like before starting.
-- Explicitly decide what we are **not** building in the current sprint.
-- Prefer small, shippable increments over big redesigns.
-- Document learnings and blockers at the end of each sprint.
+- Define one clear outcome per sprint.
+- Explicitly state what is **in scope** and what is **out of scope**.
+- Prefer small, shippable progress over large redesigns.
+- Document key decisions and learnings at the end of each sprint.
+- Adjust scope between sprints based on what was learned.
 
-## High-Level Phases (Flexible)
+## Phased Direction (Flexible)
 
-These phases are directional, not fixed timelines.
+These phases are directional and will be adjusted as needed.
 
-### Phase 1: Foundation (First 2–4 sprints)
-**Goal:** Get a minimal working system with multiple ecosystems and basic coordination.
+### Phase 1: Foundation (First 3–4 sprints)
+**Goal:** Establish a working multi-ecosystem system with basic coordination and code changes.
 
-**Focus areas:**
-- Choose core orchestration tools (CrewAI + LangGraph recommended)
-- Create 2–3 initial mental model ecosystems with distinct focuses
-- Build a basic message bus / coordination layer
-- Implement simple suggestion → evaluation → decision cycles
-- Get end-to-end code materialization working (start with full file replacement)
+**Focus:**
+- Select core orchestration tools (CrewAI + LangGraph)
+- Create 2–3 initial Territories with distinct focuses
+- Build a basic message bus and coordination cycles
+- Implement end-to-end proposal → evaluation → materialization flow (starting with full file replacement)
 - Establish basic logging and visibility
 
-**Success criteria:**
-- Can run multiple distinct agent groups that propose and apply changes
-- Basic coordination between groups exists
-- Changes can be materialized to disk safely
+**Success Criteria:**
+- Multiple Territories can propose and apply changes
+- Basic coordination exists between them
+- Changes can be safely written to disk with clear provenance
 
 ### Phase 2: Governance Layer (Next 2–3 sprints)
-**Goal:** Add higher-order rules and basic inter-ecosystem dynamics.
+**Goal:** Introduce constitutional mechanisms and basic inter-Territory dynamics.
 
-**Focus areas:**
-- Lightweight moot-style constitutional mechanism
-- Basic trust / reputation scoring between ecosystems
-- Simple territory-style organization
-- Initial claims or proposal tracking with consequences
-- Early adversarial evaluation patterns
+**Focus:**
+- Lightweight Moot-style process for constitutional changes
+- Basic trust/reputation scoring between Territories
+- Initial territory-style organization
+- Simple claims or proposal tracking with consequences
 
-**Success criteria:**
-- Ecosystems can influence each other through structured mechanisms
-- There is a way to propose and enact higher-order rules
-- Basic accountability and feedback exists between groups
+**Success Criteria:**
+- There is a working mechanism for proposing and enacting higher-order rules
+- Territories have measurable influence based on outcomes
+- Basic accountability exists between ecosystems
 
-### Phase 3: Depth & Self-Correction (Following sprints)
-**Goal:** Add robustness, evaluation quality, and maintenance behaviors.
+### Phase 3: Discrimination & Robustness (Following sprints)
+**Goal:** Strengthen quality control and self-correction.
 
-**Focus areas:**
-- Stronger multi-judge evaluation
-- Maintenance and self-correction layers (pruning, vindication-style recovery)
-- Expanded number of ecosystems (if valuable)
-- Improved observability and debugging tools
-- Better handling of inter-ecosystem relationships (cooperation, tension, resource dynamics)
+**Focus:**
+- Multi-stage evaluation using Spider Web principles
+- Adversarial critique stages
+- Basic maintenance and pruning behaviors
+- Improved observability
 
-**Success criteria:**
-- The system can run for longer periods with less manual intervention
-- Evaluation quality is noticeably better than single-judge approaches
-- Clear visibility into what each ecosystem is doing and why
+**Success Criteria:**
+- The system can filter low-quality proposals more reliably
+- Clear visibility into why proposals succeed or fail
 
-### Phase 4: Hardening & Direction Setting
-**Goal:** Decide what the system should become long-term and stabilize the core.
+### Phase 4: Expansion & Hardening
+**Goal:** Expand capabilities and stabilize the core system.
 
-**Focus areas:**
-- Refine constitutional and governance mechanisms
-- Evaluate whether to expand into more sophisticated economic/reputation models
-- Decide on final name and branding
-- Improve documentation and onboarding
-- Determine which parts should be hardened vs kept experimental
+**Focus:**
+- Evaluate adding additional Territories
+- Refine interaction patterns between Territories
+- Improve documentation and long-term maintainability
+- Decide on final name and long-term scope
 
 ## Resource Strategy
 
 | Work Type                              | Primary Location          | Notes |
 |----------------------------------------|---------------------------|-------|
-| High-value reasoning & evaluation      | Work API (50M tokens/day) | Use for proposals, judging, synthesis, and moots |
-| High-volume / background agents        | Local CPUs (120 cores)    | Heartbeat agents, monitoring, simple maintenance |
-| Lighter or specialized models          | 1080ti                    | Quantized models for lower-stakes tasks |
-| Persistent / always-on processes       | Local                     | Avoid burning API budget unnecessarily |
+| High-value reasoning & evaluation      | Work API (50M tokens/day) | Proposals, critique, synthesis, and moots |
+| High-volume / background agents        | Local CPUs                | Heartbeat agents, monitoring, simple tasks |
+| Lighter specialized models             | 1080ti                    | Quantized models where suitable |
+| Persistent / always-on processes       | Local                     | Minimize API usage for long-running agents |
+
+**Guiding Rule:** Use the API budget for anything that directly affects code quality or governance decisions. Use local hardware for volume and persistence.
 
 ## Current Priorities (Starting Point)
 
-1. Define the **minimum interesting MVP** we want after the first 2–3 sprints.
-2. Choose the core technical stack (orchestration + message bus).
-3. Create the first 2–3 mental model ecosystems with clear differentiation.
-4. Get a working proposal → evaluation → materialization loop.
-5. Establish basic sprint rhythm and documentation habits.
+1. Define the minimum interesting MVP after the first 2–3 sprints.
+2. Finalize core technical stack for orchestration and coordination.
+3. Create the first 2–3 Territories with clear differentiation.
+4. Deliver a working proposal → evaluation → materialization loop.
+5. Establish sprint rhythm and lightweight documentation habits.
 
-## Open Questions (to revisit regularly)
+## Open Questions
 
-- How many ecosystems do we actually need in the early versions?
-- How formal should the constitutional/moot layer be at the start?
-- What is the right balance between competition and cooperation between ecosystems?
-- How heavily should we lean into MDI-style mechanisms (claims, trust decay, adversarial stages) versus keeping things simpler?
-- When should we revisit the project name?
+- How formal should the initial Moot process be?
+- What is the right balance between autonomy and coordination in early sprints?
+- How should trust/reputation between Territories be calculated initially?
+- When should we expand beyond the initial three Territories?
+- How aggressively should we incorporate Spider Web discrimination mechanisms in the first few sprints?
 
 ## Working Agreements
 
-- We will favor **progress over perfection** in early sprints.
-- We will document decisions and learnings as we go.
-- We will regularly ask: “Is this still the right direction, or are we overbuilding?”
-- Scope can (and should) be adjusted between sprints based on what we learn.
+- Scope can and should be adjusted between sprints.
+- We will favor consistent, visible progress over attempting to build everything at once.
+- We will regularly ask whether current direction still serves the long-term vision of a Stewardship-oriented Constitutional Polycentric Republic.
 
 ---
 
-This plan is intentionally lightweight and meant to be updated frequently. The goal is to maintain momentum while staying flexible about both scope and direction.
+This plan is intentionally lightweight and meant to evolve. It provides enough structure to maintain momentum while remaining flexible to new learnings and constraints.
