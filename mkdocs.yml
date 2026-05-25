@@ -1,0 +1,67 @@
+site_name: Forge Federation
+site_description: Documentation for the Forge Federation vision — a Stewardship-oriented Constitutional Polycentric Republic for governed, multi-paradigm code improvement.
+site_author: Jeremy Gerdes
+repo_url: https://github.com/seakintruth/PrizmForge
+repo_name: PrizmForge
+
+docs_dir: docs
+
+theme:
+  name: material
+  logo: assets/logo.png
+  favicon: assets/favicon.png
+
+  palette:
+    # Light mode
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+
+    # Dark mode
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+
+nav:
+  - Home: index.md
+
+  - Architecture:
+      - Mental Models: mental_models.md
+      - Territory Model: federation/territory_model.md
+
+  - Territories:
+      - Core Philosophies: federation/territory_core_details.md
+      - Roles: federation/territory_role_details.md
+
+  - Development:
+      - Progression Plans: system_mental_model_progression_plans.md
+
+  - Federation Vision:
+      - Overview: federation/README.md
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+extra:
+  homepage: index.md
