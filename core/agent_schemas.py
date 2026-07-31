@@ -301,6 +301,33 @@ def get_distinct_values(table: str, column: str) -> List[str]:
         return []
 
 
+def get_schema_example(agent_name: str) -> str:
+    """Load schema example from file"""
+    schema_dir = Path(__file__).parent.parent / "agent_schemas"
+    schema_file = schema_dir / f"{agent_name}.json"
+    
+    if schema_file.exists():
+        try:
+            with open(schema_file) as f:
+                example = json.load(f)
+            # Pretty print with proper indentation
+            return json.dumps(example, indent=2)
+        except Exception:
+            pass
+    
+    # Fallback to default schema
+    return """{
+  "findings": [
+    {
+      "priority": "MEDIUM",
+      "category": "other",
+      "message": "Issue description",
+      "suggestion": "How to fix"
+    }
+  ],
+  "summary": "Brief assessment"
+}"""
+
 def get_priority_values() -> List[str]:
     """Get actual priority values from database"""
     values = get_distinct_values("agent_feedback", "priority")

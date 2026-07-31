@@ -1,3 +1,5 @@
+# core/context_manager.py
+
 """
 Smart context management - reads pre-computed token estimates
 Much faster - no recalculation at query time
@@ -34,29 +36,47 @@ class ContextManager:
     def __init__(self):
         self.config = get_config()
         
-        # Model context limits (conservative estimates)
-        self.model_limits = {
-            "gemini-2.0-flash-exp": int(1_000_000 * 0.8),
-            "gemini-1.5-pro": int(2_000_000 * 0.8),
-            "gemini-1.5-flash": int(1_000_000 * 0.8),
-            "gemini-3.1-pro-preview": int(2_000_000 * 0.8),
-            "gemini-3-flash-preview": int(1_000_000 * 0.8),
-            "gemini-2.5-pro": int(2_000_000 * 0.8),
-            "databricks-claude-sonnet-4-5": int(200_000 * 0.8),
-        }
-    
+        # Build model limits from config (with safety factor)
+        self.model_limits = {}
+        models_config = self.config.get("models", {})
+        
+        for model_name, model_config in models_config.items():
+            # Get context window size
+            max_context = model_config.get("max_context_tokens")
+            max_output = model_config.get("max_output_tokens", 16384)
+            
+            if max_context:
+                # Reserve space for output + safety margin (80% of available)
+                usable_input = int((max_context - max_output) * 0.8)
+                self.model_limits[model_name] = usable_input
+            else:
+                # Fallback: conservative default if not specified
+                self.model_limits[model_name] = 100_000
+        
+        # Fallback for unknown models
+        self.default_context_limit = 100_000
+
     def get_model_context_limit(self, model: str) -> int:
-        """Get context limit for model"""
+        """Get context limit for model from config-driven limits"""
+        
+        # Try model-specific limit
         if model in self.model_limits:
             return self.model_limits[model]
         
-        # Try config
-        model_config = self.config.get("models", {}).get(model, {})
-        max_output = model_config.get("max_output_tokens", 16384)
+        # Try to compute from config on-the-fly
+        models_config = self.config.get("models", {})
+        if model in models_config:
+            model_config = models_config[model]
+            max_context = model_config.get("max_context_tokens")
+            max_output = model_config.get("max_output_tokens", 16384)
+            
+            if max_context:
+                return int((max_context - max_output) * 0.8)
         
-        # Conservative default: 100K input
-        return 100_000 - max_output
-    
+        # Conservative default for unknown models
+        print(f"⚠️  Unknown model '{model}', using default context limit")
+        return self.default_context_limit
+
     def build_orchestrator_context(
         self, 
         task_id: str,
@@ -83,8 +103,19 @@ class ContextManager:
         if prioritized_msg:
             priority_tokens = len(prioritized_msg) // 4
             base_context += prioritized_msg + "\n\n"
+
+        # Structural index from target .PrizmForge/indexes (map, not full sources)
+        index_tokens = 0
+        try:
+            from core.index_context import build_index_context_block
+            index_block = build_index_context_block(max_chars=8_000)
+            if index_block and "not available" not in index_block:
+                index_tokens = len(index_block) // 4
+                base_context += index_block + "\n"
+        except Exception:
+            pass
         
-        tokens_used = base_tokens + history_tokens + priority_tokens
+        tokens_used = base_tokens + history_tokens + priority_tokens + index_tokens
         
         # Reserve 5% for system prompt + response
         available_for_files = int(context_limit * 0.95) - tokens_used
@@ -151,10 +182,12 @@ class ContextManager:
         
         return final_context, metadata
     
-    def _get_prioritized_files_fast(self, task_id: str) -> List[FileContext]:
+    def _get_prioritized_files_fast(self, task_id: str, limit: int = 100) -> List[FileContext]:
         """
         Get prioritized files with PRE-COMPUTED token estimates
         FAST - just one query with sorting
+        
+        UPDATED: Added limit parameter to prevent OOM
         """
         try:
             with get_db_connection() as conn:
@@ -178,7 +211,8 @@ class ContextManager:
                     WHERE pf.is_binary = 0 AND pf.estimated_tokens > 0
                     GROUP BY pf.file_path
                     ORDER BY pf.last_modified DESC
-                """)
+                    LIMIT ?
+                """, (limit,))  # ✅ ADDED LIMIT
                 
                 rows = cursor.fetchall()
             
@@ -271,37 +305,93 @@ class ContextManager:
             summary += f"\n  ⚠️  {issue_count} unresolved issue(s)"
         
         return summary
-    
+
     def _get_prioritized_suggestions(self, task_id: str) -> Optional[str]:
-        """Get prioritized suggestions from prioritizer"""
+        """
+        Get prioritized suggestions from agent_feedback and proposals
+        Shows ALL unaddressed items in priority order
+        """
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 
+                # Get ALL unaddressed feedback (prioritized)
                 cursor.execute("""
-                    SELECT id, content
-                    FROM messages
-                    WHERE task_id = ? AND from_agent = 'prioritizer'
-                    AND to_agent = 'orchestrator' AND read = 0
-                    ORDER BY timestamp DESC LIMIT 1
+                    SELECT id, agent_name, file_path, priority, category, message, suggestion
+                    FROM agent_feedback
+                    WHERE task_id = ? AND addressed = 0
+                    ORDER BY 
+                        CASE priority
+                            WHEN 'CRITICAL' THEN 1
+                            WHEN 'HIGH' THEN 2
+                            WHEN 'MEDIUM' THEN 3
+                            ELSE 4
+                        END,
+                        timestamp DESC
+                    LIMIT 20
                 """, (task_id,))
                 
-                result = cursor.fetchone()
-                if result:
-                    msg_id, content = result
-                    cursor.execute("UPDATE messages SET read = 1 WHERE id = ?", (msg_id,))
-                    return content
+                feedback_items = cursor.fetchall()
                 
-            return None
-        except:
+                # Get pending proposals
+                cursor.execute("""
+                    SELECT proposal_id, target_file_path, status, rationale
+                    FROM edit_proposals
+                    WHERE status IN ('pending', 'under_review', 'approved')
+                    ORDER BY created_at DESC
+                    LIMIT 5
+                """)
+                
+                proposals = cursor.fetchall()
+                
+                # Build summary message
+                if not feedback_items and not proposals:
+                    return None
+                
+                message = "📋 **ACTIONABLE ITEMS (Priority Order):**\n\n"
+                
+                if feedback_items:
+                    # Count by priority
+                    priority_counts = {}
+                    for item in feedback_items:
+                        priority = item[3]
+                        priority_counts[priority] = priority_counts.get(priority, 0) + 1
+                    
+                    summary = ", ".join([f"{count} {priority}" for priority, count in sorted(priority_counts.items())])
+                    message += f"**🔴 Unaddressed Feedback: {len(feedback_items)} items ({summary})**\n\n"
+                    
+                    # Show top 10 items
+                    for i, (fid, agent, fpath, priority, category, msg, suggestion) in enumerate(feedback_items[:10], 1):
+                        message += f"{i}. **[{priority}]** {category} in `{fpath}` (ID: {fid})\n"
+                        message += f"   {msg[:80]}{'...' if len(msg) > 80 else ''}\n"
+                        if suggestion:
+                            message += f"   💡 {suggestion[:60]}{'...' if len(suggestion) > 60 else ''}\n"
+                    
+                    if len(feedback_items) > 10:
+                        message += f"\n   _(+{len(feedback_items) - 10} more items in backlog)_\n"
+                    message += "\n"
+                
+                if proposals:
+                    message += f"**📄 Pending Proposals ({len(proposals)}):**\n"
+                    for prop_id, fpath, status, rationale in proposals:
+                        message += f"• {prop_id[:8]}... → `{fpath}` ({status})\n"
+                        if rationale:
+                            message += f"  {rationale[:60]}{'...' if len(rationale) > 60 else ''}\n"
+                
+                return message
+            
+        except Exception as e:
+            print(f"    ⚠️  Error getting prioritized suggestions: {e}")
             return None
 
+# =============================================================================
+# Global Singleton
+# =============================================================================
 
-# Global singleton
 _context_manager = None
 
 def get_context_manager() -> ContextManager:
-    """Get global context manager"""
+    """Get global context manager instance"""
     global _context_manager
     if _context_manager is None:
         _context_manager = ContextManager()

@@ -1,0 +1,13 @@
+{
+  "suggestions": [
+    {
+      "priority": "MEDIUM",
+      "category": "performance",
+      "message": "Optimization opportunity identified",
+      "suggestion": "Use list comprehension instead of loop",
+      "start_line_guid": "guid-def-456",
+      "end_line_guid": "guid-def-458"
+    }
+  ],
+  "summary": "Analysis complete with improvement suggestions"
+}

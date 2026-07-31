@@ -6,7 +6,7 @@ from pathlib import Path
 from datetime import datetime
 
 from core.config import get_config
-from core.db import get_db_path
+from core.db import get_db_path, init_db
 from core.db_helpers import get_unaddressed_feedback
 from core.token_budget import TokenBudget
 from core.file_operations import (
@@ -17,22 +17,29 @@ from core.file_operations import (
     save_file_summary
 )
 from core.db_connection import get_db_connection
+# cli/commands.py - Update cmd_init() function
 
 def cmd_init():
     """Initialize and index project"""
-    print(f"\\n{'='*60}")
+    print(f"\n{'='*60}")
     print(f"📂 Indexing Project")
-    print(f"{'='*60}\\n")
+    print(f"{'='*60}\n")
     
+    # ✅ ENSURE DATABASE IS INITIALIZED FIRST
+    init_db() 
+
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))
     project_dir.mkdir(parents=True, exist_ok=True)
     
-    print(f"Scanning: {project_dir.absolute()}\\n")
+    print(f"Scanning: {project_dir.absolute()}\n")
     
     indexed = 0
     skipped = 0
     errors = 0
+    
+    # Import governed editing initializer
+    from file_editing import initialize_file_lines
     
     # Use os.walk() instead of rglob()
     for root, dirs, files in os.walk(project_dir):
@@ -44,7 +51,7 @@ def cmd_init():
             
             try:
                 rel_path = full_path.relative_to(project_dir)
-                rel_path_str = str(rel_path).replace('\\\\', '/')  # Normalize path separators
+                rel_path_str = str(rel_path).replace('\\', '/')  # Normalize path separators
                 
                 if should_ignore_file(rel_path_str):
                     skipped += 1
@@ -57,13 +64,20 @@ def cmd_init():
                 
                 content = full_path.read_text(encoding='utf-8')
                 
-                # Sync to database
+                # 1. Sync to project_files (legacy context system)
                 if sync_file_to_database(rel_path_str, content):
-                    # Generate summary
+                    # 2. Generate summary
                     summary = generate_file_summary(rel_path_str, content)
                     save_file_summary(rel_path_str, summary)
-                    indexed += 1
-                    print(f"  ✅ {rel_path_str}")
+                    
+                    # 3. ✅ NEW: Initialize governed editing storage
+                    result = initialize_file_lines(rel_path_str, content)
+                    if result.get("status") == "success":
+                        indexed += 1
+                        print(f"  ✅ {rel_path_str}")
+                    else:
+                        print(f"  ⚠️  Failed to initialize lines: {rel_path_str}")
+                        errors += 1
                 else:
                     print(f"  ⚠️  Failed to sync: {rel_path_str}")
                     errors += 1
@@ -72,14 +86,57 @@ def cmd_init():
                 print(f"  ❌ Error: {filename}: {e}")
                 errors += 1
     
-    print(f"\\n{'='*60}")
+    print(f"\n🧹 Checking for deleted files...")
+    deleted_count = 0
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        
+        # 1. Check governed editing 'files' table
+        cursor.execute("SELECT file_id, file_path FROM files WHERE is_deleted = 0")
+        for file_id, fpath in cursor.fetchall():
+            full_path = project_dir / fpath
+            if not full_path.exists():
+                conn.execute("UPDATE files SET is_deleted = 1 WHERE file_id = ?", (file_id,))
+                conn.execute("UPDATE file_lines SET is_deleted = 1 WHERE file_id = ?", (file_id,))
+                print(f"  🗑️  Marked deleted (governed): {fpath}")
+                deleted_count += 1
+                
+        # 2. Check legacy 'project_files' table
+        cursor.execute("SELECT file_path FROM project_files")
+        for row in cursor.fetchall():
+            fpath = row[0]
+            full_path = project_dir / fpath
+            if not full_path.exists():
+                conn.execute("DELETE FROM project_files WHERE file_path = ?", (fpath,))
+                conn.execute("DELETE FROM file_summaries WHERE file_path = ?", (fpath,))
+                print(f"  🗑️  Removed from index: {fpath}")
+                deleted_count += 1
+
+    print(f"\n{'='*60}")
     print(f"📊 Indexing Results:")
     print(f"   ✅ Indexed: {indexed}")
     print(f"   ⏭️  Skipped: {skipped}")
+    print(f"   🗑️  Deleted: {deleted_count}")     
     if errors > 0:
         print(f"   ❌ Errors: {errors}")
-    print(f"{'='*60}\\n")
+    print(f"{'='*60}\n")
 
+    # Structural indexes: sqlite file_symbols + Markdown export (no full dump)
+    try:
+        from core.index_context import refresh_target_indexes
+        print(f"\n📚 Building target symbol index + Markdown maps → {project_dir / '.PrizmForge'}")
+        written = refresh_target_indexes(
+            project_directory=str(project_dir), full_dump=False, force=True
+        )
+        sym = written.get("symbols") or {}
+        print(
+            f"   ✅ symbols: {sym.get('files', '?')} files / {sym.get('symbols', '?')} rows; "
+            f"markdown: {'ok' if written.get('markdown') else written.get('markdown_error', 'n/a')}"
+        )
+    except Exception as e:
+        print(f"   ⚠️  Target index generation failed (non-fatal): {e}")
+
+    
 def cmd_files():
     """List indexed files"""
     with get_db_connection() as conn:
@@ -250,9 +307,9 @@ def cmd_export_db(output_dir: str = None, task_id: str = None):
         from core.config import get_config
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
-        prizmfoundry_dir = project_dir / ".PrizmForge"
-        prizmfoundry_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = prizmfoundry_dir / "agents_exports" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        PrizmForge_dir = project_dir / ".PrizmForge"
+        PrizmForge_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = PrizmForge_dir / "agents_exports" / datetime.now().strftime("%Y%m%d_%H%M%S")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     
@@ -338,9 +395,9 @@ def cmd_export_task(task_id: str, output_dir: str = None):
         from core.config import get_config
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
-        prizmfoundry_dir = project_dir / ".PrizmForge"
-        prizmfoundry_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = prizmfoundry_dir / "agents_exports" / f"task_{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        PrizmForge_dir = project_dir / ".PrizmForge"
+        PrizmForge_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = PrizmForge_dir / "agents_exports" / f"task_{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     cmd_export_db(output_dir, task_id)
 
@@ -390,9 +447,9 @@ def cmd_export_specific_tables(tables: list, output_dir: str = None, task_id: st
         from core.config import get_config
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
-        prizmfoundry_dir = project_dir / ".PrizmForge"
-        prizmfoundry_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = prizmfoundry_dir / "agents_exports" / f"custom_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        PrizmForge_dir = project_dir / ".PrizmForge"
+        PrizmForge_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = PrizmForge_dir / "agents_exports" / f"custom_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
     output_dir.mkdir(parents=True, exist_ok=True)
     

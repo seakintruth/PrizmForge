@@ -11,5 +11,4 @@ def __init__(self):
     self.optimizer = HeuristicOptimizer()
     self.current_decision: Optional[ThrottleDecision] = None
     self.decision_history: List[ThrottleDecision] = []
-    
-    self.throttling_disabled_until: Optional[datetime] = None
+    self.throttling_disabled_until = None

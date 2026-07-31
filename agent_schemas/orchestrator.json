@@ -1,0 +1,15 @@
+{
+  "feedback_summary": "Brief summary of current state and prioritized items from message bus",
+  "next_agent": "developer",
+  "instructions": "Clear, specific instructions for the developer agent about what needs to be done",
+  "reasoning": "Why this decision was made and what the current priorities are",
+  "files_needed": [
+    "path/to/file1.py",
+    "path/to/file2.py"
+  ],
+  "addressing_feedback_ids": [
+    123,
+    456
+  ],
+  "model": "gemini-3.1-pro-preview"
+}

@@ -6,12 +6,15 @@
 # =============================================================================
 
 import sqlite3
+from core.content_safety import validate_source_content
 from typing import Dict, Any, List, Optional
 from uuid import uuid4
 import hashlib
 import json
 
 from .db import get_db_connection, log_error
+
+
 
 
 # =============================================================================
@@ -24,7 +27,6 @@ RENUMBER_GAP = 1024.0
 
 def _compute_hash(content: str) -> str:
     return hashlib.md5(content.encode()).hexdigest()
-
 
 def _validate_guid_exists(conn: sqlite3.Connection, file_id: int, line_guid: str) -> bool:
     if not line_guid:
@@ -40,7 +42,10 @@ def _validate_operation_guids(conn: sqlite3.Connection, file_id: int, op) -> boo
     """
     Validate that referenced line GUIDs exist for the given operation.
     Supports replace_block, delete_lines, and insert_after.
+    find_replace does not use GUIDs and always passes.
     """
+    if op.type in ("find_replace", "full_replace", "apply_diff", "create_file", "update_documentation"):
+        return True  # content-level ops; no GUID references
     if op.type == "replace_block":
         if not _validate_guid_exists(conn, file_id, op.start_line_guid):
             return False
@@ -317,6 +322,337 @@ def apply_update_documentation(conn: sqlite3.Connection, file_id: int, op):
     """, (file_id, new_content))
 
 
+def apply_find_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+    """
+    Apply a find/replace operation to the entire file content.
+
+    This is intentionally simple and robust: reconstruct → replace → re-initialize
+    lines. It is the preferred fallback when GUID-based editing fails under
+    constrained LLMs.
+    """
+    import re
+    from .db import reconstruct_file_content
+    from .writer import initialize_file_lines
+
+    # Resolve file path for re-initialization
+    row = conn.execute(
+        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0",
+        (file_id,)
+    ).fetchone()
+    if not row:
+        return {"status": "error", "message": f"file_id {file_id} not found"}
+
+    file_path = row["file_path"] if isinstance(row, sqlite3.Row) else row[0]
+    original = reconstruct_file_content(conn, file_id)
+
+    find = getattr(op, "find", "")
+    replace = getattr(op, "replace", "")
+    use_regex = bool(getattr(op, "regex", False))
+    count = getattr(op, "count", None)
+
+    if not find:
+        return {"status": "error", "message": "find string is empty"}
+
+    try:
+        if use_regex:
+            flags = 0
+            pattern = re.compile(find, flags)
+            if count is None:
+                new_content, n = pattern.subn(replace, original)
+            else:
+                new_content, n = pattern.subn(replace, original, count=count)
+        else:
+            if count is None:
+                n = original.count(find)
+                new_content = original.replace(find, replace)
+            else:
+                n = min(count, original.count(find))
+                new_content = original.replace(find, replace, count)
+
+        if n == 0:
+            return {
+                "status": "success",
+                "replacements": 0,
+                "message": "No matches found; file unchanged",
+            }
+
+        # Re-initialize line storage with the new content
+        init_result = initialize_file_lines(file_path, new_content)
+        if init_result.get("status") != "success":
+            return {
+                "status": "error",
+                "message": f"Re-initialize after find_replace failed: {init_result.get('message')}",
+            }
+
+        return {
+            "status": "success",
+            "replacements": n,
+            "message": f"Applied {n} replacement(s)",
+        }
+    except re.error as e:
+        return {"status": "error", "message": f"Invalid regex: {e}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def apply_full_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+    """
+    Replace the entire file content. Used for small files and as a reliable fallback.
+    Reconstructs line storage from the provided new_content.
+    """
+    from .writer import initialize_file_lines
+
+    row = conn.execute(
+        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0",
+        (file_id,)
+    ).fetchone()
+    if not row:
+        return {"status": "error", "message": f"file_id {file_id} not found"}
+
+    file_path = row["file_path"] if isinstance(row, sqlite3.Row) else row[0]
+    new_content = getattr(op, "new_content", "") or ""
+    if isinstance(new_content, list):
+        new_content = "\n".join(str(line) for line in new_content)
+
+    if not str(new_content).strip():
+        return {"status": "error", "message": "new_content is empty"}
+
+    safety = validate_source_content(new_content, file_path=file_path)
+    if not safety.get("ok"):
+        return {"status": "error", "message": safety.get("message", "content rejected")}
+
+    init_result = initialize_file_lines(file_path, new_content)
+    if init_result.get("status") != "success":
+        return {
+            "status": "error",
+            "message": f"Re-initialize after full_replace failed: {init_result.get('message')}",
+        }
+
+    return {
+        "status": "success",
+        "lines": init_result.get("line_count"),
+        "message": f"Full file replaced ({init_result.get('line_count', '?')} lines)",
+    }
+
+
+
+def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+    """
+    Apply a unified diff to file content.
+    Uses a simple line-oriented algorithm suitable for LLM-generated patches.
+    """
+    from .db import reconstruct_file_content
+    from .writer import initialize_file_lines
+
+    row = conn.execute(
+        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0",
+        (file_id,)
+    ).fetchone()
+    if not row:
+        return {"status": "error", "message": f"file_id {file_id} not found"}
+
+    file_path = row["file_path"] if isinstance(row, sqlite3.Row) else row[0]
+    original = reconstruct_file_content(conn, file_id)
+    diff_text = getattr(op, "diff", "") or ""
+
+    try:
+        import difflib
+        # Prefer stdlib if the diff is a proper unified diff from difflib
+        original_lines = original.splitlines(keepends=True)
+        # Normalize diff line endings
+        diff_lines = diff_text.splitlines(keepends=True)
+
+        # Try difflib.restore / manual application via patch-like logic
+        # Simple approach: extract '+' lines and context using difflib.unified_diff inverse
+        # Fall back to applying with a minimal hunk parser
+        new_lines = _apply_unified_diff(original_lines, diff_lines)
+        if new_lines is None:
+            return {"status": "error", "message": "Failed to apply unified diff (no matching context)"}
+
+        new_content = "".join(new_lines)
+        # Ensure trailing newline consistency
+        if original.endswith("\n") and not new_content.endswith("\n"):
+            new_content += "\n"
+
+        init_result = initialize_file_lines(file_path, new_content)
+        if init_result.get("status") != "success":
+            return {
+                "status": "error",
+                "message": f"Re-initialize after apply_diff failed: {init_result.get('message')}",
+            }
+
+        return {
+            "status": "success",
+            "lines": init_result.get("line_count"),
+            "message": f"Diff applied ({init_result.get('line_count', '?')} lines)",
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def _apply_unified_diff(original_lines, diff_lines):
+    """
+    Minimal unified-diff applicator.
+    Returns new list of lines, or None on failure.
+    """
+    # Strip optional file headers
+    i = 0
+    while i < len(diff_lines) and (
+        diff_lines[i].startswith("---")
+        or diff_lines[i].startswith("+++")
+        or diff_lines[i].startswith("Index:")
+        or diff_lines[i].startswith("diff ")
+    ):
+        i += 1
+
+    result = list(original_lines)
+    # Work with lines without requiring keepends consistency
+    src = [l.rstrip("\n\r") for l in original_lines]
+    out = []
+    src_idx = 0
+
+    while i < len(diff_lines):
+        line = diff_lines[i]
+        raw = line.rstrip("\n\r")
+
+        if raw.startswith("@@"):
+            # Parse hunk header: @@ -start,count +start,count @@
+            import re
+            m = re.search(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", raw)
+            if not m:
+                i += 1
+                continue
+            old_start = int(m.group(1)) - 1  # 0-based
+            # Copy unchanged lines up to hunk start
+            while src_idx < old_start and src_idx < len(src):
+                out.append(src[src_idx] + "\n")
+                src_idx += 1
+            i += 1
+            continue
+
+        if raw.startswith(" "):
+            # Context line – must match
+            expected = raw[1:]
+            if src_idx >= len(src) or src[src_idx] != expected:
+                # Try to resync: search forward a little
+                found = False
+                for look in range(src_idx, min(src_idx + 20, len(src))):
+                    if src[look] == expected:
+                        while src_idx < look:
+                            out.append(src[src_idx] + "\n")
+                            src_idx += 1
+                        found = True
+                        break
+                if not found:
+                    return None
+            out.append(src[src_idx] + "\n")
+            src_idx += 1
+            i += 1
+        elif raw.startswith("-"):
+            # Deletion – skip source line
+            expected = raw[1:]
+            if src_idx < len(src) and src[src_idx] == expected:
+                src_idx += 1
+            else:
+                # Soft: skip if nearby
+                for look in range(src_idx, min(src_idx + 5, len(src))):
+                    if src[look] == expected:
+                        src_idx = look + 1
+                        break
+            i += 1
+        elif raw.startswith("+"):
+            # Addition
+            out.append(raw[1:] + "\n")
+            i += 1
+        elif raw.startswith("\\"):
+            # "\ No newline at end of file"
+            i += 1
+        else:
+            i += 1
+
+    # Copy remaining source lines
+    while src_idx < len(src):
+        out.append(src[src_idx] + "\n")
+        src_idx += 1
+
+    return out
+
+
+
+def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+    """
+    Create a new file in the governed store from a create_file operation.
+
+    Called only from apply_edit_proposal after reviewer approval.
+    Producer: developer agent EditPayload (type create_file).
+    """
+    from .writer import initialize_file_lines
+
+    # Prefer op path; fall back to files table for this file_id
+    file_path = getattr(op, "target_file_path", None)
+    if not file_path:
+        row = conn.execute(
+            "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0",
+            (file_id,),
+        ).fetchone()
+        if not row:
+            return {"status": "error", "message": f"file_id {file_id} not found"}
+        file_path = row["file_path"] if isinstance(row, sqlite3.Row) else row[0]
+
+    # Refuse if THIS path already has live lines (not the proposal's primary file_id)
+    row_existing = conn.execute(
+        "SELECT file_id FROM files WHERE file_path = ? AND is_deleted = 0",
+        (file_path,),
+    ).fetchone()
+    check_id = None
+    if row_existing:
+        check_id = row_existing["file_id"] if hasattr(row_existing, "keys") else row_existing[0]
+    if check_id is not None:
+        existing = conn.execute(
+            "SELECT COUNT(*) FROM file_lines WHERE file_id = ? AND is_deleted = 0",
+            (check_id,),
+        ).fetchone()
+        count = existing[0] if existing else 0
+        if count > 0:
+            return {
+                "status": "error",
+                "message": (
+                    f"create_file refused: {file_path!r} already has {count} lines "
+                    "(use full_replace to overwrite)"
+                ),
+            }
+
+    initial = getattr(op, "initial_content", None) or []
+    if isinstance(initial, str):
+        content = initial
+    else:
+        content = "\n".join(str(line) for line in initial)
+    if content and not content.endswith("\n"):
+        # normalize: join without forcing trailing newline beyond list semantics
+        pass
+    if not str(content).strip() and initial != [] and initial != [""]:
+        # empty file is allowed if explicitly empty list; non-empty required only when content is whitespace-only from bad data
+        pass
+
+    safety = validate_source_content(content if content is not None else "", file_path=file_path)
+    if not safety.get("ok"):
+        return {"status": "error", "message": safety.get("message", "content rejected")}
+
+    init_result = initialize_file_lines(file_path, content if content is not None else "")
+    if init_result.get("status") != "success":
+        return {
+            "status": "error",
+            "message": f"create_file initialize failed: {init_result.get('message')}",
+        }
+
+    return {
+        "status": "success",
+        "file_id": init_result.get("file_id", file_id),
+        "lines": init_result.get("line_count"),
+        "message": f"Created file {file_path} ({init_result.get('line_count', 0)} lines)",
+    }
+
+
 def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:
     with get_db_connection() as conn:
         proposal_row = conn.execute(
@@ -358,8 +694,39 @@ def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:
                     operation_results.append(result)
                 elif op.type == "update_documentation":
                     apply_update_documentation(conn, file_id, op)
+                elif op.type == "find_replace":
+                    result = apply_find_replace(conn, file_id, op)
+                    operation_results.append(result)
+                elif op.type == "full_replace":
+                    result = apply_full_replace(conn, file_id, op)
+                    operation_results.append(result)
+                elif op.type == "apply_diff":
+                    result = apply_diff(conn, file_id, op)
+                    operation_results.append(result)
                 elif op.type == "create_file":
-                    pass
+                    result = apply_create_file(conn, file_id, op)
+                    operation_results.append(result)
+                else:
+                    operation_results.append({
+                        "status": "error",
+                        "message": f"Unknown operation type: {getattr(op, 'type', op)}",
+                    })
+
+            # Any failed op => terminal error, do not mark applied
+            failed = [r for r in operation_results if isinstance(r, dict) and r.get("status") not in ("success", None)]
+            # update_documentation may return None historically — treat missing status as ok only for empty dict issues
+            failed = [r for r in operation_results if isinstance(r, dict) and r.get("status") == "error"]
+            if failed:
+                conn.execute(
+                    "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
+                    (proposal_id,),
+                )
+                return {
+                    "status": "error",
+                    "proposal_id": proposal_id,
+                    "message": failed[0].get("message", "operation failed"),
+                    "operations": operation_results,
+                }
 
             conn.execute(
                 "UPDATE edit_proposals SET status = 'applied' WHERE proposal_id = ?",

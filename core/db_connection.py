@@ -39,8 +39,14 @@ def get_db_connection(
     try:
         conn = sqlite3.connect(db_path, timeout=30.0)
         
-        # Enable WAL mode for better concurrency
-        conn.execute("PRAGMA journal_mode=WAL")
+        # Prefer DELETE/OFF over WAL on restrictive mounts (WAL can corrupt/malform)
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+        except Exception:
+            try:
+                conn.execute("PRAGMA journal_mode=OFF")
+            except Exception:
+                pass
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA temp_store=MEMORY")
         
@@ -56,7 +62,12 @@ def get_db_connection(
         
         # Checkpoint with retry (optional)
         if checkpoint_on_close:
-            _checkpoint_with_retry(conn, retries)
+            try:
+                mode = conn.execute("PRAGMA journal_mode").fetchone()
+                if mode and str(mode[0]).lower() == "wal":
+                    _checkpoint_with_retry(conn, retries)
+            except Exception:
+                pass
             
     except Exception:
         # Rollback on any exception in user code

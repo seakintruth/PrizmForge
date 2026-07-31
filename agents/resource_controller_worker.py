@@ -84,12 +84,6 @@ class ThrottleDecision:
     def to_dict(self) -> dict:
         return asdict(self)
 
-def _is_throttling_disabled(self) -> bool:
-    """Check if throttling is currently temporarily disabled."""
-    if self.throttling_disabled_until is None:
-        return False
-    return datetime.now() < self.throttling_disabled_until
-
 
 class HeuristicOptimizer:
     """
@@ -132,15 +126,6 @@ class HeuristicOptimizer:
             with get_db_connection() as conn:
 
                 cursor = conn.cursor()
-                
-                # Create table if not exists
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS agent_profiles (
-                        agent_name TEXT PRIMARY KEY,
-                        profile_json TEXT,
-                        last_updated TEXT
-                    )
-                """)
                 
                 # Load existing profiles
                 cursor.execute("SELECT agent_name, profile_json FROM agent_profiles")
@@ -233,7 +218,13 @@ class HeuristicOptimizer:
         2. Select agents to keep active based on value scores
         3. Adjust intervals and limits proportionally
         4. Apply model downgrades if needed
-        """
+        """  
+
+        # ✅ : Check feedback backlog FIRST
+        backlog_decision = self._check_feedback_backlog(state)
+        if backlog_decision:
+            return backlog_decision
+
         budget_pct = state.budget_percentage
         
         # Determine throttle level
@@ -245,7 +236,69 @@ class HeuristicOptimizer:
             return self._throttle_moderate(state)
         else:
             return self._throttle_normal(state)
-    
+
+
+    def _check_feedback_backlog(self, state: ResourceState) -> Optional[ThrottleDecision]:
+        """
+        Check if feedback backlog is too high
+        
+        Strategy:
+        - If 300+ unaddressed feedback items → STOP background agents
+        - Only run: prioritizer (organize), developer (fix)
+        """
+        try:
+            from core.db_connection import get_db_connection
+            
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT COUNT(*) FROM agent_feedback
+                    WHERE addressed = 0
+                """)
+                
+                unaddressed_count = cursor.fetchone()[0]
+            
+            # Threshold: 300+ unaddressed items = STOP generating more
+            if unaddressed_count >= 300:
+                return ThrottleDecision(
+                    level="BACKLOG_PROCESSING",
+                    background_feeder_interval=9999,  # Effectively disable
+                    active_agents=["prioritizer"],  # Only prioritizer
+                    rate_limit_per_minute=max(30, int(state.api_rate_limit * 0.5)),
+                    model_downgrades={
+                        "developer": "gemini-3-flash-preview",  # Fast fixes
+                        "prioritizer": "gemini-3.1-pro-preview"  # Keep quality
+                    },
+                    reasoning=(
+                        f"🚨 FEEDBACK BACKLOG: {unaddressed_count} unaddressed items. "
+                        f"Pausing background agents (jr_reviewer, etc.). "
+                        f"Allowing ONLY prioritizer to organize existing feedback. "
+                        f"Developer will work through backlog in priority order."
+                    )
+                )
+            
+            # Warning threshold: 150-299 items = Slow down
+            elif unaddressed_count >= 150:
+                return ThrottleDecision(
+                    level="BACKLOG_WARNING",
+                    background_feeder_interval=300,  # 5 min (very slow)
+                    active_agents=["jr_reviewer", "prioritizer"],  # Only 1 + prioritizer
+                    rate_limit_per_minute=max(40, int(state.api_rate_limit * 0.6)),
+                    model_downgrades={},
+                    reasoning=(
+                        f"⚠️  FEEDBACK BACKLOG: {unaddressed_count} unaddressed items. "
+                        f"Reducing background agent activity to prevent overload. "
+                        f"Only jr_reviewer active. Prioritizer organizing feedback."
+                    )
+                )
+            
+            return None  # No backlog throttling needed
+            
+        except Exception as e:
+            print(f"    ⚠️  Failed to check feedback backlog: {e}")
+            return None
+
     def _throttle_critical(self, state: ResourceState) -> ThrottleDecision:
         """
         CRITICAL mode: < 5% budget remaining
@@ -493,12 +546,13 @@ class ResourceControllerWorker:
         self.rc_config = self.config.get("resource_controller", {})
         self.token_budget = TokenBudget(
             get_db_path(), 
-            self.rc_config.get("max_tokens_per_day", 5_000_000)
+            self.rc_config.get("max_tokens_per_day", 50_000_000)
         )
         self.optimizer = HeuristicOptimizer()
         self.current_decision: Optional[ThrottleDecision] = None
         self.decision_history: List[ThrottleDecision] = []
-    
+        self.throttling_disabled_until: Optional[datetime] = None
+
     def start(self, task_id: str):
         """Start resource controller worker"""
         if self.running:
@@ -723,16 +777,7 @@ class ResourceControllerWorker:
         """Store model override preferences for agents to check"""
         try:
             with get_db_connection() as conn:
-                
-                # Create table if not exists
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS resource_model_overrides (
-                        agent_name TEXT PRIMARY KEY,
-                        override_model TEXT,
-                        applied_at TEXT
-                    )
-                """)
-                
+                                
                 # Clear old overrides
                 conn.execute("DELETE FROM resource_model_overrides")
                 
@@ -806,22 +851,6 @@ Recommendation: {self._get_recommendation(decision)}"""
         """Log decision to database for analysis"""
         try:
             with get_db_connection() as conn:
-                
-                conn.execute("""
-                    CREATE TABLE IF NOT EXISTS resource_decisions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        timestamp TEXT,
-                        task_id TEXT,
-                        level TEXT,
-                        budget_percentage REAL,
-                        tokens_remaining INTEGER,
-                        burn_rate REAL,
-                        feeder_interval INTEGER,
-                        active_agents TEXT,
-                        rate_limit INTEGER,
-                        reasoning TEXT
-                    )
-                """)
                 
                 conn.execute("""
                     INSERT INTO resource_decisions
@@ -910,6 +939,22 @@ Recommendation: {self._get_recommendation(decision)}"""
         
         return stats
 
+    def _is_throttling_disabled(self) -> bool:
+        """Check if throttling is currently temporarily disabled."""
+        if self.throttling_disabled_until is None:
+            return False
+        return datetime.now() < self.throttling_disabled_until
+
+    def temporarily_disable_throttling(self, duration_seconds: int = 30):
+        """
+        Temporarily disable resource throttling for a short period.
+        
+        This is useful when we want background agents to run aggressively
+        for one cycle (e.g. when orchestrator yields control).
+        """
+        self.throttling_disabled_until = datetime.now() + timedelta(seconds=duration_seconds)
+        print(f"    🔓 Throttling temporarily disabled for {duration_seconds} seconds")
+        
 
 # Global singleton
 _resource_controller = None
@@ -920,13 +965,3 @@ def get_resource_controller() -> ResourceControllerWorker:
     if _resource_controller is None:
         _resource_controller = ResourceControllerWorker()
     return _resource_controller
-
-def temporarily_disable_throttling(self, duration_seconds: int = 30):
-    """
-    Temporarily disable resource throttling for a short period.
-    
-    This is useful when we want background agents to run aggressively
-    for one cycle (e.g. when orchestrator yields control).
-    """
-    self.throttling_disabled_until = datetime.now() + timedelta(seconds=duration_seconds)
-    print(f"    🔓 Throttling temporarily disabled for {duration_seconds} seconds")

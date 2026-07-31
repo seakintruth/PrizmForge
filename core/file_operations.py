@@ -218,7 +218,7 @@ def get_file_content_from_db(file_path: str) -> Optional[str]:
         return None
     return "\n".join(line["content"] for line in lines)
 
-def format_file_for_agent(file_path: str, include_guids: bool = False) -> str:
+def format_file_for_agent(file_path: str, include_guids: bool = True) -> str:
     """
     Unified formatter.
     - include_guids=True  → for Developer / Reviewer (governed path)

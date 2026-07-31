@@ -62,11 +62,21 @@ def main():
         print(f"   Duration: {unattended_config.max_duration_hours}h")
         print(f"   Max iterations per task: {unattended_config.max_iterations_per_task}")
         print(f"   Checkpoint interval: {unattended_config.checkpoint_interval_minutes}m")
-    
+
+        from core.preflight import preflight_unattended
+        ok, errs = preflight_unattended(config)
+        if not ok:
+            print("\n❌ Unattended preflight failed:")
+            for e in errs:
+                print(f"  • {e}")
+            if getattr(unattended_config, "exit_on_preflight_failure", True):
+                sys.exit(2)
+
     # Check API keys for configured endpoints
     endpoints_config = config.get("endpoints", {})
     missing_keys = []
     placeholder_keys = []
+    valid_endpoints = []
     
     for endpoint_name, endpoint_config in endpoints_config.items():
         api_key_name = endpoint_config.get("api_key_name", "api_key")
@@ -76,18 +86,30 @@ def main():
             missing_keys.append(f"{endpoint_name} (needs '{api_key_name}')")
         elif "YOUR_" in api_key_value.upper():
             placeholder_keys.append(f"{endpoint_name} ('{api_key_name}' = placeholder)")
+        else:
+            valid_endpoints.append(endpoint_name)
     
-    if missing_keys:
-        print(f"\n❌ ERROR: Missing API keys:")
-        for key in missing_keys:
-            print(f"  • {key}")
-        print("\nPlease edit api_key.json with your keys\n")
-        sys.exit(1)
-    
-    if placeholder_keys:
-        print(f"\n❌ ERROR: Placeholder API keys detected:")
-        for key in placeholder_keys:
-            print(f"  • {key}")
+    # test_mode / PRIZMFORGE_TEST_MODE: allow dry run without real keys
+    from core.llm_test_mode import test_mode_enabled
+    in_test_mode = test_mode_enabled(config)
+    if in_test_mode:
+        print("🧪 llm.test_mode active — API keys not required (mock LLM)")
+
+    # Only error if NO valid endpoints exist (unless test mode)
+    if not valid_endpoints and not in_test_mode:
+        print(f"\n❌ ERROR: No valid API keys configured.")
+        print(f"\nAt least one endpoint needs a valid API key.")
+        
+        if missing_keys:
+            print(f"\nMissing keys:")
+            for key in missing_keys:
+                print(f"  • {key}")
+        
+        if placeholder_keys:
+            print(f"\nPlaceholder keys detected:")
+            for key in placeholder_keys:
+                print(f"  • {key}")
+        
         print("\nPlease edit api_key.json with actual API keys:")
         print("  Example api_key.json:")
         print("  {")
@@ -101,29 +123,45 @@ def main():
             print(f"  • {ep_name.title()}: {key_url}")
         print()
         sys.exit(1)
-
+    
+    # Warnings for optional endpoints
+    if missing_keys or placeholder_keys:
+        print(f"\n⚠️  Warning: Some endpoints are not configured (fallback unavailable):")
+        for key in missing_keys:
+            print(f"  • {key}")
+        for key in placeholder_keys:
+            print(f"  • {key}")
+        print(f"\n✅ Valid endpoints: {', '.join(valid_endpoints)}")
+        print()
+    else:
+        print(f"✅ API keys configured for {len(endpoints_config)} endpoint(s)")
     
     print(f"✅ API keys configured for {len(endpoints_config)} endpoint(s)")
 
     # Initialize database
     init_db()
 
-    print("\n🔄 Auto-indexing project files...")
-    try:
-        from cli.commands import cmd_init
-        from utils.git_operations import ensure_git_initialized
-        
-        # Ensure git is initialized
-        if config.get("git", False):
-            git_available = ensure_git_initialized()
-            if not git_available and config.get("git_auto_commit", False):
-                print("⚠️  Warning: git_auto_commit enabled but git unavailable")
-                print("   Changes will NOT be version controlled!")
-        
-        cmd_init()
-    except Exception as e:
-        print(f"⚠️  Auto-init failed (non-fatal): {e}")
-        print("   Files will be indexed on first task")
+    do_auto_init = True
+    if unattended_config is not None:
+        do_auto_init = bool(getattr(unattended_config, "auto_init_on_start", True))
+    if do_auto_init:
+        print("\n🔄 Auto-indexing project files...")
+        try:
+            from cli.commands import cmd_init
+            from utils.git_operations import ensure_git_initialized
+
+            if config.get("git", False):
+                git_available = ensure_git_initialized()
+                if not git_available and config.get("git_auto_commit", False):
+                    print("⚠️  Warning: git_auto_commit enabled but git unavailable")
+                    print("   Changes will NOT be version controlled!")
+
+            cmd_init()
+        except Exception as e:
+            print(f"⚠️  Auto-init failed (non-fatal): {e}")
+            print("   Files will be indexed on first task")
+    else:
+        print("\n⏭️  Skipping auto-init (auto_init_on_start=false)")
 
     # Show resolved project directory
     project_dir = Path(config.get("project_directory", "./project"))

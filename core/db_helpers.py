@@ -159,3 +159,76 @@ def mark_feedback_addressed(feedback_ids: List[int], addressed_by: str):
             f"UPDATE agent_feedback SET addressed = 1, addressed_by = ?, addressed_at = ? WHERE id IN ({placeholders})",
             [addressed_by, datetime.now().isoformat()] + feedback_ids
         )
+
+def age_feedback_backlog(
+    max_age_days_low: int = 7,
+    max_unaddressed: int = 200,
+) -> dict:
+    """
+    Dismiss aged LOW-priority feedback and optionally trim the oldest
+    MEDIUM items when the backlog exceeds max_unaddressed.
+
+    CRITICAL and HIGH items are never auto-dismissed.
+    Returns counts of rows affected.
+    """
+    from datetime import timedelta
+    dismissed_low = 0
+    trimmed_medium = 0
+    now = datetime.now()
+    cutoff = (now - timedelta(days=max_age_days_low)).isoformat()
+
+    with get_db_connection() as conn:
+        # Age out old LOW items
+        cur = conn.execute(
+            """
+            UPDATE agent_feedback
+            SET addressed = 1,
+                addressed_by = 'system_aging',
+                addressed_at = ?
+            WHERE addressed = 0
+              AND UPPER(priority) = 'LOW'
+              AND timestamp IS NOT NULL
+              AND timestamp < ?
+            """,
+            (now.isoformat(), cutoff),
+        )
+        dismissed_low = cur.rowcount if cur.rowcount is not None else 0
+
+        # Cap total unaddressed by dismissing oldest MEDIUM items only
+        row = conn.execute(
+            "SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0"
+        ).fetchone()
+        total = row[0] if row else 0
+        if total > max_unaddressed:
+            excess = total - max_unaddressed
+            # Select oldest MEDIUM ids
+            ids = [
+                r[0]
+                for r in conn.execute(
+                    """
+                    SELECT id FROM agent_feedback
+                    WHERE addressed = 0 AND UPPER(priority) = 'MEDIUM'
+                    ORDER BY timestamp ASC
+                    LIMIT ?
+                    """,
+                    (excess,),
+                ).fetchall()
+            ]
+            if ids:
+                placeholders = ",".join("?" * len(ids))
+                conn.execute(
+                    f"""
+                    UPDATE agent_feedback
+                    SET addressed = 1,
+                        addressed_by = 'system_backlog_cap',
+                        addressed_at = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    [now.isoformat()] + ids,
+                )
+                trimmed_medium = len(ids)
+
+    return {
+        "dismissed_low": dismissed_low,
+        "trimmed_medium": trimmed_medium,
+    }

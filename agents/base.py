@@ -1,5 +1,6 @@
 """Base agent functionality with multi-endpoint support"""
 import requests
+from core.http_client import post_json
 import re
 import time
 from typing import Tuple, Optional, List, Dict
@@ -10,6 +11,7 @@ from core.db import get_db_path
 from core.db_helpers import save_conversation
 from core.endpoint_manager import get_endpoint_manager, EndpointStatus, EndpointConfig
 from core.fallback_stats import log_fallback
+from file_editing.db import log_error
 
 # Initialize
 _rate_limiter = None
@@ -144,44 +146,88 @@ def call_endpoint(messages: List[Dict], max_tokens: Optional[int] = None,
     
     for attempt in range(retry_count):
         try:
-            resp = requests.post(
+            resp = post_json(
                 endpoint.base_url,
                 headers=headers,
-                json=payload,
+                json_body=payload,
                 timeout=120,
-                proxies=proxies
+                proxies=proxies,
             )
             
-            # ============= HANDLE 401 UNAUTHORIZED (KEY LOCKED) =============
-            if resp.status_code == 401:
-                print(f"\n{'='*60}")
-                print(f"🔒 API KEY LOCKED OR INVALID ({endpoint.name})")
-                print(f"{'='*60}")
+            # Attempt to extract error JSON safely
+            error_data = {}
+            try:
+                resp_json = resp.json()
+                if "error" in resp_json and isinstance(resp_json["error"], dict):
+                    error_data = resp_json["error"]
+            except Exception:
+                pass
+
+            # ============= HANDLE 401 / UNAUTHORIZED (KEY LOCKED) =============
+            if resp.status_code == 401 or error_data.get("type") == "unauthorized":
+                unlock_url = error_data.get("unlock_url")
+                error_msg = error_data.get("message", "API KEY LOCKED OR INVALID")
                 
-                # Mark endpoint as unavailable
+                # ✅ If we got an unlock URL, pause for 2 minutes to let the user click it
+                if unlock_url:
+                    print(f"\n{'='*60}")
+                    print(f"🔒 {error_msg.upper()} ({endpoint.name})")
+                    print(f"👉 CLICK TO UNLOCK: {unlock_url}")
+                    print(f"⏳ Pausing for 2 minutes to allow you to unlock the API...")
+                    print(f"{'='*60}\n")
+                    
+                    time.sleep(120)  # Wait 2 minutes for user to unlock
+                    
+                    # Try the request one more time after waiting
+                    try:
+                        resp = post_json(
+                            endpoint.base_url,
+                            headers=headers,
+                            json_body=payload,
+                            timeout=120,
+                            proxies=proxies,
+                        )
+                        
+                        retry_error_data = {}
+                        try:
+                            retry_json = resp.json()
+                            if "error" in retry_json and isinstance(retry_json["error"], dict):
+                                retry_error_data = retry_json["error"]
+                        except Exception:
+                            pass
+                            
+                        # Check if the retry succeeded
+                        if resp.status_code == 200 and retry_error_data.get("type") != "unauthorized":
+                            print(f"✅ API successfully unlocked ({endpoint.name})! Resuming...")
+                            resp.raise_for_status()
+                            # Skip the fallback below, continue to normal parsing
+                        else:
+                            raise ValueError("API still locked after wait.")
+                            
+                    except Exception:
+                        # Still locked/failed after waiting, let it fall through to the fallback logic below
+                        print(f"❌ API still locked after 2 minutes.")
+                else:
+                    # No unlock URL provided, just print the standard error and skip the sleep
+                    print(f"\n{'='*60}")
+                    print(f"🔒 {error_msg.upper()} ({endpoint.name})")
+                    print(f"{'='*60}\n")
+                
+                # === Fallback Logic (Executes if no unlock_url, or if retry failed) ===
                 endpoint.health.mark_failure(EndpointStatus.KEY_LOCKED, cooldown_minutes=30)
-                
-                # Try fallback immediately
-                print(f"⚠️  {endpoint.name} marked as unavailable for 30 minutes")
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
                     fallback_model, fallback_endpoint = fallback
-                    # Log the fallback
                     log_fallback(
                         original_endpoint=endpoint.name,
                         fallback_endpoint=fallback_endpoint.name,
-                        reason=endpoint.health.status.value,
-                        task_id=task_id,  # You'll need to pass this through
-                        agent_name=agent_name  # You'll need to pass this through
+                        reason=EndpointStatus.KEY_LOCKED.value,
+                        task_id=task_id,
+                        agent_name=agent_name
                     )
                     print(f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}")
-                    print(f"{'='*60}\n")
                     return call_endpoint(messages, max_tokens, temperature, fallback_model, retry_count, task_id, agent_name)
-                else:
-                    print(f"❌ No alternate endpoints available")
-                    print(f"Check your {endpoint.api_key_name} at: {endpoint.key_management_url}")
-                    print(f"{'='*60}\n")
-                    return None, 0
+                return None, 0
             
             # ============= HANDLE 429 RATE LIMIT =============
             if resp.status_code == 429:
@@ -307,7 +353,8 @@ def call_endpoint(messages: List[Dict], max_tokens: Optional[int] = None,
             return answer, total_tokens
             
         except requests.exceptions.Timeout:
-            print(f"⏱️  Timeout calling {endpoint.name}")
+            # ✅ Added Agent Attribution and Attempt Tracker
+            print(f"  ⏱️  {agent_name.upper()} timed out calling {endpoint.name} (Attempt {attempt + 1}/{retry_count})")
             
             if attempt == retry_count - 1:
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
@@ -315,42 +362,79 @@ def call_endpoint(messages: List[Dict], max_tokens: Optional[int] = None,
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
                     fallback_model, fallback_endpoint = fallback
-                    # Log the fallback
                     log_fallback(
                         original_endpoint=endpoint.name,
                         fallback_endpoint=fallback_endpoint.name,
-                        reason=endpoint.health.status.value,
-                        task_id=task_id,  # You'll need to pass this through
-                        agent_name=agent_name  # You'll need to pass this through
+                        reason=EndpointStatus.UNAVAILABLE.value,
+                        task_id=task_id,
+                        agent_name=agent_name
                     )
-                    print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
+                    print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(messages, max_tokens, temperature, fallback_model, retry_count, task_id, agent_name)
+                return None, 0
             
+            # ✅ Make the retry visible
+            print(f"  🔄 Retrying {agent_name} in {2 ** attempt}s...")
             time.sleep(2 ** attempt)
             
         except requests.exceptions.RequestException as e:
+            error_str = str(e).lower()
+            
+            # Handle proxy or auth errors gracefully by pausing
+            if "proxy" in error_str or "auth" in error_str or "forbidden" in error_str:
+                print(f"\n{'='*60}")
+                print(f"🔒 CONNECTION/PROXY ERROR for {agent_name.upper()} ({endpoint.name}): {e}")
+                print(f"⏳ Pausing for 2 minutes to allow you to fix the connection...")
+                print(f"{'='*60}\n")
+                time.sleep(120)
+            else:
+                # ✅ Added Agent Attribution to standard request failures
+                print(f"  ❌ {agent_name.upper()} request failed ({endpoint.name}) [Attempt {attempt + 1}/{retry_count}]: {e}")
+            
             if attempt == retry_count - 1:
-                print(f"❌ Request failed ({endpoint.name}): {e}")
-                
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
                 
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
                     fallback_model, fallback_endpoint = fallback
-                    # Log the fallback
                     log_fallback(
                         original_endpoint=endpoint.name,
                         fallback_endpoint=fallback_endpoint.name,
-                        reason=endpoint.health.status.value,
-                        task_id=task_id,  # You'll need to pass this through
-                        agent_name=agent_name  # You'll need to pass this through
+                        reason=EndpointStatus.UNAVAILABLE.value,
+                        task_id=task_id,
+                        agent_name=agent_name
                     )
-                    print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
+                    print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(messages, max_tokens, temperature, fallback_model, retry_count, task_id, agent_name)
                 
                 return None, 0
+                
+            print(f"  🔄 Retrying {agent_name} in {2 ** attempt}s...")
             time.sleep(2 ** attempt)
             
+        except Exception as e:
+            # ✅ Added Agent Attribution to unexpected errors
+            print(f"  ❌ {agent_name.upper()} encountered unexpected error ({endpoint.name}): {e}")
+            import traceback
+            traceback.print_exc()
+            
+            endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+            
+            fallback = endpoint_mgr.get_fallback_model(endpoint)
+            if fallback:
+                fallback_model, fallback_endpoint = fallback
+                log_fallback(
+                    original_endpoint=endpoint.name,
+                    fallback_endpoint=fallback_endpoint.name,
+                    reason=EndpointStatus.UNAVAILABLE.value,
+                    task_id=task_id,
+                    agent_name=agent_name
+                )
+                print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
+                return call_endpoint(messages, max_tokens, temperature, fallback_model, retry_count, task_id, agent_name)
+            
+            return None, 0
+
         except Exception as e:
             print(f"❌ Unexpected error ({endpoint.name}): {e}")
             import traceback
@@ -399,6 +483,10 @@ def call_agent(agent_name: str, prompt: str, task_id: str,
               model_override: Optional[str] = None,
               auto_resume: bool = True,
               max_resume_attempts: int = 1) -> Optional[str]:
+    
+    """Call agent with schema injection"""
+    from core.agent_schemas import get_schema_example
+
     """
     Call an agent with automatic truncation detection and resume
     
@@ -417,6 +505,16 @@ def call_agent(agent_name: str, prompt: str, task_id: str,
     from core.archival import archive_raw_response
     
     config = get_config()
+
+    # Config/env mock LLM — no network (unattended test mode)
+    try:
+        from core.llm_test_mode import test_mode_enabled, mock_call_agent
+        if test_mode_enabled(config):
+            print(f"  🧪 test_mode: mock LLM response for {agent_name}")
+            return mock_call_agent(agent_name, prompt, task_id, config)
+    except Exception:
+        pass
+
     endpoint_mgr = get_endpoint_manager()
     
     # ============= Resource controller model override check =============
@@ -445,7 +543,37 @@ def call_agent(agent_name: str, prompt: str, task_id: str,
         return None
     
     system_prompt = prompts[agent_name]["system_prompt"]
+
+
+    # ✅ FIX: Only inject schemas for JSON-outputting agents
+    TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
     
+    if agent_name not in TEXT_OUTPUT_AGENTS:
+
+        schema_example = get_schema_example(agent_name)
+        
+        system_prompt += f"""
+        
+**MANDATORY OUTPUT FORMAT:**
+
+Your ENTIRE response must be valid JSON matching this structure EXACTLY:
+
+{schema_example}
+
+**CRITICAL RULES:**
+- First character of your response: {{
+- Last character of your response: }}
+- No text before the {{
+- No text after the }}
+- No markdown fences (```json)
+- Use standard JSON quotes (\")
+
+If you cannot analyze the file, return:
+{{"error": "Unable to analyze", "summary": "Analysis failed"}}
+    """
+    
+    messages = [{"role": "system", "content": system_prompt}]
+
     messages = [{"role": "system", "content": system_prompt}]
     
     if context:
@@ -475,21 +603,34 @@ def call_agent(agent_name: str, prompt: str, task_id: str,
     # ============= CALL ENDPOINT =============
     response, tokens = call_endpoint(messages, model=model, 
                                    task_id=task_id, agent_name=agent_name)
-    
-    # ============= ARCHIVE RAW RESPONSE (ALWAYS) =============
-    parse_success = response is not None
-    archive_raw_response(
-        task_id, agent_name, 
-        prompt,
-        response if response else "NO RESPONSE",
-        parse_success,
-        None if parse_success else "Agent returned None"
-    )
-    
-    if not response:
+
+    # ============= ARCHIVE OR LOG ERROR =============
+    if response is not None:
+        # Only archive successful connections
+        archive_raw_response(
+            task_id, agent_name, 
+            prompt,
+            response,
+            True,
+            None
+        )
+    else:
+        # ✅ Log the network/API failure to the central errors table
+        try:
+            log_error(
+                component="agents.base",
+                category="call_agent",
+                severity="HIGH",
+                message=f"{agent_name} failed to return a response (API/Network error)",
+                task_id=task_id,
+                details=f"Prompt length: {len(prompt)} chars"
+            )
+        except Exception as e:
+            print(f"  ⚠️  Failed to log error: {e}")
+            
         print(f"  ❌ {agent_name} failed")
         return None
-    
+
     # ============= UPDATE RESOURCE CONTROLLER =============
     try:
         duration = time.time() - start_time
@@ -561,6 +702,8 @@ IMPORTANT: Start exactly where you left off. Don't repeat what you already wrote
             else:
                 print(f"  ⚠️  {agent_name} resume failed, using truncated response")
     
+
+
     # ============= SUCCESS =============
     save_conversation(task_id, agent_name, "assistant", response[:500], 
                      raw_response=response)

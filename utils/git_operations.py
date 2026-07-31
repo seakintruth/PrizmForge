@@ -152,6 +152,48 @@ venv/
                     gitignore_path.write_text(gitignore_content)
                     print(f"   📝 Created .gitignore")
                 
+                # Initial commit
+                try:
+                    # Add all files
+                    add_result = subprocess.run(
+                        ["git", "add", "."],
+                        cwd=project_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    
+                    if add_result.returncode == 0:
+                        # Commit initial state
+                        commit_result = subprocess.run(
+                            ["git", "commit", "-m", "Initial commit - PrizmForge project initialization"],
+                            cwd=project_dir,
+                            capture_output=True,
+                            text=True,
+                            timeout=10
+                        )
+                        
+                        if commit_result.returncode == 0:
+                            # Get commit hash
+                            hash_result = subprocess.run(
+                                ["git", "rev-parse", "--short", "HEAD"],
+                                cwd=project_dir,
+                                capture_output=True,
+                                text=True,
+                                timeout=5
+                            )
+                            commit_hash = hash_result.stdout.strip()
+                            print(f"   📦 Initial commit: {commit_hash}")
+                        else:
+                            print(f"   ⚠️  Initial commit failed: {commit_result.stderr}")
+                    else:
+                        print(f"   ⚠️  git add failed: {add_result.stderr}")
+                
+                except subprocess.TimeoutExpired:
+                    print(f"   ⚠️  Initial commit timed out")
+                except Exception as e:
+                    print(f"   ⚠️  Initial commit error: {e}")
+                
                 return True
             else:
                 print(f"❌ Git init failed: {init_result.stderr}")

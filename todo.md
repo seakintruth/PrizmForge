@@ -1,1277 +1,1880 @@
+Manually fixing:
+----------------------
+We currently have 3 tables that list all project files in this repo, we should have one, we have also switched to using line guid and line for all coms, so we need to stop storing content in the project_files tabl :
+1) interactive.py, parallel_workers, reporter_worker, commands.py, context_manager.py, task_runner.py all contain "FROM project_files"
+2) commands.py contain "FROM file_summaries"
+3) commands.py, writer.py, proposal_builder.py contain "FROM files"
+
+
+
+----------------------
+currently my driver agent the Orchestrator I instruct it to :
+
+Respond **ONLY** with valid JSON in this exact format:
+{{
+  "feedback_summary": "Brief summary of current state and prioritized items",
+  "next_agent": "developer|background|complete",
+  "instructions": "Clear instructions (only used when calling developer)",
+  "reasoning": "Why you made this decision",
+  "files_needed": ["optional list of files"],
+  "addressing_feedback_ids": [123, 456],
+  "model": "optional-model-override"
+}}"""
+
+
+A couple of issues I see is that there's no prompting the prioritizer to focus on building proposals, and  the build_orchestrator_context isn't focusing on the agent_feedback table, but is reading directly from the messy 'messages' table in _get_prioritized_suggestions.
+
+So we always pile up 100 to 200 feedback items that never get addressed. we need to change _get_prioritized_suggestions to focus on 'proposals' and 'agent_feedback' and lean heavily on sending anything we can to the developer, only send to background if there are no feedback_items not addressed or proposals not addressed, complete only ever happens after there are no feedback items left to address, or our run iterations or time limit is up (these should only apply when in semi-attended mode, in unattended mode it should never respond with complete).
+
+
+Prompt to fix self:
+----------------------
+Please verify that these critical fixes from the audit are still present, if so fix them. First, update file_editing/writer.py to prevent path traversal by resolving paths and ensuring they are strictly within the configured project_directory. Second, update file_editing/edit_payload.py to remove the default empty string (="") for the rationale field in BaseOperation and all inherited classes so it is strictly required. Third, refactor the roughly 10 Python files that still reference the project_files table. We need to stop storing the entire file content as a single text block in project_files. Instead, update the system to rely on the file_summaries table for metadata/summaries and the file_lines table for actual content. Since this has never been deployed, do not worry about migrations—just update the schema in core/db.py directly (e.g., dropping project_files or its content column, and linking file_summaries to the governed files table) and update all SQL queries to match. Update Documentation on file change. Fifth, in agents/base.py, fix the proxy/connection exception handling in call_endpoint so that if a proxy, auth, or connection error occurs, it pauses for 2 minutes and actually retries the request rather than burning through attempts and returning None. Sixth, in call_agent within agents/base.py, prevent spamming the agent_responses_archive table by skipping the archive_raw_response call entirely if response is None (network failure). Finally, after bug fixing, (A) investigate making the cli more usefull and viability of running in unattended mode. (B) standardize the use of __ini__.py accross the project using best practices.
+
+
+Databricks from advana review:
 Reasoning:
-The user is identifying a critical issue: the file_manager agent might be returning responses that can't actually be executed by the Python code that applies file operations.
+The user is asking me to review how `agent_schemas` is being incorporated in the project, noting that it seems "half baked".
 
-Looking at the code:
+Let me analyze how agent schemas are currently being used:
 
-1. `execute_file_operations()` in `workflow/task_runner.py` expects JSON with this structure:
+1. **File: `core\agent_schemas.py`** - This is a comprehensive implementation with:
+   - Static schema definitions for different agents
+   - Fallback schema templates
+   - Dynamic value discovery from database
+   - Schema validation functions
+   - Factory functions
+
+2. **File: `agents\base.py`** - The `call_agent` function imports and uses schemas:
+   ```python
+   from core.agent_schemas import get_schema_example
+   
+   schema_example = get_schema_example(agent_name)
+   
+   system_prompt += f"""
+   **MANDATORY OUTPUT FORMAT:**
+   Your ENTIRE response must be valid JSON matching this structure EXACTLY:
+   {schema_example}
+   """
+   ```
+
+3. **Schema JSON files in `agent_schemas\` directory** - Many example schemas are defined, but they're just static files.
+
+The issues I see:
+
+1. **Inconsistent usage**: The `call_agent` function adds schema examples to prompts, but this is done for ALL agents regardless of whether they need it. Not all agents output JSON.
+
+2. **Redundancy**: The `core/agent_schemas.py` has Python dataclasses defining schemas, AND there are JSON files in `agent_schemas/` directory with examples. These aren't fully integrated.
+
+3. **Half-baked validation**: The validation logic exists but isn't consistently enforced throughout the codebase.
+
+4. **Missing connection**: The schema system isn't fully integrated with the response parsing and validation workflow.
+
+Let me provide specific feedback on what needs improvement.# Review: `agent_schemas` Implementation
+
+## Current State Assessment
+
+You're right - the `agent_schemas` system is **half-baked**. Here's what I found:
+
+### ✅ What's Working
+
+1. **`core/agent_schemas.py`** - Well-structured with:
+   - Static schema definitions
+   - Dynamic value discovery from DB
+   - Fallback schema template for undefined agents
+   - Validation functions
+
+2. **`agent_schemas/*.json`** - Comprehensive example schemas exist
+
+3. **Basic injection in `agents/base.py`** - Schemas are being added to prompts
+
+---
+
+## ❌ Major Issues
+
+### 1. **Blanket Schema Injection**
+
+**Problem**: In `agents/base.py`, schemas are injected into **EVERY agent's prompt**, regardless of output type:
+
 ```python
-{
-  "operations": [
-    {
-      "type": "create|modify|delete",
-      "path": "path/to/file.py",
-      "content": "...",
-      "is_diff": true/false,
-      "reasoning": "..."
-    }
-  ],
-  "summary": "..."
-}
+schema_example = get_schema_example(agent_name)
+
+system_prompt += f"""
+**MANDATORY OUTPUT FORMAT:**
+Your ENTIRE response must be valid JSON matching this structure EXACTLY:
+{schema_example}
+"""
 ```
 
-2. The file_manager agent is prompted by `agent_prompts.json` to output this format, but:
-   - It's an LLM, so it might not follow instructions perfectly
-   - The JSON might be malformed
-   - The operations might be incomplete or vague
-   - The file paths might be wrong
+**Why it's broken**:
+- `project_reporter` outputs **Markdown**, not JSON
+- `reviewer` outputs **text** in many cases
+- `archivist` has flexible output
 
-3. The `execute_file_operations()` function tries to parse the response but has limited error handling
+**Impact**: Confuses agents that shouldn't be outputting JSON
 
-The problem is likely:
-- File manager returns something, but it's not actionable
-- The JSON parser might succeed but the operations are invalid
-- The patch editor gets invalid diffs
-- Everything "succeeds" but nothing actually changes
+---
 
-We need to:
-1. Validate file_manager output more strictly
-2. Provide better feedback when operations fail
-3. Retry with corrections
-4. Make the file_manager prompt more explicit about what's needed# YES - This is a Critical Problem
+### 2. **Disconnected Schema Files**
 
-You're absolutely right. The file_manager is the **critical chokepoint**. Let me trace the failure path:
+**Problem**: The JSON files in `agent_schemas/` are **not loaded or used** by the Python code.
 
+**Evidence**:
+- `core/agent_schemas.py` has hardcoded `AGENT_SCHEMAS` dict
+- `get_schema_example()` loads from `agent_schemas/*.json` files
+- But validation and enforcement uses the hardcoded Python schemas
+
+**Result**: Two sources of truth that can drift out of sync
+
+---
+
+### 3. **Validation Not Enforced**
+
+**Problem**: `validate_agent_response()` exists but is **never called** in the workflow.
+
+**Where it should be**:
+- After `call_agent()` returns
+- Before proposal creation
+- In background agent processing
+
+**Current flow**:
+```python
+response = call_agent("jr_reviewer", prompt, task_id)
+# ❌ No validation here
+data = parse_json_response(response)  # Generic parsing
 ```
-Developer outputs diff → File Manager "extracts" operations → JSON looks valid → But operations are USELESS
+
+**Should be**:
+```python
+response = call_agent("jr_reviewer", prompt, task_id)
+# ✅ Validate against schema
+valid, errors = validate_agent_response("jr_reviewer", response)
+if not valid:
+    # Handle schema violation
 ```
 
 ---
 
-## The Problems
+### 4. **Inconsistent Priority/Category Values**
 
-### Problem 1: File Manager Might Return Valid JSON with Invalid Operations
+**Problem**: Priority and category enums are defined in multiple places:
 
-```python
-# This passes JSON parsing:
-{
-  "operations": [
-    {
-      "type": "modify",
-      "path": "some/file.py",  # ← Wrong path
-      "content": "vague description of change",  # ← Not actual code!
-      "is_diff": true
-    }
-  ]
-}
-```
+- `core/agent_schemas.py`: `["CRITICAL", "HIGH", "MEDIUM", "LOW"]`
+- Database queries: Hardcoded strings scattered throughout
+- Agent prompts: Different agents use different conventions
 
-### Problem 2: No Validation Before Execution
-
-The current code blindly tries to apply whatever file_manager returns.
-
-### Problem 3: Developer Might Not Output Diffs At All
-
-Developer might just say "add error handling" instead of outputting actual code.
+**Result**: No single source of truth for valid values
 
 ---
 
-## Complete Fix: Validated File Operations Pipeline
+### 5. **No Runtime Schema Evolution**
 
-### Step 1: Strict File Manager Validation
-
-**File: `workflow/task_runner.py`**
-
-**Replace `execute_file_operations()` with this validated version:**
+**Problem**: The "dynamic value discovery" is theoretical:
 
 ```python
-def execute_file_operations(file_manager_response: str, task_id: str, changed_by: str) -> int:
-    """
-    THE ONLY FUNCTION THAT WRITES TO DISK
-    NOW WITH STRICT VALIDATION
+def get_distinct_values(table: str, column: str) -> List[str]:
+    """Query database for distinct values in a column"""
+```
+
+This function exists but **priorities and categories are still hardcoded** in:
+- `get_priority_values()` - Returns hardcoded list
+- `get_category_values()` - Returns hardcoded list
+
+**Actual behavior**: Falls back to hardcoded defaults instead of learning from DB
+
+---
+
+## 🔧 Recommended Fixes
+
+### Fix 1: **Conditional Schema Injection**
+
+Update `agents/base.py` to only inject schemas for JSON-outputting agents:
+
+```python
+from core.agent_schemas import get_schema, get_prompt_schema_text
+
+def call_agent(agent_name: str, prompt: str, task_id: str, ...):
+    # ... existing code ...
     
-    Returns: Number of files successfully changed
-    """
-    from core.patch_editor import get_patch_editor
-    from agents.parallel_workers import get_agent_pool
-    from core.file_operations import sync_file_to_database, generate_file_summary, post_file_metadata_to_bus
-    from core.json_parser import parse_json_response
-    import json
+    schema = get_schema(agent_name)
     
-    # ✅ VALIDATION STEP 1: Parse JSON
-    try:
-        data = parse_json_response(
-            file_manager_response,
-            expected_keys=["operations", "summary"],
-            agent_name="file_manager"
-        )
-        
-        if not data:
-            print(f"   ❌ File manager returned invalid JSON")
-            return 0
-        
-        operations = data.get("operations", [])
-        
-        if not operations:
-            print(f"   ⚠️  File manager found no operations")
-            return 0
-        
-    except Exception as e:
-        print(f"   ❌ Failed to parse file manager response: {e}")
-        return 0
-    
-    # ✅ VALIDATION STEP 2: Check operation validity
-    valid_operations = []
-    invalid_operations = []
-    
-    for idx, op in enumerate(operations):
-        validation_errors = []
-        
-        # Check required fields
-        if "type" not in op:
-            validation_errors.append("Missing 'type' field")
-        elif op["type"] not in ["create", "modify", "delete"]:
-            validation_errors.append(f"Invalid type: {op['type']}")
-        
-        if "path" not in op or not op["path"]:
-            validation_errors.append("Missing or empty 'path' field")
-        
-        if op.get("type") in ["create", "modify"]:
-            if "content" not in op or not op["content"]:
-                validation_errors.append("Missing 'content' for create/modify")
-            elif len(op["content"]) < 10:
-                validation_errors.append(f"Content suspiciously short ({len(op['content'])} chars)")
-            
-            # Check if content looks like actual code vs description
-            content = op["content"]
-            if op.get("is_diff", False):
-                # Should have diff markers
-                if "---" not in content and "+++" not in content and "REPLACE_LINES" not in content:
-                    validation_errors.append("Marked as diff but has no diff markers (---, +++, REPLACE_LINES)")
-            else:
-                # Should look like code
-                if not any(char in content for char in ["{", "(", "def ", "class ", "import "]):
-                    validation_errors.append("Content looks like description, not code")
-        
-        if validation_errors:
-            invalid_operations.append({
-                "index": idx,
-                "operation": op,
-                "errors": validation_errors
-            })
-        else:
-            valid_operations.append(op)
-    
-    # Report validation results
-    print(f"   📋 File Manager Validation:")
-    print(f"      Valid operations: {len(valid_operations)}")
-    print(f"      Invalid operations: {len(invalid_operations)}")
-    
-    if invalid_operations:
-        print(f"\n   ❌ Invalid Operations Detected:")
-        for inv in invalid_operations:
-            print(f"      Operation #{inv['index']}: {inv['operation'].get('path', 'unknown')}")
-            for error in inv['errors']:
-                print(f"         • {error}")
-        print()
-    
-    if not valid_operations:
-        print(f"   ❌ No valid operations to execute")
-        return 0
-    
-    # ✅ EXECUTION: Apply valid operations
-    print(f"   🔧 Executing {len(valid_operations)} valid operation(s)...\n")
-    
-    editor = get_patch_editor()
-    agent_pool = get_agent_pool()
-    files_changed = 0
-    
-    for op in valid_operations:
-        op_type = op["type"].lower()
-        file_path = op["path"]
-        content = op.get("content", "")
-        is_diff = op.get("is_diff", False)
-        
-        try:
-            if op_type in ["create", "modify"]:
-                if is_diff:
-                    # Apply diff/patch
-                    success, message = editor.auto_detect_and_apply(file_path, content)
-                    print(f"   {message}")
-                    
-                    if not success:
-                        # Diff failed - try to diagnose why
-                        print(f"      🔍 Diagnosis:")
-                        print(f"         Content length: {len(content)} chars")
-                        print(f"         Has ---: {'---' in content}")
-                        print(f"         Has +++: {'+++' in content}")
-                        print(f"         Has @@: {'@@' in content}")
-                        print(f"         Preview: {content[:150]}...")
-                        continue
-                    
-                else:
-                    # Write full file
-                    from pathlib import Path
-                    from core.config import get_config
-                    config = get_config()
-                    full_path = Path(config.get("project_directory", "./project")) / file_path
-                    
-                    # Security check
-                    if ".." in file_path or file_path.startswith("/"):
-                        print(f"   ❌ Security: Invalid path: {file_path}")
-                        continue
-                    
-                    full_path.parent.mkdir(parents=True, exist_ok=True)
-                    full_path.write_text(content, encoding='utf-8')
-                    success = True
-                    print(f"   ✅ Created: {file_path} ({len(content)} chars)")
-                
-                if success:
-                    files_changed += 1
-                    
-                    # Sync to database
-                    from pathlib import Path
-                    from core.config import get_config
-                    config = get_config()
-                    full_path = Path(config.get("project_directory", "./project")) / file_path
-                    
-                    if full_path.exists():
-                        file_content = full_path.read_text(encoding='utf-8')
-                        sync_file_to_database(file_path, file_content)
-                        
-                        summary = generate_file_summary(file_path, file_content)
-                        post_file_metadata_to_bus(file_path, op_type, summary, task_id)
-                        
-                        # Queue for background review
-                        agent_pool.queue_file_change(file_path, op_type, file_content)
-            
-            elif op_type == "delete":
-                from pathlib import Path
-                from core.config import get_config
-                config = get_config()
-                full_path = Path(config.get("project_directory", "./project")) / file_path
-                
-                if full_path.exists():
-                    full_path.unlink()
-                    files_changed += 1
-                    print(f"   ✅ Deleted: {file_path}")
-                else:
-                    print(f"   ⚠️  File not found for deletion: {file_path}")
-        
-        except Exception as e:
-            print(f"   ❌ Error executing {op_type} on {file_path}: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    return files_changed
+    # ✅ Only inject schema if agent outputs JSON
+    if schema and schema.output_format == 'json':
+        schema_text = get_prompt_schema_text(agent_name)
+        system_prompt += f"""
+
+**MANDATORY OUTPUT FORMAT:**
+Your ENTIRE response must be valid JSON matching this structure EXACTLY:
+{schema_text}
+
+**CRITICAL RULES:**
+- First character of your response: {{
+- Last character of your response: }}
+- No text before the {{
+- No text after the }}
+- No markdown fences (```json)
+"""
+    elif schema and schema.output_format == 'text':
+        # Text-based agents like project_reporter
+        system_prompt += "\n\nRespond in clear, well-formatted text."
 ```
 
 ---
 
-### Step 2: Better File Manager Prompt
+### Fix 2: **Consolidate Schema Sources**
 
-**File: `agent_prompts.json`**
+**Option A - Load from JSON files** (recommended):
 
-**Replace file_manager system_prompt with:**
-
-```json
-"file_manager": {
-  "role": "Intelligent File Manager",
-  "system_prompt": "You are the File Manager. Extract file operations from developer responses.\n\n**YOUR JOB:** Parse the developer's response and identify EVERY file operation. BE EXTREMELY LITERAL.\n\n**CRITICAL RULES:**\n\n1. **ONLY extract ACTUAL CODE/DIFFS** - not descriptions\n2. **Verify file paths are real** - don't make them up\n3. **Content must be ACTIONABLE** - not \"add error handling\", but actual code\n4. **Diffs must have markers** - ---, +++, @@ or REPLACE_LINES\n\n**DETECT THESE PATTERNS:**\n\n**1. Unified Diff (modify existing file):**\n```diff\n--- a/file.py\n+++ b/file.py\n@@ -10,3 +10,4 @@\n-old line\n+new line\n```\n→ Extract as: {\"type\": \"modify\", \"path\": \"file.py\", \"content\": \"<full diff>\", \"is_diff\": true}\n\n**2. REPLACE_LINES (modify existing file):**\n```\nREPLACE_LINES 10-15\nnew code here\nEND_REPLACE\n```\n→ Extract as: {\"type\": \"modify\", \"path\": \"file.py\", \"content\": \"<full block>\", \"is_diff\": true}\n\n**3. Code block with filename (create new file):**\n```python path/to/newfile.py\nactual code here\n```\n→ Extract as: {\"type\": \"create\", \"path\": \"path/to/newfile.py\", \"content\": \"<actual code>\", \"is_diff\": false}\n\n**4. Explicit delete:**\n\"Delete file.py\"\n→ Extract as: {\"type\": \"delete\", \"path\": \"file.py\"}\n\n**VALIDATION CHECKLIST:**\n\nBefore outputting an operation, verify:\n- [ ] Path is specific (not \"the file\" or \"main.py maybe\")\n- [ ] Content is ACTUAL code/diff (not \"add try/catch\")\n- [ ] If is_diff=true, content has ---, +++, or REPLACE_LINES\n- [ ] If is_diff=false, content is complete, runnable code\n- [ ] Content is at least 20 characters (not a stub)\n\n**IF DEVELOPER OUTPUT IS INVALID:**\n\nIf developer gave descriptions instead of code:\n```json\n{\n  \"operations\": [],\n  \"summary\": \"ERROR: Developer provided descriptions, not code. No extractable operations.\",\n  \"error\": \"Developer must output actual diffs or code blocks, not instructions.\"\n}\n```\n\n**OUTPUT FORMAT (JSON ONLY):**\n```json\n{\n  \"operations\": [\n    {\n      \"type\": \"modify\",\n      \"path\": \"exact/path.py\",\n      \"content\": \"<full diff or code>\",\n      \"is_diff\": true,\n      \"reasoning\": \"What this operation does\"\n    }\n  ],\n  \"summary\": \"Extracted N operations\"\n}\n```"
-}
+```python
+# core/agent_schemas.py
+def _load_schemas_from_files() -> Dict[str, AgentResponseSchema]:
+    """Load all schemas from agent_schemas/*.json directory"""
+    schema_dir = Path(__file__).parent.parent / "agent_schemas"
+    schemas = {}
+    
+    for schema_file in schema_dir.glob("*.json"):
+        if schema_file.stem.startswith("_"):
+            continue  # Skip metadata files
+        
+        with open(schema_file) as f:
+            schema_data = json.load(f)
+        
+        # Convert JSON schema to AgentResponseSchema object
+        schemas[schema_file.stem] = _parse_schema_json(schema_data)
+    
+    return schemas
 ```
+
+**Option B - Remove JSON files, use Python only**:
+- Delete `agent_schemas/*.json`
+- Keep only `core/agent_schemas.py`
+- Generate examples dynamically
 
 ---
 
-### Step 3: Add Developer Output Validation
+### Fix 3: **Enforce Validation**
 
-**File: `workflow/task_runner.py`**
-
-**In the developer section, add validation BEFORE calling file_manager:**
+Add validation checkpoints:
 
 ```python
-if next_agent == "developer":
-    # ... existing code to build enhanced_instructions ...
-    
-    response = call_agent("developer", enhanced_instructions, task_id, conversation_context, model_choice)
+# agents/parallel_workers.py - Background agents
+def _process_file(self, agent_name: str, event: FileChangeEvent):
+    response = call_agent(agent_name, prompt, event.task_id)
     
     if response:
-        # ✅ VALIDATE DEVELOPER OUTPUT BEFORE PROCEEDING
-        has_diff = "---" in response or "+++" in response or "REPLACE_LINES" in response
-        has_code_block = "```" in response
+        # ✅ VALIDATE AGAINST SCHEMA
+        valid, errors = validate_agent_response(agent_name, response)
         
-        print(f"\n   📋 Developer Output Validation:")
-        print(f"      Has diffs: {has_diff}")
-        print(f"      Has code blocks: {has_code_block}")
-        print(f"      Length: {len(response)} chars")
+        if not valid:
+            log_error("parallel_workers", "schema_validation", "HIGH",
+                     f"{agent_name} violated schema: {errors}",
+                     task_id=event.task_id)
+            return  # Reject invalid response
         
-        if not has_diff and not has_code_block:
-            print(f"\n   ❌ DEVELOPER OUTPUT INVALID")
-            print(f"      Developer provided explanations, not code!")
-            print(f"      Preview: {response[:300]}...")
-            
-            # Post feedback for next turn
-            post_message(
-                "file_manager",
-                "orchestrator",
-                f"❌ Developer failed to output code/diffs. Response was {len(response)} chars of explanation. "
-                f"Developer MUST output actual diffs (--- +++) or code blocks (```), not descriptions.",
-                task_id,
-                "CRITICAL"
-            )
-            
-            # DON'T call file_manager with garbage
-            print(f"      Skipping file_manager (nothing to extract)")
-            continue
-        
-        conversation_context.append({
-            "role": "assistant",
-            "content": response[:500]
-        })
-        
-        # ✅ NOW proceed with file_manager
-        addressing_ids = decision.get("addressing_feedback_ids", [])
-        was_enforced = decision.get("enforced", False)
-        
-        print(f"\n📁 File Manager extracting operations...")
-        file_manager_response = call_agent(
-            "file_manager",
-            f"Extract file operations from developer response:\n\n{response}",
-            task_id
-        )
-        
-        if file_manager_response:
-            files_changed = execute_file_operations(file_manager_response, task_id, "developer")
-            
-            # ... rest of existing tracking code ...
+        self._parse_and_save_feedback(agent_name, event, response)
+```
+
+```python
+# workflow/proposal_builder.py - Developer agent
+def create_proposal_from_developer_output(developer_output, ...):
+    # ✅ VALIDATE EditPayload schema
+    try:
+        payload = EditPayload.model_validate_json(developer_output)
+    except ValidationError as e:
+        return {
+            "status": "error",
+            "message": f"Developer output violated EditPayload schema: {e}"
+        }
 ```
 
 ---
 
-### Step 4: Add Retry Logic
+### Fix 4: **Single Source for Enums**
 
-**File: `workflow/task_runner.py`**
-
-**After failed file operations, post corrective feedback:**
+Create a central enum module:
 
 ```python
-if file_manager_response:
-    files_changed = execute_file_operations(file_manager_response, task_id, "developer")
+# core/enums.py
+from enum import Enum
+
+class Priority(str, Enum):
+    CRITICAL = "CRITICAL"
+    HIGH = "HIGH"
+    MEDIUM = "MEDIUM"
+    LOW = "LOW"
+
+class Category(str, Enum):
+    SECURITY = "security"
+    BUG = "bug"
+    PERFORMANCE = "performance"
+    MAINTAINABILITY = "maintainability"
+    DOCUMENTATION = "documentation"
+    ARCHITECTURE = "architecture"
+    STYLE = "style"
+    OTHER = "other"
+```
+
+Then import and use everywhere:
+```python
+from core.enums import Priority, Category
+
+# In agent prompts:
+f"Priority must be one of: {[p.value for p in Priority]}"
+
+# In database queries:
+priority_values = [p.value for p in Priority]
+```
+
+---
+
+### Fix 5: **Actually Use Dynamic Discovery**
+
+Make the "learn from DB" feature actually work:
+
+```python
+def get_priority_values() -> List[str]:
+    """Get actual priority values from database (with fallback)"""
+    values = get_distinct_values("agent_feedback", "priority")
     
-    if files_changed > 0:
-        # ... existing success handling ...
-        pass
+    # ✅ Use DB values if available, otherwise fall back
+    if values and len(values) > 0:
+        return sorted(values, key=lambda p: PRIORITY_ORDER.get(p, 99))
     
+    # Fallback to defaults
+    return ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+
+# Similar for categories
+def get_category_values() -> List[str]:
+    values = get_distinct_values("agent_feedback", "category")
+    return values if values else ["security", "bug", "performance", ...]
+```
+
+---
+
+## 🎯 Priority Ranking
+
+**High Priority** (Do First):
+1. ✅ **Fix #1**: Conditional schema injection (prevents confusing text-output agents)
+2. ✅ **Fix #3**: Enforce validation at key points (prevents bad data from entering system)
+
+**Medium Priority**:
+3. ✅ **Fix #4**: Centralize enums (reduces duplication, prevents drift)
+
+**Low Priority** (Nice to have):
+4. **Fix #2**: Consolidate schema sources (cleanup, but system works either way)
+5. **Fix #5**: Dynamic enum discovery (theoretical benefit, not critical)
+
+---
+
+## 📝 Summary
+
+The `agent_schemas` system has good bones but needs:
+- **Selective application** (not all agents need JSON schemas)
+- **Actual validation enforcement** (schemas defined but not checked)
+- **Single source of truth** (enums scattered across codebase)
+- **Integration with parsing** (validation disconnected from usage)
+
+The core issue: **Schemas are being injected into prompts, but never validated on the way back out**. It's like having a type system that never throws errors.
+
+
+## Critical System Challenges
+1 {DONE}
+
+2. **Data Consistency Concerns**
+   - Potential column naming inconsistencies requiring thorough query auditing
+   - Risk of subtle integration errors due to naming discrepancies
+
+3. **Error Management Complexity**
+   - Inconsistent error response patterns across functions
+   - Unpredictable error handling mechanisms complicate upstream error management
+
+4. **Concurrency Potential Vulnerabilities**
+   - Parallel worker operations need enhanced thread-safety verification
+   - Potential race conditions in shared state management
+
+### High-Priority Design Issues
+
+5. **Validation Logic Weaknesses**
+   - Rationale field validation shows significant implementation gaps
+   - Default empty string conflicts with stated requirements
+
+6. **Temporal Validation Challenges**
+   - Current GUID validation occurs at application time
+   - Potential integrity risks due to file state changes between proposal and approval
+
+7. **Documentation Misalignment**
+   - Developer guidance lacks comprehensive editing requirement details
+   - Agent prompts insufficiently specify critical structural expectations
+
+8. **Resource Control Reliability**
+   - Throttling disable mechanism lacks robust recovery strategy
+   - Potential system vulnerability during unexpected interruptions
+
+### Performance and Efficiency Concerns
+
+9. **Token Estimation Limitations**
+   - Simplistic token calculation method
+   - Risks of budget miscalculations with current heuristic approach
+
+10. **Database Connectivity Optimization**
+   - Context management present but connection pooling absent
+   - Potential performance and resource allocation improvements needed
+
+Writes in WAL mode, yet parallel processing might introduce database contention challenges. JSON parsing introduces complex merge strategies with potential resumption risks. Background agent coordination suffers from potential race conditions, and simultaneous file reviews lack robust deduplication mechanisms.
+
+Git integration remains fragile, permitting file writes despite commit failures. This could generate untracked changes. Configuration validation is minimal, potentially enabling cryptic error scenarios. CLI unattended mode checkpoint functionality exists but requires extensive edge case testing.
+
+Legacy code cleanup demands immediate attention. The deprecated `file_manager` agent persists in prompts, necessitating complete removal or explicit unused status marking. Recommendations focus on schema consolidation, standardizing error handling, and implementing robust validation mechanisms.
+
+Critical steps include removing deprecated file editing schemas, updating imports, and creating a migration guide. A new `OperationResult` class will standardize error handling with clear return types, ensuring consistent operation outcomes.
+
+Validation improvements target the `BaseOperation` dataclass, enforcing strict rationale requirements. A post-initialization validation ensures rationale meets minimum length and content standards, preventing incomplete or meaningless operation descriptions.
+
+Developer agent prompts require enhancement, specifically addressing GUID references and edit payload expectations. The proposed changes will clarify file context representation and improve overall system communication clarity.
+
+Resource controller safety introduces a mechanism for temporarily disabling throttling with a guaranteed re-enable callback, preventing potential long-term system resource lockouts.
+
+Token estimation strategies will incorporate tiktoken as an optional dependency, maintaining existing heuristic fallback mechanisms while improving estimation accuracy tracking.
+
+Proposal validation will strengthen pre-review checks, ensuring GUID integrity and providing precise error messaging for common submission failures.
+
+Observability enhancements focus on comprehensive metrics tracking proposal lifecycle events, monitoring reviewer interactions, and evaluating background agent performance over extended periods.
+
+Conflict resolution strategies now include advanced auto-rebase techniques, implementing three-way merge approaches for handling proposal conflicts with intelligent guidance mechanisms.
+
+Security considerations reveal robust protections: flexible API key management, reviewer-gated code execution safeguards, parameterized database queries, and securely escaped Git integration commands.
+
+The system demonstrates an innovative governed editing approach, scoring 8.5/10 for its sophisticated design and safety properties, with primary remaining concerns around migration completeness.
+
+Migration challenges include potential deprecated code persistence, error handling refinements needed, and possible race conditions in background worker processes. While test coverage is adequate, expanding scenarios for governed editing and concurrent interactions would further strengthen the system's reliability and readiness for production deployment.# PrizmForge Multi-Agent System - Comprehensive Review
+
+## Executive Summary
+
+**Overall Assessment: 8.5/10** - Production-Ready with Minor Fixes Needed
+
+PrizmForge is a sophisticated autonomous software development system with a well-architected **governed self-modification** approach. The core innovation—line-level editing with stable GUIDs and a reviewer safety gate—is significantly more robust than traditional diff-based patching.
+
+### Strengths
+- ✅ Excellent safety-first design with proposal → review → materialize workflow
+- ✅ Clean separation between mutation (sequential) and analysis (parallel)
+- ✅ Comprehensive error logging and auditability
+- ✅ Multi-endpoint resilience with automatic fallback
+- ✅ Adaptive resource management with learned agent profiles
+- ✅ Good test framework with proper fixtures and mocks
+
+### Critical Issues Requiring Immediate Attention
+- ❌ Schema consolidation incomplete (deprecated code still present)
+- ❌ Inconsistent error handling patterns across components
+- ⚠️ EditPayload validation has default value contradicting requirements
+- ⚠️ Potential race conditions in background worker coordination
+
+---
+
+## Detailed Analysis
+
+### 1. Architecture & Design (9/10)
+
+**Strengths:**
+- The **governed editing path** is the star feature - this is the right way to do autonomous modification
+- Clear agent categorization (Sequential/Governed, Parallel Background, Support)
+- Well-documented with comprehensive architecture.md and mermaid diagrams
+- GUID-based line addressing solves the "stale line numbers" problem elegantly
+
+**Issues:**
+```python
+# ISSUE: Legacy code still present despite being marked deprecated
+# file_editing/schema.py should be completely removed
+# Currently: Marked deprecated but still contains full schema definition
+
+# RECOMMENDATION:
+# 1. Delete file_editing/schema.py entirely
+# 2. Update all imports to use core.db
+# 3. Add migration documentation
+```
+
+### 2. Governed File Editing (9/10)
+
+**Strengths:**
+- Optimistic concurrency via content hashes is correct approach
+- Post-write invalidation prevents conflicting proposals
+- Detailed operation results with lines affected
+- Clear proposal lifecycle tracking
+
+**Critical Issue:**
+```python
+# file_editing/edit_payload.py
+@dataclass
+class BaseOperation:
+    type: str
+    rationale: str = ""  # ❌ DEFAULT VALUE CONTRADICTS VALIDATION
+    
+    def __post_init__(self):
+        # This will fail for default empty string!
+        if not (10 <= len(self.rationale) <= 500):
+            raise ValueError("rationale must be between 10 and 500 characters")
+
+# FIX:
+@dataclass
+class BaseOperation:
+    type: str
+    rationale: str  # ✅ No default - truly required
+    
+    def __post_init__(self):
+        if not isinstance(self.rationale, str):
+            raise ValueError("rationale must be a string")
+        if not (10 <= len(self.rationale) <= 500):
+            raise ValueError("rationale must be between 10 and 500 characters")
+```
+
+**Medium Priority:**
+```python
+# GUID validation happens too late
+# In workflow/proposal_builder.py - validation is at proposal creation
+# But in file_editing/editing.py - GUIDs are checked again at apply time
+
+# RECOMMENDATION: Add GUID pre-validation at review time
+def validate_proposal_guids(proposal_id: str) -> bool:
+    """Validate GUIDs exist BEFORE reviewer sees it"""
+    # Check all referenced GUIDs actually exist
+    # Provide clear error messages if not
+    # This catches problems earlier in the workflow
+```
+
+### 3. Agent Orchestration (8.5/10)
+
+**Strengths:**
+- Clean decision routing (developer | background | complete)
+- Progress forcing prevents infinite loops
+- Good integration with background agent pool
+
+**Issues:**
+
+```python
+# workflow/task_runner.py line ~247
+# Orchestrator retry logic is good, but fallback decision is questionable
+if not decision:
+    print(f"❌ Orchestrator failed after {MAX_ORCHESTRATOR_RETRIES} attempts")
+    decision = {
+        "next_agent": "reviewer",  # ❌ Why reviewer if orchestrator failed?
+        "reasoning": "Orchestrator failed - defaulting to review",
+        "instructions": "Review the current state",
+        "files_needed": []
+    }
+
+# RECOMMENDATION: Better fallback strategy
+if not decision:
+    # Check what we've tried so far
+    if progress["developer_calls"] == 0:
+        decision = {"next_agent": "developer", ...}  # Haven't tried making changes
+    elif progress["reviewer_calls"] == 0:
+        decision = {"next_agent": "reviewer", ...}   # Haven't reviewed yet
     else:
-        # ✅ NO FILES CHANGED - DIAGNOSE AND RETRY
-        print(f"\n   ⚠️  File operations failed or produced no changes")
-        
-        # Check if it's a developer problem or file_manager problem
-        if not has_diff and not has_code_block:
-            failure_reason = "Developer didn't output code/diffs"
-            retry_instructions = """Your previous response didn't contain any code or diffs.
-
-OUTPUT REQUIREMENTS:
-- Unified diff format: --- a/file.py then +++ b/file.py then @@ chunks
-- OR code blocks: ```python filename.py with full file content
-- OR REPLACE_LINES blocks
-
-NO explanations. NO descriptions. ONLY actual code/diffs."""
-        
-        else:
-            failure_reason = "File manager couldn't extract operations"
-            retry_instructions = """Your previous response contained code/diffs, but file_manager couldn't extract valid operations.
-
-CHECK:
-- Are your diff headers correct? (--- a/file.py, +++ b/file.py)
-- Do you have @@ hunk markers?
-- Is your filename correct and does the file exist?
-- Is your code block properly formatted? (```python filename.py)
-
-Try again with EXACT formatting."""
-        
-        print(f"      Reason: {failure_reason}")
-        print(f"      Posting retry instructions to orchestrator")
-        
-        post_message(
-            "system",
-            "orchestrator",
-            f"❌ Developer operation failed: {failure_reason}\n\n"
-            f"Tell developer to retry with these instructions:\n{retry_instructions}",
-            task_id,
-            "CRITICAL"
-        )
+        decision = {"next_agent": "complete", ...}    # Stuck - complete with error
 ```
 
----
+### 4. Database & Schema (8/10)
 
-Reasoning:
-The user wants me to continue from "Step 5: Add Developer Self-Check" which was cut off. Let me continue from where it was interrupted in the developer system_prompt.## Step 5: Add Developer Self-Check (continued)
+**Strengths:**
+- Comprehensive schema with proper indexes
+- Good use of foreign keys
+- Centralized error logging table
+- Context manager for connection safety
 
-**File: `agent_prompts.json`**
-
-**Update developer system_prompt to include self-validation:**
-
-```json
-"developer": {
-  "role": "Senior Python Developer",
-  "system_prompt": "You are a Senior Python Developer.\n\n**CRITICAL OUTPUT REQUIREMENT:** Generate changes as diffs/patches ONLY. Never output complete files unless creating NEW files.\n\n**SELF-CHECK BEFORE RESPONDING:**\n\nBefore you output anything, verify:\n1. ✅ My response contains actual code/diffs (not descriptions)\n2. ✅ Diffs have --- and +++ headers\n3. ✅ Diffs have @@ hunk markers\n4. ✅ File paths are correct and specific\n5. ✅ Code is complete and runnable\n\nIf you catch yourself writing \"add error handling\" or \"implement validation\" → STOP. Output the actual code instead.\n\n**SUPPORTED FORMATS:**\n\n**1. Unified Diff (preferred for modifications):**\n```diff\n--- a/path/to/file.py\n+++ b/path/to/file.py\n@@ -10,7 +10,8 @@\n context line\n-old line to remove\n+new line to add\n context line\n```\n\n**2. REPLACE_LINES (alternative):**\n```\nREPLACE_LINES 10-15\nnew content here\nEND_REPLACE\n```\n\n**3. New Files Only:**\n```python path/to/newfile.py\n# Complete file content for NEW files only\ndef hello():\n    print(\"Hello, World!\")\n```\n\n**GUIDELINES:**\n- Include 3-5 context lines before/after changes\n- Test diffs mentally before outputting\n- Be precise with line numbers\n- Write clean, production-ready code\n- Add comments for complex logic\n- Follow PEP 8\n\n**WRONG (will fail):**\n```\nTo fix the security issue in auth.py:\n- Add input validation on line 45\n- Sanitize the username parameter\n- Add try/catch for errors\n```\n\n**RIGHT (will succeed):**\n```diff\n--- a/auth.py\n+++ b/auth.py\n@@ -42,7 +42,12 @@\n def login(username, password):\n+    # Validate input\n+    if not username or len(username) > 50:\n+        raise ValueError(\"Invalid username\")\n+    \n+    # Sanitize\n+    username = username.strip()\n     query = \"SELECT * FROM users WHERE username = ?\"\n-    user = db.execute(query, username).fetchone()\n+    try:\n+        user = db.execute(query, (username,)).fetchone()\n+    except Exception as e:\n+        logger.error(f\"Login error: {e}\")\n+        return None\n     return user\n```"
-}
-```
-
----
-
-## Step 6: Emergency Fallback - Direct Code Injection
-
-**File: `workflow/task_runner.py`**
-
-**Add this function for when developer repeatedly fails:**
+**Issues:**
 
 ```python
-def emergency_apply_fixes(task_id: str, feedback_ids: List[int]) -> int:
-    """
-    EMERGENCY: Generate and apply fixes without developer
-    
-    Used when developer fails 3+ times on same issues.
-    Uses simple template-based fixes for common problems.
-    
-    Returns: Number of files changed
-    """
-    print(f"\n{'='*60}")
-    print(f"🚨 EMERGENCY MODE: Applying template-based fixes")
-    print(f"{'='*60}\n")
-    
-    # Get the feedback items
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        
-        placeholders = ','.join('?' * len(feedback_ids))
-        cursor.execute(f"""
-            SELECT id, file_path, category, message, suggestion
-            FROM agent_feedback
-            WHERE id IN ({placeholders})
-        """, feedback_ids)
-        
-        items = cursor.fetchall()
-    
-    from core.patch_editor import get_patch_editor
-    editor = get_patch_editor()
-    
-    files_changed = 0
-    
-    for item_id, file_path, category, message, suggestion in items:
-        print(f"   🔧 Emergency fix: {file_path} - {category}")
-        
-        # Get current file content
-        from core.file_operations import get_file_content_from_db
-        content = get_file_content_from_db(file_path)
-        
-        if not content:
-            print(f"      ❌ File not found, skipping")
-            continue
-        
-        # Apply template-based fix based on category
-        fixed_content = None
-        
-        if category == "security" and "SQL injection" in message:
-            # Template fix for SQL injection
-            fixed_content = _fix_sql_injection(content)
-        
-        elif category == "security" and "hardcoded" in message.lower():
-            # Template fix for hardcoded secrets
-            fixed_content = _fix_hardcoded_secrets(content)
-        
-        elif category == "bug" and "null" in message.lower():
-            # Add null checks
-            fixed_content = _add_null_checks(content)
-        
-        # More templates can be added here
-        
-        if fixed_content and fixed_content != content:
-            # Generate diff
-            diff = editor.generate_diff(file_path, fixed_content)
-            
-            if diff:
-                success, msg = editor.apply_unified_diff(file_path, diff)
-                
-                if success:
-                    files_changed += 1
-                    print(f"      ✅ Applied emergency fix")
-                    
-                    # Mark as addressed
-                    with get_db_connection() as conn:
-                        conn.execute("""
-                            UPDATE agent_feedback
-                            SET addressed = 1, addressed_by = 'emergency_fixer'
-                            WHERE id = ?
-                        """, (item_id,))
-                else:
-                    print(f"      ❌ {msg}")
-        else:
-            print(f"      ⚠️  No template available for this issue type")
-    
-    print(f"\n   Emergency mode: {files_changed} files fixed\n")
-    return files_changed
+# core/db_connection.py
+# The checkpoint happens on EVERY close, even for read-only operations
+@contextmanager
+def get_db_connection(..., checkpoint_on_close: bool = True):
+    # ...
+    finally:
+        if checkpoint_on_close:
+            _checkpoint_with_retry(conn, retries)  # ❌ Expensive for reads
 
-
-def _fix_sql_injection(content: str) -> str:
-    """Template fix: Replace f-string SQL with parameterized queries"""
-    import re
-    
-    # Pattern: f"SELECT ... WHERE col = '{var}'"
-    # Fix: Use parameterized query
-    
-    # This is a simple example - real implementation would be more sophisticated
-    pattern = r'f"(SELECT.*?WHERE.*?\{(\w+)\}.*?)"'
-    
-    def replace_func(match):
-        query = match.group(1)
-        var = match.group(2)
-        # Remove f-string, replace {var} with ?
-        fixed_query = query.replace(f"{{{var}}}", "?")
-        return f'"{fixed_query}", ({var},)'
-    
-    return re.sub(pattern, replace_func, content)
-
-
-def _fix_hardcoded_secrets(content: str) -> str:
-    """Template fix: Move hardcoded secrets to environment variables"""
-    import re
-    
-    # Pattern: API_KEY = "hardcoded_value"
-    # Fix: API_KEY = os.environ.get("API_KEY")
-    
-    pattern = r'(\w+_(?:KEY|SECRET|TOKEN|PASSWORD))\s*=\s*["\']([^"\']+)["\']'
-    
-    def replace_func(match):
-        var_name = match.group(1)
-        return f'{var_name} = os.environ.get("{var_name}")'
-    
-    fixed = re.sub(pattern, replace_func, content)
-    
-    # Add import if not present
-    if "import os" not in fixed and fixed != content:
-        fixed = "import os\n" + fixed
-    
-    return fixed
-
-
-def _add_null_checks(content: str) -> str:
-    """Template fix: Add basic null checks"""
-    # This would need sophisticated AST parsing in reality
-    # For now, just a placeholder
-    return content
+# RECOMMENDATION:
+# 1. Set checkpoint_on_close=False for read-only operations
+# 2. Or detect if any writes occurred before checkpointing
 ```
 
----
+**Column Naming:**
+The code has many comments about "correct column names" suggesting past inconsistency:
+```python
+# file_editing/writer.py line 122
+# "Update file metadata (correct column: file_id)"
+# This suggests there was confusion between file_id vs id
 
-## Step 7: Track Developer Failure Rate
+# RECOMMENDATION: Run a comprehensive audit
+# grep -r "file_id\|file_path" --include="*.py" | review all queries
+```
 
-**File: `workflow/task_runner.py`**
+### 5. Background Agents & Parallel Processing (7.5/10)
 
-**Add to progress tracking:**
+**Strengths:**
+- Clean worker pool design
+- Priority-based event queue
+- Review tracking prevents redundant work
+- Resource-aware throttling
+
+**Critical Issue - Race Conditions:**
 
 ```python
-progress = {
-    "files_modified": 0,
-    "developer_calls": 0,
-    "developer_failures": 0,  # ✅ NEW
-    "reviewer_calls": 0,
-    "researcher_calls": 0,
-    "last_file_change": None,
-    "enforcements": 0,
-    "enforcement_successes": 0,
-    "emergency_fixes": 0,  # ✅ NEW
-}
+# agents/parallel_workers.py
+class BackgroundAgentPool:
+    def __init__(self):
+        self.recently_queued = {}  # ❌ Dictionary modified by multiple threads
+        
+    def queue_file_change(self, file_path: str, ...):
+        # Multiple threads call this simultaneously
+        for agent_name in self.modification_agents:
+            if agent_name in self.recently_queued:
+                self.recently_queued[agent_name].add(file_path)  # ❌ Not thread-safe
+
+# FIX:
+import threading
+
+class BackgroundAgentPool:
+    def __init__(self):
+        self.recently_queued = {}
+        self._queue_lock = threading.Lock()
+        
+    def queue_file_change(self, file_path: str, ...):
+        with self._queue_lock:
+            for agent_name in self.modification_agents:
+                if agent_name in self.recently_queued:
+                    self.recently_queued[agent_name].add(file_path)
 ```
 
-**After developer fails to produce files:**
+**Medium Priority:**
+```python
+# agents/parallel_workers.py - feeder interval adjustment
+def _adjust_feeder_interval(self, queue_size: int):
+    if queue_size < 10:
+        self.feeder_interval = self.base_feeder_interval
+    elif queue_size < 50:
+        self.feeder_interval = self.base_feeder_interval * 1.5
+    # ... etc
+
+# ISSUE: No hysteresis - interval thrashes if queue size oscillates around threshold
+# RECOMMENDATION: Add hysteresis or exponential smoothing
+```
+
+### 6. Resource Controller (8.5/10)
+
+**Strengths:**
+- Adaptive learning from agent performance
+- Progressive throttling levels
+- Model downgrades during budget pressure
+- Good separation of concerns
+
+**Issue:**
 
 ```python
-if files_changed > 0:
-    # Success path
-    progress["files_modified"] += files_changed
-    progress["last_file_change"] = current_turn
+# agents/resource_controller_worker.py
+def temporarily_disable_throttling(self, duration_seconds: int = 30):
+    self.throttling_disabled_until = datetime.now() + timedelta(seconds=duration_seconds)
+    print(f"🔓 Throttling temporarily disabled for {duration_seconds} seconds")
     
-else:
-    # ✅ Failure path
-    progress["developer_failures"] += 1
+# ❌ PROBLEM: If process crashes during disabled window, no cleanup
+# ❌ PROBLEM: If exception occurs, throttling stays disabled
+
+# FIX: Add guaranteed re-enable
+def temporarily_disable_throttling(self, duration_seconds: int = 30):
+    self.throttling_disabled_until = datetime.now() + timedelta(seconds=duration_seconds)
     
-    print(f"\n   📊 Developer failure rate: {progress['developer_failures']}/{progress['developer_calls']}")
+    # Guaranteed re-enable even if something goes wrong
+    def _ensure_enabled():
+        time.sleep(duration_seconds + 5)
+        if self.throttling_disabled_until and datetime.now() > self.throttling_disabled_until:
+            self.throttling_disabled_until = None
+            print("🔒 Throttling automatically re-enabled (safety)")
     
-    # ✅ Emergency mode after 3 consecutive failures
-    if progress["developer_failures"] >= 3 and addressing_ids:
-        print(f"\n   🚨 Developer has failed {progress['developer_failures']} times")
-        print(f"   Attempting emergency template-based fixes...")
-        
-        emergency_changes = emergency_apply_fixes(task_id, addressing_ids)
-        
-        if emergency_changes > 0:
-            progress["emergency_fixes"] += emergency_changes
-            progress["files_modified"] += emergency_changes
-            progress["developer_failures"] = 0  # Reset counter
-            print(f"   ✅ Emergency fixes applied: {emergency_changes} files")
-        else:
-            print(f"   ❌ Emergency fixes also failed")
+    threading.Thread(target=_ensure_enabled, daemon=True).start()
 ```
 
----
+### 7. Error Handling & Observability (8/10)
 
-## Step 8: Add Diagnostic Export
+**Strengths:**
+- Centralized error logging with `log_error()`
+- Comprehensive `errors` table with context
+- Detailed operation results
+- Good use of structured logging
 
-**File: `cli/commands.py`**
-
-**Add command to export failure diagnostics:**
+**Issue - Inconsistent Return Types:**
 
 ```python
-def cmd_diagnose_failures(task_id: str = None):
-    """Diagnose why file operations are failing"""
-    
-    print(f"\n{'='*60}")
-    print(f"🔍 File Operation Failure Diagnostics")
-    print(f"{'='*60}\n")
-    
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        
-        # Get developer responses
-        if task_id:
-            cursor.execute("""
-                SELECT timestamp, prompt, response, parse_success
-                FROM agent_responses_archive
-                WHERE task_id = ? AND agent_name = 'developer'
-                ORDER BY timestamp DESC
-                LIMIT 5
-            """, (task_id,))
-        else:
-            cursor.execute("""
-                SELECT timestamp, prompt, response, parse_success
-                FROM agent_responses_archive
-                WHERE agent_name = 'developer'
-                ORDER BY timestamp DESC
-                LIMIT 5
-            """)
-        
-        dev_responses = cursor.fetchall()
-        
-        # Get file_manager responses
-        if task_id:
-            cursor.execute("""
-                SELECT timestamp, prompt, response, parse_success
-                FROM agent_responses_archive
-                WHERE task_id = ? AND agent_name = 'file_manager'
-                ORDER BY timestamp DESC
-                LIMIT 5
-            """, (task_id,))
-        else:
-            cursor.execute("""
-                SELECT timestamp, prompt, response, parse_success
-                FROM agent_responses_archive
-                WHERE agent_name = 'file_manager'
-                ORDER BY timestamp DESC
-                LIMIT 5
-            """)
-        
-        fm_responses = cursor.fetchall()
-    
-    # Analyze developer responses
-    print("📊 Developer Output Analysis:")
-    print("-" * 60)
-    
-    for timestamp, prompt, response, parse_success in dev_responses:
-        has_diff = "---" in response and "+++" in response
-        has_replace = "REPLACE_LINES" in response
-        has_code = "```" in response
-        
-        print(f"\n⏰ {timestamp[:19]}")
-        print(f"   Length: {len(response)} chars")
-        print(f"   Has diffs: {has_diff}")
-        print(f"   Has REPLACE_LINES: {has_replace}")
-        print(f"   Has code blocks: {has_code}")
-        
-        if not has_diff and not has_replace and not has_code:
-            print(f"   ❌ PROBLEM: No actionable code detected")
-            print(f"   Preview: {response[:200]}...")
-    
-    # Analyze file_manager responses
-    print(f"\n\n📊 File Manager Extraction Analysis:")
-    print("-" * 60)
-    
-    for timestamp, prompt, response, parse_success in fm_responses:
-        try:
-            import json
-            data = json.loads(response)
-            ops = data.get("operations", [])
-            
-            print(f"\n⏰ {timestamp[:19]}")
-            print(f"   Parse success: {parse_success}")
-            print(f"   Operations found: {len(ops)}")
-            
-            for idx, op in enumerate(ops):
-                print(f"\n   Operation {idx+1}:")
-                print(f"      Type: {op.get('type')}")
-                print(f"      Path: {op.get('path')}")
-                print(f"      Is diff: {op.get('is_diff')}")
-                print(f"      Content length: {len(op.get('content', ''))}")
-                
-                content = op.get('content', '')
-                if len(content) < 50:
-                    print(f"      ⚠️  Content suspiciously short: {content}")
-        
-        except json.JSONDecodeError:
-            print(f"\n⏰ {timestamp[:19]}")
-            print(f"   ❌ JSON parse failed")
-            print(f"   Raw: {response[:200]}...")
-    
-    print("\n" + "="*60 + "\n")
+# Different functions use different error patterns:
+
+# Pattern 1: Dict with status
+def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:
+    return {"status": "error", "message": "..."}
+
+# Pattern 2: None on error
+def call_agent(...) -> Optional[str]:
+    return None  # On error
+
+# Pattern 3: Raise exception
+def validate_guid_exists(...):
+    if not valid:
+        raise ValueError("GUID not found")
+
+# RECOMMENDATION: Standardize on one pattern (prefer Dict with status)
+@dataclass
+class OperationResult:
+    success: bool
+    data: Optional[Any] = None
+    error: Optional[str] = None
+    details: Optional[Dict] = None
 ```
 
-**Add to `interactive.py`:**
+### 8. Testing (7.5/10)
 
-```python
-if cmd.lower() == "diagnose" or cmd.lower().startswith("diagnose "):
-    parts = cmd.split()
-    task_id = parts[1] if len(parts) > 1 else None
-    cmd_diagnose_failures(task_id)
-    continue
-```
+**Strengths:**
+- Good fixture design (`temp_db`, `mock_openai_chat`)
+- Separation of unit vs integration tests
+- Race condition tests for parallel workers
 
----
-
-## Complete Test Workflow
-
-After applying all fixes, test with:
+**Gaps:**
 
 ```bash
-python main.py
+# Missing test coverage for:
+- Optimistic concurrency conflict resolution flow
+- Proposal invalidation cascade
+- Resource controller throttling transitions
+- Background agent coordination edge cases
+- Full orchestrator → developer → reviewer → materialize flow
 
-# Start a task
-👤 Human> fix the SQL injection vulnerability in auth.py
-
-# Watch for validation messages:
+# RECOMMENDATION: Add integration test
+def test_full_governed_editing_flow(temp_db, mock_openai_chat):
+    """End-to-end: create proposal → review → materialize"""
+    # Initialize file
+    # Mock developer output with EditPayload
+    # Mock reviewer approval
+    # Verify file written to disk
+    # Verify overlapping proposals invalidated
 ```
 
-**Expected output with fixes:**
+### 9. Configuration & Deployment (8/10)
 
+**Strengths:**
+- Multi-endpoint support
+- Environment variable overrides
+- Path normalization
+
+**Issues:**
+
+```python
+# core/config.py
+# No schema validation for config.json
+def load_config(config_path: str = None) -> Dict[str, Any]:
+    with open(config_file, 'r', encoding='utf-8') as f:
+        config = json.load(f)  # ❌ No validation
+    # ...
+
+# RECOMMENDATION: Add Pydantic model
+from pydantic import BaseModel, Field, validator
+from typing import Dict, List, Optional
+
+class EndpointConfig(BaseModel):
+    base_url: str
+    api_key_name: str
+    include_model_in_payload: bool
+    response_path: List[str | int]
+    priority: int = Field(default=50, ge=1, le=100)
+    rate_limit_per_minute: int = Field(default=60, ge=1)
+
+class ConfigSchema(BaseModel):
+    project_directory: str
+    git: bool = True
+    endpoints: Dict[str, EndpointConfig]
+    default_endpoint: str
+    models: Dict[str, dict]
+    
+    @validator('default_endpoint')
+    def default_endpoint_must_exist(cls, v, values):
+        if 'endpoints' in values and v not in values['endpoints']:
+            raise ValueError(f"default_endpoint '{v}' not found in endpoints")
+        return v
+
+def load_config(config_path: str = None) -> Dict[str, Any]:
+    with open(config_file, 'r', encoding='utf-8') as f:
+        raw_config = json.load(f)
+    
+    # Validate with Pydantic
+    try:
+        validated = ConfigSchema(**raw_config)
+        return validated.dict()
+    except ValidationError as e:
+        print(f"❌ Configuration validation failed:")
+        for error in e.errors():
+            print(f"   {error['loc']}: {error['msg']}")
+        raise
 ```
-🔄 Iteration 1/20
 
-🚨 ENFORCEMENT: Overriding orchestrator decision
-   Orchestrator chose: reviewer
-   System override: developer
-   Reason: 3 CRITICAL/HIGH items unaddressed
+**Missing Documentation:**
+```markdown
+# No documented upgrade path for configuration changes
+# Example: If you add a new required config field, how do existing users migrate?
 
-🤖 Calling developer...
-
-   📋 Developer Output Validation:
-      Has diffs: True
-      Has code blocks: False
-      Length: 450 chars
-
-📁 File Manager extracting operations...
-
-   📋 File Manager Validation:
-      Valid operations: 1
-      Invalid operations: 0
-
-   🔧 Executing 1 valid operation(s)...
-
-   ✅ Patched: auth.py (+4 -2 lines)
-
-✅ PROGRESS: 1 files modified so far
-   ✅ Marked 1 feedback items as addressed
-   ✅ System enforcement successful - developer made changes
-```
-
-**Or if developer fails:**
-
-```
-   📋 Developer Output Validation:
-      Has diffs: False
-      Has code blocks: False
-      Length: 280 chars
-
-   ❌ DEVELOPER OUTPUT INVALID
-      Developer provided explanations, not code!
-      Preview: To fix the SQL injection, you should use parameterized...
-      Skipping file_manager (nothing to extract)
-
-   📊 Developer failure rate: 1/1
-
-[Next iteration will retry with corrective instructions]
-```
-
-**Or if developer fails 3 times:**
-
-```
-   🚨 Developer has failed 3 times
-   Attempting emergency template-based fixes...
-
-🚨 EMERGENCY MODE: Applying template-based fixes
-   🔧 Emergency fix: auth.py - security
-      ✅ Applied emergency fix
-
-   Emergency mode: 1 files fixed
-
-   ✅ Emergency fixes applied: 1 files
+# RECOMMENDATION: Add config/CHANGELOG.md
+## v1.4 → v1.5
+- Added: `resource_controller.project_goals` (optional)
+- Changed: `background_agents` now supports per-agent `model` override
+- Migration: Existing configs work without changes
 ```
 
 ---
 
-## Summary: What These Fixes Accomplish
+### 10. JSON Parsing & LLM Resilience (9/10)
 
-1. **Validation Pipeline**: JSON parsing → field validation → content validation → execution
-2. **Early Detection**: Catches bad developer output before wasting time on file_manager
-3. **Detailed Diagnostics**: Shows exactly WHY operations fail
-4. **Smart Retry**: Posts corrective instructions to orchestrator for next turn
-5. **Emergency Fallback**: Template-based fixes when developer repeatedly fails
-6. **Progress Tracking**: Knows success/failure rates
-7. **Diagnostic Tools**: `diagnose` command shows exactly what's broken
+**Strengths:**
+- Excellent multi-strategy parsing (markdown, braces, etc.)
+- Truncation detection with auto-resume
+- Format-specific merge strategies
+- Confidence scoring
 
-The key insight: **Validate at EVERY step**, not just at JSON parsing.
+**Minor Issue:**
 
-Reasoning:
-This is a great "step back and rethink" question. Let me consider the fundamental architecture problem:
+```python
+# core/json_parser.py
+def _extract_json_content(self, text: str) -> Optional[str]:
+    """Extract JSON content, stripping markdown fences and surrounding text"""
+    # Strategy 1: Extract from ```json block
+    if "```json" in text:
+        match = re.search(r'```json\s*\n(.*?)(?:```|$)', text, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    
+    # Strategy 3: Find first { to last }
+    if '{' in text:
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        
+        if start < end:
+            return text[start:end]  # ✅ Good
+        else:
+            # Truncated JSON (no closing brace found)
+            json_part = text[start:]
+            if '```' in json_part:
+                json_part = json_part.split('```')[0]
+            return json_part  # ⚠️ Returns incomplete JSON without marking it
 
-**Current Approach:**
-Developer (LLM) → generates diff text → File Manager (LLM) → extracts operations → Python applies patch
-
-**Problems:**
-1. Two LLMs in series = 2x failure rate
-2. Diffs are fragile (whitespace, line numbers, context)
-3. No feedback loop if patch fails
-4. LLMs are bad at precise line numbers
-
-**Alternative Approaches:**
-
-1. **AST-based editing** (like Aider, Cursor)
-   - LLM outputs high-level changes
-   - Python does AST manipulation
-   - More reliable, language-specific
-
-2. **Search and replace** (like Aider's search/replace mode)
-   - LLM outputs: SEARCH block + REPLACE block
-   - Python finds exact match, replaces
-   - More reliable than line numbers
-
-3. **Whole file rewrite with validation**
-   - LLM outputs full file
-   - Python diffs against original
-   - Shows changes for approval
-   - Simpler, but uses more tokens
-
-4. **Multi-step with validation**
-   - LLM proposes change
-   - Python validates it would work
-   - LLM sees validation result
-   - Iterate until success
-
-5. **Structured editing commands** (like Claude Code's approach)
-   - LLM outputs JSON operations
-   - Operations are high-level: "insert_after_function", "replace_function", "add_import"
-   - Python uses AST to execute
-
-6. **Line-based replace blocks** (Aider's approach)
-   - LLM outputs exact text to find
-   - LLM outputs exact replacement
-   - Python does string search/replace
-   - No line numbers needed
-
-I think the user is right - we're fighting the wrong battle. The diff approach is inherently fragile.# Yes - The Current Approach is Fighting the Wrong Battle
-
-You're absolutely right to question this. Let me analyze the fundamental problem:
-
-## Current Architecture (Fragile)
-
+# RECOMMENDATION: Return tuple (content, is_complete)
+def _extract_json_content(self, text: str) -> Tuple[Optional[str], bool]:
+    # ... strategies ...
+    if start < end:
+        return text[start:end], True  # Complete
+    else:
+        return text[start:], False    # Incomplete
 ```
-Developer (LLM)          File Manager (LLM)         Python
-     ↓                         ↓                       ↓
-"Here's a diff"     "I extracted operations"    "Patch failed"
- - Line numbers      - Maybe parsed wrong        - No feedback
- - Context lines     - Maybe wrong file           to LLM
- - Whitespace        - Maybe hallucinated
-   sensitive
-```
-
-**Failure modes:**
-1. Developer outputs descriptions instead of diffs
-2. Developer gets line numbers wrong (file changed)
-3. File manager misparses the diff
-4. Patch utility rejects malformed diff
-5. **No feedback loop** - LLM never knows it failed
-
-This is like asking someone to edit a file by describing changes in a language they barely speak, then having a translator who also barely speaks it, then hoping the result compiles.
 
 ---
 
-## Better Approaches Used by Real Tools
+### 11. CLI & User Experience (7/10)
 
-### Option 1: **Search/Replace Blocks** (Aider's approach)
+**Strengths:**
+- Good command organization
+- Export functionality for debugging
+- Status and health monitoring
+- Semi-attended and unattended modes
 
-**How it works:**
-```
-Developer outputs:
-<<<<<<< SEARCH
-def login(username):
-    query = f"SELECT * FROM users WHERE username = '{username}'"
-    return db.execute(query)
-=======
-def login(username):
-    query = "SELECT * FROM users WHERE username = ?"
-    return db.execute(query, (username,))
->>>>>>> REPLACE
-```
-
-**Python does:**
-```python
-# Find exact match (no line numbers!)
-old_text = extract_search_block()
-new_text = extract_replace_block()
-
-if old_text in file_content:
-    file_content = file_content.replace(old_text, new_text)
-    success = True
-else:
-    # FEEDBACK TO LLM
-    return "Search block not found in file. Current content: ..."
-```
-
-**Advantages:**
-- No line numbers (can't get stale)
-- Exact matching (no ambiguity)
-- LLM can see current file if search fails
-- One LLM (no file_manager needed)
-
-**Implementation:**
+**Issues:**
 
 ```python
-# core/search_replace_editor.py
+# interactive.py - User feedback during long operations
+def run_task_cycle(task_id: str, user_command: str, ...):
+    # ...
+    while current_turn < max_turns:
+        # ... lots of processing ...
+        # ❌ No progress indicator during long LLM calls
+        response = call_agent("developer", enhanced_instructions, ...)
 
-class SearchReplaceEditor:
-    """Edit files using search/replace blocks - more reliable than diffs"""
+# RECOMMENDATION: Add progress feedback
+import sys
+
+def call_agent_with_progress(agent_name: str, prompt: str, ...):
+    print(f"  ⏳ Calling {agent_name}...", end='', flush=True)
     
-    def parse_search_replace(self, response: str) -> List[Dict]:
-        """Extract search/replace blocks from LLM response"""
-        
-        blocks = []
-        pattern = r'<<<<<<< SEARCH\n(.*?)\n=======\n(.*?)\n>>>>>>> REPLACE'
-        
-        for match in re.finditer(pattern, response, re.DOTALL):
-            blocks.append({
-                'search': match.group(1),
-                'replace': match.group(2)
-            })
-        
-        return blocks
+    # Show dots during wait
+    def show_progress():
+        while not done_event.is_set():
+            print('.', end='', flush=True)
+            time.sleep(1)
     
-    def apply_blocks(self, file_path: str, blocks: List[Dict]) -> Tuple[bool, str]:
-        """Apply search/replace blocks to file"""
-        
-        content = Path(file_path).read_text()
-        original_content = content
-        changes_made = 0
-        
-        for block in blocks:
-            search = block['search']
-            replace = block['replace']
-            
-            if search in content:
-                content = content.replace(search, replace, 1)  # Replace once
-                changes_made += 1
-            else:
-                # FAILURE - provide feedback
-                return False, self._build_search_failure_message(
-                    search, content, file_path
-                )
-        
-        if changes_made > 0:
-            Path(file_path).write_text(content)
-            return True, f"Applied {changes_made} changes to {file_path}"
-        
-        return False, "No changes matched"
+    progress_thread = threading.Thread(target=show_progress, daemon=True)
+    progress_thread.start()
     
-    def _build_search_failure_message(self, search: str, content: str, file_path: str) -> str:
-        """Build helpful error message for LLM"""
-        
-        # Find similar content (fuzzy match)
-        from difflib import get_close_matches
-        lines = content.split('\n')
-        search_lines = search.split('\n')
-        
-        similar = get_close_matches(search_lines[0], lines, n=3, cutoff=0.6)
-        
-        msg = f"Search block not found in {file_path}\n\n"
-        msg += f"You searched for:\n{search}\n\n"
-        
-        if similar:
-            msg += f"Similar lines found:\n"
-            for s in similar:
-                msg += f"  {s}\n"
-        
-        msg += f"\nCurrent file content:\n{content}"
-        
-        return msg
+    response = call_agent(agent_name, prompt, ...)
+    done_event.set()
+    print(" ✅")
+    return response
 ```
 
-**Developer prompt changes:**
+**Error Messages Need Improvement:**
 
+```python
+# Current:
+"❌ Developer failed after 3 attempts"
+
+# Better:
+"""
+❌ Developer Agent Failed
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Attempts: 3/3
+Last Error: Invalid JSON response
+Context: Trying to modify core/db.py
+
+Possible causes:
+  • Model context limit exceeded
+  • Network timeout
+  • Malformed prompt
+
+Next steps:
+  1. Check endpoint health: `health`
+  2. View last attempt: `show_prompt task_001 developer`
+  3. Export logs: `export task_001`
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""
+```
+
+---
+
+### 12. Security Considerations (8.5/10)
+
+**Strengths:**
+- API keys separate from config
+- Reviewer gate prevents unauthorized changes
+- Full audit trail in database
+- Git integration for rollback
+
+**Issues:**
+
+```python
+# 1. No protection against path traversal
+# file_editing/writer.py
+def write_file_to_disk(file_path: str, content: str, ...):
+    path = Path(file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)  # ❌ No validation
+
+# ATTACK: Developer could propose:
+{
+    "target_file_path": "../../etc/passwd",
+    "operations": [...]
+}
+
+# FIX: Add path validation
+def write_file_to_disk(file_path: str, content: str, ...):
+    path = Path(file_path).resolve()
+    project_root = Path(get_config()["project_directory"]).resolve()
+    
+    # Ensure path is within project
+    if not str(path).startswith(str(project_root)):
+        raise SecurityError(f"Path {file_path} is outside project directory")
+    
+    # Prevent dangerous locations
+    dangerous_paths = [".git", ".ssh", ".env"]
+    if any(part in path.parts for part in dangerous_paths):
+        raise SecurityError(f"Cannot modify {file_path} (protected path)")
+```
+
+```python
+# 2. Database injection risk (minor)
+# Several places use string interpolation instead of parameters
+
+# BAD (from agents/parallel_workers.py):
+placeholders = ','.join('?' * len(feedback_ids))
+conn.execute(f"UPDATE agent_feedback ... WHERE id IN ({placeholders})", feedback_ids)
+
+# GOOD (parameterized):
+conn.execute(
+    "UPDATE agent_feedback ... WHERE id IN ({})".format(','.join(['?']*len(feedback_ids))),
+    feedback_ids
+)
+
+# BEST: Use executemany for bulk updates
+```
+
+```python
+# 3. Sensitive data in error logs
+# core/archival.py
+def archive_raw_response(task_id: str, agent_name: str, prompt: str, 
+                        response: str, ...):
+    # ❌ Full prompt and response stored forever
+    # Could contain API keys, secrets, PII
+
+# RECOMMENDATION: Add scrubbing
+import re
+
+SENSITIVE_PATTERNS = [
+    (r'(api[_-]?key["\s:=]+)["\']?([a-zA-Z0-9_-]+)', r'\1***REDACTED***'),
+    (r'(password["\s:=]+)["\']?([^\s"\']+)', r'\1***REDACTED***'),
+    (r'(token["\s:=]+)["\']?([a-zA-Z0-9_-]+)', r'\1***REDACTED***'),
+]
+
+def scrub_sensitive_data(text: str) -> str:
+    for pattern, replacement in SENSITIVE_PATTERNS:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return text
+```
+
+---
+
+### 13. Performance & Scalability (7.5/10)
+
+**Strengths:**
+- Token estimation at write time (not repeated)
+- Smart context manager with prioritization
+- Indexes on hot query paths
+- Connection pooling via context manager
+
+**Issues:**
+
+```python
+# 1. N+1 Query Problem
+# workflow/proposal_builder.py
+def _capture_hashes_for_operations(conn, file_id, payload):
+    affected_guids = []
+    expected_hashes = {}
+    
+    for op in payload.operations:
+        guids = _get_affected_guids_from_operation(op)
+        if guids:
+            affected_guids.extend(guids)
+            for guid in guids:  # ❌ Query per GUID
+                row = conn.execute(
+                    "SELECT content_hash FROM file_lines WHERE line_guid = ? ...",
+                    (guid,)
+                ).fetchone()
+
+# FIX: Batch query
+def _capture_hashes_for_operations(conn, file_id, payload):
+    all_guids = []
+    for op in payload.operations:
+        all_guids.extend(_get_affected_guids_from_operation(op))
+    
+    if not all_guids:
+        return [], {}
+    
+    # Single query for all GUIDs
+    placeholders = ','.join('?' * len(all_guids))
+    rows = conn.execute(
+        f"SELECT line_guid, content_hash FROM file_lines WHERE line_guid IN ({placeholders})",
+        all_guids
+    ).fetchall()
+    
+    expected_hashes = {row[0]: row[1] for row in rows}
+    return list(set(all_guids)), expected_hashes
+```
+
+```python
+# 2. Memory leak risk in long-running tasks
+# agents/parallel_workers.py
+class BackgroundAgentPool:
+    def __init__(self):
+        self.recently_queued = {agent: set() for agent in all_agents}
+        # ❌ These sets grow unbounded
+        
+    def queue_file_change(self, file_path: str, ...):
+        self.recently_queued[agent_name].add(file_path)  # Never cleared
+
+# FIX: Use LRU cache with size limit
+from collections import OrderedDict
+
+class BoundedSet:
+    def __init__(self, max_size=1000):
+        self._data = OrderedDict()
+        self.max_size = max_size
+    
+    def add(self, item):
+        if item in self._data:
+            self._data.move_to_end(item)
+        else:
+            self._data[item] = True
+            if len(self._data) > self.max_size:
+                self._data.popitem(last=False)
+```
+
+```python
+# 3. Inefficient file reconstruction
+# file_editing/db.py
+def reconstruct_file_content(conn: sqlite3.Connection, file_id: int) -> str:
+    cursor = conn.execute("""
+        SELECT content 
+        FROM file_lines 
+        WHERE file_id = ? AND is_deleted = 0
+        ORDER BY sort_order
+    """, (file_id,))
+    lines = [row["content"] for row in cursor.fetchall()]
+    return "\n".join(lines)  # ❌ For large files, this builds giant string in memory
+
+# BETTER: Stream to file
+def reconstruct_file_to_stream(conn: sqlite3.Connection, file_id: int, output_stream):
+    cursor = conn.execute("""...""")
+    for row in cursor:
+        output_stream.write(row["content"])
+        output_stream.write("\n")
+```
+
+---
+
+### 14. Code Quality & Maintainability (8/10)
+
+**Strengths:**
+- Good separation of concerns
+- Clear module organization
+- Comprehensive docstrings in key areas
+- Type hints in many places
+
+**Issues:**
+
+```python
+# 1. Inconsistent type hint coverage
+# Some files have excellent hints:
+def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]: ...
+
+# Others have none:
+def some_function(data, options):  # ❌ No hints
+    ...
+
+# RECOMMENDATION: Add to CI
+# mypy --strict core/ file_editing/ workflow/
+```
+
+```python
+# 2. Magic numbers throughout codebase
+# file_editing/editing.py
+INITIAL_GAP = 1024.0  # ✅ Good - named constant
+MIN_GAP_THRESHOLD = 0.001
+RENUMBER_GAP = 1024.0
+
+# But elsewhere:
+if elapsed > 0.3:  # ❌ What is 0.3?
+    time.sleep(0.1 * (2 ** attempt))  # ❌ Magic formula
+
+# Better:
+RESPONSE_TIMEOUT_THRESHOLD_SECONDS = 0.3
+BASE_BACKOFF_INTERVAL = 0.1
+```
+
+```python
+# 3. Duplicate logic
+# Multiple places implement "get recent items from table"
+
+# agents/archivist_worker.py
+cutoff_time = (datetime.now() - timedelta(minutes=10)).isoformat()
+cursor.execute("SELECT ... WHERE timestamp < ?", (cutoff_time,))
+
+# agents/resource_controller_worker.py
+ten_min_ago = (datetime.now() - timedelta(minutes=10)).isoformat()
+cursor.execute("SELECT ... FROM token_log WHERE timestamp > ?", ...)
+
+# RECOMMENDATION: Extract to utility
+# core/db_utils.py
+def get_recent_records(conn, table: str, minutes: int, order: str = "DESC"):
+    cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
+    return conn.execute(f"""
+        SELECT * FROM {table} 
+        WHERE timestamp {'>' if order == 'DESC' else '<'} ?
+        ORDER BY timestamp {order}
+    """, (cutoff,)).fetchall()
+```
+
+---
+
+### 15. Documentation Quality (8.5/10)
+
+**Strengths:**
+- Excellent `architecture.md` with mermaid diagrams
+- Clear README with quick start
+- Comprehensive troubleshooting guide
+- Good inline comments for complex logic
+
+**Gaps:**
+
+```markdown
+# 1. Missing: API reference for custom agents
+# If I want to add a new agent, I need to piece together info from multiple files
+
+# RECOMMENDATION: Add docs/CUSTOM_AGENTS.md
+## Adding a Custom Agent
+
+### 1. Define System Prompt
 ```json
-"developer": {
-  "system_prompt": "You are a Senior Python Developer.\n\n**OUTPUT FORMAT: SEARCH/REPLACE BLOCKS**\n\nTo edit a file, output:\n\n<<<<<<< SEARCH\nexact lines to find (including whitespace)\n=======\nnew lines to replace with\n>>>>>>> REPLACE\n\n**RULES:**\n1. SEARCH block must match EXACTLY (copy from file)\n2. Include enough context (5-10 lines) to be unique\n3. One block per change\n4. Multiple blocks for multiple changes\n\n**EXAMPLE:**\n\n<<<<<<< SEARCH\ndef login(username):\n    query = f\"SELECT * FROM users WHERE username = '{username}'\"\n    return db.execute(query)\n=======\ndef login(username):\n    if not username:\n        raise ValueError(\"Username required\")\n    query = \"SELECT * FROM users WHERE username = ?\"\n    return db.execute(query, (username,))\n>>>>>>> REPLACE\n\n**NO FILE_MANAGER NEEDED** - Your blocks are applied directly."
+// agent_prompts.json
+{
+  "my_custom_agent": {
+    "role": "Custom Agent Role",
+    "system_prompt": "You are..."
+  }
 }
 ```
 
+### 2. Register with Configuration
+### 3. Implement Handler (if needed)
+### 4. Test
+
 ---
 
-### Option 2: **Whole File with Smart Diff** (Claude Code's approach)
+# 2. Missing: Database schema evolution guide
+# Current schema is v1.3 but no documented migration path
 
-**How it works:**
+# RECOMMENDATION: Add migrations/
+migrations/
+  001_initial_schema.sql
+  002_add_reviewed_at.sql
+  003_consolidate_schema.sql
+  README.md  # How to apply migrations
 ```
-Developer outputs complete file → Python diffs it → Shows diff for verification → Applies if safe
-```
 
-**Advantages:**
-- LLM just writes code (what it's good at)
-- Python generates the diff (100% reliable)
-- Can show human the diff before applying
-- No fragile parsing
+---
 
-**Implementation:**
+## Priority Fix List
+
+### 🔴 Critical (Fix Before Production)
+
+1. **Race condition in `BackgroundAgentPool.recently_queued`**
+   - File: `agents/parallel_workers.py`
+   - Impact: Data corruption in multi-threaded environment
+   - Fix: Add `threading.Lock()` around all dictionary mutations
+
+2. **Path traversal vulnerability in file writer**
+   - File: `file_editing/writer.py`
+   - Impact: Could write files outside project directory
+   - Fix: Add path validation with `Path.resolve()` checks
+
+3. **`EditPayload.rationale` default value contradiction**
+   - File: `file_editing/edit_payload.py`
+   - Impact: Invalid payloads pass initial validation, fail later
+   - Fix: Remove default value, make truly required
+
+4. **Remove deprecated `file_editing/schema.py`**
+   - Impact: Confusion about source of truth for schema
+   - Fix: Delete file, update imports
+
+### 🟡 High (Fix Soon)
+
+5. **Add GUID validation at review time**
+   - File: `workflow/proposal_builder.py`
+   - Impact: Better error messages, fail-fast behavior
+   - Fix: Validate GUIDs exist before sending to reviewer
+
+6. **Improve orchestrator fallback decision**
+   - File: `workflow/task_runner.py`
+   - Impact: Better recovery from orchestrator failure
+   - Fix: Smarter fallback based on progress state
+
+7. **Add config validation with Pydantic**
+   - File: `core/config.py`
+   - Impact: Catch config errors at startup vs runtime
+   - Fix: Create `ConfigSchema` model
+
+8. **Fix N+1 query in hash capture**
+   - File: `workflow/proposal_builder.py`
+   - Impact: Performance on large proposals
+   - Fix: Batch GUID lookups
+
+### 🟢 Medium (Improve Quality)
+
+9. **Add resource controller re-enable safety**
+   - File: `agents/resource_controller_worker.py`
+   - Impact: Throttling could stay disabled after crash
+   - Fix: Guaranteed re-enable thread
+
+10. **Standardize error return patterns**
+    - Files: Multiple
+    - Impact: Easier error handling
+    - Fix: Use consistent `OperationResult` pattern
+
+11. **Add sensitive data scrubbing**
+    - File: `core/archival.py`
+    - Impact: API keys in database
+    - Fix: Regex-based scrubbing before storage
+
+12. **Fix memory leak in `recently_queued`**
+    - File: `agents/parallel_workers.py`
+    - Impact: Unbounded growth in long-running processes
+    - Fix: Use `BoundedSet` with LRU eviction
+
+---
+
+## Testing Recommendations
+
+### Critical Test Gaps
 
 ```python
-# core/whole_file_editor.py
+# 1. Integration test for full governed flow
+def test_end_to_end_governed_editing(temp_db):
+    """Complete flow: init file → create proposal → review → materialize"""
+    # Initialize file with GUIDs
+    init_result = initialize_file_lines("test.py", "def hello():\n    pass")
+    
+    # Create proposal
+    payload = {...}
+    proposal = create_proposal_from_developer_output(payload, ...)
+    
+    # Review and approve
+    update_proposal_status(proposal["proposal_id"], "approved")
+    
+    # Materialize
+    result = materialize_proposal(proposal["proposal_id"])
+    
+    # Verify file on disk
+    assert Path("test.py").read_text() == expected_content
+    
+    # Verify overlapping proposals invalidated
+    assert get_proposal_status(other_proposal_id) == "needs_revalidation"
+```
 
-class WholeFileEditor:
-    """LLM outputs complete files, we generate and apply diffs"""
+```python
+# 2. Optimistic concurrency conflict test
+def test_optimistic_concurrency_prevents_conflicting_edits(temp_db, sample_file):
+    """Two proposals modify same line - second should fail validation"""
+    # Create two proposals targeting same line
+    proposal_1 = create_proposal_from_developer_output({
+        "target_file_path": "test.py",
+        "operations": [{
+            "type": "replace_block",
+            "start_line_guid": "guid-1",
+            "new_content": ["def updated_v1():"]
+        }]
+    }) 
+    proposal_2 = create_proposal_from_developer_output({
+        "target_file_path": "test.py",
+        "operations": [{
+            "type": "replace_block",
+            "start_line_guid": "guid-1",  # Same GUID!
+            "new_content": ["def updated_v2():"]
+        }]
+    })
     
-    def extract_file_blocks(self, response: str) -> List[Dict]:
-        """Extract complete file outputs from LLM"""
-        
-        files = []
-        pattern = r'```(?:python|py)?\s+([^\n]+)\n(.*?)```'
-        
-        for match in re.finditer(pattern, response, re.DOTALL):
-            files.append({
-                'path': match.group(1).strip(),
-                'content': match.group(2)
-            })
-        
-        return files
+    # Approve and apply first
+    update_proposal_status(proposal_1["proposal_id"], "approved")
+    result_1 = apply_edit_proposal(proposal_1["proposal_id"])
+    assert result_1["status"] == "success"
     
-    def apply_file(self, file_path: str, new_content: str, 
-                   show_diff: bool = True) -> Tuple[bool, str]:
-        """Apply complete file with diff generation"""
-        
-        full_path = self.project_dir / file_path
-        
-        if full_path.exists():
-            old_content = full_path.read_text()
-            
-            # Generate diff for review
-            diff = self._generate_diff(old_content, new_content, file_path)
-            
-            if show_diff:
-                print(f"\n{'='*60}")
-                print(f"Changes to {file_path}:")
-                print(diff)
-                print('='*60)
-            
-            # Count changes
-            changes = self._count_changes(diff)
-            
-            # Safety check
-            if changes['removed'] > 100 or changes['added'] > 200:
-                return False, f"Too many changes ({changes}). Review manually."
-        
-        else:
-            old_content = ""
-            diff = None
-        
-        # Apply
-        full_path.parent.mkdir(parents=True, exist_ok=True)
-        full_path.write_text(new_content)
-        
-        return True, f"Updated {file_path}"
+    # Second should fail validation (hash changed)
+    update_proposal_status(proposal_2["proposal_id"], "approved")
+    result_2 = apply_edit_proposal(proposal_2["proposal_id"])
+    assert result_2["status"] == "conflicted"
+    assert "hash mismatch" in result_2.get("message", "").lower()
+```
+
+```python
+# 3. Background agent coordination test
+def test_background_agents_coordinate_safely(temp_db, mock_minimal_config):
+    """Multiple background agents processing same file should not corrupt data"""
+    from agents.parallel_workers import BackgroundAgentPool
+    import threading
     
-    def _generate_diff(self, old: str, new: str, filename: str) -> str:
-        """Generate unified diff"""
-        import difflib
-        
-        old_lines = old.splitlines(keepends=True)
-        new_lines = new.splitlines(keepends=True)
-        
-        diff = difflib.unified_diff(
-            old_lines, new_lines,
-            fromfile=f"a/{filename}",
-            tofile=f"b/{filename}",
-            lineterm=''
+    pool = BackgroundAgentPool()
+    pool.start(task_id="test_coordination")
+    
+    # Queue same file for multiple agents simultaneously
+    def queue_work(agent_name):
+        for _ in range(10):
+            pool.queue_file_change(
+                file_path="test.py",
+                operation="modified",
+                content="def test(): pass"
+            )
+    
+    threads = [
+        threading.Thread(target=queue_work, args=(name,))
+        for name in ["jr_reviewer", "security_reviewer", "tech_writer"]
+    ]
+    
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    
+    # Verify no exceptions raised and queue is consistent
+    time.sleep(2)
+    pool.stop()
+    
+    # Check database integrity
+    with get_db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA integrity_check")
+        assert cursor.fetchone()[0] == "ok"
+```
+
+```python
+# 4. Resource controller throttling transition test
+def test_resource_controller_throttles_progressively(temp_db, mock_minimal_config):
+    """As budget depletes, throttling should progressively increase"""
+    from agents.resource_controller_worker import HeuristicOptimizer, ResourceState
+    
+    optimizer = HeuristicOptimizer()
+    
+    # Test each throttling level
+    test_states = [
+        (0.95, "NORMAL"),
+        (0.45, "MODERATE"),
+        (0.15, "AGGRESSIVE"),
+        (0.03, "CRITICAL")
+    ]
+    
+    for budget_pct, expected_level in test_states:
+        state = ResourceState(
+            tokens_used_in_window=int(1_000_000 * (1 - budget_pct)),
+            tokens_remaining=int(1_000_000 * budget_pct),
+            max_tokens=1_000_000,
+            current_burn_rate=1000.0,
+            api_calls_last_minute=10,
+            api_rate_limit=60,
+            budget_percentage=budget_pct,
+            time_remaining_in_window=60.0
         )
         
-        return '\n'.join(diff)
+        decision = optimizer.optimize(state)
+        assert decision.level == expected_level
+        
+        # Verify agents are progressively restricted
+        if expected_level == "CRITICAL":
+            assert len(decision.active_agents) <= 1
+        elif expected_level == "AGGRESSIVE":
+            assert len(decision.active_agents) <= 2
+```
+
+```python
+# 5. JSON parsing edge cases test
+def test_json_parser_handles_all_truncation_types():
+    """Verify parser correctly detects and handles truncation in all formats"""
+    from core.json_parser import get_json_parser
+    
+    parser = get_json_parser()
+    
+    test_cases = [
+        # (response, expected_truncated, expected_type)
+        ('{"key": "value"}', False, "NONE"),  # Complete
+        ('{"key": "val', True, "JSON"),  # Truncated string
+        ('{"key": "value",', True, "JSON"),  # Trailing comma
+        ('{"a": 1, "b": {"c":', True, "JSON"),  # Incomplete nested
+        ('```python\ndef test():\n    pass', True, "CODE_BLOCK"),  # No closing fence
+        ('Here is code:\n```\ndef test():', True, "CODE_BLOCK"),  # Truncated code
+    ]
+    
+    for response, should_truncate, expected_type in test_cases:
+        result = parser.detect(response)
+        assert result.is_truncated == should_truncate, f"Failed for: {response[:30]}"
+        if should_truncate:
+            assert expected_type in str(result.truncation_type)
+```
+
+### Load & Stress Tests
+
+```python
+# 6. Large file editing test
+def test_editing_large_files_performs_acceptably(temp_db):
+    """System should handle files with 1000+ lines efficiently"""
+    # Create file with 1000 lines
+    content = "\n".join([f"line_{i} = {i}" for i in range(1000)])
+    result = initialize_file_lines("large_file.py", content)
+    
+    assert result["status"] == "success"
+    
+    # Time a replace operation
+    import time
+    start = time.time()
+    
+    proposal = create_proposal_from_developer_output({
+        "target_file_path": "large_file.py",
+        "operations": [{
+            "type": "replace_block",
+            "start_line_guid": result["line_guids"][500],  # Middle of file
+            "new_content": ["# Modified line"]
+        }]
+    })
+    
+    elapsed = time.time() - start
+    
+    # Should complete in under 1 second
+    assert elapsed < 1.0, f"Proposal creation took {elapsed}s (too slow)"
+```
+
+```python
+# 7. Concurrent proposal stress test
+def test_many_concurrent_proposals(temp_db):
+    """System should handle many proposals being created simultaneously"""
+    import concurrent.futures
+    
+    def create_proposal_worker(i):
+        return create_proposal_from_developer_output({
+            "target_file_path": f"file_{i % 10}.py",
+            "operations": [{
+                "type": "insert_after",
+                "after_guid": None,
+                "new_content": [f"# Proposal {i}"]
+            }]
+        })
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(create_proposal_worker, i) for i in range(50)]
+        results = [f.result() for f in futures]
+    
+    # All should succeed
+    assert all(r["status"] == "success" for r in results)
+    
+    # All proposal IDs should be unique
+    proposal_ids = [r["proposal_id"] for r in results]
+    assert len(proposal_ids) == len(set(proposal_ids))
 ```
 
 ---
 
-### Option 3: **AST-Based Editing** (Most robust, Python-specific)
+## Architecture Evolution Recommendations
 
-**How it works:**
-```
-Developer: "Replace function 'login' with this implementation"
-Python: Uses AST to find function, replace it surgically
-```
+### 1. Plugin System for Custom Agents
 
-**Advantages:**
-- Language-aware (understands Python structure)
-- Can't break syntax
-- Can handle formatting differences
-- Most reliable
+**Current State:** Adding a new agent requires modifying core files.
 
-**Implementation:**
-
+**Recommendation:**
 ```python
-# core/ast_editor.py
+# agents/plugin_loader.py
+from typing import Protocol, Dict, Any
 
-import ast
-import astor  # pip install astor
-
-class ASTEditor:
-    """Edit Python files using AST manipulation"""
+class AgentPlugin(Protocol):
+    """Interface for custom agents"""
     
-    def replace_function(self, file_path: str, func_name: str, 
-                        new_func_code: str) -> Tuple[bool, str]:
-        """Replace a function by name"""
-        
-        # Parse existing file
-        with open(file_path) as f:
-            tree = ast.parse(f.read())
-        
-        # Parse new function
-        new_func = ast.parse(new_func_code).body[0]
-        
-        # Find and replace
-        replaced = False
-        for i, node in enumerate(tree.body):
-            if isinstance(node, ast.FunctionDef) and node.name == func_name:
-                tree.body[i] = new_func
-                replaced = True
-                break
-        
-        if not replaced:
-            return False, f"Function '{func_name}' not found in {file_path}"
-        
-        # Write back
-        new_code = astor.to_source(tree)
-        Path(file_path).write_text(new_code)
-        
-        return True, f"Replaced function '{func_name}' in {file_path}"
+    @property
+    def name(self) -> str:
+        """Agent identifier"""
+        ...
     
-    def add_import(self, file_path: str, module: str, names: List[str] = None):
-        """Add import if not present"""
-        
-        with open(file_path) as f:
-            tree = ast.parse(f.read())
-        
-        # Check if already imported
-        for node in tree.body:
-            if isinstance(node, ast.Import):
-                if any(alias.name == module for alias in node.names):
-                    return True, f"Already imported: {module}"
-        
-        # Add import at top
-        if names:
-            new_import = ast.ImportFrom(module=module, names=[
-                ast.alias(name=n, asname=None) for n in names
-            ], level=0)
-        else:
-            new_import = ast.Import(names=[ast.alias(name=module, asname=None)])
-        
-        tree.body.insert(0, new_import)
-        
-        new_code = astor.to_source(tree)
-        Path(file_path).write_text(new_code)
-        
-        return True, f"Added import: {module}"
-```
-
-**Developer prompt for AST mode:**
-
-```json
-"developer": {
-  "system_prompt": "You are a Senior Python Developer.\n\n**OUTPUT FORMAT: STRUCTURED EDITS**\n\nOutput JSON operations:\n\n```json\n{\n  \"operations\": [\n    {\n      \"type\": \"replace_function\",\n      \"file\": \"auth.py\",\n      \"function\": \"login\",\n      \"new_code\": \"def login(username):\\n    ...\"\n    },\n    {\n      \"type\": \"add_import\",\n      \"file\": \"auth.py\",\n      \"module\": \"os\",\n      \"names\": [\"environ\"]\n    }\n  ]\n}\n```\n\n**AVAILABLE OPERATIONS:**\n- replace_function\n- replace_class\n- add_function\n- add_import\n- replace_method (in class)\n- add_docstring\n\nPython uses AST to apply these surgically - can't break syntax."
-}
-```
-
----
-
-## Recommended Hybrid Approach
-
-Combine the best of each:
-
-```python
-# core/smart_editor.py
-
-class SmartEditor:
-    """Multi-strategy editor with automatic fallback"""
+    @property
+    def system_prompt(self) -> str:
+        """Agent instructions"""
+        ...
     
+    def process(self, input: Dict[str, Any]) -> Dict[str, Any]:
+        """Main processing logic"""
+        ...
+    
+    def validate_output(self, output: str) -> bool:
+        """Output validation"""
+        ...
+
+class AgentRegistry:
     def __init__(self):
-        self.search_replace = SearchReplaceEditor()
-        self.whole_file = WholeFileEditor()
-        self.ast = ASTEditor()
+        self.plugins: Dict[str, AgentPlugin] = {}
     
-    def apply(self, developer_response: str, file_path: str) -> Tuple[bool, str]:
-        """Try strategies in order of reliability"""
+    def register(self, plugin: AgentPlugin):
+        self.plugins[plugin.name] = plugin
+    
+    def load_from_directory(self, path: str):
+        """Auto-discover plugins in directory"""
+        for module in Path(path).glob("*.py"):
+            # Dynamic import and registration
+            ...
+
+# Example custom agent
+# plugins/my_agent.py
+class MyCustomAgent:
+    @property
+    def name(self) -> str:
+        return "my_custom_agent"
+    
+    @property
+    def system_prompt(self) -> str:
+        return "You are a custom agent that..."
+    
+    def process(self, input: Dict[str, Any]) -> Dict[str, Any]:
+        # Custom logic
+        return {"status": "success", "data": ...}
+```
+
+### 2. Event-Driven Architecture for Better Observability
+
+**Current State:** Coordination via database polling and direct calls.
+
+**Recommendation:**
+```python
+# core/events.py
+from dataclasses import dataclass
+from enum import Enum
+from typing import Any, Callable, List
+
+class EventType(Enum):
+    PROPOSAL_CREATED = "proposal.created"
+    PROPOSAL_APPROVED = "proposal.approved"
+    PROPOSAL_REJECTED = "proposal.rejected"
+    FILE_MATERIALIZED = "file.materialized"
+    AGENT_COMPLETED = "agent.completed"
+    FEEDBACK_POSTED = "feedback.posted"
+
+@dataclass
+class Event:
+    type: EventType
+    payload: Dict[str, Any]
+    timestamp: str
+    source: str
+
+class EventBus:
+    def __init__(self):
+        self._subscribers: Dict[EventType, List[Callable]] = {}
+    
+    def subscribe(self, event_type: EventType, handler: Callable):
+        if event_type not in self._subscribers:
+            self._subscribers[event_type] = []
+        self._subscribers[event_type].append(handler)
+    
+    def publish(self, event: Event):
+        # Notify all subscribers
+        for handler in self._subscribers.get(event.type, []):
+            try:
+                handler(event)
+            except Exception as e:
+                log_error("event_bus", "publish", "MEDIUM", str(e))
+
+# Usage:
+event_bus = EventBus()
+
+# Subscribe to proposal approvals
+event_bus.subscribe(
+    EventType.PROPOSAL_APPROVED,
+    lambda e: queue_file_for_background_review(e.payload["file_path"])
+)
+
+# Publish after approval
+event_bus.publish(Event(
+    type=EventType.PROPOSAL_APPROVED,
+    payload={"proposal_id": proposal_id, "file_path": file_path},
+    timestamp=datetime.now().isoformat(),
+    source="reviewer"
+))
+```
+
+### 3. Query Builder for Complex Database Operations
+
+**Current State:** SQL strings scattered throughout codebase.
+
+**Recommendation:**
+```python
+# core/query_builder.py
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
+
+@dataclass
+class Query:
+    table: str
+    columns: List[str] = None
+    where: List[Tuple[str, str, Any]] = None
+    order_by: Optional[str] = None
+    limit: Optional[int] = None
+    
+    def to_sql(self) -> Tuple[str, List[Any]]:
+        cols = ", ".join(self.columns) if self.columns else "*"
+        sql = f"SELECT {cols} FROM {self.table}"
+        params = []
         
-        # Strategy 1: Search/Replace blocks (most reliable)
-        blocks = self.search_replace.parse_search_replace(developer_response)
-        if blocks:
-            print("   Using search/replace strategy")
-            success, msg = self.search_replace.apply_blocks(file_path, blocks)
-            if success:
-                return True, msg
-            else:
-                # Feedback to LLM for next iteration
-                return False, msg  # Contains helpful error
+        if self.where:
+            conditions = []
+            for column, op, value in self.where:
+                conditions.append(f"{column} {op} ?")
+                params.append(value)
+            sql += " WHERE " + " AND ".join(conditions)
         
-        # Strategy 2: AST operations (Python only)
-        if file_path.endswith('.py'):
-            ops = self._parse_ast_operations(developer_response)
-            if ops:
-                print("   Using AST strategy")
-                return self._apply_ast_operations(file_path, ops)
+        if self.order_by:
+            sql += f" ORDER BY {self.order_by}"
         
-        # Strategy 3: Whole file (fallback)
-        files = self.whole_file.extract_file_blocks(developer_response)
-        if files:
-            print("   Using whole-file strategy")
-            for file in files:
-                if file['path'] == file_path:
-                    return self.whole_file.apply_file(file_path, file['content'])
+        if self.limit:
+            sql += f" LIMIT {self.limit}"
         
-        # Strategy 4: Traditional diff (last resort)
-        print("   Falling back to diff strategy")
-        from core.patch_editor import get_patch_editor
-        editor = get_patch_editor()
-        return editor.auto_detect_and_apply(file_path, developer_response)
+        return sql, params
+
+# Usage:
+query = Query(
+    table="agent_feedback",
+    columns=["file_path", "priority", "message"],
+    where=[
+        ("task_id", "=", task_id),
+        ("addressed", "=", 0),
+        ("priority", "IN", ["CRITICAL", "HIGH"])
+    ],
+    order_by="timestamp DESC",
+    limit=10
+)
+
+sql, params = query.to_sql()
+cursor.execute(sql, params)
+```
+
+### 4. Proposal Versioning & Rollback
+
+**Current State:** Once materialized, proposals can't be easily reverted.
+
+**Recommendation:**
+```python
+# file_editing/versioning.py
+def create_checkpoint(file_id: int, description: str) -> str:
+    """Create a named checkpoint of current file state"""
+    checkpoint_id = str(uuid4())
+    
+    with get_db_connection() as conn:
+        # Snapshot current file_lines
+        conn.execute("""
+            INSERT INTO file_checkpoints (checkpoint_id, file_id, description, created_at)
+            VALUES (?, ?, ?, datetime('now'))
+        """, (checkpoint_id, file_id, description))
+        
+        # Copy current lines to checkpoint_lines
+        conn.execute("""
+            INSERT INTO checkpoint_lines (checkpoint_id, line_guid, sort_order, content)
+            SELECT ?, line_guid, sort_order, content
+            FROM file_lines
+            WHERE file_id = ? AND is_deleted = 0
+        """, (checkpoint_id, file_id))
+    
+    return checkpoint_id
+
+def rollback_to_checkpoint(checkpoint_id: str):
+    """Restore file to a previous checkpoint"""
+    with get_db_connection() as conn:
+        # Get file_id
+        row = conn.execute(
+            "SELECT file_id FROM file_checkpoints WHERE checkpoint_id = ?",
+            (checkpoint_id,)
+        ).fetchone()
+        
+        if not row:
+            raise ValueError("Checkpoint not found")
+        
+        file_id = row[0]
+        
+        # Soft delete current lines
+        conn.execute("UPDATE file_lines SET is_deleted = 1 WHERE file_id = ?", (file_id,))
+        
+        # Restore from checkpoint
+        conn.execute("""
+            INSERT INTO file_lines (line_guid, file_id, sort_order, content, version)
+            SELECT line_guid, ?, sort_order, content, version + 1
+            FROM checkpoint_lines
+            WHERE checkpoint_id = ?
+        """, (file_id, checkpoint_id))
+
+# Usage:
+checkpoint = create_checkpoint(file_id, "Before risky refactor")
+# ... make changes ...
+if something_went_wrong:
+    rollback_to_checkpoint(checkpoint)
 ```
 
 ---
 
-## My Recommendation
+## Performance Optimization Roadmap
 
-**Implement Search/Replace first** because:
+### Phase 1: Low-Hanging Fruit (1-2 days)
 
-1. **Simplest** - No external dependencies
-2. **Most reliable** - Exact string matching
-3. **LLM-friendly** - Clear format, hard to get wrong
-4. **Eliminates file_manager** - One less failure point
-5. **Self-correcting** - Failures include current file content
+1. ✅ **Batch GUID lookups** in proposal builder
+2. ✅ **Add indexes** on frequently queried columns
+3. ✅ **Cache file summaries** in memory (TTL-based)
+4. ✅ **Pre-compile regex patterns** in JSON parser
 
-**Then add AST editing** for complex refactorings.
+### Phase 2: Structural Improvements (1 week)
 
-**Keep diffs** as fallback for multi-file changes.
+5. ✅ **Connection pooling** instead of per-operation connections
+6. ✅ **Async I/O** for background agents (use `asyncio`)
+7. ✅ **Lazy loading** for file content (don't load unless needed)
+8. ✅ **Streaming file reconstruction** for large files
 
-This gives you:
-- **80% of edits** via search/replace (reliable)
-- **15% of edits** via AST (complex Python)
-- **5% of edits** via diffs (multi-file, non-Python)
+### Phase 3: Advanced Optimizations (2-3 weeks)
 
-Want me to implement the Search/Replace editor as a replacement for the current system?
+9. ✅ **Query result caching** with invalidation on writes
+10. ✅ **Parallel proposal validation** (validate multiple proposals concurrently)
+11. ✅ **Incremental context building** (reuse context across iterations)
+12. ✅ **Database write batching** (batch INSERT/UPDATE operations)
+
+---
+
+## Deployment Checklist
+
+### Pre-Production
+
+- [ ] Fix all 🔴 Critical issues
+- [ ] Add path traversal protection
+- [ ] Add config schema validation
+- [ ] Fix race condition in BackgroundAgentPool
+- [ ] Remove deprecated schema.py
+- [ ] Add comprehensive integration tests
+- [ ] Add sensitive data scrubbing
+- [ ] Document migration path from previous versions
+- [ ] Set up monitoring/alerting for error table
+- [ ] Create rollback plan
+
+### Production Readiness
+
+- [ ] Load testing with realistic workloads
+- [ ] Backup and restore procedures documented
+- [ ] API key rotation procedure documented
+- [ ] Database migration scripts tested
+- [ ] Disaster recovery plan created
+- [ ] Performance baseline established
+- [ ] Security audit completed
+- [ ] Documentation review by external party
+
+### Operations
+
+- [ ] Monitoring dashboard for key metrics
+- [ ] Alerting on error rate thresholds
+- [ ] Log aggregation and analysis
+- [ ] Automated health checks
+- [ ] Resource usage trending
+- [ ] Proposal approval/rejection rates tracking
+
+---
+
+## Final Recommendations
+
+### What to Prioritize
+
+**If you're deploying for internal use (low risk):**
+1. Fix race condition (#1)
+2. Add path validation (#2)
+3. Fix EditPayload default (#3)
+4. Deploy with monitoring
+
+**If you're deploying for production (external users):**
+1. Fix all 🔴 Critical issues
+2. Fix all 🟡 High priority issues
+3. Complete integration test suite
+4. Security audit
+5. Load testing
+6. Staged rollout with rollback plan
+
+### Long-Term Vision
+
+This is already a sophisticated system. To take it to the next level:
+
+1. **Visual Workflow Builder** - Let non-technical users create custom agent workflows
+2. **Agent Marketplace** - Share custom agents with community
+3. **Real-Time Collaboration** - Multiple users working with same agent system
+4. **Advanced Observability** - Grafana dashboards, distributed tracing
+5. **Multi-Repository Support** - Manage changes across multiple codebases
+6. **Formal Verification** - Prove correctness of critical editing operations
+
+---
+
+## Conclusion
+
+**PrizmForge is production-ready with fixes to the critical issues identified above.**
+
+The governed editing system is the standout feature—it's a fundamentally better approach to autonomous code modification than traditional diff-based patching. The combination of:
+
+- **GUID-based line addressing** (stable references)
+- **Optimistic concurrency** (prevents conflicts)
+- **Reviewer safety gate** (human-in-the-loop)
+- **Full audit trail** (every change tracked)
+
+...creates a system that's both powerful and safe.
+
+The architecture is well thought out, the code is generally high quality, and the documentation is comprehensive. The test framework provides a solid foundation for expansion.
+
+**Grade: 8.5/10** - With the critical fixes applied, this becomes a **9/10** system.
+
+The path to 10/10 is refinement: complete the plugin system, add event-driven observability, finish the integration test suite, and continue learning from production usage.
+
+**Recommended next steps:**
+1. Apply critical fixes (2-3 days)
+2. Add missing integration tests (1 week)
+3. Deploy to staging with monitoring

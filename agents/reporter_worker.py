@@ -24,7 +24,8 @@ class ProjectReporterWorker:
         self.last_file_count: int = 0
         self.last_line_delta: int = 0
         self.config = get_config().get("reporter", {})
-        self.output_dir = Path(self.config.get("output_directory", ".PrizmForge/reports"))
+        project_dir = Path(get_config().get("project_directory", "./project"))
+        self.output_dir = project_dir / ".PrizmForge" / "reports"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def start(self, task_id: str):

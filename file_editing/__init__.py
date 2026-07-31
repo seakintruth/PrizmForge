@@ -13,9 +13,9 @@ from .db import (
     capture_current_hashes
 )
 from .editing import apply_edit_proposal, validate_proposal
-from .writer import materialize_proposal, write_file_to_disk, invalidate_other_proposals
+from .writer import materialize_proposal, write_file_to_disk, invalidate_other_proposals, initialize_file_lines
 
-__version__ = "1.3"
+__version__ = "1.4"
 
 __all__ = [
     "EditPayload",
@@ -29,4 +29,5 @@ __all__ = [
     "materialize_proposal",
     "write_file_to_disk",
     "invalidate_other_proposals",
+    "initialize_file_lines",     
 ]

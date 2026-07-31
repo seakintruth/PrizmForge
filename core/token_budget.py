@@ -12,6 +12,10 @@ class TokenBudget:
         self.usage = []
         self.load_from_db()
     
+    def __del__(self):
+        """Cleanup on deletion (helps with Windows file locks)"""
+        pass  # All connections are closed immediately after use
+    
     def load_from_db(self):
         """Load recent usage from database"""
         try:
@@ -23,7 +27,7 @@ class TokenBudget:
                 (cutoff,)
             )
             self.usage = [(row[1], row[0]) for row in cursor.fetchall()]
-            conn.close()
+            conn.close()  # Explicit close
         except:
             self.usage = []
     

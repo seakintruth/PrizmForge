@@ -44,6 +44,7 @@ class TestTokenBudget:
             budget = TokenBudget(db_path=db_path, max_tokens_per_4h=1000000)
             assert budget.max_tokens == 1000000
             assert budget.get_used() == 0
+            del budget
 
     def test_token_budget_add_usage(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -51,6 +52,7 @@ class TestTokenBudget:
             budget = TokenBudget(db_path=db_path, max_tokens_per_4h=1000000)
             budget.add_usage(1500)
             assert budget.get_used() >= 1500
+            del budget
 
     def test_token_budget_can_spend(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -59,6 +61,7 @@ class TestTokenBudget:
             assert budget.can_spend(500) is True
             budget.add_usage(9000)
             assert budget.can_spend(2000) is False
+            del budget
 
     def test_token_budget_remaining(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -68,3 +71,4 @@ class TestTokenBudget:
             remaining = budget.remaining()
             assert remaining > 0
             assert remaining <= 5000
+            del budget

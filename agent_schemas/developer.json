@@ -1,0 +1,52 @@
+{
+  "target_file_path": "path/to/file.py",
+  "summary": "Brief description of all changes being made",
+  "operations": [
+    {
+      "type": "find_replace",
+      "find": "exact string or pattern to find",
+      "replace": "replacement text",
+      "regex": false,
+      "count": null,
+      "rationale": "Replace outdated identifier with new name"
+    },
+    {
+      "type": "replace_block",
+      "start_line_guid": "guid-abc-123",
+      "end_line_guid": "guid-abc-125",
+      "new_content": [
+        "def improved_function(param1, param2):",
+        "    return param1 + param2"
+      ],
+      "rationale": "Refactored function for better readability"
+    },
+    {
+      "type": "insert_after",
+      "after_guid": "guid-xyz-789",
+      "new_content": [
+        "",
+        "def new_helper_function():",
+        "    return True"
+      ],
+      "rationale": "Added new helper function"
+    },
+    {
+      "type": "delete_lines",
+      "start_line_guid": "guid-old-111",
+      "end_line_guid": "guid-old-115",
+      "rationale": "Removed deprecated code block"
+    },
+    {
+      "type": "create_file",
+      "target_file_path": "path/to/new_module.py",
+      "initial_content": [
+        "\"\"\"New module.\"\"\"",
+        "",
+        "def main():",
+        "    pass"
+      ],
+      "rationale": "Create new module for feature X"
+    }
+  ],
+  "rationale": "Overall explanation of why these changes are needed"
+}

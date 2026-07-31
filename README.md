@@ -1,5 +1,3 @@
-![PrizmForge Logo](assets/logos/logo.png)
-
 # PrizmForge
 
 **Autonomous multi-agent software engineering system with governed self-editing.**
@@ -7,6 +5,8 @@
 PrizmForge enables AI agents to safely modify a project repository, even a copy of their own codebase through a structured proposal and review process, while maintaining full auditability and human oversight.
 
 ## Core Philosophy
+
+"AI makes coding cheaper, and Judgement more valuble." Proffesor Todd Whitaker May 2026
 
 PrizmForge solves the fundamental problem of **safe autonomous code modification** by enforcing a strict separation between:
 
@@ -154,32 +154,223 @@ This approach provides:
 ## Key Safety Features
 
 - Line-level optimistic concurrency via content hashes
-- Strict Pydantic validation on all edit operations
+- Strict validation on all edit operations
 - Reviewer safety gate before any mutation
 - Post-write invalidation of overlapping proposals
-- Comprehensive error logging and proposal status tracking
+- Path containment under project dir and **repo root**
+- **Binary payload rejection** (`core/content_safety.py`): PE/MSI/OLE magic, NUL bytes; blocks `.msi`/`.exe`/`.dll` paths — **does not** block text scripts (`.ps1`, `.bat`, `.cmd`, `.js`, …)
+- Comprehensive error logging, proposal status tracking, and mutation event log
+
+
+## Governed editing notes
+
+### `create_file` operation
+New files are created only through the governed pipeline (not ad-hoc disk writes):
+
+```text
+Developer JSON { "type": "create_file", "target_file_path", "initial_content" }
+  → proposal → reviewer APPROVE → apply_create_file → materialize_proposal
+```
+
+- Refuses if the path already has governed lines (use `full_replace` to overwrite).
+- Documented in `agent_schemas/developer.json` and the developer system prompt.
+
+### Project directory / repo root
+- `project_directory` may be **created** on init (`ensure_project_directory`).
+- Resolved project paths must stay **under the repository root** (directory containing `config.json`).
+- Path containment also applies on every `write_file_to_disk`.
+
+### Mutation event log
+Thin append-only log (`events` table) via `core.events.publish_event` / `list_events`.
+Emitted for proposal create/approve/reject, edit materialize/fail/fallback, and undo.
+Not a full worker event bus.
+
+### Binary content rejection
+LLMs under `full_replace` may emit installers or PE blobs (e.g. Windows MSI) instead of source.
+`core.content_safety.validate_source_content` is enforced on `full_replace`, `create_file`, and `write_file_to_disk`:
+
+- **Reject:** binary magic (PE/`MZ`, ELF, OLE/CFB used by MSI, Mach-O), NUL-heavy payloads, binary-only extensions (`.msi`, `.exe`, `.dll`, …)
+- **Allow:** normal text source, including PowerShell/batch/JS scripts (`.ps1`, `.bat`, `.cmd`, `.js`)
+
+Optional `config.json` overrides (defaults are safe/fail-closed):
+
+```json
+"content_safety": {
+  "disallow_binary_content": true,
+  "blocked_extensions": []
+}
+```
+
+- `disallow_binary_content` (default `true`) — reject PE/MSI/OLE magic, NULs, high non-text ratio
+- `blocked_extensions` (default `[]`) — allow-list of otherwise-blocked path suffixes (e.g. `[".msi"]`). Empty means no binary extensions are enabled.
+
+See `example_config.json` for the full catalog and `tests/unit/test_content_safety.py`.
+
+### Proposal undo
+```python
+from file_editing.undo import undo_proposal
+undo_proposal("<proposal_id>")  # restores pre-apply snapshot; explicit id required
+```
+Snapshots are taken automatically in `run_developer_mutation` before materialize.
+
+## Dependencies
+
+Designed for **Advana Nexus / SageMaker**-friendly installs (popular DS/DE packages).
+
+| File | Purpose |
+|------|---------|
+| `requirements.txt` | **Runtime only:** `requests>=2.31.0` |
+| `requirements-dev.txt` | Tests: `pytest`, `pytest-mock`. Optional: `black`, `flake8` |
+
+```bash
+# Runtime
+pip install -r requirements.txt
+
+# Development / CI
+pip install -r requirements-dev.txt
+```
+
+LLM calls in tests use a **stdlib MockLLM** (`tests/mocks/openai.py`) — no OpenAI SDK, no network.
+
+The **CLI** (`python interactive.py` / `python main.py`) is the supported user interface — there is no graphical UI.
 
 ## Testing
 
-The project includes a growing test suite focused on:
-
-- Governed editing logic and edge cases
-- Schema initialization
-- JSON parsing and truncation detection
-- Token estimation and budgeting
-- Resource Controller data structures and logic
-- Endpoint Manager, Proposal Builder, Task Runner, Agent Execution, and Parallel Workers (including race conditions)
-
-Run tests with:
+The suite covers governed editing, mode fallback, golden-path workflows, binary content safety, schema/ops contracts, orchestrator/backlog routing, JSON/truncation, tokens, and worker hardening (~274 non-slow tests).
 
 ```bash
-pytest tests/ -q
+# Full suite (pytest + pytest-mock from requirements-dev.txt)
+pytest tests/ -m "not slow" -q
+bash utils/run_fast_tests.sh          # fast gate
+pytest tests/ -m slow -q             # concurrent only
+pytest tests/ -m "not slow" -q   # CI-friendly (skip @pytest.mark.slow)
+
+# Golden path + contracts only
+pytest tests/integration/test_golden_path.py tests/unit/test_edit_contracts.py -q
+
+# Ultra-minimal host (no pytest): stdlib unittest smoke
+python -m utils.run_critical_tests
 ```
+
+## Compliance & authorization
+
+Program RMF / Navy RAISE / DISA ASD STIG-oriented requirements and artifact expectations: **[COMPLIANCE.md](COMPLIANCE.md)**.
+
+
+## Project export & indexes
+
+| Script | Purpose |
+|--------|---------|
+| **`utils/consolidate.py`** | Build `report/INDEX.md`, split indexes, and optional full `project_review.md`. Each file starts with `Generated: <UTC>`. |
+| **`utils/export_project_zip.py`** | Run consolidate, then zip the project (including `report/`) next to the project directory. |
+
+```bash
+# Indexes + full review under report/
+python utils/consolidate.py
+
+# Indexes only
+python utils/consolidate.py --indexes-only
+
+# Consolidate then create ../PrizmForge-multi-agent.zip
+python utils/export_project_zip.py
+
+# Zip without regenerating report/
+python utils/export_project_zip.py --skip-consolidate
+```
+
+Does **not** run tests. For the fast gate: `bash utils/run_fast_tests.sh`.
+
+
+## Configuration
+
+See **[CONFIGURATION.md](CONFIGURATION.md)** for the full `config.json` schema. Template: `example_config.json`.
+
+
+## CLI usage examples
+
+Primary entrypoint is **`python main.py`** (mode comes from `config.json` → `cli_mode.mode`).  
+Semi-attended sessions also accept typed commands (see help inside the session).
+
+### First-time setup
+
+```bash
+# From the directory that contains config.json
+pip install -r requirements.txt
+# optional: pip install -r requirements-dev.txt
+
+# Copy templates if needed
+cp example_config.json config.json
+cp example_api_key.json api_key.json   # then put real keys (or use llm.test_mode)
+
+python main.py                         # loads config, init_db, optional auto-init, starts CLI mode
+```
+
+### Unattended (config only, no stdin)
+
+```json
+"cli_mode": { "mode": "unattended", "unattended": { "seed_task": "…", "max_duration_hours": 2 } },
+"llm": { "test_mode": true }
+```
+
+```bash
+python main.py
+# Optional DB override (prefer project path, not /tmp for real runs):
+# PRIZMFORGE_DB_PATH=./ExampleProject/.PrizmForge/agents.db python main.py
+```
+
+### Semi-attended / interactive commands
+
+After `python main.py` with `cli_mode.mode` = `semi_attended` (or `python interactive.py`):
+
+```text
+init                 Scan and index project_directory into the DB + symbol index
+files                List indexed files
+status               Token budget status
+history [N]          Recent tasks
+feedback <task_id>   Unaddressed feedback for a task
+endpoints            Configured LLM endpoints
+health               Endpoint health
+reports              List generated reports
+report [name]        Show latest or named report
+resource_status      Resource controller status
+review_status        Background agent activity
+help                 Full command list
+<natural language>   Start a new task description
+```
+
+### Utilities (from repo root)
+
+```bash
+# Structural indexes + optional full review → report/
+python utils/consolidate.py
+python utils/consolidate.py --indexes-only
+python utils/consolidate.py --target --indexes-only   # target project_directory
+
+# Package project (runs consolidate, includes report/)
+python utils/export_project_zip.py
+python utils/export_project_zip.py --skip-consolidate
+python utils/export_project_zip.py --out /path/to/out.zip
+
+# Tests
+bash utils/run_fast_tests.sh
+pytest tests/ -m "not slow" -q
+python -m utils.run_critical_tests
+```
+
+### Dry-run without API keys
+
+```bash
+# config.json: "llm": { "test_mode": true }
+# or:
+PRIZMFORGE_TEST_MODE=1 python main.py
+```
+
+Mock responses can be scripted under `llm.mock_responses` (string or list queue per agent). See `CONFIGURATION.md`.
 
 ## Getting Started
 
 1. Ensure Python 3.12+
-2. Install dependencies (see `requirements.txt` or equivalent)
+2. Install runtime deps: `pip install -r requirements.txt`
 3. Initialize the database:
 
 ```bash

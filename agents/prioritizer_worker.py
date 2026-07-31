@@ -1,7 +1,8 @@
 """Prioritizer worker - intelligent multi-phase feedback processing"""
+import re
+from datetime import datetime, timedelta
 import threading
 import time
-from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 
@@ -87,7 +88,87 @@ class PrioritizerWorker:
                 import traceback
                 traceback.print_exc()
                 time.sleep(30)
-    
+        
+    def _filter_low_quality_feedback(self, items: List[FeedbackItem]) -> Tuple[List[FeedbackItem], int]:
+        """
+        Filter out and auto-dismiss low-quality feedback.
+        Returns (valid_items, dismissed_count)
+        """
+        LOW_QUALITY_PATTERNS = [
+            # Placeholder text
+            r'^issue here$',
+            r'^fix here$',
+            r'^todo',
+            r'^placeholder',
+            
+            # Too generic
+            r'^issue$',
+            r'^bug$',
+            r'^error$',
+            
+            # Too short (less than 15 chars)
+            r'^.{1,14}$',
+            
+            # Just variable names
+            r'^[a-z_]+$',
+        ]
+        
+        valid_items = []
+        dismissed_items = []
+        
+        for item in items:
+            # Check message quality
+            message_lower = item.message.lower().strip()
+            suggestion_lower = (item.suggestion or "").lower().strip()
+            
+            is_low_quality = False
+            reason = None
+            
+            # Pattern matching
+            for pattern in LOW_QUALITY_PATTERNS:
+                if re.match(pattern, message_lower, re.IGNORECASE):
+                    is_low_quality = True
+                    reason = f"Generic placeholder: '{item.message[:30]}'"
+                    break
+            
+            # Check if both message and suggestion are placeholders
+            if not is_low_quality:
+                if (message_lower in ['issue here', 'todo', 'fix this'] and 
+                    suggestion_lower in ['fix here', 'todo', 'fix this']):
+                    is_low_quality = True
+                    reason = "Both message and suggestion are placeholders"
+            
+            # Check if message is just repeating the category
+            if not is_low_quality:
+                if message_lower == item.category.lower():
+                    is_low_quality = True
+                    reason = f"Message just repeats category: '{item.category}'"
+            
+            if is_low_quality:
+                dismissed_items.append((item, reason))
+            else:
+                valid_items.append(item)
+        
+        # Auto-dismiss low quality items in database
+        if dismissed_items:
+            try:
+                with get_db_connection() as conn:
+                    for item, reason in dismissed_items:
+                        conn.execute("""
+                            UPDATE agent_feedback
+                            SET addressed = 1,
+                                addressed_by = 'prioritizer_quality_filter',
+                                addressed_at = ?
+                            WHERE id = ?
+                        """, (datetime.now().isoformat(), item.id))
+                        
+                        print(f"    🗑️  Dismissed feedback #{item.id}: {reason}")
+            except Exception as e:
+                print(f"    ⚠️  Failed to dismiss low-quality feedback: {e}")
+        
+        return valid_items, len(dismissed_items)
+
+
     def _should_run_cycle(self) -> bool:
         """Check if we should run a prioritization cycle"""
         # First cycle - always run
@@ -100,17 +181,18 @@ class PrioritizerWorker:
         
         elapsed = time.time() - self.last_prioritization
         return elapsed >= self.prioritization_interval
-    
+        
     def _run_full_prioritization_cycle(self):
         """
         Full multi-phase prioritization cycle
         
-        Phase 1: Categorize uncategorized items
-        Phase 2: Score within categories  
-        Phase 3: Cross-category ranking
-        Phase 4: Post to orchestrator
+        Phase 1: Filter low-quality feedback
+        Phase 2: Categorize uncategorized items
+        Phase 3: Score within categories  
+        Phase 4: Cross-category ranking
+        Phase 5: Post to orchestrator
         """
-        # Phase 1: Get all feedback
+        # Get all feedback
         all_feedback = self._get_all_feedback()
         
         if not all_feedback:
@@ -119,8 +201,22 @@ class PrioritizerWorker:
         
         print(f"    📊 Processing {len(all_feedback)} feedback items")
         
+        # Phase 1: Quality filter
+        valid_feedback, dismissed_count = self._filter_low_quality_feedback(all_feedback)
+        
+        if dismissed_count > 0:
+            print(f"    🗑️  Phase 1: Dismissed {dismissed_count} low-quality items")  # ✅ Changed from Phase 0 to Phase 1
+            print(f"    📊 Remaining: {len(valid_feedback)} valid items")
+        
+        if not valid_feedback:
+            print(f"    ✅ No valid feedback remaining after quality filter")
+            return
+        
         # Phase 2: Categorize uncategorized (batches of 30)
-        categorized = self._categorize_feedback(all_feedback)
+        categorized = self._categorize_feedback(valid_feedback)
+        
+        if not categorized:
+            print(f"    ✓ Phase 2: All items categorized")  # ✅ Changed to match phase number
         
         # Phase 3: Score within categories
         scored_by_category = self._score_within_categories(categorized)
@@ -130,7 +226,7 @@ class PrioritizerWorker:
         
         # Phase 5: Post to orchestrator
         self._post_results(final_ranked)
-    
+        
     def _get_all_feedback(self) -> List[FeedbackItem]:
         """Get ALL unaddressed feedback (no limit)"""
         try:
@@ -224,7 +320,27 @@ class PrioritizerWorker:
     def _categorize_batch(self, batch: List[FeedbackItem]):
         """Categorize a batch of items"""
         # Build prompt with message and suggestion context
-        prompt = f"Categorize these {len(batch)} feedback items:\n\n"
+        index_snip = ""
+        try:
+            from core.index_context import load_symbol_json_context, load_index_text
+            paths = [getattr(it, "file_path", None) for it in batch]
+            paths = [p for p in paths if p]
+            index_snip = load_symbol_json_context(
+                file_paths=paths or None,
+                max_rows=40,
+                label="Known symbols near feedback paths",
+            )
+            if not index_snip.strip():
+                raw = load_index_text(which="production", max_chars=4_000)
+                if raw.strip():
+                    index_snip = (
+                        "Known source paths (Markdown fallback):\n" + raw + "\n\n"
+                    )
+            elif not index_snip.endswith("\n"):
+                index_snip += "\n"
+        except Exception:
+            pass
+        prompt = f"{index_snip}Categorize these {len(batch)} feedback items:\n\n"
         
         for idx, item in enumerate(batch, 1):
             prompt += f"#{idx} (ID: {item.id})\n"
@@ -445,20 +561,20 @@ Respond with JSON ONLY:
         self._mark_items_processed(ranked)
         
         print(f"    ✓ Phase 4: Posted to orchestrator")
-    
-def _mark_items_processed(self, items: List[FeedbackItem]):
-    """Mark items as READ (not addressed - that happens when developer fixes them)"""
-    try:
-        with get_db_connection() as conn:
-            for item in items:
-                if item.file_path == "<message>":
-                    conn.execute("UPDATE messages SET read = 1 WHERE id = ?", (item.id,))
-                else:
-                    # ✅ GOOD: Only mark messages as read, feedback stays unaddressed
-                    # Feedback is marked addressed ONLY when developer actually fixes it
-                    pass  # Don't touch agent_feedback.addressed
-    except Exception as e:
-        print(f"    ⚠️  Error marking processed: {e}")
+        
+    def _mark_items_processed(self, items: List[FeedbackItem]):
+        """Mark items as READ (not addressed - that happens when developer fixes them)"""
+        try:
+            with get_db_connection() as conn:
+                for item in items:
+                    if item.file_path == "<message>":
+                        conn.execute("UPDATE messages SET read = 1 WHERE id = ?", (item.id,))
+                    else:
+                        # ✅ GOOD: Only mark messages as read, feedback stays unaddressed
+                        # Feedback is marked addressed ONLY when developer actually fixes it
+                        pass  # Don't touch agent_feedback.addressed
+        except Exception as e:
+            print(f"    ⚠️  Error marking processed: {e}")
 
 # Global singleton
 _prioritizer_worker = None

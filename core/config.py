@@ -1,7 +1,7 @@
 """Configuration management"""
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Optional, Dict, Any
 import os
 
 _config_cache = None
@@ -122,8 +122,125 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
     
     # Store config directory for reference
     config["_config_dir"] = str(config_dir)
+
+    validate_config(config)
     
     return config
+
+
+
+def get_repo_root() -> Path:
+    """
+    Repository root for containment: directory that holds config.json
+    (or CWD fallback when config has not been loaded yet).
+    """
+    try:
+        return find_config_file("config.json").parent.resolve()
+    except Exception:
+        return Path.cwd().resolve()
+
+
+def ensure_project_directory(config: Optional[Dict[str, Any]] = None) -> Path:
+    """
+    Resolve project_directory, ensure it exists (create if missing),
+    and require it stays under repo root.
+    """
+    if config is None:
+        config = get_config()
+    raw = config.get("project_directory") or "./project"
+    repo = get_repo_root()
+    path = Path(str(raw)).expanduser()
+    if not path.is_absolute():
+        path = (repo / path).resolve()
+    else:
+        path = path.resolve()
+    try:
+        path.relative_to(repo)
+    except ValueError:
+        raise ValueError(
+            f"project_directory must stay under repo root: {path} is outside {repo}"
+        )
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def validate_config(config: Dict[str, Any]) -> None:
+    """
+    Lightweight schema validation for required settings.
+    Raises ValueError with a clear message on failure.
+    """
+    errors = []
+
+    # project_directory is required for path containment and must stay under repo root
+    pd = config.get("project_directory")
+    if not pd or not isinstance(pd, str):
+        errors.append("project_directory is required and must be a non-empty string")
+    else:
+        try:
+            repo = get_repo_root()
+            path = Path(pd).expanduser()
+            if not path.is_absolute():
+                path = (repo / path).resolve()
+            else:
+                path = path.resolve()
+            try:
+                path.relative_to(repo)
+            except ValueError:
+                errors.append(
+                    f"project_directory {path} escapes repo root {repo}"
+                )
+        except Exception as e:
+            errors.append(f"project_directory could not be validated: {e}")
+
+    # file_editing section: accept legacy method or new multi-mode keys
+    fe = config.get("file_editing")
+    if fe is not None and not isinstance(fe, dict):
+        errors.append("file_editing must be an object/dict when present")
+    elif isinstance(fe, dict):
+        method = fe.get("method")
+        preferred = fe.get("preferred_modes")
+        fallback = fe.get("fallback_order")
+        known = {"guid", "guid_sloc", "find_replace", "full_replace", "diff", "planned_diff"}
+        if method is not None and method not in known:
+            errors.append(
+                f"file_editing.method {method!r} is not recognized; "
+                f"expected one of {sorted(known)}"
+            )
+        if preferred is not None:
+            if not isinstance(preferred, list) or not preferred:
+                errors.append("file_editing.preferred_modes must be a non-empty list when present")
+            else:
+                bad = [m for m in preferred if m not in known]
+                if bad:
+                    errors.append(f"file_editing.preferred_modes has unknown modes: {bad}")
+        if fallback is not None:
+            if not isinstance(fallback, list) or not fallback:
+                errors.append("file_editing.fallback_order must be a non-empty list when present")
+            else:
+                bad = [m for m in fallback if m not in known]
+                if bad:
+                    errors.append(f"file_editing.fallback_order has unknown modes: {bad}")
+        threshold = fe.get("small_file_threshold_lines")
+        if threshold is not None and (not isinstance(threshold, int) or threshold < 1):
+            errors.append("file_editing.small_file_threshold_lines must be a positive integer")
+
+    cs = config.get("content_safety")
+    if cs is not None:
+        if not isinstance(cs, dict):
+            errors.append("content_safety must be an object/dict when present")
+        else:
+            if "disallow_binary_content" in cs and not isinstance(cs["disallow_binary_content"], bool):
+                errors.append("content_safety.disallow_binary_content must be a boolean")
+            be = cs.get("blocked_extensions")
+            if be is not None:
+                if not isinstance(be, list) or not all(isinstance(x, str) for x in be):
+                    errors.append(
+                        "content_safety.blocked_extensions must be a list of strings"
+                    )
+
+    if errors:
+        raise ValueError(
+            "config.json validation failed:\n  - " + "\n  - ".join(errors)
+        )
 
 def load_agent_prompts() -> Dict[str, Any]:
     """Load agent prompts from same directory as config"""

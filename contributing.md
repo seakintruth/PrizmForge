@@ -586,13 +586,13 @@ if vulnerabilities:
 
 ```bash
 # Backup database first
-cp .PrizmFoundry/agents.db .PrizmFoundry/agents.db.backup
+cp .PrizmForge/agents.db .PrizmForge/agents.db.backup
 
 # Run PrizmForge (will create new tables)
 python main.py
 
 # Verify tables created
-sqlite3 .PrizmFoundry/agents.db ".tables"
+sqlite3 .PrizmForge/agents.db ".tables"
 # Should show: security_scans
 ```
 
@@ -1061,7 +1061,7 @@ def my_function(param):
 ### Check Database State
 
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 -- Check if data was saved
 SELECT * FROM my_table LIMIT 5;

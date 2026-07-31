@@ -9,18 +9,6 @@ def log_fallback(original_endpoint: str, fallback_endpoint: str,
     try:
         with get_db_connection() as conn:
             conn.execute("""
-                CREATE TABLE IF NOT EXISTS endpoint_fallbacks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT,
-                    task_id TEXT,
-                    agent_name TEXT,
-                    original_endpoint TEXT,
-                    fallback_endpoint TEXT,
-                    reason TEXT
-                )
-            """)
-            
-            conn.execute("""
                 INSERT INTO endpoint_fallbacks
                 (timestamp, task_id, agent_name, original_endpoint, fallback_endpoint, reason)
                 VALUES (?, ?, ?, ?, ?, ?)

@@ -1,6 +1,8 @@
 """Background archivist - monitors, archives, and restores context"""
 import threading
 import time
+import json
+
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 

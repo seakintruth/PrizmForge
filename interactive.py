@@ -36,11 +36,35 @@ def should_continue_unattended(state: CLIState, config: UnattendedConfig) -> boo
     if elapsed >= config.max_duration_hours:
         print(f"\n⏰ Unattended duration reached ({config.max_duration_hours}h)")
         return False
+
+    # Seed-only runs: stop when queue empty and not auto-generating
+    if not config.auto_generate_tasks and not (config._seed_queue or []):
+        if state.total_iterations > 0:
+            print("\n✅ Seed tasks complete (auto_generate_tasks=false)")
+            return False
+
+    # Optional: stop when feedback backlog empty after at least one task
+    if getattr(config, "stop_when_backlog_empty", False) and state.total_iterations > 0:
+        try:
+            with get_db_connection() as conn:
+                n = conn.execute(
+                    "SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0"
+                ).fetchone()[0]
+            if n == 0:
+                print("\n✅ Feedback backlog empty — stopping unattended run")
+                return False
+        except Exception:
+            pass
     
     return True
 
 def generate_next_task(state: CLIState, config: UnattendedConfig) -> str:
     """Generate next task based on project state"""
+    # Priority 0: config seed_task / seed_tasks queue
+    if config._seed_queue:
+        return config._seed_queue.pop(0)
+    if not config.auto_generate_tasks:
+        return "Continue development based on project state and feedback"
     
     # Priority 1: Critical/High issues from background agents
     if config.prioritize_critical_issues:
@@ -123,20 +147,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig) -> str:
 def save_checkpoint(state: CLIState):
     """Save checkpoint to database"""
     try:
-        with get_db_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cli_checkpoints (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    mode TEXT,
-                    start_time TEXT,
-                    task_counter INTEGER,
-                    total_files_modified INTEGER,
-                    total_iterations INTEGER,
-                    current_task_id TEXT,
-                    checkpoint_time TEXT
-                )
-            """)
-            
+        with get_db_connection() as conn:            
             conn.execute("""
                 INSERT OR REPLACE INTO cli_checkpoints
                 (id, mode, start_time, task_counter, total_files_modified, 
@@ -341,6 +352,35 @@ def run_unattended_mode(config: UnattendedConfig):
     
     # Save final checkpoint
     save_checkpoint(state)
+
+    # Final summary (config-only run, no prompt)
+    print("\n" + "=" * 60)
+    print("✅ UNATTENDED RUN COMPLETE")
+    print("=" * 60)
+    print(f"   Tasks started: {state.task_counter - 1}")
+    print(f"   Iterations: {state.total_iterations}")
+    print(f"   Files modified: {state.total_files_modified}")
+    print(f"   Elapsed hours: {state.elapsed_hours():.2f}")
+    try:
+        from core.config import get_config
+        from pathlib import Path as _P
+        pd = _P(get_config().get("project_directory", "./project"))
+        out = pd / ".PrizmForge" / "reports"
+        out.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime as _dt
+        summary_path = out / f"unattended_summary_{_dt.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        summary_path.write_text(
+            f"tasks={state.task_counter - 1}\n"
+            f"iterations={state.total_iterations}\n"
+            f"files_modified={state.total_files_modified}\n"
+            f"elapsed_hours={state.elapsed_hours():.2f}\n",
+            encoding="utf-8",
+        )
+        print(f"   Summary written: {summary_path}")
+    except Exception as _e:
+        print(f"   (summary file skipped: {_e})")
+    print("=" * 60 + "\n")
+
 
 def run_semi_attended_mode():
     """Run semi-attended mode loop (original behavior)"""

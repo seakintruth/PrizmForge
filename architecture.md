@@ -968,7 +968,7 @@ The database contains:
 - Edit proposals and their rationales
 - Agent feedback and decisions
 
-Access to `.PrizmFoundry/agents.db` should be restricted to authorized users and processes.
+Access to `.PrizmForge/agents.db` should be restricted to authorized users and processes.
 
 #### Network Security
 

@@ -1,0 +1,23 @@
+# core/response_parser.py
+class ResponseParser:
+    """Single source of truth for LLM response parsing"""
+    
+    def __init__(self, expected_format: str = "json"):
+        self.expected_format = expected_format
+        self.strategies = [
+            self._extract_markdown_json,
+            self._extract_code_block,
+            self._extract_raw_json,
+        ]
+    
+    def parse(self, response: str) -> ParseResult:
+        for strategy in self.strategies:
+            try:
+                extracted = strategy(response)
+                if extracted:
+                    return self._validate_and_parse(extracted)
+            except Exception as e:
+                logger.debug(f"Strategy {strategy.__name__} failed: {e}")
+                continue
+        
+        return ParseResult(success=False, error="All strategies failed")

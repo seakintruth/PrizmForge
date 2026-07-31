@@ -29,25 +29,63 @@ def call_orchestrator(task_id: str, user_command: str, conversation_context: lis
     if metadata['files_excluded']:
         print(f"     ⚠️  {len(metadata['files_excluded'])} files excluded - {metadata['truncation_reason']}")
     
+    # Get current feedback backlog count (ALL priorities)
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN priority = 'CRITICAL' THEN 1 ELSE 0 END) as critical,
+                    SUM(CASE WHEN priority = 'HIGH' THEN 1 ELSE 0 END) as high,
+                    SUM(CASE WHEN priority = 'MEDIUM' THEN 1 ELSE 0 END) as medium,
+                    SUM(CASE WHEN priority = 'LOW' THEN 1 ELSE 0 END) as low
+                FROM agent_feedback
+                WHERE task_id = ? AND addressed = 0
+            """, (task_id,))
+            total, critical, high, medium, low = cursor.fetchone()
+    except:
+        total, critical, high, medium, low = 0, 0, 0, 0, 0
+    
+    # Get CLI mode to know if we should allow 'complete'
+    try:
+        from core.cli_modes import get_cli_mode_from_config, CLIMode
+        cli_mode = get_cli_mode_from_config(config)
+        is_unattended = (cli_mode == CLIMode.UNATTENDED)
+    except:
+        is_unattended = False
+    
     prompt = f"""{context_str}
 
 **Progress:** Turn {current_turn}/{max_turns} | Time remaining: {time_remaining:.1f}m
 
+**Current Feedback Backlog:** {total} unaddressed
+  - CRITICAL: {critical}
+  - HIGH: {high}
+  - MEDIUM: {medium}
+  - LOW: {low}
+
 What should we do next?
 
-**Important Rules:**
-- You should **only** call `developer` when there is actionable work from the message bus or proposals.
-- You should **never** directly call `reviewer` or `researcher`. These now run as background agents.
-- If there is no clear high-priority work from the message bus or pending proposals, return `"next_agent": "background"` so background agents can continue their work.
+**DECISION RULES:**
+1. **If backlog > 0** → call "developer" to address highest priority item
+2. **If backlog = 0** → call "background" to generate new feedback
+3. **Only call "complete"** when:
+   - Backlog is empty (0 items)
+   - Minimum iterations met ({config.get('min_iterations_before_complete', 3)})
+   - Task objectives satisfied
+   {"- **NEVER use 'complete' in unattended mode** (current mode: unattended)" if is_unattended else ""}
+
+**Remember:** Work through ALL items in priority order (CRITICAL → HIGH → MEDIUM → LOW), not just high priority ones.
 
 Respond **ONLY** with valid JSON in this exact format:
 {{
-  "feedback_summary": "Brief summary of current state and prioritized items",
+  "feedback_summary": "Backlog status and next item to address",
   "next_agent": "developer|background|complete",
-  "instructions": "Clear instructions (only used when calling developer)",
-  "reasoning": "Why you made this decision",
-  "files_needed": ["optional list of files"],
-  "addressing_feedback_ids": [123, 456],
+  "instructions": "Specific instructions for highest priority item, referencing feedback ID",
+  "reasoning": "Why you made this decision (include backlog count)",
+  "files_needed": ["files to edit"],
+  "addressing_feedback_ids": [123],
   "model": "optional-model-override"
 }}"""
 

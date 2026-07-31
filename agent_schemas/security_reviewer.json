@@ -1,0 +1,13 @@
+{
+  "security_findings": [
+    {
+      "priority": "CRITICAL",
+      "category": "security",
+      "message": "SQL injection vulnerability detected",
+      "suggestion": "Use parameterized queries instead of string concatenation",
+      "start_line_guid": "guid-sec-111",
+      "end_line_guid": "guid-sec-113"
+    }
+  ],
+  "summary": "Security audit complete"
+}

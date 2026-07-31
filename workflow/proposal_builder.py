@@ -13,6 +13,7 @@ from datetime import datetime
 
 from file_editing.edit_payload import EditPayload
 from file_editing.db import get_db_connection, log_error
+from core.events import publish_event
 
 
 def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> int:
@@ -84,7 +85,10 @@ def create_proposal_from_developer_output(
     developer_output: str | dict,
     proposed_by_agent_id: int,
     target_file_path: str,
-    rationale: Optional[str] = None
+    rationale: Optional[str] = None,
+    selected_mode: Optional[str] = None,
+    fallback_used: bool = False,
+    final_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Creates a governed edit proposal from Developer output."""
     try:
@@ -98,6 +102,27 @@ def create_proposal_from_developer_output(
             affected_guids, expected_hashes = _capture_hashes_for_operations(conn, file_id, payload)
 
             proposal_id = str(uuid4())
+
+            # Best-effort: ensure mode metadata columns exist (safe for existing DBs)
+            for col, coltype in (
+                ("selected_mode", "TEXT"),
+                ("fallback_used", "INTEGER DEFAULT 0"),
+                ("final_mode", "TEXT"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
+                except Exception:
+                    pass  # column already exists
+
+            # Embed mode info in rationale prefix for auditability even without columns
+            base_rationale = rationale or payload.rationale or ""
+            mode_tag = ""
+            if selected_mode or final_mode:
+                mode_tag = f"[mode={final_mode or selected_mode}"
+                if fallback_used:
+                    mode_tag += f" fallback_from={selected_mode}"
+                mode_tag += "] "
+            full_rationale = mode_tag + base_rationale
 
             conn.execute("""
                 INSERT INTO edit_proposals (
@@ -115,8 +140,11 @@ def create_proposal_from_developer_output(
                     write_started_at,
                     write_completed_at,
                     write_start_line_guid,
-                    write_end_line_guid
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), NULL, NULL, NULL, NULL, NULL)
+                    write_end_line_guid,
+                    selected_mode,
+                    fallback_used,
+                    final_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
             """, (
                 proposal_id,
                 file_id,
@@ -125,7 +153,10 @@ def create_proposal_from_developer_output(
                 json.dumps(affected_guids),
                 json.dumps(expected_hashes),
                 proposed_by_agent_id,
-                rationale or payload.rationale
+                full_rationale,
+                selected_mode,
+                1 if fallback_used else 0,
+                final_mode or selected_mode,
             ))
 
             log_error(
@@ -134,13 +165,29 @@ def create_proposal_from_developer_output(
                 proposal_id=proposal_id
             )
 
-            return {
+            result = {
                 "status": "success",
                 "proposal_id": proposal_id,
                 "target_file_path": target_file_path,
                 "affected_line_guids": affected_guids,
+                "selected_mode": selected_mode,
+                "fallback_used": fallback_used,
+                "final_mode": final_mode or selected_mode,
                 "message": "Proposal created and ready for review"
             }
+
+        # Publish outside the DB connection to avoid lock contention
+        publish_event(
+            "proposal.created",
+            source="proposal_builder",
+            proposal_id=result["proposal_id"],
+            payload={
+                "target_file_path": result["target_file_path"],
+                "selected_mode": result.get("selected_mode"),
+                "fallback_used": result.get("fallback_used"),
+            },
+        )
+        return result
 
     except Exception as e:
         log_error("proposal_builder", "create_proposal", "HIGH", str(e))
