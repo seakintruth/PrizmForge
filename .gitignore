@@ -23,6 +23,7 @@ report/
 project/
 *.db
 *.backup.*
+.PrizmForge/
 
 # IDE
 .vscode/
