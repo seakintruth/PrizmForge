@@ -24,6 +24,7 @@ project/
 *.db
 *.backup.*
 .PrizmForge/
+ExampleProject/
 
 # IDE
 .vscode/
