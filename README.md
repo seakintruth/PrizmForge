@@ -1,3 +1,5 @@
+![PrizmForge Logo](assets/logos/logo.png)
+
 # PrizmForge
 
 **Autonomous multi-agent software engineering system with governed self-editing.**
