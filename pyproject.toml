@@ -1,0 +1,18 @@
+[tool.black]
+line-length = 127
+
+[tool.isort]
+profile = "black"
+line_length = 127
+skip = ["build", "dist", ".venv", ".git", ".PrizmFoundry"]
+
+[tool.ruff]
+# General ruff options (non-lint/format keys)
+exclude = ["build/", "dist/", ".venv/", ".git/", ".PrizmFoundry/"]
+line-length = 127
+
+[tool.ruff.lint]
+# Linting rules (preferred location for select/ignore)
+select = ["E", "F", "W", "C90", "I"]
+# extend-ignore = ["E203"]  # example, add exceptions here as needed
+

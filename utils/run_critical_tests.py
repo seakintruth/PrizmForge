@@ -10,8 +10,6 @@ edit validation, and MockLLM scripting.
 
 from __future__ import annotations
 
-import json
-import os
 import sys
 import tempfile
 import unittest
@@ -62,20 +60,14 @@ class TestModeSelector(unittest.TestCase):
 
 class TestEditValidator(unittest.TestCase):
     def test_find_replace_and_empty(self):
-        from core.edit_response_validator import (
-            validate_developer_edit_response,
-            EditFailureReason,
-        )
+        from core.edit_response_validator import EditFailureReason, validate_developer_edit_response
 
-        ok = validate_developer_edit_response(
-            '{"target_file_path":"a.py","find":"old","replace":"new"}'
-        )
+        ok = validate_developer_edit_response('{"target_file_path":"a.py","find":"old","replace":"new"}')
         self.assertTrue(ok.is_valid)
         self.assertEqual(ok.detected_mode, "find_replace")
 
         bad = validate_developer_edit_response(
-            '{"target_file_path":"a.py","summary":"x",'
-            '"operations":[],"rationale":"enough text here"}'
+            '{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text here"}'
         )
         self.assertFalse(bad.is_valid)
         self.assertEqual(bad.reason, EditFailureReason.EMPTY_OPERATIONS)

@@ -1,3 +1,5 @@
+from typing import Dict, List, Optional
+
 """
 Developer mutation pipeline extracted from task_runner.
 
@@ -11,29 +13,25 @@ Primary entry: run_developer_mutation(...)
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Dict, List, Optional
 
 from agents.base import call_agent
-from core.db_helpers import post_message
 from core.db_connection import get_db_connection
+from core.db_helpers import post_message
 from core.edit_response_validator import validate_developer_edit_response
-from core.file_operations import format_file_with_guids, get_file_content_from_db
-from workflow.edit_mode_selector import (
-    select_edit_mode,
-    next_fallback_mode,
-    MODE_GUID,
-    MODE_FULL_REPLACE,
-    MODE_DIFF,
-    DEFAULT_FALLBACK_ORDER,
-)
-from workflow.proposal_builder import (
-    create_proposal_from_developer_output,
-    update_proposal_status,
-)
-from file_editing.writer import materialize_proposal
-from file_editing.undo import snapshot_before_apply
 from core.events import publish_event
+from core.file_operations import format_file_with_guids, get_file_content_from_db
+from file_editing.undo import snapshot_before_apply
+from file_editing.writer import materialize_proposal
+from workflow.edit_mode_selector import (
+    DEFAULT_FALLBACK_ORDER,
+    MODE_DIFF,
+    MODE_FULL_REPLACE,
+    MODE_GUID,
+    next_fallback_mode,
+    select_edit_mode,
+)
+from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 
 
 def run_developer_mutation(
@@ -128,9 +126,7 @@ def run_developer_mutation(
                 already_tried=modes_tried,
             )
             if next_mode:
-                print(
-                    f"   ↪️  Empty response; falling back {edit_method} → {next_mode}"
-                )
+                print(f"   ↪️  Empty response; falling back {edit_method} → {next_mode}")
                 edit_method = next_mode
                 fallback_used = True
                 continue
@@ -162,8 +158,7 @@ def run_developer_mutation(
         post_message(
             "developer",
             "orchestrator",
-            f"Edit failure ({reason}); fallback chain exhausted (tried: {modes_tried}). "
-            f"Preview: {(response or '')[:180]}...",
+            f"Edit failure ({reason}); fallback chain exhausted (tried: {modes_tried}). Preview: {(response or '')[:180]}...",
             task_id,
             "HIGH",
         )
@@ -262,9 +257,7 @@ def run_developer_mutation(
 
     print(f"   ✅ Reviewer approved proposal {proposal_id}")
     update_proposal_status(proposal_id, "approved")
-    publish_event(
-        "proposal.approved", source="reviewer", task_id=task_id, proposal_id=proposal_id
-    )
+    publish_event("proposal.approved", source="reviewer", task_id=task_id, proposal_id=proposal_id)
     print("   📝 Materializing changes to disk...")
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)
@@ -324,7 +317,7 @@ def _build_generation_prompt(
     joined = "\n\n".join(files_content)
     index_snip = ""
     try:
-        from core.index_context import load_symbol_json_context, load_index_text
+        from core.index_context import load_index_text, load_symbol_json_context
 
         index_snip = load_symbol_json_context(
             file_paths=requested_files or None,
@@ -334,9 +327,7 @@ def _build_generation_prompt(
         if not index_snip.strip():
             raw_idx = load_index_text(which="production", max_chars=6_000)
             if raw_idx.strip():
-                index_snip = (
-                    "\n**Structural index (Markdown fallback):**\n" + raw_idx + "\n"
-                )
+                index_snip = "\n**Structural index (Markdown fallback):**\n" + raw_idx + "\n"
         elif index_snip and not index_snip.startswith("\n"):
             index_snip = "\n" + index_snip
     except Exception:
@@ -355,9 +346,7 @@ def _build_generation_prompt(
     return "\n".join(parts)
 
 
-def _normalize_payload(
-    data: dict, edit_method: str, requested_files: List[str]
-) -> dict:
+def _normalize_payload(data: dict, edit_method: str, requested_files: List[str]) -> dict:
     """Normalize top-level full_replace / diff shapes into operations form."""
     out = dict(data)
     if not out.get("target_file_path") and requested_files:
@@ -369,9 +358,7 @@ def _normalize_payload(
                 {
                     "type": "full_replace",
                     "new_content": out.get("new_content"),
-                    "rationale": out.get("rationale")
-                    or out.get("summary")
-                    or "full replace",
+                    "rationale": out.get("rationale") or out.get("summary") or "full replace",
                 }
             ]
             out["_final_mode"] = MODE_FULL_REPLACE
@@ -380,9 +367,7 @@ def _normalize_payload(
                 {
                     "type": "apply_diff",
                     "diff": out.get("diff"),
-                    "rationale": out.get("rationale")
-                    or out.get("summary")
-                    or "apply diff",
+                    "rationale": out.get("rationale") or out.get("summary") or "apply diff",
                 }
             ]
             out["_final_mode"] = MODE_DIFF
@@ -397,9 +382,7 @@ def _normalize_payload(
             ]
     # Ensure summary/rationale meet minimums when possible
     if not out.get("summary"):
-        out["summary"] = (
-            out.get("rationale") or f"Edit {out.get('target_file_path', 'file')}"
-        )
+        out["summary"] = out.get("rationale") or f"Edit {out.get('target_file_path', 'file')}"
     if not out.get("rationale"):
         out["rationale"] = out.get("summary") or "Developer edit mutation"
     return out

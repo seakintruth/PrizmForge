@@ -1,3 +1,5 @@
+from typing import Optional, Sequence
+
 """
 Target-repo structural index context for agents.
 
@@ -12,7 +14,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 DEFAULT_MAX_CHARS = 24_000
 _last_refresh_mono: float = 0.0
@@ -50,10 +52,7 @@ def load_index_text(
     except Exception:
         return ""
     if max_chars and len(text) > max_chars:
-        return (
-            text[:max_chars]
-            + f"\n\n… truncated ({len(text)} chars total; see {path})\n"
-        )
+        return text[:max_chars] + f"\n\n… truncated ({len(text)} chars total; see {path})\n"
     return text
 
 
@@ -104,10 +103,7 @@ def build_index_context_block(
         max_chars=max_chars,
     )
     if not body.strip():
-        return (
-            f"**{label}:** not available. Run CLI `init` to build "
-            f"`file_symbols` and/or `.PrizmForge/indexes/INDEX.md`.\n"
-        )
+        return f"**{label}:** not available. Run CLI `init` to build `file_symbols` and/or `.PrizmForge/indexes/INDEX.md`.\n"
     return f"**{label}** (Markdown fallback):\n\n{body}\n"
 
 

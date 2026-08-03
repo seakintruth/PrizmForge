@@ -6,9 +6,8 @@ Can run without any database or config setup.
 
 def test_imports():
     """Core packages import and expose expected callables."""
-    import core.db
     import core.config
-    import file_editing
+    import core.db
     import workflow.task_runner
 
     assert hasattr(core.db, "init_db")

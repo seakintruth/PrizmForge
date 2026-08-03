@@ -211,6 +211,7 @@ See `example_config.json` for the full catalog and `tests/unit/test_content_safe
 ### Proposal undo
 ```python
 from file_editing.undo import undo_proposal
+
 undo_proposal("<proposal_id>")  # restores pre-apply snapshot; explicit id required
 ```
 Snapshots are taken automatically in `run_developer_mutation` before materialize.

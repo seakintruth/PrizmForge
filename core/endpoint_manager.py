@@ -1,9 +1,14 @@
+from typing import Optional
+
+from typing import Dict, List, Optional, Tuple
+
 """Multi-endpoint manager for different API providers"""
 
-from typing import Dict, Any, Optional, List, Tuple
+import logging
 from datetime import datetime, timedelta
 from enum import Enum
-import logging
+from typing import Any, Dict, List, Optional, Tuple
+
 from core.db_connection import get_db_connection
 
 logger = logging.getLogger(__name__)
@@ -29,12 +34,8 @@ class EndpointConfig:
         self.base_url = config.get("base_url")
         self.api_key_name = config.get("api_key_name", "api_key")
         self.include_model_in_payload = config.get("include_model_in_payload", True)
-        self.response_path = config.get(
-            "response_path", ["choices", 0, "message", "content"]
-        )
-        self.key_management_url = config.get(
-            "key_management_url", "Contact your system administrator for access."
-        )
+        self.response_path = config.get("response_path", ["choices", 0, "message", "content"])
+        self.key_management_url = config.get("key_management_url", "Contact your system administrator for access.")
         self.description = config.get("description", "")
         self.priority = config.get("priority", 50)
         self.rate_limit_per_minute = config.get("rate_limit_per_minute", 118)
@@ -56,7 +57,7 @@ class EndpointConfig:
 class EndpointHealth:
     """Track health status of an endpoint"""
 
-    def __init__(self, endpoint_name: str = None):
+    def __init__(self, endpoint_name: Optional[str] = None):
         self.endpoint_name = endpoint_name
         self.status = EndpointStatus.HEALTHY
         self.last_error = None
@@ -72,13 +73,11 @@ class EndpointHealth:
     def _load_from_db(self):
         """Load health status from database"""
         try:
-            from core.db import get_db_path
-
             with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute(
                     """
-                    SELECT status, error_count, consecutive_failures, 
+                    SELECT status, error_count, consecutive_failures,
                         last_success, unavailable_until
                     FROM endpoint_health
                     WHERE endpoint_name = ?
@@ -105,8 +104,6 @@ class EndpointHealth:
             return
 
         try:
-            from core.db import get_db_path
-
             with get_db_connection() as conn:
                 conn.execute(
                     """
@@ -121,11 +118,7 @@ class EndpointHealth:
                         self.error_count,
                         self.consecutive_failures,
                         self.last_success.isoformat() if self.last_success else None,
-                        (
-                            self.unavailable_until.isoformat()
-                            if self.unavailable_until
-                            else None
-                        ),
+                        (self.unavailable_until.isoformat() if self.unavailable_until else None),
                         datetime.now().isoformat(),
                     ),
                 )
@@ -154,7 +147,7 @@ class EndpointHealth:
         self.unavailable_until = None
         self._save_to_db()
 
-    def mark_failure(self, status: EndpointStatus, cooldown_minutes: int = None):
+    def mark_failure(self, status: EndpointStatus, cooldown_minutes: Optional[int] = None):
         """Mark failed call with configurable cooldown period"""
         self.status = status
         self.last_error = datetime.now()
@@ -187,17 +180,13 @@ class EndpointManager:
         # Load endpoints
         for name, endpoint_config in config.get("endpoints", {}).items():
             self.endpoints[name] = EndpointConfig(name, endpoint_config)
-            logger.info(
-                f"Loaded endpoint: {name} - {endpoint_config.get('description')}"
-            )
+            logger.info(f"Loaded endpoint: {name} - {endpoint_config.get('description')}")
 
         # Load models
         for model_name, model_config in config.get("models", {}).items():
             endpoint_name = model_config.get("endpoint")
             if endpoint_name not in self.endpoints:
-                logger.warning(
-                    f"Model '{model_name}' references unknown endpoint '{endpoint_name}'"
-                )
+                logger.warning(f"Model '{model_name}' references unknown endpoint '{endpoint_name}'")
                 continue
 
             self.models[model_name] = {
@@ -206,13 +195,9 @@ class EndpointManager:
             }
             logger.debug(f"Registered model: {model_name} -> {endpoint_name}")
 
-        self.default_endpoint = self.endpoints.get(
-            config.get("default_endpoint", "gemini")
-        )
+        self.default_endpoint = self.endpoints.get(config.get("default_endpoint", "gemini"))
 
-    def get_endpoint_for_model(
-        self, model_name: Optional[str] = None
-    ) -> EndpointConfig:
+    def get_endpoint_for_model(self, model_name: Optional[str] = None) -> EndpointConfig:
         """Get endpoint configuration for a given model"""
         if not model_name:
             return self.default_endpoint
@@ -238,11 +223,7 @@ class EndpointManager:
         if not api_key:
             api_key = self.config.get("api_key")
 
-        if (
-            not api_key
-            or api_key == "YOUR_GEMINI_API_KEY_HERE"
-            or api_key == "YOUR_DATABRICKS_TOKEN_HERE"
-        ):
+        if not api_key or api_key == "YOUR_GEMINI_API_KEY_HERE" or api_key == "YOUR_DATABRICKS_TOKEN_HERE":
             raise ValueError(f"API key not configured for endpoint: {endpoint.name}")
 
         return api_key
@@ -262,11 +243,7 @@ class EndpointManager:
         payload = {
             "messages": messages,
             "max_tokens": max_tokens or model_config.get("max_output_tokens", 16384),
-            "temperature": (
-                temperature
-                if temperature is not None
-                else model_config.get("temperature", 0.5)
-            ),
+            "temperature": (temperature if temperature is not None else model_config.get("temperature", 0.5)),
         }
 
         # Add model field if endpoint requires it
@@ -294,9 +271,7 @@ class EndpointManager:
 
         return None
 
-    def get_fallback_model(
-        self, endpoint: EndpointConfig
-    ) -> Optional[Tuple[str, EndpointConfig]]:
+    def get_fallback_model(self, endpoint: EndpointConfig) -> Optional[Tuple[str, EndpointConfig]]:
         """Get fallback model and endpoint"""
         fallback_settings = self.config.get("fallback_settings", {})
 
@@ -342,15 +317,9 @@ class EndpointManager:
                 "available": endpoint.health.is_available(),
                 "error_count": endpoint.health.error_count,
                 "consecutive_failures": endpoint.health.consecutive_failures,
-                "last_success": (
-                    endpoint.health.last_success.isoformat()
-                    if endpoint.health.last_success
-                    else None
-                ),
+                "last_success": (endpoint.health.last_success.isoformat() if endpoint.health.last_success else None),
                 "unavailable_until": (
-                    endpoint.health.unavailable_until.isoformat()
-                    if endpoint.health.unavailable_until
-                    else None
+                    endpoint.health.unavailable_until.isoformat() if endpoint.health.unavailable_until else None
                 ),
                 "seconds_until_available": endpoint.health.time_until_available(),
             }

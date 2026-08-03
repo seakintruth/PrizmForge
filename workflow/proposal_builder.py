@@ -1,3 +1,5 @@
+from typing import Dict, List, Optional
+
 # =============================================================================
 # PrizmForge/workflow/proposal_builder.py
 # Version: 1.7
@@ -7,13 +9,12 @@
 
 import json
 import sqlite3
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
-from datetime import datetime
 
-from file_editing.edit_payload import EditPayload
-from file_editing.db import get_db_connection, log_error
 from core.events import publish_event
+from file_editing.db import get_db_connection, log_error
+from file_editing.edit_payload import EditPayload
 
 
 def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> int:
@@ -57,9 +58,7 @@ def _get_affected_guids_from_operation(op) -> List[str]:
     return []
 
 
-def _capture_hashes_for_operations(
-    conn: sqlite3.Connection, file_id: int, payload: EditPayload
-) -> tuple[list[str], dict]:
+def _capture_hashes_for_operations(conn: sqlite3.Connection, file_id: int, payload: EditPayload) -> tuple[list[str], dict]:
     """Capture current hashes for optimistic concurrency validation."""
     affected_guids: list[str] = []
     expected_hashes: dict = {}
@@ -97,9 +96,7 @@ def create_proposal_from_developer_output(
 
         with get_db_connection() as conn:
             file_id = _get_or_create_file_id(conn, target_file_path)
-            affected_guids, expected_hashes = _capture_hashes_for_operations(
-                conn, file_id, payload
-            )
+            affected_guids, expected_hashes = _capture_hashes_for_operations(conn, file_id, payload)
 
             proposal_id = str(uuid4())
 
@@ -110,9 +107,7 @@ def create_proposal_from_developer_output(
                 ("final_mode", "TEXT"),
             ):
                 try:
-                    conn.execute(
-                        f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}"
-                    )
+                    conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
                 except Exception:
                     pass  # column already exists
 
@@ -201,9 +196,7 @@ def create_proposal_from_developer_output(
         return {"status": "error", "message": f"Failed to create proposal: {str(e)}"}
 
 
-def update_proposal_status(
-    proposal_id: str, new_status: str, reviewed_by_agent_id: Optional[int] = None
-) -> bool:
+def update_proposal_status(proposal_id: str, new_status: str, reviewed_by_agent_id: Optional[int] = None) -> bool:
     """Update proposal status and set reviewed_at when a reviewer acts."""
     allowed_statuses = {
         "pending",
@@ -221,9 +214,9 @@ def update_proposal_status(
             if reviewed_by_agent_id:
                 conn.execute(
                     """
-                    UPDATE edit_proposals 
-                    SET status = ?, 
-                        reviewed_by_agent_id = ?, 
+                    UPDATE edit_proposals
+                    SET status = ?,
+                        reviewed_by_agent_id = ?,
                         reviewed_at = datetime('now')
                     WHERE proposal_id = ?
                 """,
@@ -236,7 +229,5 @@ def update_proposal_status(
                 )
         return True
     except Exception as e:
-        log_error(
-            "proposal_builder", "update_status", "HIGH", str(e), proposal_id=proposal_id
-        )
+        log_error("proposal_builder", "update_status", "HIGH", str(e), proposal_id=proposal_id)
         return False

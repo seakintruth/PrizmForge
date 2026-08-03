@@ -7,9 +7,7 @@ Hardening tests for secondary plan S6:
 """
 
 import hashlib
-import os
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -104,21 +102,19 @@ class TestPathContainment:
 
 class TestEditModeSelector:
     def test_small_file_prefers_full_replace(self):
-        from workflow.edit_mode_selector import select_edit_mode, MODE_FULL_REPLACE
+        from workflow.edit_mode_selector import MODE_FULL_REPLACE, select_edit_mode
 
         d = select_edit_mode(file_line_count=40, instructions="rewrite helper")
         assert d.selected_mode == MODE_FULL_REPLACE
 
     def test_rename_prefers_find_replace(self):
-        from workflow.edit_mode_selector import select_edit_mode, MODE_FIND_REPLACE
+        from workflow.edit_mode_selector import MODE_FIND_REPLACE, select_edit_mode
 
-        d = select_edit_mode(
-            file_line_count=400, instructions="rename old_name to new_name"
-        )
+        d = select_edit_mode(file_line_count=400, instructions="rename old_name to new_name")
         assert d.selected_mode == MODE_FIND_REPLACE
 
     def test_large_prefers_guid(self):
-        from workflow.edit_mode_selector import select_edit_mode, MODE_GUID
+        from workflow.edit_mode_selector import MODE_GUID, select_edit_mode
 
         d = select_edit_mode(
             file_line_count=900,
@@ -137,10 +133,7 @@ class TestEditModeSelector:
         assert tried == ["guid", "diff", "find_replace", "full_replace"]
 
     def test_validator_detects_empty_ops(self):
-        from core.edit_response_validator import (
-            validate_developer_edit_response,
-            EditFailureReason,
-        )
+        from core.edit_response_validator import EditFailureReason, validate_developer_edit_response
 
         r = validate_developer_edit_response(
             '{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text"}'
@@ -151,9 +144,7 @@ class TestEditModeSelector:
     def test_validator_detects_find_replace(self):
         from core.edit_response_validator import validate_developer_edit_response
 
-        r = validate_developer_edit_response(
-            '{"target_file_path":"a.py","find":"old","replace":"new"}'
-        )
+        r = validate_developer_edit_response('{"target_file_path":"a.py","find":"old","replace":"new"}')
         assert r.is_valid
         assert r.detected_mode == "find_replace"
 
@@ -175,18 +166,16 @@ def governed_db(monkeypatch, tmp_path):
 
 class TestConcurrencyAndGuids:
     def test_hash_mismatch_returns_conflicted(self, governed_db):
-        from file_editing.writer import initialize_file_lines
-        from file_editing.editing import apply_edit_proposal
         from file_editing.db import get_db_connection
+        from file_editing.editing import apply_edit_proposal
+        from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
 
         initialize_file_lines("demo/sample.py", "def hello():\n    print('world')\n")
 
         # Capture the real GUID for line 2
         with get_db_connection() as conn:
-            rows = conn.execute(
-                "SELECT line_guid, content FROM file_lines WHERE is_deleted=0 ORDER BY sort_order"
-            ).fetchall()
+            rows = conn.execute("SELECT line_guid, content FROM file_lines WHERE is_deleted=0 ORDER BY sort_order").fetchall()
             guids = [r[0] for r in rows]
             assert len(guids) >= 2
             target_guid = guids[1]
@@ -223,9 +212,9 @@ class TestConcurrencyAndGuids:
         assert result["status"] == "conflicted"
 
     def test_missing_guid_returns_conflicted(self, governed_db):
-        from file_editing.writer import initialize_file_lines
-        from file_editing.editing import apply_edit_proposal
         from file_editing.db import get_db_connection
+        from file_editing.editing import apply_edit_proposal
+        from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
 
         initialize_file_lines("demo/g.py", "x = 1\ny = 2\n")
@@ -257,9 +246,9 @@ class TestConcurrencyAndGuids:
         assert result["status"] == "conflicted"
 
     def test_find_replace_still_works(self, governed_db):
-        from file_editing.writer import initialize_file_lines
-        from file_editing.editing import apply_edit_proposal
         from file_editing.db import get_db_connection, reconstruct_file_content
+        from file_editing.editing import apply_edit_proposal
+        from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
 
         initialize_file_lines("demo/r.py", "a = old\nb = old\n")
@@ -298,9 +287,7 @@ class TestConcurrencyAndGuids:
         assert result["status"] == "success"
 
         with get_db_connection() as conn:
-            fid = conn.execute(
-                "SELECT file_id FROM files WHERE file_path='demo/r.py'"
-            ).fetchone()[0]
+            fid = conn.execute("SELECT file_id FROM files WHERE file_path='demo/r.py'").fetchone()[0]
             content = reconstruct_file_content(conn, fid)
         assert content == "a = new\nb = new\n"
 
@@ -326,8 +313,9 @@ class TestRepoRootContainment:
         assert path.resolve().relative_to(fake_repo.resolve())
 
     def test_ensure_project_directory_rejects_escape(self, tmp_path, monkeypatch):
-        from core import config as config_mod
         import pytest
+
+        from core import config as config_mod
 
         fake_repo = tmp_path / "repo"
         fake_repo.mkdir()

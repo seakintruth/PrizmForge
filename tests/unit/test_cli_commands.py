@@ -12,8 +12,6 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -113,9 +111,7 @@ class TestTaskRunnerMockedFromCLILayer:
         calls = []
 
         def fake_cycle(task_id, user_command, max_turns=20, **kwargs):
-            calls.append(
-                {"task_id": task_id, "cmd": user_command, "max_turns": max_turns}
-            )
+            calls.append({"task_id": task_id, "cmd": user_command, "max_turns": max_turns})
             return {"status": "ok", "mocked": True}
 
         with patch("workflow.task_runner.run_task_cycle", side_effect=fake_cycle):
@@ -153,7 +149,7 @@ class TestCLIModes:
         assert cfg.max_iterations_per_task == 5
 
     def test_get_cli_mode_from_config_default(self):
-        from core.cli_modes import get_cli_mode_from_config, CLIMode
+        from core.cli_modes import CLIMode, get_cli_mode_from_config
 
         mode = get_cli_mode_from_config({})
         assert mode in (CLIMode.SEMI_ATTENDED, CLIMode.UNATTENDED)

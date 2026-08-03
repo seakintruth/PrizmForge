@@ -1,8 +1,10 @@
+from typing import List, Optional
+
 """Database helper functions"""
 
-import json
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import Dict, List, Optional
+
 from core.db_connection import get_db_connection
 
 
@@ -38,14 +40,10 @@ def post_message(
         )
 
 
-def get_unread_messages(
-    agent: str, task_id: Optional[str] = None, min_priority: str = "LOW"
-) -> List[Dict]:
+def get_unread_messages(agent: str, task_id: Optional[str] = None, min_priority: str = "LOW") -> List[Dict]:
     """Get unread messages for agent"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-
-        priority_order = {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 3, "LOW": 4}
 
         if task_id:
             cursor.execute(
@@ -53,7 +51,7 @@ def get_unread_messages(
                 SELECT id, from_agent, content, timestamp, priority
                 FROM messages
                 WHERE to_agent = ? AND task_id = ? AND read = 0
-                ORDER BY 
+                ORDER BY
                     CASE priority
                         WHEN 'CRITICAL' THEN 1
                         WHEN 'HIGH' THEN 2
@@ -70,7 +68,7 @@ def get_unread_messages(
                 SELECT id, from_agent, content, timestamp, priority
                 FROM messages
                 WHERE to_agent = ? AND read = 0
-                ORDER BY 
+                ORDER BY
                     CASE priority
                         WHEN 'CRITICAL' THEN 1
                         WHEN 'HIGH' THEN 2
@@ -102,9 +100,7 @@ def mark_messages_read(message_ids: List[int]):
         return
     with get_db_connection() as conn:
         placeholders = ",".join("?" * len(message_ids))
-        conn.execute(
-            f"UPDATE messages SET read = 1 WHERE id IN ({placeholders})", message_ids
-        )
+        conn.execute(f"UPDATE messages SET read = 1 WHERE id IN ({placeholders})", message_ids)
 
 
 def save_conversation(
@@ -174,7 +170,7 @@ def save_agent_feedback(
         conn.execute(
             """
             INSERT INTO agent_feedback
-            (agent_name, file_path, priority, category, message, suggestion, 
+            (agent_name, file_path, priority, category, message, suggestion,
             task_id, file_event_id, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
@@ -202,7 +198,7 @@ def get_unaddressed_feedback(task_id: str, min_priority: str = "LOW") -> List[Di
             SELECT id, agent_name, file_path, priority, category, message, suggestion, timestamp
             FROM agent_feedback
             WHERE task_id = ? AND addressed = 0
-            ORDER BY 
+            ORDER BY
                 CASE priority
                     WHEN 'CRITICAL' THEN 1
                     WHEN 'HIGH' THEN 2
@@ -280,9 +276,7 @@ def age_feedback_backlog(
         dismissed_low = cur.rowcount if cur.rowcount is not None else 0
 
         # Cap total unaddressed by dismissing oldest MEDIUM items only
-        row = conn.execute(
-            "SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0"
-        ).fetchone()
+        row = conn.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0").fetchone()
         total = row[0] if row else 0
         if total > max_unaddressed:
             excess = total - max_unaddressed

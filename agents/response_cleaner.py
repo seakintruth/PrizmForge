@@ -1,7 +1,7 @@
 # agents/response_cleaner.py
 
-import re
 import json
+import re
 
 
 def extract_json_aggressively(response: str, agent_name: str) -> tuple[str | None, str]:
@@ -70,9 +70,7 @@ def extract_json_aggressively(response: str, agent_name: str) -> tuple[str | Non
     # Strategy 5: Attempt to parse
     try:
         json.loads(response)
-        print(
-            f"    ✅ {agent_name}: Extracted valid JSON ({original_length} → {len(response)} chars)"
-        )
+        print(f"    ✅ {agent_name}: Extracted valid JSON ({original_length} → {len(response)} chars)")
         return response, None
     except json.JSONDecodeError as e:
         return None, f"JSON parse failed: {e.msg} at position {e.pos}"

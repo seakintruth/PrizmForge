@@ -1,7 +1,8 @@
 """Track fallback statistics"""
 
 from datetime import datetime
-from typing import Dict, List
+from typing import Dict
+
 from core.db_connection import get_db_connection
 
 
@@ -47,8 +48,8 @@ def get_fallback_stats() -> Dict:
 
             # Fallbacks by reason
             cursor.execute("""
-                SELECT reason, COUNT(*) 
-                FROM endpoint_fallbacks 
+                SELECT reason, COUNT(*)
+                FROM endpoint_fallbacks
                 GROUP BY reason
                 ORDER BY COUNT(*) DESC
             """)
@@ -56,8 +57,8 @@ def get_fallback_stats() -> Dict:
 
             # Most affected endpoints
             cursor.execute("""
-                SELECT original_endpoint, COUNT(*) 
-                FROM endpoint_fallbacks 
+                SELECT original_endpoint, COUNT(*)
+                FROM endpoint_fallbacks
                 GROUP BY original_endpoint
                 ORDER BY COUNT(*) DESC
             """)

@@ -14,8 +14,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -55,9 +53,7 @@ def _content(file_path: str) -> str:
     from file_editing.db import get_db_connection, reconstruct_file_content
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", (file_path,)
-        ).fetchone()
+        row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,)).fetchone()
         assert row is not None, f"file not found: {file_path}"
         return reconstruct_file_content(conn, row[0])
 
@@ -69,9 +65,9 @@ def _content(file_path: str) -> str:
 
 class TestFindReplaceWorkflow:
     def test_proposal_approve_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("wf/rename.py", "x = old_name\ny = old_name\n")
         payload = {
@@ -107,9 +103,9 @@ class TestFindReplaceWorkflow:
 
 class TestFullReplaceWorkflow:
     def test_proposal_approve_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("wf/small.py", "a = 1\nb = 2\n")
         payload = {
@@ -140,9 +136,9 @@ class TestFullReplaceWorkflow:
 
 class TestGuidReplaceWorkflow:
     def test_proposal_approve_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines(
             "wf/guid.py",
@@ -174,9 +170,9 @@ class TestGuidReplaceWorkflow:
 
 class TestDiffWorkflow:
     def test_proposal_approve_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines(
             "wf/diff.py",
@@ -235,11 +231,11 @@ class TestDiffWorkflow:
 class TestModeSelectionWorkflow:
     def test_tshirt_and_fallback_chain(self):
         from workflow.edit_mode_selector import (
-            select_edit_mode,
-            next_fallback_mode,
-            MODE_FULL_REPLACE,
             MODE_FIND_REPLACE,
+            MODE_FULL_REPLACE,
             MODE_GUID,
+            next_fallback_mode,
+            select_edit_mode,
         )
 
         small = select_edit_mode(40, "rewrite the helper")
@@ -262,15 +258,11 @@ class TestModeSelectionWorkflow:
 
 class TestValidationWorkflow:
     def test_empty_ops_and_recovery_signal(self):
-        from core.edit_response_validator import (
-            validate_developer_edit_response,
-            EditFailureReason,
-        )
+        from core.edit_response_validator import EditFailureReason, validate_developer_edit_response
         from workflow.edit_mode_selector import next_fallback_mode
 
         bad = validate_developer_edit_response(
-            '{"target_file_path":"a.py","summary":"x",'
-            '"operations":[],"rationale":"enough text here"}'
+            '{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text here"}'
         )
         assert not bad.is_valid
         assert bad.reason == EditFailureReason.EMPTY_OPERATIONS
@@ -279,9 +271,7 @@ class TestValidationWorkflow:
         nxt = next_fallback_mode("guid", already_tried=["guid"])
         assert nxt == "diff"
 
-        good = validate_developer_edit_response(
-            '{"target_file_path":"a.py","find":"old","replace":"new"}'
-        )
+        good = validate_developer_edit_response('{"target_file_path":"a.py","find":"old","replace":"new"}')
         assert good.is_valid
         assert good.detected_mode == "find_replace"
 
@@ -337,9 +327,7 @@ class TestMockedAgentWorkflow:
         )
         mock_llm.set_response(
             "reviewer",
-            json.dumps(
-                {"decision": "APPROVE", "reason": "Looks correct", "suggestions": []}
-            ),
+            json.dumps({"decision": "APPROVE", "reason": "Looks correct", "suggestions": []}),
         )
 
         with mock_llm.patch_call_agent():
@@ -407,9 +395,9 @@ class TestMockedAgentWorkflow:
 
     def test_mocked_developer_output_creates_proposal(self, temp_db, mock_llm):
         """End-to-end: mocked developer JSON → proposal → apply."""
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("wf/mock.py", "value = OLD\n")
         mock_llm.set_response(

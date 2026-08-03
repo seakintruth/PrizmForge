@@ -4,11 +4,11 @@ tests/unit/test_context_manager.py
 Realistic tests for ContextManager that match the actual implementation.
 """
 
-import pytest
 import time
-from pathlib import Path
 
-from core.context_manager import get_context_manager, ContextManager
+import pytest
+
+from core.context_manager import ContextManager, get_context_manager
 from core.db_connection import get_db_connection
 
 
@@ -84,8 +84,8 @@ class TestGetPrioritizedFilesFast:
             for i in range(20):
                 conn.execute(
                     """
-                    INSERT INTO project_files 
-                    (file_path, content, estimated_tokens, last_modified, 
+                    INSERT INTO project_files
+                    (file_path, content, estimated_tokens, last_modified,
                      size_bytes, file_type, is_binary, content_hash)
                     VALUES (?, ?, ?, ?, ?, ?, 0, ?)
                 """,
@@ -196,8 +196,8 @@ class TestBuildOrchestratorContext:
         with get_db_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO project_files 
-                (file_path, content, estimated_tokens, last_modified, 
+                INSERT INTO project_files
+                (file_path, content, estimated_tokens, last_modified,
                  size_bytes, file_type, is_binary, content_hash)
                 VALUES (?, ?, ?, ?, ?, ?, 0, ?)
             """,
@@ -215,7 +215,7 @@ class TestBuildOrchestratorContext:
             # Add summary
             conn.execute(
                 """
-                INSERT INTO file_summaries 
+                INSERT INTO file_summaries
                 (file_path, summary, purpose, line_count)
                 VALUES (?, ?, ?, ?)
             """,
@@ -251,8 +251,8 @@ class TestGetPrioritizedSuggestions:
         with get_db_connection() as conn:
             conn.execute(
                 """
-                INSERT INTO agent_feedback 
-                (agent_name, file_path, priority, category, message, 
+                INSERT INTO agent_feedback
+                (agent_name, file_path, priority, category, message,
                  task_id, addressed, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, 0, ?)
             """,
@@ -322,8 +322,8 @@ class TestPerformance:
             for i in range(50):
                 conn.execute(
                     """
-                    INSERT INTO project_files 
-                    (file_path, content, estimated_tokens, last_modified, 
+                    INSERT INTO project_files
+                    (file_path, content, estimated_tokens, last_modified,
                      size_bytes, file_type, is_binary, content_hash)
                     VALUES (?, ?, ?, ?, ?, ?, 0, ?)
                 """,

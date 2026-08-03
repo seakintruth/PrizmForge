@@ -1,3 +1,5 @@
+from typing import Dict, Optional
+
 """
 Edit response validator – early detection of failed developer outputs.
 
@@ -9,10 +11,9 @@ and trigger fallback / retry logic.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 
 class EditFailureReason(Enum):
@@ -34,9 +35,7 @@ class EditValidationResult:
     reason: Optional[EditFailureReason] = None
     message: str = ""
     data: Optional[Dict[str, Any]] = None
-    detected_mode: Optional[str] = (
-        None  # "guid" | "find_replace" | "full_replace" | "diff" | None
-    )
+    detected_mode: Optional[str] = None  # "guid" | "find_replace" | "full_replace" | "diff" | None
 
     @property
     def should_fallback(self) -> bool:
@@ -111,9 +110,7 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:
     # Full-file replacement
     if "new_content" in data:
         new_content = data.get("new_content")
-        if new_content is None or (
-            isinstance(new_content, str) and not new_content.strip()
-        ):
+        if new_content is None or (isinstance(new_content, str) and not new_content.strip()):
             return EditValidationResult(
                 is_valid=False,
                 reason=EditFailureReason.FULL_REPLACE_MISSING_CONTENT,
@@ -137,11 +134,7 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:
             message="Valid find_replace payload",
         )
 
-    if (
-        "replacements" in data
-        and isinstance(data["replacements"], list)
-        and data["replacements"]
-    ):
+    if "replacements" in data and isinstance(data["replacements"], list) and data["replacements"]:
         return EditValidationResult(
             is_valid=True,
             data=data,

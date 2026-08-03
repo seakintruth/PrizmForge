@@ -3,16 +3,16 @@
 # Version: 2.2 - Updated payloads to match current EditPayload v1.3
 # =============================================================================
 
-import pytest
-import sqlite3
 import hashlib
+import sqlite3
 import sys
 from pathlib import Path
+
+import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from file_editing.db import initialize_database
 from file_editing.editing import apply_edit_proposal
 from workflow.proposal_builder import create_proposal_from_developer_output
 
@@ -28,8 +28,8 @@ def db(monkeypatch):
     Deletes existing DB at the path (if any) before initialization
     to guarantee a clean state.
     """
-    import tempfile
     import os
+    import tempfile
 
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -77,7 +77,7 @@ def sample_file(db):
     for guid, sort, content in lines:
         db.execute(
             """
-            INSERT INTO file_lines 
+            INSERT INTO file_lines
             (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
             VALUES (?, ?, ?, ?, ?, 1, 0)
         """,
@@ -151,9 +151,7 @@ def test_optimistic_concurrency_conflict(db, sample_file):
     proposal_id = proposal["proposal_id"]
 
     # Corrupt hash
-    db.execute(
-        "UPDATE file_lines SET content_hash = 'invalid' WHERE line_guid = 'guid-2'"
-    )
+    db.execute("UPDATE file_lines SET content_hash = 'invalid' WHERE line_guid = 'guid-2'")
     db.commit()
 
     db.execute(

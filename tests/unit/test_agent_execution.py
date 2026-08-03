@@ -4,8 +4,6 @@ tests/unit/test_agent_execution.py
 Stability and routing tests for call_agent under mocked LLM responses.
 """
 
-import pytest
-
 
 class TestAgentExecutionBasic:
     """Basic stability tests for call_agent with mocks."""

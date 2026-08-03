@@ -1,8 +1,8 @@
 # agents/orchestrator.py
 
 from agents.base import call_agent
-from core.context_manager import get_context_manager
 from core.config import get_config
+from core.context_manager import get_context_manager
 from core.json_parser import parse_json_response
 
 
@@ -21,14 +21,10 @@ def call_orchestrator(
     config = get_config()
     model = config.get("agent_model_preferences", {}).get("orchestrator")
 
-    context_str, metadata = context_mgr.build_orchestrator_context(
-        task_id, user_command, conversation_context, model
-    )
+    context_str, metadata = context_mgr.build_orchestrator_context(task_id, user_command, conversation_context, model)
 
     utilization = metadata["context_utilization"]
-    utilization_color = (
-        "🟢" if utilization < 0.5 else "🟡" if utilization < 0.8 else "🔴"
-    )
+    utilization_color = "🟢" if utilization < 0.5 else "🟡" if utilization < 0.8 else "🔴"
 
     print(
         f"  {utilization_color} Context: {metadata['tokens_used']:,} / {metadata['context_limit']:,} tokens "
@@ -37,9 +33,7 @@ def call_orchestrator(
     print(f"     Files: {len(metadata['files_included'])} included")
 
     if metadata["files_excluded"]:
-        print(
-            f"     ⚠️  {len(metadata['files_excluded'])} files excluded - {metadata['truncation_reason']}"
-        )
+        print(f"     ⚠️  {len(metadata['files_excluded'])} files excluded - {metadata['truncation_reason']}")
 
     # Get current feedback backlog count (ALL priorities)
     try:
@@ -47,7 +41,7 @@ def call_orchestrator(
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     SUM(CASE WHEN priority = 'CRITICAL' THEN 1 ELSE 0 END) as critical,
                     SUM(CASE WHEN priority = 'HIGH' THEN 1 ELSE 0 END) as high,
@@ -64,7 +58,7 @@ def call_orchestrator(
 
     # Get CLI mode to know if we should allow 'complete'
     try:
-        from core.cli_modes import get_cli_mode_from_config, CLIMode
+        from core.cli_modes import CLIMode, get_cli_mode_from_config
 
         cli_mode = get_cli_mode_from_config(config)
         is_unattended = cli_mode == CLIMode.UNATTENDED
@@ -88,7 +82,7 @@ What should we do next?
 2. **If backlog = 0** → call "background" to generate new feedback
 3. **Only call "complete"** when:
    - Backlog is empty (0 items)
-   - Minimum iterations met ({config.get('min_iterations_before_complete', 3)})
+   - Minimum iterations met ({config.get("min_iterations_before_complete", 3)})
    - Task objectives satisfied
    {"- **NEVER use 'complete' in unattended mode** (current mode: unattended)" if is_unattended else ""}
 

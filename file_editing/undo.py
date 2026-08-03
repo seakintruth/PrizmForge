@@ -1,3 +1,5 @@
+from typing import Dict
+
 """
 Proposal undo / version restore (Phase D2).
 
@@ -7,18 +9,13 @@ via the events/write log path, and can restore by proposal_id.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from core.db_connection import get_db_connection
 from core.events import publish_event
 from file_editing.db import reconstruct_file_content
-from file_editing.writer import (
-    initialize_file_lines,
-    write_file_to_disk,
-    materialize_proposal,
-)
+from file_editing.writer import initialize_file_lines, write_file_to_disk
 
 
 def ensure_snapshot_table(conn) -> None:

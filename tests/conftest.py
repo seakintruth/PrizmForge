@@ -3,13 +3,12 @@ Pytest fixtures for PrizmForge tests
 Minimal version - no external dependencies beyond pytest
 """
 
-import pytest
-import tempfile
 import os
 import sys
-import sqlite3
+import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+
+import pytest
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -23,7 +22,6 @@ def temp_db(monkeypatch):
     No external dependencies.
     """
     import tempfile
-    import os
 
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)

@@ -1,13 +1,15 @@
+from typing import Dict, List, Optional, Set
+
 """File operations with database sync"""
 
-import os
 import hashlib
-from pathlib import Path
-from typing import Optional, Dict, List, Set, Any
-from datetime import datetime
 import json
-from core.token_estimator import estimate_tokens
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
+
 from core.db_connection import get_db_connection
+from core.token_estimator import estimate_tokens
 
 # Known binary extensions (for fast rejection)
 _BINARY_EXTENSIONS: Set[str] = {
@@ -255,10 +257,7 @@ def get_file_lines_with_guids(file_path: str) -> List[Dict[str, Any]]:
 
             rows = cursor.fetchall()
 
-        return [
-            {"guid": row[0], "content": row[1] or "", "sort_order": row[2]}
-            for row in rows
-        ]
+        return [{"guid": row[0], "content": row[1] or "", "sort_order": row[2]} for row in rows]
     except Exception as e:
         print(f"⚠️  Failed to get lines with GUIDs for {file_path}: {e}")
         return []
@@ -300,9 +299,7 @@ def should_ignore_file(file_path: str) -> bool:
     import fnmatch
 
     for pattern in ignore_patterns:
-        if fnmatch.fnmatch(file_path, pattern) or fnmatch.fnmatch(
-            Path(file_path).name, pattern
-        ):
+        if fnmatch.fnmatch(file_path, pattern) or fnmatch.fnmatch(Path(file_path).name, pattern):
             return True
     return False
 
@@ -313,8 +310,6 @@ def sync_file_to_database(file_path: str, content: str) -> bool:
     COMPUTE TOKEN ESTIMATE HERE (write-time)
     """
     try:
-        from core.db import get_db_path
-
         content_hash = compute_file_hash(content)
         file_type = Path(file_path).suffix or "unknown"
         size_bytes = len(content.encode("utf-8"))
@@ -327,7 +322,7 @@ def sync_file_to_database(file_path: str, content: str) -> bool:
             conn.execute(
                 """
                 INSERT OR REPLACE INTO project_files
-                (file_path, content, content_hash, last_modified, size_bytes, 
+                (file_path, content, content_hash, last_modified, size_bytes,
                 file_type, indexed_at, is_binary, estimated_tokens)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -411,9 +406,7 @@ def generate_file_summary(file_path: str, content: str) -> Dict:
         summary["functions"] = functions[:10]
         summary["classes"] = classes[:10]
         summary["imports"] = imports[:10]
-        summary["purpose"] = (
-            f"Python module with {len(functions)} functions, {len(classes)} classes"
-        )
+        summary["purpose"] = f"Python module with {len(functions)} functions, {len(classes)} classes"
 
     elif file_type in [".json", ".yml", ".yaml", ".toml"]:
         summary["purpose"] = f"Configuration file ({file_type})"
@@ -436,8 +429,6 @@ def save_file_summary(file_path: str, summary: Dict):
     COMPUTE TOKEN ESTIMATE FOR SUMMARY TEXT HERE
     """
     try:
-        from core.db import get_db_path
-
         # Build summary text
         summary_text = json.dumps(summary)
 
@@ -449,7 +440,7 @@ def save_file_summary(file_path: str, summary: Dict):
             conn.execute(
                 """
                 INSERT OR REPLACE INTO file_summaries
-                (file_path, summary, key_functions, dependencies, purpose, 
+                (file_path, summary, key_functions, dependencies, purpose,
                 line_count, generated_at, estimated_tokens)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -468,12 +459,9 @@ def save_file_summary(file_path: str, summary: Dict):
         print(f"  ⚠️  Failed to save summary: {e}")
 
 
-def post_file_metadata_to_bus(
-    file_path: str, operation: str, summary: Dict, task_id: str
-):
+def post_file_metadata_to_bus(file_path: str, operation: str, summary: Dict, task_id: str):
     """Post file metadata to message bus"""
     try:
-        from core.db import get_db_path
         from core.db_helpers import post_message
 
         metadata = {

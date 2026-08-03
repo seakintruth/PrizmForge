@@ -1,3 +1,5 @@
+from typing import Dict, List, Optional, Sequence
+
 """
 tests/mocks/openai.py
 
@@ -9,7 +11,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence
 from unittest.mock import MagicMock, patch
 
 # Modules that do `from agents.base import call_agent` must be listed here.
@@ -72,9 +74,7 @@ def make_requests_response(
     """Return a MagicMock that looks like a successful requests.Response."""
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
-    mock_resp.json.return_value = make_chat_completion_payload(
-        response_text, model=model
-    )
+    mock_resp.json.return_value = make_chat_completion_payload(response_text, model=model)
     mock_resp.text = json.dumps(mock_resp.json.return_value)
     mock_resp.raise_for_status = MagicMock()
     if status_code >= 400:
@@ -99,9 +99,7 @@ def mock_openai_chat_completion(
     Returns the mock response object. Use as a context manager via the
     returned patch, or prefer the `mock_llm_http` fixture.
     """
-    mock_resp = make_requests_response(
-        response_text, status_code=status_code, model=model
-    )
+    mock_resp = make_requests_response(response_text, status_code=status_code, model=model)
     return patch("agents.base.requests.post", return_value=mock_resp)
 
 

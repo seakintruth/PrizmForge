@@ -5,10 +5,9 @@ Tests focused on database schema initialization and structure.
 These tests verify that init_db() creates all expected tables correctly.
 """
 
-import pytest
+import os
 import sqlite3
 import tempfile
-import os
 
 
 def test_init_db_creates_all_tables():
@@ -72,6 +71,4 @@ def test_init_db_creates_all_tables():
     missing_governed = governed_tables - existing_tables
 
     assert not missing_core, f"Missing core tables after init_db(): {missing_core}"
-    assert (
-        not missing_governed
-    ), f"Missing governed editing tables after init_db(): {missing_governed}"
+    assert not missing_governed, f"Missing governed editing tables after init_db(): {missing_governed}"

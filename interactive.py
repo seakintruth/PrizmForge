@@ -5,11 +5,12 @@ import sys
 import time
 from datetime import datetime
 from typing import Optional
+
 from cli.commands import *
-from workflow.task_runner import run_task_cycle
-from core.db_helpers import post_message
+from core.cli_modes import CLIMode, CLIState, UnattendedConfig
 from core.db_connection import get_db_connection
-from core.cli_modes import CLIMode, UnattendedConfig, CLIState
+from core.db_helpers import post_message
+from workflow.task_runner import run_task_cycle
 
 # Global flag for graceful shutdown
 _shutdown_requested = False
@@ -50,9 +51,7 @@ def should_continue_unattended(state: CLIState, config: UnattendedConfig) -> boo
     if getattr(config, "stop_when_backlog_empty", False) and state.total_iterations > 0:
         try:
             with get_db_connection() as conn:
-                n = conn.execute(
-                    "SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0"
-                ).fetchone()[0]
+                n = conn.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0").fetchone()[0]
             if n == 0:
                 print("\n✅ Feedback backlog empty — stopping unattended run")
                 return False
@@ -80,7 +79,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig) -> str:
                 FROM agent_feedback
                 WHERE addressed = 0 AND priority IN ('CRITICAL', 'HIGH')
                 GROUP BY priority, category
-                ORDER BY 
+                ORDER BY
                     CASE priority WHEN 'CRITICAL' THEN 1 ELSE 2 END,
                     COUNT(*) DESC
                 LIMIT 1
@@ -156,7 +155,7 @@ def save_checkpoint(state: CLIState):
             conn.execute(
                 """
                 INSERT OR REPLACE INTO cli_checkpoints
-                (id, mode, start_time, task_counter, total_files_modified, 
+                (id, mode, start_time, task_counter, total_files_modified,
                  total_iterations, current_task_id, checkpoint_time)
                 VALUES (1, ?, ?, ?, ?, ?, ?, ?)
             """,
@@ -233,9 +232,7 @@ def run_unattended_mode(config: UnattendedConfig):
 
         # Check if should continue
         if elapsed >= config.max_duration_hours:
-            print(
-                f"\n⏰ Previous session already completed {config.max_duration_hours}h run"
-            )
+            print(f"\n⏰ Previous session already completed {config.max_duration_hours}h run")
             print("   Starting fresh session...\n")
             state = None
     else:
@@ -255,7 +252,7 @@ def run_unattended_mode(config: UnattendedConfig):
     print(f"End: {end_time.strftime('%Y-%m-%d %H:%M')}")
     print(f"Checkpoint interval: {config.checkpoint_interval_minutes}m")
     print(f"Max iterations per task: {config.max_iterations_per_task}")
-    print(f"\nPress Ctrl+C for graceful shutdown")
+    print("\nPress Ctrl+C for graceful shutdown")
     print("=" * 60 + "\n")
 
     # Main unattended loop
@@ -265,9 +262,7 @@ def run_unattended_mode(config: UnattendedConfig):
             if config.auto_generate_tasks:
                 task_description = generate_next_task(state, config)
             else:
-                task_description = (
-                    "Continue development based on project state and feedback"
-                )
+                task_description = "Continue development based on project state and feedback"
 
             task_id = f"task_{state.task_counter:03d}"
             state.task_counter += 1
@@ -276,16 +271,14 @@ def run_unattended_mode(config: UnattendedConfig):
             elapsed = state.elapsed_hours()
             remaining = config.max_duration_hours - elapsed
 
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"🎯 AUTO-GENERATED TASK: {task_id}")
             print(f"   {task_description}")
             print(f"   Elapsed: {elapsed:.1f}h | Remaining: {remaining:.1f}h")
-            print(f"{'='*60}\n")
+            print(f"{'=' * 60}\n")
 
             # Run task cycle
-            run_task_cycle(
-                task_id, task_description, max_turns=config.max_iterations_per_task
-            )
+            run_task_cycle(task_id, task_description, max_turns=config.max_iterations_per_task)
 
             state.total_iterations += 1
 
@@ -342,13 +335,13 @@ def run_unattended_mode(config: UnattendedConfig):
             save_checkpoint(state)
 
             if not _shutdown_requested:
-                print(f"\n⏸️  Recovering... pausing 2 minutes before retry")
+                print("\n⏸️  Recovering... pausing 2 minutes before retry")
                 time.sleep(120)
             else:
                 break
 
     # Final summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("📊 UNATTENDED MODE SUMMARY")
     print("=" * 60)
     elapsed = state.elapsed_hours()
@@ -356,14 +349,12 @@ def run_unattended_mode(config: UnattendedConfig):
     print(f"Tasks completed: {state.task_counter - 1}")
     print(f"Total iterations: {state.total_iterations}")
     print(f"Files modified: {state.total_files_modified}")
-    print(
-        f"Checkpoints saved: {state.total_iterations // config.checkpoint_interval_minutes + 1}"
-    )
+    print(f"Checkpoints saved: {state.total_iterations // config.checkpoint_interval_minutes + 1}")
 
     if _shutdown_requested:
-        print(f"\nStatus: Gracefully shutdown by user")
+        print("\nStatus: Gracefully shutdown by user")
     else:
-        print(f"\nStatus: Completed full duration")
+        print("\nStatus: Completed full duration")
 
     print("=" * 60 + "\n")
 
@@ -379,17 +370,16 @@ def run_unattended_mode(config: UnattendedConfig):
     print(f"   Files modified: {state.total_files_modified}")
     print(f"   Elapsed hours: {state.elapsed_hours():.2f}")
     try:
-        from core.config import get_config
         from pathlib import Path as _P
+
+        from core.config import get_config
 
         pd = _P(get_config().get("project_directory", "./project"))
         out = pd / ".PrizmForge" / "reports"
         out.mkdir(parents=True, exist_ok=True)
         from datetime import datetime as _dt
 
-        summary_path = (
-            out / f"unattended_summary_{_dt.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        )
+        summary_path = out / f"unattended_summary_{_dt.now().strftime('%Y%m%d_%H%M%S')}.txt"
         summary_path.write_text(
             f"tasks={state.task_counter - 1}\n"
             f"iterations={state.total_iterations}\n"
@@ -477,9 +467,7 @@ def run_semi_attended_mode():
                 print(f"Directory: {config.get('project_directory')}")
                 print(f"Git enabled: {config.get('git')}")
                 print(f"Background agents: {config.get('background_agents_enabled')}")
-                print(
-                    f"CLI Mode: {config.get('cli_mode', {}).get('mode', 'semi_attended')}"
-                )
+                print(f"CLI Mode: {config.get('cli_mode', {}).get('mode', 'semi_attended')}")
                 print()
                 continue
 
@@ -506,9 +494,7 @@ def run_semi_attended_mode():
                         task_id,
                         timestamp,
                     ) in modifications:
-                        print(
-                            f"  {timestamp[:19]} | {operation.upper():8} | {file_path}"
-                        )
+                        print(f"  {timestamp[:19]} | {operation.upper():8} | {file_path}")
                         print(f"    By: {changed_by} (Task: {task_id})")
                         print()
                 continue
@@ -584,7 +570,7 @@ def run_semi_attended_mode():
                         print("-" * 60)
                         print(content[:500])
                         if len(content) > 500:
-                            print(f"... +{len(content)-500} chars")
+                            print(f"... +{len(content) - 500} chars")
                         print()
                 continue
 
@@ -623,7 +609,7 @@ def run_semi_attended_mode():
                 continue
 
             if cmd.lower() == "git":
-                from utils.git_operations import git_status, git_log
+                from utils.git_operations import git_log, git_status
 
                 print("\n📦 Git Status:")
                 print(git_status())
@@ -642,18 +628,16 @@ def run_semi_attended_mode():
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute("""
-                        SELECT id FROM tasks 
-                        WHERE status = 'in_progress' 
-                        ORDER BY started_at DESC 
+                        SELECT id FROM tasks
+                        WHERE status = 'in_progress'
+                        ORDER BY started_at DESC
                         LIMIT 1
                     """)
                     active_task = cursor.fetchone()
 
                 if active_task:
                     # Post as human feedback with high bias
-                    print(
-                        f"\n💬 Posting as human feedback to active task {active_task[0]}..."
-                    )
+                    print(f"\n💬 Posting as human feedback to active task {active_task[0]}...")
                     post_message(
                         from_agent="human",
                         to_agent="orchestrator",
@@ -662,9 +646,7 @@ def run_semi_attended_mode():
                         priority="CRITICAL",  # Human input always CRITICAL
                     )
                     print(f"   ✅ Posted to {active_task[0]}")
-                    print(
-                        f"   🎯 Prioritizer will process and elevate to orchestrator\n"
-                    )
+                    print("   🎯 Prioritizer will process and elevate to orchestrator\n")
                     continue
             # ==========================================================
 
@@ -686,9 +668,7 @@ def run_semi_attended_mode():
             traceback.print_exc()
 
 
-def interactive_loop(
-    mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: UnattendedConfig = None
-):
+def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: Optional[UnattendedConfig] = None):
     """Main interactive loop - routes to appropriate mode"""
 
     # Setup signal handler for graceful shutdown

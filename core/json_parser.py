@@ -1,3 +1,7 @@
+from typing import Optional
+
+from typing import Callable, Dict, Optional
+
 """
 Centralized JSON parsing with edge case handling
 Handles: markdown wrapping, truncation, malformed responses
@@ -5,9 +9,9 @@ Handles: markdown wrapping, truncation, malformed responses
 
 import json
 import re
-from typing import Optional, Dict, Any, Tuple, Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any, Callable, Dict, Optional
 
 
 class ParseStatus(Enum):
@@ -61,9 +65,7 @@ class JSONParser:
             self._extract_raw,
         ]
 
-    def parse(
-        self, response: str, expected_keys: Optional[list] = None, strict: bool = False
-    ) -> ParseResult:
+    def parse(self, response: str, expected_keys: Optional[list] = None, strict: bool = False) -> ParseResult:
         """
         Parse JSON from LLM response with multiple strategies
 
@@ -204,9 +206,7 @@ class JSONParser:
 
         return None
 
-    def _try_parse(
-        self, json_str: str, expected_keys: Optional[list], strict: bool
-    ) -> ParseResult:
+    def _try_parse(self, json_str: str, expected_keys: Optional[list], strict: bool) -> ParseResult:
         """Attempt to parse JSON string"""
         try:
             data = json.loads(json_str)
@@ -331,7 +331,7 @@ def parse_json_response(
     expected_keys: Optional[list] = None,
     strict: bool = False,
     agent_name: str = "unknown",
-    auto_resume: Callable = None,
+    auto_resume: Optional[Callable] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Convenience function for parsing JSON responses

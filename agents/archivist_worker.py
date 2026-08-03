@@ -1,16 +1,16 @@
+from typing import List
+
 """Background archivist - monitors, archives, and restores context"""
 
+import json
 import threading
 import time
-import json
-
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import Dict, List
 
 from agents.base import call_agent
-from core.db_helpers import post_message
-from core.config import get_config
 from core.db_connection import get_db_connection
+from core.db_helpers import post_message
 
 
 class ArchivistWorker:
@@ -44,18 +44,16 @@ class ArchivistWorker:
 
         self.running = True
         self.current_task_id = task_id
-        self.worker_thread = threading.Thread(
-            target=self._worker_loop, daemon=True, name="archivist-worker"
-        )
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="archivist-worker")
         self.worker_thread.start()
-        print(f"    📚 Started archivist worker (message bus & conversation only)")
+        print("    📚 Started archivist worker (message bus & conversation only)")
 
     def stop(self):
         """Stop the archivist worker"""
         self.running = False
         if self.worker_thread:
             self.worker_thread.join(timeout=2.0)
-        print(f"    📚 Stopped archivist worker")
+        print("    📚 Stopped archivist worker")
 
     def _worker_loop(self):
         """Main worker loop"""
@@ -87,7 +85,6 @@ class ArchivistWorker:
         Does NOT touch file_metadata_bus or file-related tables
         """
         try:
-
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
@@ -109,9 +106,7 @@ class ArchivistWorker:
                 if len(old_messages) < 5:  # Only archive if we have enough messages
                     return
 
-                print(
-                    f"    📦 Archiving {len(old_messages)} read messages from message bus..."
-                )
+                print(f"    📦 Archiving {len(old_messages)} read messages from message bus...")
 
                 # Build messages list
                 messages = []
@@ -146,9 +141,7 @@ class ArchivistWorker:
                         message_ids,
                     )
 
-                    print(
-                        f"    ✅ Archived and cleaned {len(messages)} messages from bus"
-                    )
+                    print(f"    ✅ Archived and cleaned {len(messages)} messages from bus")
 
         except Exception as e:
             print(f"    ❌ Message archive error: {e}")
@@ -159,7 +152,6 @@ class ArchivistWorker:
         Does NOT touch file contents or metadata
         """
         try:
-
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
@@ -214,9 +206,7 @@ class ArchivistWorker:
                 if len(old_conversations) < 10:  # Must have at least 10 to archive
                     return
 
-                print(
-                    f"    📦 Archiving {len(old_conversations)} old conversation entries..."
-                )
+                print(f"    📦 Archiving {len(old_conversations)} old conversation entries...")
 
                 # Build conversations list
                 conversations = []
@@ -239,9 +229,7 @@ class ArchivistWorker:
 
                 if response:
                     # Save archive
-                    self._save_conversation_archive(
-                        self.current_task_id, conversations, response
-                    )
+                    self._save_conversation_archive(self.current_task_id, conversations, response)
                     print(f"    ✅ Archived {len(conversations)} conversation entries")
 
         except Exception as e:
@@ -263,7 +251,7 @@ class ArchivistWorker:
                     """
                     SELECT id, content, task_id
                     FROM messages
-                    WHERE to_agent = 'orchestrator' 
+                    WHERE to_agent = 'orchestrator'
                     AND timestamp > ?
                     AND task_id = ?
                     AND read = 0
@@ -277,9 +265,7 @@ class ArchivistWorker:
                     # Check if message asks about previous decisions or context
                     # NOT about files (files are always available in database)
                     if self._needs_context_restore(content):
-                        print(
-                            f"    🔍 Detected context restore need in message {msg_id}"
-                        )
+                        print(f"    🔍 Detected context restore need in message {msg_id}")
                         self._restore_relevant_context(task_id, content)
 
         except Exception as e:
@@ -343,9 +329,7 @@ class ArchivistWorker:
 
                 # Build restoration message (CONVERSATION CONTEXT ONLY)
                 restoration = "📚 **Restored Conversation Context from Archives:**\n\n"
-                restoration += (
-                    "*(Note: File contents are always available in database)*\n\n"
-                )
+                restoration += "*(Note: File contents are always available in database)*\n\n"
 
                 for archive_id, summary, key_decisions, turn_range in archives:
                     restoration += f"**Period: {turn_range}**\n"
@@ -354,9 +338,7 @@ class ArchivistWorker:
                     try:
                         decisions = json.loads(key_decisions)
                         if decisions:
-                            restoration += (
-                                f"Key Decisions: {', '.join(decisions[:3])}\n"
-                            )
+                            restoration += f"Key Decisions: {', '.join(decisions[:3])}\n"
                     except:
                         pass
 
@@ -365,9 +347,7 @@ class ArchivistWorker:
                 # Post restoration to orchestrator
                 post_message("archivist", "orchestrator", restoration, task_id, "HIGH")
 
-                print(
-                    f"    ✅ Restored {len(archives)} archived context(s) to message bus"
-                )
+                print(f"    ✅ Restored {len(archives)} archived context(s) to message bus")
 
         except Exception as e:
             print(f"    ❌ Restore error: {e}")
@@ -396,22 +376,16 @@ class ArchivistWorker:
             prompt += f"{conv['content'][:200]}...\n\n"
 
         prompt += "\nCreate a compact summary of what was discussed and decided. "
-        prompt += (
-            "Do NOT include file content summaries - focus on decisions and context."
-        )
+        prompt += "Do NOT include file content summaries - focus on decisions and context."
 
         return prompt
 
-    def _save_message_archive(
-        self, task_id: str, messages: List[Dict], archivist_response: str
-    ):
+    def _save_message_archive(self, task_id: str, messages: List[Dict], archivist_response: str):
         """Save message bus archive to database"""
         try:
             # Parse archivist response
             if "```json" in archivist_response:
-                json_str = (
-                    archivist_response.split("```json")[1].split("```")[0].strip()
-                )
+                json_str = archivist_response.split("```json")[1].split("```")[0].strip()
             elif "{" in archivist_response:
                 start = archivist_response.find("{")
                 end = archivist_response.rfind("}") + 1
@@ -451,9 +425,7 @@ class ArchivistWorker:
                 ),
             )
 
-    def _save_conversation_archive(
-        self, task_id: str, conversations: List[Dict], archivist_response: str
-    ):
+    def _save_conversation_archive(self, task_id: str, conversations: List[Dict], archivist_response: str):
         """Save conversation history archive to database"""
         # Same as message archive but marks it as conversation type
         self._save_message_archive(task_id, conversations, archivist_response)

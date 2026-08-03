@@ -1,3 +1,7 @@
+from typing import Optional
+
+from typing import List, Optional
+
 """
 ./agents/resource_controller_worker.py
 Resource Controller - Heuristic Implementation
@@ -17,21 +21,20 @@ Philosophy:
 - Respects human priorities from config
 """
 
+import json
 import threading
 import time
-import json
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
-from dataclasses import dataclass, asdict
 
 from agents.base import get_rate_limiter
-from core.db import get_db_path
-from core.config import get_config
-from core.token_budget import TokenBudget
-from core.db_helpers import post_message
-from core.db_connection import get_db_connection
-from core.config import get_config
 from agents.parallel_workers import get_agent_pool
+from core.config import get_config
+from core.db import get_db_path
+from core.db_connection import get_db_connection
+from core.db_helpers import post_message
+from core.token_budget import TokenBudget
 
 
 @dataclass
@@ -130,7 +133,6 @@ class HeuristicOptimizer:
         """Load agent profiles from database or initialize defaults"""
         try:
             with get_db_connection() as conn:
-
                 cursor = conn.cursor()
 
                 # Load existing profiles
@@ -246,9 +248,7 @@ class HeuristicOptimizer:
         else:
             return self._throttle_normal(state)
 
-    def _check_feedback_backlog(
-        self, state: ResourceState
-    ) -> Optional[ThrottleDecision]:
+    def _check_feedback_backlog(self, state: ResourceState) -> Optional[ThrottleDecision]:
         """
         Check if feedback backlog is too high
 
@@ -379,9 +379,7 @@ class HeuristicOptimizer:
         ranked_agents = self._rank_agents_by_value(exclude=["prioritizer"])
 
         # Keep top 2 background agents + prioritizer
-        active_background = (
-            ranked_agents[:2] if len(ranked_agents) >= 2 else ranked_agents
-        )
+        active_background = ranked_agents[:2] if len(ranked_agents) >= 2 else ranked_agents
         active_agents = ["prioritizer"] + active_background
 
         # Add archivist if budget allows
@@ -432,7 +430,7 @@ class HeuristicOptimizer:
             ),
         )
 
-    def _rank_agents_by_value(self, exclude: List[str] = None) -> List[str]:
+    def _rank_agents_by_value(self, exclude: Optional[List[str]] = None) -> List[str]:
         """
         Rank agents by current value score
 
@@ -519,24 +517,22 @@ class HeuristicOptimizer:
         # Exponential moving average (10% new, 90% old)
         alpha = 0.1
 
-        profile.avg_tokens_per_call = (
-            alpha * tokens_used + (1 - alpha) * profile.avg_tokens_per_call
-        )
+        profile.avg_tokens_per_call = alpha * tokens_used + (1 - alpha) * profile.avg_tokens_per_call
 
-        profile.avg_duration_seconds = (
-            alpha * duration + (1 - alpha) * profile.avg_duration_seconds
-        )
+        profile.avg_duration_seconds = alpha * duration + (1 - alpha) * profile.avg_duration_seconds
 
         # Adjust value score based on feedback generation
         if feedback_generated > 0:
             # Agent generated useful feedback - increase value slightly
             profile.feedback_value_score = min(
-                1.0, profile.feedback_value_score * 1.02  # 2% increase
+                1.0,
+                profile.feedback_value_score * 1.02,  # 2% increase
             )
         elif profile.total_calls > 10:  # Only penalize after warmup
             # No feedback after warmup - decrease value slightly
             profile.feedback_value_score = max(
-                0.1, profile.feedback_value_score * 0.99  # 1% decrease
+                0.1,
+                profile.feedback_value_score * 0.99,  # 1% decrease
             )
 
         # Save periodically (every 10 calls)
@@ -564,9 +560,7 @@ class ResourceControllerWorker:
         self.task_id: Optional[str] = None
         self.config = get_config()
         self.rc_config = self.config.get("resource_controller", {})
-        self.token_budget = TokenBudget(
-            get_db_path(), self.rc_config.get("max_tokens_per_day", 50_000_000)
-        )
+        self.token_budget = TokenBudget(get_db_path(), self.rc_config.get("max_tokens_per_day", 50_000_000))
         self.optimizer = HeuristicOptimizer()
         self.current_decision: Optional[ThrottleDecision] = None
         self.decision_history: List[ThrottleDecision] = []
@@ -580,11 +574,9 @@ class ResourceControllerWorker:
         self.running = True
         self.task_id = task_id
 
-        self.worker_thread = threading.Thread(
-            target=self._worker_loop, daemon=True, name="resource-controller-worker"
-        )
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="resource-controller-worker")
         self.worker_thread.start()
-        print(f"    ⚖️  Started Resource Controller (heuristic, adaptive)")
+        print("    ⚖️  Started Resource Controller (heuristic, adaptive)")
 
     def stop(self):
         """Stop resource controller worker"""
@@ -595,7 +587,7 @@ class ResourceControllerWorker:
         # Save final agent profiles (learned performance data)
         self.optimizer._save_agent_profiles()
 
-        print(f"    🛑 Stopped Resource Controller")
+        print("    🛑 Stopped Resource Controller")
 
     def _worker_loop(self):
         """Main control loop - monitors and adjusts resources"""
@@ -609,9 +601,7 @@ class ResourceControllerWorker:
 
                 # Skip normal throttling if temporarily disabled
                 if self._is_throttling_disabled():
-                    print(
-                        "    🔓 Throttling temporarily disabled — skipping optimization cycle"
-                    )
+                    print("    🔓 Throttling temporarily disabled — skipping optimization cycle")
                     continue
 
                 # Gather current state
@@ -680,8 +670,8 @@ class ResourceControllerWorker:
 
                 cursor.execute(
                     """
-                    SELECT SUM(tokens_used) 
-                    FROM token_log 
+                    SELECT SUM(tokens_used)
+                    FROM token_log
                     WHERE timestamp > ?
                 """,
                     (ten_min_ago,),
@@ -707,8 +697,8 @@ class ResourceControllerWorker:
 
                 cursor.execute(
                     """
-                    SELECT COUNT(*) 
-                    FROM token_log 
+                    SELECT COUNT(*)
+                    FROM token_log
                     WHERE timestamp > ?
                 """,
                     (one_min_ago,),
@@ -732,18 +722,12 @@ class ResourceControllerWorker:
         level_changed = new_decision.level != curr.level
 
         interval_changed = (
-            abs(
-                new_decision.background_feeder_interval
-                - curr.background_feeder_interval
-            )
-            > 15
+            abs(new_decision.background_feeder_interval - curr.background_feeder_interval) > 15
         )  # > 15 seconds difference
 
         agents_changed = set(new_decision.active_agents) != set(curr.active_agents)
 
-        rate_changed = (
-            abs(new_decision.rate_limit_per_minute - curr.rate_limit_per_minute) > 10
-        )  # > 10 calls/min difference
+        rate_changed = abs(new_decision.rate_limit_per_minute - curr.rate_limit_per_minute) > 10  # > 10 calls/min difference
 
         return level_changed or interval_changed or agents_changed or rate_changed
 
@@ -780,7 +764,7 @@ class ResourceControllerWorker:
 
         # 2. Adjust rate limiter
         try:
-            config = get_config()
+            get_config()
 
             # Get the appropriate endpoint's rate limiter
             # (You'll need to modify get_rate_limiter to accept endpoint parameter)
@@ -805,7 +789,6 @@ class ResourceControllerWorker:
         """Store model override preferences for agents to check"""
         try:
             with get_db_connection() as conn:
-
                 # Clear old overrides
                 conn.execute("DELETE FROM resource_model_overrides")
 
@@ -852,7 +835,7 @@ Current State:
 • API calls: {state.api_calls_last_minute}/{state.api_rate_limit} per minute
 
 Actions Taken:
-• Active agents: {', '.join(decision.active_agents)}
+• Active agents: {", ".join(decision.active_agents)}
 • Feeder interval: {decision.background_feeder_interval}s
 • Rate limit: {decision.rate_limit_per_minute} calls/min
 • Model downgrades: {len(decision.model_downgrades)} agent(s)
@@ -870,9 +853,7 @@ Recommendation: {self._get_recommendation(decision)}"""
     def _get_recommendation(self, decision: ThrottleDecision) -> str:
         """Get actionable recommendation for orchestrator"""
         if decision.level == "CRITICAL":
-            return (
-                "Focus ONLY on highest-priority human requests. Defer all other work."
-            )
+            return "Focus ONLY on highest-priority human requests. Defer all other work."
         elif decision.level == "AGGRESSIVE":
             return "Prioritize critical and high-priority items only. Defer optimization work."
         elif decision.level == "MODERATE":
@@ -884,7 +865,6 @@ Recommendation: {self._get_recommendation(decision)}"""
         """Log decision to database for analysis"""
         try:
             with get_db_connection() as conn:
-
                 conn.execute(
                     """
                     INSERT INTO resource_decisions
@@ -930,9 +910,7 @@ Recommendation: {self._get_recommendation(decision)}"""
         This should be called by agents after each execution
         Allows resource controller to learn which agents provide most value
         """
-        self.optimizer.update_agent_performance(
-            agent_name, tokens_used, duration, feedback_generated
-        )
+        self.optimizer.update_agent_performance(agent_name, tokens_used, duration, feedback_generated)
 
     def get_model_override(self, agent_name: str) -> Optional[str]:
         """
@@ -947,8 +925,8 @@ Recommendation: {self._get_recommendation(decision)}"""
 
                 cursor.execute(
                     """
-                    SELECT override_model 
-                    FROM resource_model_overrides 
+                    SELECT override_model
+                    FROM resource_model_overrides
                     WHERE agent_name = ?
                 """,
                     (agent_name,),
@@ -974,16 +952,14 @@ Recommendation: {self._get_recommendation(decision)}"""
                 stats[name] = {
                     "calls": profile.total_calls,
                     "feedback_generated": profile.total_feedback_generated,
-                    "feedback_per_call": profile.total_feedback_generated
-                    / profile.total_calls,
+                    "feedback_per_call": profile.total_feedback_generated / profile.total_calls,
                     "avg_tokens": int(profile.avg_tokens_per_call),
                     "avg_duration": round(profile.avg_duration_seconds, 2),
                     "value_score": round(profile.feedback_value_score, 2),
                     "tokens_per_feedback": int(
                         profile.avg_tokens_per_call
                         / max(
-                            profile.total_feedback_generated
-                            / max(profile.total_calls, 1),
+                            profile.total_feedback_generated / max(profile.total_calls, 1),
                             0.1,
                         )
                     ),
@@ -1004,9 +980,7 @@ Recommendation: {self._get_recommendation(decision)}"""
         This is useful when we want background agents to run aggressively
         for one cycle (e.g. when orchestrator yields control).
         """
-        self.throttling_disabled_until = datetime.now() + timedelta(
-            seconds=duration_seconds
-        )
+        self.throttling_disabled_until = datetime.now() + timedelta(seconds=duration_seconds)
         print(f"    🔓 Throttling temporarily disabled for {duration_seconds} seconds")
 
 

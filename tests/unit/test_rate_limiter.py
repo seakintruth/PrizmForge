@@ -4,8 +4,8 @@ tests/unit/test_rate_limiter.py
 Unit tests for core/rate_limiter.py
 """
 
-import pytest
 import time
+
 from core.rate_limiter import RateLimiter
 
 

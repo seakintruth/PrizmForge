@@ -7,8 +7,6 @@ Tests for workflow/task_runner orchestration with mocked LLM responses.
 import inspect
 import json
 
-import pytest
-
 
 class TestTaskRunnerSignature:
     def test_run_task_cycle_function_exists(self):
@@ -26,9 +24,7 @@ class TestTaskRunnerSignature:
 
 
 class TestTaskRunnerWithMocks:
-    def test_call_agent_patched_during_cycle_components(
-        self, mock_llm, temp_db, mock_minimal_config
-    ):
+    def test_call_agent_patched_during_cycle_components(self, mock_llm, temp_db, mock_minimal_config):
         """
         Verify the pieces the task runner uses (call_agent) honor MockLLM
         scripting — without requiring a full multi-turn cycle against real APIs.
@@ -53,9 +49,9 @@ class TestTaskRunnerWithMocks:
 
     def test_developer_edit_payload_roundtrip(self, mock_llm, temp_db):
         """Mocked developer emits find_replace; proposal path accepts it."""
+        from core.edit_response_validator import validate_developer_edit_response
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from core.edit_response_validator import validate_developer_edit_response
 
         initialize_file_lines("tr/demo.py", "n = 1\n")
         mock_llm.set_response(

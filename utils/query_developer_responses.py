@@ -4,10 +4,9 @@ Query and display raw agent responses from the database.
 Useful for debugging JSON parsing failures and seeing what the LLM actually returned.
 """
 
-import sys
 import argparse
+import sys
 from pathlib import Path
-from datetime import datetime
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -25,7 +24,7 @@ def list_recent_developer_responses(task_id=None, limit=10, agent_name="develope
         if task_id:
             cursor.execute(
                 """
-                SELECT id, timestamp, agent_name, parse_success, 
+                SELECT id, timestamp, agent_name, parse_success,
                        LENGTH(prompt) as prompt_len,
                        LENGTH(response) as response_len
                 FROM agent_responses_archive
@@ -55,9 +54,9 @@ def list_recent_developer_responses(task_id=None, limit=10, agent_name="develope
         print(f"\n❌ No {agent_name} responses found")
         return []
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"📋 Recent {agent_name.upper()} Responses ({len(responses)} found)")
-    print(f"{'='*80}\n")
+    print(f"{'=' * 80}\n")
 
     for row in responses:
         if task_id:
@@ -86,7 +85,7 @@ def show_response_detail(response_id, show_full=False, max_chars=2000):
 
         cursor.execute(
             """
-            SELECT timestamp, agent_name, task_id, prompt, response, 
+            SELECT timestamp, agent_name, task_id, prompt, response,
                    parse_success, parse_error
             FROM agent_responses_archive
             WHERE id = ?
@@ -102,16 +101,16 @@ def show_response_detail(response_id, show_full=False, max_chars=2000):
 
     timestamp, agent, task, prompt, response, parse_ok, parse_error = row
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"📄 Response Detail - ID: {response_id}")
-    print(f"{'='*80}")
+    print(f"{'=' * 80}")
     print(f"Time: {timestamp}")
     print(f"Agent: {agent}")
     print(f"Task: {task}")
     print(f"Parse Success: {'✅ Yes' if parse_ok else '❌ No'}")
     if parse_error:
         print(f"Parse Error: {parse_error}")
-    print(f"{'='*80}\n")
+    print(f"{'=' * 80}\n")
 
     # PROMPT
     print(f"📥 PROMPT ({len(prompt):,} chars):")
@@ -155,14 +154,10 @@ def show_response_detail(response_id, show_full=False, max_chars=2000):
             print("   2. Network/API error (check endpoint_health table)")
             print("   3. Response was lost in transmission")
         elif not response.strip().startswith("{"):
-            print(
-                f"⚠️  Response doesn't start with '{{' (starts with: {response.strip()[:50]})"
-            )
+            print(f"⚠️  Response doesn't start with '{{' (starts with: {response.strip()[:50]})")
             print("   → Response may be wrapped in markdown or text")
         elif response.count("{") != response.count("}"):
-            print(
-                f"⚠️  Unmatched braces: {response.count('{')} open, {response.count('}')} close"
-            )
+            print(f"⚠️  Unmatched braces: {response.count('{')} open, {response.count('}')} close")
             print("   → Response may be truncated")
         else:
             print("⚠️  Response looks like JSON but parser failed")
@@ -206,12 +201,12 @@ def show_failed_parses(task_id=None, limit=10):
         failures = cursor.fetchall()
 
     if not failures:
-        print(f"\n✅ No parse failures found!\n")
+        print("\n✅ No parse failures found!\n")
         return
 
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"❌ Parse Failures ({len(failures)} found)")
-    print(f"{'='*80}\n")
+    print(f"{'=' * 80}\n")
 
     for row in failures:
         if task_id:
@@ -235,48 +230,38 @@ def main():
 Examples:
   # List recent developer responses
   python query_developer_responses.py --list
-  
+
   # List for specific task
   python query_developer_responses.py --list --task task_001
-  
+
   # Show full detail for response ID 42
   python query_developer_responses.py --show 42 --full
-  
+
   # Show only failed parses
   python query_developer_responses.py --failures
-  
+
   # Show latest response
   python query_developer_responses.py --latest --full
         """,
     )
 
-    parser.add_argument(
-        "--list", action="store_true", help="List recent developer responses"
-    )
-    parser.add_argument(
-        "--show", type=int, metavar="ID", help="Show detailed view of response by ID"
-    )
-    parser.add_argument(
-        "--latest", action="store_true", help="Show latest developer response"
-    )
+    parser.add_argument("--list", action="store_true", help="List recent developer responses")
+    parser.add_argument("--show", type=int, metavar="ID", help="Show detailed view of response by ID")
+    parser.add_argument("--latest", action="store_true", help="Show latest developer response")
     parser.add_argument(
         "--failures",
         action="store_true",
         help="Show only responses that failed to parse",
     )
     parser.add_argument("--task", metavar="TASK_ID", help="Filter by task ID")
-    parser.add_argument(
-        "--agent", default="developer", help="Agent name to query (default: developer)"
-    )
+    parser.add_argument("--agent", default="developer", help="Agent name to query (default: developer)")
     parser.add_argument(
         "--limit",
         type=int,
         default=10,
         help="Number of responses to show (default: 10)",
     )
-    parser.add_argument(
-        "--full", action="store_true", help="Show full response (no truncation)"
-    )
+    parser.add_argument("--full", action="store_true", help="Show full response (no truncation)")
     parser.add_argument(
         "--max-chars",
         type=int,
@@ -298,24 +283,16 @@ Examples:
             show_failed_parses(task_id=args.task, limit=args.limit)
 
         elif args.list:
-            list_recent_developer_responses(
-                task_id=args.task, limit=args.limit, agent_name=args.agent
-            )
+            list_recent_developer_responses(task_id=args.task, limit=args.limit, agent_name=args.agent)
 
         elif args.show:
-            show_response_detail(
-                args.show, show_full=args.full, max_chars=args.max_chars
-            )
+            show_response_detail(args.show, show_full=args.full, max_chars=args.max_chars)
 
         elif args.latest:
             # Get latest ID
-            response_ids = list_recent_developer_responses(
-                task_id=args.task, limit=1, agent_name=args.agent
-            )
+            response_ids = list_recent_developer_responses(task_id=args.task, limit=1, agent_name=args.agent)
             if response_ids:
-                show_response_detail(
-                    response_ids[0], show_full=args.full, max_chars=args.max_chars
-                )
+                show_response_detail(response_ids[0], show_full=args.full, max_chars=args.max_chars)
 
     except KeyboardInterrupt:
         print("\n\n👋 Interrupted\n")

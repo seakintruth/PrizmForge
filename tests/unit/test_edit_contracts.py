@@ -33,9 +33,7 @@ def _content(path: str) -> str:
     from file_editing.db import get_db_connection, reconstruct_file_content
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", (path,)
-        ).fetchone()
+        row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (path,)).fetchone()
         return reconstruct_file_content(conn, row[0])
 
 
@@ -207,9 +205,9 @@ class TestDeveloperSchemaFile:
 
 class TestApplyContracts:
     def test_find_replace_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("ops/fr.py", "a = old\nb = old\n")
         prop = create_proposal_from_developer_output(
@@ -235,9 +233,9 @@ class TestApplyContracts:
         assert _content("ops/fr.py") == "a = new\nb = new\n"
 
     def test_full_replace_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("ops/full.py", "a = 1\n")
         prop = create_proposal_from_developer_output(
@@ -262,9 +260,9 @@ class TestApplyContracts:
         assert "z = 9" in _content("ops/full.py")
 
     def test_replace_block_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("ops/rb.py", "line1\nline2\nline3\n")
         g = _guids("ops/rb.py")
@@ -291,9 +289,9 @@ class TestApplyContracts:
         assert "LINE2" in _content("ops/rb.py")
 
     def test_insert_after_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("ops/ins.py", "a\nb\n")
         g = _guids("ops/ins.py")
@@ -321,9 +319,9 @@ class TestApplyContracts:
         assert "mid" in body
 
     def test_delete_lines_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("ops/del.py", "keep\nremove\nkeep2\n")
         g = _guids("ops/del.py")
@@ -351,19 +349,12 @@ class TestApplyContracts:
         assert "keep" in body
 
     def test_apply_diff(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("ops/diff.py", "hello\nworld\n")
-        diff = (
-            "--- a/ops/diff.py\n"
-            "+++ b/ops/diff.py\n"
-            "@@ -1,2 +1,2 @@\n"
-            " hello\n"
-            "-world\n"
-            "+WORLD\n"
-        )
+        diff = "--- a/ops/diff.py\n+++ b/ops/diff.py\n@@ -1,2 +1,2 @@\n hello\n-world\n+WORLD\n"
         prop = create_proposal_from_developer_output(
             {
                 "target_file_path": "ops/diff.py",
@@ -387,9 +378,8 @@ class TestApplyContracts:
         assert "WORLD" in _content("ops/diff.py")
 
     def test_create_file_apply(self, temp_db):
-        from workflow.proposal_builder import create_proposal_from_developer_output
         from file_editing.editing import apply_edit_proposal
-        from file_editing.db import get_db_connection, reconstruct_file_content
+        from workflow.proposal_builder import create_proposal_from_developer_output
 
         prop = create_proposal_from_developer_output(
             {
@@ -417,9 +407,9 @@ class TestApplyContracts:
         assert "y = 2" in body
 
     def test_create_file_refuses_existing(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
 
         initialize_file_lines("ops/exists.py", "already = 1\n")
         prop = create_proposal_from_developer_output(
@@ -454,10 +444,10 @@ class TestApplyContracts:
         assert st == "error"
 
     def test_apply_diff_malformed(self, temp_db):
+        from file_editing.db import get_db_connection
+        from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines
         from workflow.proposal_builder import create_proposal_from_developer_output
-        from file_editing.editing import apply_edit_proposal
-        from file_editing.db import get_db_connection
 
         initialize_file_lines("ops/bad_diff.py", "hello\nworld\n")
         prop = create_proposal_from_developer_output(
@@ -490,8 +480,9 @@ class TestApplyContracts:
             assert st == "error"
 
     def test_apply_diff_empty(self, temp_db):
-        from file_editing.edit_payload import EditPayload
         import pytest
+
+        from file_editing.edit_payload import EditPayload
 
         with pytest.raises(Exception):
             EditPayload.model_validate(
@@ -499,8 +490,6 @@ class TestApplyContracts:
                     "target_file_path": "x.py",
                     "summary": "empty diff op",
                     "rationale": "Empty diff must fail validation",
-                    "operations": [
-                        {"type": "apply_diff", "diff": "   ", "rationale": "empty"}
-                    ],
+                    "operations": [{"type": "apply_diff", "diff": "   ", "rationale": "empty"}],
                 }
             )

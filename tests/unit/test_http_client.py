@@ -25,13 +25,11 @@ class TestHttpClient:
         assert isinstance(has_requests(), bool)
 
     def test_post_json_uses_requests_when_available(self):
-        from core.http_client import post_json, HttpResponse
+        from core.http_client import post_json
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.content = json.dumps(
-            {"choices": [{"message": {"content": "hello"}}]}
-        ).encode()
+        mock_resp.content = json.dumps({"choices": [{"message": {"content": "hello"}}]}).encode()
         mock_resp.headers = {"Content-Type": "application/json"}
 
         with patch("requests.post", return_value=mock_resp) as mocked:
@@ -68,9 +66,7 @@ class TestHttpClient:
             def open(self, req, timeout=None):
                 return FakeResp()
 
-        with patch(
-            "core.http_client.urllib_request.build_opener", return_value=FakeOpener()
-        ):
+        with patch("core.http_client.urllib_request.build_opener", return_value=FakeOpener()):
             r = post_json(
                 "http://example.invalid/v1",
                 json_body={"a": 1},
@@ -80,7 +76,7 @@ class TestHttpClient:
             assert r.json()["ok"] is True
 
     def test_http_error_raise_for_status(self):
-        from core.http_client import HttpResponse, HttpError
+        from core.http_client import HttpError, HttpResponse
 
         r = HttpResponse(500, b"fail")
         with pytest.raises(HttpError):
@@ -114,16 +110,13 @@ class TestEndpointResilienceMocks:
     def test_mock_openai_chat_still_patches_requests(self, mock_openai_chat):
         """Existing fixture continues to work for HTTP-layer tests."""
         mock_openai_chat(response_text="RESILIENCE_OK")
-        import agents.base as base_mod
 
         # base still imports requests; fixture patches agents.base.requests.post
         # and top-level requests.post — post_json goes through requests.post
         with patch("requests.post") as mocked:
             mocked.return_value = MagicMock(
                 status_code=200,
-                content=json.dumps(
-                    {"choices": [{"message": {"content": "RESILIENCE_OK"}}]}
-                ).encode(),
+                content=json.dumps({"choices": [{"message": {"content": "RESILIENCE_OK"}}]}).encode(),
                 headers={},
             )
             from core.http_client import post_json

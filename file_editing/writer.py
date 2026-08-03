@@ -1,21 +1,24 @@
+from typing import Dict, List, Optional
+
 # =============================================================================
 # PrizmForge/file_editing/writer.py
 # Version: 1.4 - Critical column name fixes + improved invalidation + init files
 # Purpose: FileWriterAgent - Materializes proposals to disk + git + invalidation
 # =============================================================================
 
-import os
-import tempfile
-import subprocess
 import hashlib
-from pathlib import Path
-from typing import Dict, Any, Optional, List
-from uuid import uuid4
 import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from core.content_safety import validate_source_content
 
 from .db import get_db_connection, log_error, reconstruct_file_content
 from .editing import apply_edit_proposal
-from core.content_safety import validate_source_content
 
 
 def _compute_hash(content: str) -> str:
@@ -31,9 +34,7 @@ def initialize_file_lines(file_path: str, content: str) -> Dict[str, Any]:
     try:
         with get_db_connection() as conn:
             # 1. Get or create file record
-            cursor = conn.execute(
-                "SELECT file_id FROM files WHERE file_path = ?", (file_path,)
-            )
+            cursor = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,))
             row = cursor.fetchone()
 
             if row:
@@ -62,7 +63,7 @@ def initialize_file_lines(file_path: str, content: str) -> Dict[str, Any]:
 
                 conn.execute(
                     """
-                    INSERT INTO file_lines 
+                    INSERT INTO file_lines
                     (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
                     VALUES (?, ?, ?, ?, ?, 1, 0)
                 """,
@@ -90,15 +91,11 @@ def _resolve_contained_path(file_path: str, project_dir: Path) -> Path:
     try:
         resolved.relative_to(root)
     except ValueError:
-        raise ValueError(
-            f"Path escapes project directory: {file_path!r} → {resolved} (root={root})"
-        )
+        raise ValueError(f"Path escapes project directory: {file_path!r} → {resolved} (root={root})")
     return resolved
 
 
-def write_file_to_disk(
-    file_path: str, content: str, proposal_id: Optional[str] = None
-) -> Dict[str, Any]:
+def write_file_to_disk(file_path: str, content: str, proposal_id: Optional[str] = None) -> Dict[str, Any]:
     """Atomic write using temp file + os.replace(), with project-root containment."""
     try:
         from core.config import get_config
@@ -123,9 +120,7 @@ def write_file_to_disk(
             }
 
         path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", delete=False, dir=path.parent, suffix=".tmp", encoding="utf-8"
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="w", delete=False, dir=path.parent, suffix=".tmp", encoding="utf-8") as tmp:
             tmp.write(content)
             tmp_path = tmp.name
 
@@ -140,9 +135,7 @@ def write_file_to_disk(
         return {"status": "error", "message": str(e)}
 
 
-def invalidate_other_proposals(
-    conn, current_proposal_id: str, affected_guids: List[str]
-):
+def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: List[str]):
     """After successful write, mark overlapping pending proposals as needs_revalidation."""
     if not affected_guids:
         return
@@ -152,7 +145,7 @@ def invalidate_other_proposals(
             """
             SELECT proposal_id, affected_line_guids
             FROM edit_proposals
-            WHERE proposal_id != ? 
+            WHERE proposal_id != ?
             AND status IN ('pending', 'under_review', 'approved')
         """,
             (current_proposal_id,),
@@ -176,7 +169,7 @@ def invalidate_other_proposals(
                 # Mark as needs revalidation
                 conn.execute(
                     """
-                    UPDATE edit_proposals 
+                    UPDATE edit_proposals
                     SET status = 'needs_revalidation'
                     WHERE proposal_id = ?
                 """,
@@ -185,9 +178,7 @@ def invalidate_other_proposals(
                 invalidated_count += 1
 
         if invalidated_count > 0:
-            print(
-                f"🔄 Invalidated {invalidated_count} overlapping proposal(s) after {current_proposal_id[:8]}"
-            )
+            print(f"🔄 Invalidated {invalidated_count} overlapping proposal(s) after {current_proposal_id[:8]}")
 
     except Exception as e:
         log_error(
@@ -202,9 +193,7 @@ def invalidate_other_proposals(
 def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
     """Apply proposal (if needed), write to disk, invalidate overlapping proposals, optional git commit."""
     with get_db_connection() as conn:
-        proposal = conn.execute(
-            "SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)
-        ).fetchone()
+        proposal = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
 
         if not proposal:
             return {"status": "error", "message": "Proposal not found"}
@@ -251,12 +240,8 @@ def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
                 try:
                     from core.config import get_config
 
-                    pd = Path(
-                        get_config().get("project_directory", "./project")
-                    ).resolve()
-                    rel = str(Path(target_path).resolve().relative_to(pd)).replace(
-                        "\\", "/"
-                    )
+                    pd = Path(get_config().get("project_directory", "./project")).resolve()
+                    rel = str(Path(target_path).resolve().relative_to(pd)).replace("\\", "/")
                 except Exception:
                     rel = Path(target_path).name
                 if rel.endswith(".py"):

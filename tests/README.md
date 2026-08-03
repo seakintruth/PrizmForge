@@ -72,6 +72,7 @@ def test_flow(mock_llm):
 
     with mock_llm.patch_call_agent():
         from agents.base import call_agent
+
         ...
 ```
 

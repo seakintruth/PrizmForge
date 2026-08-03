@@ -1,3 +1,5 @@
+from typing import Dict, Optional
+
 """
 Minimal HTTP JSON POST helper.
 
@@ -11,7 +13,7 @@ from __future__ import annotations
 
 import json
 import ssl
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -19,9 +21,7 @@ from urllib import request as urllib_request
 class HttpResponse:
     """Small response object compatible with the bits agents.base uses."""
 
-    def __init__(
-        self, status_code: int, body: bytes, headers: Optional[Dict[str, str]] = None
-    ):
+    def __init__(self, status_code: int, body: bytes, headers: Optional[Dict[str, str]] = None):
         self.status_code = status_code
         self._body = body or b""
         self.headers = headers or {}
@@ -120,9 +120,7 @@ def post_json(
             )
         except ImportError:
             pass
-    return _post_with_urllib(
-        url, headers=headers, json_body=json_body, timeout=timeout, proxies=proxies
-    )
+    return _post_with_urllib(url, headers=headers, json_body=json_body, timeout=timeout, proxies=proxies)
 
 
 def has_requests() -> bool:

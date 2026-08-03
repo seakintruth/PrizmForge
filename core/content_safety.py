@@ -1,3 +1,5 @@
+from typing import Dict, Optional, Set, Tuple, Union
+
 """
 Reject binary payloads that must never enter governed source trees.
 

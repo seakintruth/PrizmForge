@@ -42,12 +42,7 @@ def test_rejects_exe_extension():
 def test_allows_powershell_script_text():
     from core.content_safety import validate_source_content
 
-    assert (
-        validate_source_content("Write-Host 'hello'\n", file_path="scripts/deploy.ps1")[
-            "ok"
-        ]
-        is True
-    )
+    assert validate_source_content("Write-Host 'hello'\n", file_path="scripts/deploy.ps1")["ok"] is True
 
 
 def test_allows_bat_cmd_js_text():
@@ -61,23 +56,19 @@ def test_allows_bat_cmd_js_text():
 def test_allows_normal_source():
     from core.content_safety import validate_source_content
 
-    assert (
-        validate_source_content("def main():\n    pass\n", file_path="app.py")["ok"]
-        is True
-    )
+    assert validate_source_content("def main():\n    pass\n", file_path="app.py")["ok"] is True
 
 
 def test_full_replace_rejects_binary(temp_db):
-    from file_editing.writer import initialize_file_lines
-    from file_editing.editing import apply_full_replace
-    from file_editing.db import get_db_connection
     from types import SimpleNamespace
+
+    from file_editing.db import get_db_connection
+    from file_editing.editing import apply_full_replace
+    from file_editing.writer import initialize_file_lines
 
     initialize_file_lines("safe.py", "x = 1\n")
     with get_db_connection() as conn:
-        fid = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", ("safe.py",)
-        ).fetchone()[0]
+        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("safe.py",)).fetchone()[0]
         op = SimpleNamespace(
             type="full_replace",
             new_content="MZ" + ("\x00" * 50) + "binary-not-source",
@@ -109,15 +100,9 @@ def test_custom_blocked_list():
             "blocked_extensions": [".msi"],
         }
     }
-    assert (
-        validate_source_content("text", file_path="Setup.msi", config=cfg)["ok"]
-        is False
-    )
+    assert validate_source_content("text", file_path="Setup.msi", config=cfg)["ok"] is False
     # .exe not in custom list → allowed by extension (content still checked)
-    assert (
-        validate_source_content("print(1)\n", file_path="run.exe", config=cfg)["ok"]
-        is True
-    )
+    assert validate_source_content("print(1)\n", file_path="run.exe", config=cfg)["ok"] is True
 
 
 def test_disallow_binary_content_false():

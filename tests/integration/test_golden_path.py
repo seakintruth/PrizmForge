@@ -11,12 +11,8 @@ No network. No new dependencies (stdlib MockLLM + pytest).
 from __future__ import annotations
 
 import json
-import os
 import sys
-import tempfile
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -41,12 +37,12 @@ def run_governed_edit_once(
       validate → create_proposal → approve → apply → materialize
     Returns a progress-like dict for assertions.
     """
+    from core import config as config_mod
     from core.edit_response_validator import validate_developer_edit_response
-    from workflow.proposal_builder import create_proposal_from_developer_output
+    from file_editing.db import get_db_connection
     from file_editing.editing import apply_edit_proposal
     from file_editing.writer import materialize_proposal
-    from file_editing.db import get_db_connection
-    from core import config as config_mod
+    from workflow.proposal_builder import create_proposal_from_developer_output
 
     progress = {
         "valid_edit_payloads": 0,
@@ -151,9 +147,7 @@ def _init_file(rel_path: str, content: str, project_dir: Path) -> None:
 
 
 class TestGoldenPathFindReplace:
-    def test_orchestrator_developer_reviewer_materialize(
-        self, temp_db, mock_llm, tmp_path
-    ):
+    def test_orchestrator_developer_reviewer_materialize(self, temp_db, mock_llm, tmp_path):
         """Full golden path with MockLLM-scripted agent responses."""
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
@@ -187,9 +181,7 @@ class TestGoldenPathFindReplace:
         mock_llm.set_response("developer", json.dumps(developer_payload))
         mock_llm.set_response(
             "reviewer",
-            json.dumps(
-                {"decision": "APPROVE", "reason": "Safe rename", "suggestions": []}
-            ),
+            json.dumps({"decision": "APPROVE", "reason": "Safe rename", "suggestions": []}),
         )
 
         with mock_llm.patch_call_agent():
@@ -263,9 +255,7 @@ class TestGoldenPathFallback:
             from agents.base import call_agent
 
             for _ in range(4):
-                raw = call_agent(
-                    "developer", f"edit with mode={mode}", task_id="gold_fb"
-                )
+                raw = call_agent("developer", f"edit with mode={mode}", task_id="gold_fb")
                 v = validate_developer_edit_response(raw)
                 if v.is_valid:
                     final_raw = raw
@@ -298,7 +288,7 @@ class TestGoldenPathFallback:
 
 class TestGoldenPathFullReplace:
     def test_small_file_full_replace(self, temp_db, mock_llm, tmp_path):
-        from workflow.edit_mode_selector import select_edit_mode, MODE_FULL_REPLACE
+        from workflow.edit_mode_selector import MODE_FULL_REPLACE, select_edit_mode
 
         project_dir = tmp_path / "proj"
         project_dir.mkdir()

@@ -295,13 +295,14 @@ def cmd_security_report(task_id: str = None):
     """Generate security report"""
     from core.db import get_db_path
     import sqlite3
-    
+
     print(f"\n🔒 Security Report")
     print("=" * 60)
-    
+
     from core.db_connection import get_db_connection
+
     with get_db_connection() as conn:
-        cursor = conn.cursor()        
+        cursor = conn.cursor()
         # Query security feedback
         query = """
             SELECT file_path, priority, message, suggestion
@@ -309,35 +310,35 @@ def cmd_security_report(task_id: str = None):
             WHERE agent_name = 'security_auditor'
             AND category IN ('sql_injection', 'xss', 'csrf', 'auth')
         """
-        
+
         if task_id:
             query += " AND task_id = ?"
             cursor.execute(query, (task_id,))
         else:
             cursor.execute(query)
-        
+
         vulnerabilities = cursor.fetchall()
         # Don't conn.close()
-    
+
     if not vulnerabilities:
         print("✅ No security issues found\n")
         return
-    
+
     # Group by severity
-    critical = [v for v in vulnerabilities if v[1] == 'CRITICAL']
-    high = [v for v in vulnerabilities if v[1] == 'HIGH']
-    medium = [v for v in vulnerabilities if v[1] == 'MEDIUM']
-    
+    critical = [v for v in vulnerabilities if v[1] == "CRITICAL"]
+    high = [v for v in vulnerabilities if v[1] == "HIGH"]
+    medium = [v for v in vulnerabilities if v[1] == "MEDIUM"]
+
     print(f"\n🚨 CRITICAL: {len(critical)}")
     for file_path, _, message, suggestion in critical:
         print(f"   {file_path}")
         print(f"   • {message}")
         print(f"   💡 {suggestion}\n")
-    
+
     print(f"⚠️  HIGH: {len(high)}")
     for file_path, _, message, suggestion in high:
         print(f"   {file_path}: {message}\n")
-    
+
     print(f"⚡ MEDIUM: {len(medium)}\n")
     print("=" * 60 + "\n")
 ```
@@ -396,10 +397,10 @@ Edit `agent_prompts.json`:
 
 ```python
 {
-  "performance_analyzer": {
-    "role": "Performance Analyzer (Background)",
-    "system_prompt": "You are a performance analyzer running in parallel. Analyze code for:\n- Performance bottlenecks\n- Inefficient algorithms\n- Memory leaks\n- Database query optimization\n\nResponse (JSON):\n{\n  \"issues\": [\n    {\n      \"priority\": \"HIGH|MEDIUM|LOW\",\n      \"type\": \"bottleneck|memory|query|algorithm\",\n      \"location\": \"function_name or line range\",\n      \"issue\": \"Description\",\n      \"suggestion\": \"How to optimize\",\n      \"estimated_improvement\": \"2x faster, 50% less memory, etc\"\n    }\n  ],\n  \"summary\": \"Overall performance assessment\"\n}"
-  }
+    "performance_analyzer": {
+        "role": "Performance Analyzer (Background)",
+        "system_prompt": 'You are a performance analyzer running in parallel. Analyze code for:\n- Performance bottlenecks\n- Inefficient algorithms\n- Memory leaks\n- Database query optimization\n\nResponse (JSON):\n{\n  "issues": [\n    {\n      "priority": "HIGH|MEDIUM|LOW",\n      "type": "bottleneck|memory|query|algorithm",\n      "location": "function_name or line range",\n      "issue": "Description",\n      "suggestion": "How to optimize",\n      "estimated_improvement": "2x faster, 50% less memory, etc"\n    }\n  ],\n  "summary": "Overall performance assessment"\n}',
+    }
 }
 ```
 
@@ -412,24 +413,19 @@ def start(self, task_id: str):
     """Start background workers"""
     if self.running:
         return
-    
+
     self.running = True
     self.task_id = task_id
     self.recently_queued = {
-        'jr_reviewer': set(),
-        'jr_researcher': set(),
-        'tech_writer': set(),
-        'performance_analyzer': set()  # ← Add this
+        "jr_reviewer": set(),
+        "jr_researcher": set(),
+        "tech_writer": set(),
+        "performance_analyzer": set(),  # ← Add this
     }
-    
+
     # Start workers
-    for agent_name in ['jr_reviewer', 'jr_researcher', 'tech_writer', 'performance_analyzer']:
-        worker = threading.Thread(
-            target=self._worker_loop,
-            args=(agent_name,),
-            daemon=True,
-            name=f"{agent_name}-worker"
-        )
+    for agent_name in ["jr_reviewer", "jr_researcher", "tech_writer", "performance_analyzer"]:
+        worker = threading.Thread(target=self._worker_loop, args=(agent_name,), daemon=True, name=f"{agent_name}-worker")
         worker.start()
         self.workers.append(worker)
         print(f"    🤖 Started {agent_name} worker")
@@ -532,39 +528,46 @@ Create `core/security_helpers.py`:
 
 ```python
 """Security scan database helpers"""
+
 import sqlite3
 from datetime import datetime
 from core.db import get_db_path
 
-def save_security_scan(task_id: str, file_path: str, scan_type: str,
-                       vulnerabilities: list, scanned_by: str):
+
+def save_security_scan(task_id: str, file_path: str, scan_type: str, vulnerabilities: list, scanned_by: str):
     """Save security scan results"""
-    critical = len([v for v in vulnerabilities if v['severity'] == 'CRITICAL'])
-    high = len([v for v in vulnerabilities if v['severity'] == 'HIGH'])
+    critical = len([v for v in vulnerabilities if v["severity"] == "CRITICAL"])
+    high = len([v for v in vulnerabilities if v["severity"] == "HIGH"])
     with get_db_connection() as conn:
-        cursor = conn.cursor() 
-        conn.execute("""
+        cursor = conn.cursor()
+        conn.execute(
+            """
             INSERT INTO security_scans
             (task_id, file_path, scan_type, vulnerabilities_found,
             critical_count, high_count, scanned_at, scanned_by)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (task_id, file_path, scan_type, len(vulnerabilities),
-            critical, high, datetime.now().isoformat(), scanned_by))
+        """,
+            (task_id, file_path, scan_type, len(vulnerabilities), critical, high, datetime.now().isoformat(), scanned_by),
+        )
         # don't conn.commit()
         # don't conn.close()
+
 
 def get_security_scans(task_id: str) -> list:
     """Get security scans for task"""
 
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT file_path, scan_type, vulnerabilities_found,
                 critical_count, high_count, scanned_at
             FROM security_scans
             WHERE task_id = ?
             ORDER BY scanned_at DESC
-        """, (task_id,))
+        """,
+            (task_id,),
+        )
         results = cursor.fetchall()
     return results
 ```
@@ -576,10 +579,7 @@ from core.security_helpers import save_security_scan
 
 # After security audit
 if vulnerabilities:
-    save_security_scan(
-        task_id, file_path, "static_analysis",
-        vulnerabilities, "security_auditor"
-    )
+    save_security_scan(task_id, file_path, "static_analysis", vulnerabilities, "security_auditor")
 ```
 
 ### Step 4: Test Migration
@@ -768,39 +768,42 @@ Create `tests/test_security_auditor.py`:
 
 ```python
 """Test security auditor agent"""
+
 import unittest
 from agents.base import call_agent
+
 
 class TestSecurityAuditor(unittest.TestCase):
     def test_sql_injection_detection(self):
         """Test SQL injection detection"""
-        vulnerable_code = '''
+        vulnerable_code = """
 def get_user(username):
     query = f"SELECT * FROM users WHERE username = '{username}'"
     return db.execute(query)
-'''
-        
+"""
+
         prompt = f"Analyze for SQL injection:\n{vulnerable_code}"
         response = call_agent("security_auditor", prompt, "test_task")
-        
+
         self.assertIsNotNone(response)
         self.assertIn("sql_injection", response.lower())
-    
+
     def test_safe_code(self):
         """Test safe code returns no issues"""
-        safe_code = '''
+        safe_code = """
 def get_user(username):
     query = "SELECT * FROM users WHERE username = ?"
     return db.execute(query, (username,))
-'''
-        
+"""
+
         prompt = f"Analyze for SQL injection:\n{safe_code}"
         response = call_agent("security_auditor", prompt, "test_task")
-        
+
         self.assertIsNotNone(response)
         # Should indicate no issues or low severity
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
 ```
 
@@ -816,38 +819,41 @@ Create `tests/test_security_workflow.py`:
 
 ```python
 """Test security audit workflow"""
+
 import unittest
 import os
 from workflow.security_audit import run_security_audit
 from core.db import init_db
 from core.file_operations import sync_file_to_database
 
+
 class TestSecurityWorkflow(unittest.TestCase):
     def setUp(self):
         """Set up test database"""
-        os.environ['TESTING'] = '1'
+        os.environ["TESTING"] = "1"
         init_db()
-        
+
         # Add test file
-        vulnerable_code = '''
+        vulnerable_code = """
 def login(username, password):
     query = f"SELECT * FROM users WHERE username='{username}'"
     user = db.execute(query).fetchone()
     return user
-'''
+"""
         sync_file_to_database("test_auth.py", vulnerable_code)
-    
+
     def test_security_audit_finds_vulnerabilities(self):
         """Test that audit finds vulnerabilities"""
         vulns = run_security_audit("test_task")
-        
+
         self.assertGreater(vulns, 0, "Should find vulnerabilities")
-    
+
     def tearDown(self):
         """Clean up"""
-        os.environ.pop('TESTING', None)
+        os.environ.pop("TESTING", None)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()
 ```
 
@@ -880,6 +886,7 @@ def cmd_my_command():
     print("=" * 60)
     # Implementation
     print()
+
 
 # Bad: Different style
 def myCommand():
@@ -930,13 +937,11 @@ cursor.execute(f"SELECT * FROM tasks WHERE id = '{task_id}'")
 **Close connections and Commit changes:**
 
 ```python
-
 # Use our custom context manager, close and commit happen automatically
 with get_db_connection() as conn:
     cursor = conn.cursor()
     cursor.execute(...)
     results = cursor.fetchall()
-
 ```
 
 
@@ -1078,10 +1083,10 @@ LIMIT 10;
 from agents.base import call_agent
 
 response = call_agent("my_agent", "test prompt", "test_task")
-print("="*60)
+print("=" * 60)
 print("RESPONSE:")
 print(response)
-print("="*60)
+print("=" * 60)
 ```
 
 ### Export for Analysis

@@ -2,6 +2,7 @@
 
 import subprocess
 from pathlib import Path
+
 from core.config import get_config
 
 
@@ -14,9 +15,7 @@ def git_init():
     project_dir = Path(config.get("project_directory", "./project"))
 
     try:
-        result = subprocess.run(
-            ["git", "init"], cwd=project_dir, capture_output=True, text=True
-        )
+        result = subprocess.run(["git", "init"], cwd=project_dir, capture_output=True, text=True)
         if result.returncode == 0:
             print(f"✅ Git initialized in {project_dir}")
             return True
@@ -68,13 +67,13 @@ def git_commit(file_path: str, message: str) -> str:
             return commit_hash
         else:
             # ✅ FIX: Make commit failures more visible
-            print(f"\n{'='*60}")
+            print(f"\n{'=' * 60}")
             print(f"⚠️  GIT COMMIT FAILED for {file_path}")
-            print(f"{'='*60}")
+            print(f"{'=' * 60}")
             print(f"Error: {result.stderr}")
             print(f"Stdout: {result.stdout}")
-            print(f"File will be modified but NOT version controlled!")
-            print(f"{'='*60}\n")
+            print("File will be modified but NOT version controlled!")
+            print(f"{'=' * 60}\n")
             return None
 
     except subprocess.TimeoutExpired:
@@ -112,7 +111,7 @@ def ensure_git_initialized() -> bool:
             return True
         else:
             # Not a git repo - initialize it
-            print(f"\n⚠️  Not a git repository. Initializing...")
+            print("\n⚠️  Not a git repository. Initializing...")
             init_result = subprocess.run(
                 ["git", "init"],
                 cwd=project_dir,
@@ -151,7 +150,7 @@ venv/
 *.swo
 """
                     gitignore_path.write_text(gitignore_content)
-                    print(f"   📝 Created .gitignore")
+                    print("   📝 Created .gitignore")
 
                 # Initial commit
                 try:
@@ -191,14 +190,12 @@ venv/
                             commit_hash = hash_result.stdout.strip()
                             print(f"   📦 Initial commit: {commit_hash}")
                         else:
-                            print(
-                                f"   ⚠️  Initial commit failed: {commit_result.stderr}"
-                            )
+                            print(f"   ⚠️  Initial commit failed: {commit_result.stderr}")
                     else:
                         print(f"   ⚠️  git add failed: {add_result.stderr}")
 
                 except subprocess.TimeoutExpired:
-                    print(f"   ⚠️  Initial commit timed out")
+                    print("   ⚠️  Initial commit timed out")
                 except Exception as e:
                     print(f"   ⚠️  Initial commit error: {e}")
 
@@ -208,7 +205,7 @@ venv/
                 return False
 
     except FileNotFoundError:
-        print(f"❌ Git command not found. Install git to enable version control.")
+        print("❌ Git command not found. Install git to enable version control.")
         return False
     except Exception as e:
         print(f"❌ Git check failed: {e}")
@@ -261,9 +258,7 @@ def git_log(count: int = 10) -> list:
             if line.strip():
                 parts = line.split("|", 2)
                 if len(parts) == 3:
-                    commits.append(
-                        {"hash": parts[0], "message": parts[1], "when": parts[2]}
-                    )
+                    commits.append({"hash": parts[0], "message": parts[1], "when": parts[2]})
         return commits
     except Exception:
         return []

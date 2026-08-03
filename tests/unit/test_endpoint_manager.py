@@ -4,13 +4,7 @@ tests/unit/test_endpoint_manager.py
 High-priority tests for EndpointManager.
 """
 
-import pytest
-from core.endpoint_manager import (
-    EndpointConfig,
-    EndpointStatus,
-    EndpointHealth,
-    EndpointManager,
-)
+from core.endpoint_manager import EndpointConfig, EndpointHealth, EndpointManager, EndpointStatus
 
 
 class TestEndpointConfig:
@@ -71,9 +65,7 @@ class TestEndpointManagerAdvanced:
     def test_build_payload_structure(self):
         manager = EndpointManager(config={})
         try:
-            payload = manager.build_payload(
-                messages=[{"role": "user", "content": "Hello"}], model="test-model"
-            )
+            payload = manager.build_payload(messages=[{"role": "user", "content": "Hello"}], model="test-model")
             assert isinstance(payload, dict)
         except Exception:
             pass

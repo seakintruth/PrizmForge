@@ -1,3 +1,5 @@
+from typing import Dict, Optional, Tuple
+
 """
 Backlog override helpers for unattended runs.
 
@@ -71,9 +73,7 @@ def apply_backlog_overrides(
                 f"Priority: {priority}\n"
                 f"Category: {category}\n"
                 f"File: {file_path}\n\n"
-                f"Issue: {message}\n\n"
-                + (f"Suggested fix: {suggestion}\n\n" if suggestion else "")
-                + f"**CRITICAL:**\n"
+                f"Issue: {message}\n\n" + (f"Suggested fix: {suggestion}\n\n" if suggestion else "") + f"**CRITICAL:**\n"
                 f"- Skip analysis phase\n"
                 f"- FILES_NEEDED: {file_path}\n"
                 f"- Prefer a simple, reliable edit (find_replace or full_replace for small files)\n"
@@ -82,10 +82,7 @@ def apply_backlog_overrides(
             "reasoning": f"BACKLOG OVERRIDE: {total} items, processing #{fb_id}",
             "files_needed": [file_path] if file_path else [],
             "addressing_feedback_ids": [fb_id],
-            "feedback_summary": (
-                f"Backlog: {total} items. Processing highest priority: "
-                f"#{fb_id} [{priority}] {category}"
-            ),
+            "feedback_summary": (f"Backlog: {total} items. Processing highest priority: #{fb_id} [{priority}] {category}"),
             "model": (decision or {}).get("model"),
         }
 
@@ -96,10 +93,7 @@ def apply_backlog_overrides(
         fb_id, priority, category, file_path, message, suggestion = top
         out = dict(decision)
         out["next_agent"] = "developer"
-        out["instructions"] = (
-            f"Address feedback #{fb_id}: [{priority}] {category} in {file_path}\n\n"
-            f"Issue: {message}\n\n"
-        )
+        out["instructions"] = f"Address feedback #{fb_id}: [{priority}] {category} in {file_path}\n\nIssue: {message}\n\n"
         if suggestion:
             out["instructions"] += f"Suggested fix: {suggestion}"
         out["files_needed"] = [file_path] if file_path else []

@@ -7,8 +7,6 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -49,8 +47,6 @@ class TestMockLLMScripting:
         llm.set_response("developer", "PATCHED_OK")
 
         with llm.patch_call_agent():
-            from agents.base import call_agent
-
             # May still fail on prompts/config — but if it gets through, response is ours
             # Force direct use of the patched symbol
             import agents.base as base_mod
@@ -105,9 +101,7 @@ class TestNoNetworkLeak:
         mock_llm.set_response("developer", "no-network")
 
         def boom(*args, **kwargs):
-            raise AssertionError(
-                "requests.post must not be called when call_agent is mocked"
-            )
+            raise AssertionError("requests.post must not be called when call_agent is mocked")
 
         with patch("agents.base.requests.post", side_effect=boom):
             with mock_llm.patch_call_agent():

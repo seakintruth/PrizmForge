@@ -4,13 +4,7 @@ tests/unit/test_truncation_detector.py
 Unit tests for core/truncation_detector.py
 """
 
-import pytest
-from core.truncation_detector import (
-    TruncationDetector,
-    TruncationType,
-    get_truncation_detector,
-    detect_and_resume,
-)
+from core.truncation_detector import TruncationDetector, TruncationType, detect_and_resume, get_truncation_detector
 
 
 class TestTruncationDetector:
@@ -51,9 +45,7 @@ class TestTruncationDetector:
 
     def test_detect_mid_sentence_truncation(self):
         detector = TruncationDetector()
-        response = (
-            "The function should return the sum of the two numbers and also handle"
-        )
+        response = "The function should return the sum of the two numbers and also handle"
         result = detector.detect(response)
         assert result.is_truncated is True or result.confidence > 0.6
 

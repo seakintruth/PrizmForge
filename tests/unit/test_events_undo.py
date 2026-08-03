@@ -5,14 +5,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def test_publish_and_list_events(temp_db):
-    from core.events import publish_event, list_events
+    from core.events import list_events, publish_event
 
     eid = publish_event(
         "proposal.created",
@@ -27,11 +25,11 @@ def test_publish_and_list_events(temp_db):
 
 
 def test_undo_restores_content(temp_db):
-    from file_editing.writer import initialize_file_lines
-    from workflow.proposal_builder import create_proposal_from_developer_output
+    from file_editing.db import get_db_connection, reconstruct_file_content
     from file_editing.editing import apply_edit_proposal
     from file_editing.undo import snapshot_before_apply, undo_proposal
-    from file_editing.db import get_db_connection, reconstruct_file_content
+    from file_editing.writer import initialize_file_lines
+    from workflow.proposal_builder import create_proposal_from_developer_output
 
     initialize_file_lines("undo/demo.py", "a = 1\n")
     prop = create_proposal_from_developer_output(
@@ -61,16 +59,12 @@ def test_undo_restores_content(temp_db):
     snapshot_before_apply(pid)
     assert apply_edit_proposal(pid)["status"] == "success"
     with get_db_connection() as conn:
-        fid = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)
-        ).fetchone()[0]
+        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)).fetchone()[0]
         assert "a = 2" in reconstruct_file_content(conn, fid)
     und = undo_proposal(pid, write_disk=False)
     assert und["status"] == "success"
     with get_db_connection() as conn:
-        fid = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)
-        ).fetchone()[0]
+        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)).fetchone()[0]
         assert "a = 1" in reconstruct_file_content(conn, fid)
 
 
@@ -79,15 +73,12 @@ def test_undo_without_snapshot_errors(temp_db):
 
     result = undo_proposal("nonexistent-proposal-id", write_disk=False)
     assert result["status"] == "error"
-    assert (
-        "snapshot" in result["message"].lower()
-        or "no snapshot" in result["message"].lower()
-    )
+    assert "snapshot" in result["message"].lower() or "no snapshot" in result["message"].lower()
 
 
 def test_proposal_created_emits_event(temp_db):
-    from workflow.proposal_builder import create_proposal_from_developer_output
     from core.events import list_events
+    from workflow.proposal_builder import create_proposal_from_developer_output
 
     prop = create_proposal_from_developer_output(
         {
@@ -114,10 +105,10 @@ def test_proposal_created_emits_event(temp_db):
 def test_create_file_then_materialize(temp_db, tmp_path, monkeypatch):
     """create_file apply + materialize writes under project dir."""
     from core import config as config_mod
-    from workflow.proposal_builder import create_proposal_from_developer_output
+    from file_editing.db import get_db_connection
     from file_editing.editing import apply_edit_proposal
     from file_editing.writer import materialize_proposal
-    from file_editing.db import get_db_connection
+    from workflow.proposal_builder import create_proposal_from_developer_output
 
     project_dir = tmp_path / "proj"
     project_dir.mkdir()

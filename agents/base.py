@@ -1,17 +1,21 @@
+from typing import List, Optional, Tuple
+
 """Base agent functionality with multi-endpoint support"""
 
-import requests
-from core.http_client import post_json
 import re
 import time
-from typing import Tuple, Optional, List, Dict
-from core.config import get_config, get_agent_prompts
-from core.rate_limiter import RateLimiter
-from core.token_budget import TokenBudget
+from typing import Dict, List, Optional, Tuple
+
+import requests
+
+from core.config import get_agent_prompts, get_config
 from core.db import get_db_path
 from core.db_helpers import save_conversation
-from core.endpoint_manager import get_endpoint_manager, EndpointStatus, EndpointConfig
+from core.endpoint_manager import EndpointConfig, EndpointStatus, get_endpoint_manager
 from core.fallback_stats import log_fallback
+from core.http_client import post_json
+from core.rate_limiter import RateLimiter
+from core.token_budget import TokenBudget
 from file_editing.db import log_error
 
 # Initialize
@@ -32,9 +36,7 @@ def get_token_budget() -> TokenBudget:
     global _token_budget
     if _token_budget is None:
         config = get_config()
-        _token_budget = TokenBudget(
-            get_db_path(), config["token_budget"]["max_tokens_per_4h"]
-        )
+        _token_budget = TokenBudget(get_db_path(), config["token_budget"]["max_tokens_per_4h"])
     return _token_budget
 
 
@@ -98,13 +100,11 @@ def call_endpoint(
                 agent_name,
             )
         else:
-            print(f"   ❌ No alternate endpoints available")
+            print("   ❌ No alternate endpoints available")
             return None, 0
 
     # Build payload for this endpoint
-    payload = endpoint_mgr.build_payload(
-        endpoint, model_name, messages, max_tokens, temperature
-    )
+    payload = endpoint_mgr.build_payload(endpoint, model_name, messages, max_tokens, temperature)
 
     # Estimate tokens
     input_tokens = sum(estimate_tokens(m.get("content", "")) for m in messages)
@@ -112,7 +112,7 @@ def call_endpoint(
     estimated_total = input_tokens + estimated_output
 
     if not token_budget.can_spend(estimated_total):
-        print(f"⚠️  Token budget exceeded. Trying alternate endpoint...")
+        print("⚠️  Token budget exceeded. Trying alternate endpoint...")
         fallback = endpoint_mgr.get_fallback_model(endpoint)
         if fallback:
             fallback_model, fallback_endpoint = fallback
@@ -199,11 +199,11 @@ def call_endpoint(
 
                 # ✅ If we got an unlock URL, pause for 2 minutes to let the user click it
                 if unlock_url:
-                    print(f"\n{'='*60}")
+                    print(f"\n{'=' * 60}")
                     print(f"🔒 {error_msg.upper()} ({endpoint.name})")
                     print(f"👉 CLICK TO UNLOCK: {unlock_url}")
-                    print(f"⏳ Pausing for 2 minutes to allow you to unlock the API...")
-                    print(f"{'='*60}\n")
+                    print("⏳ Pausing for 2 minutes to allow you to unlock the API...")
+                    print(f"{'=' * 60}\n")
 
                     time.sleep(120)  # Wait 2 minutes for user to unlock
 
@@ -220,21 +220,14 @@ def call_endpoint(
                         retry_error_data = {}
                         try:
                             retry_json = resp.json()
-                            if "error" in retry_json and isinstance(
-                                retry_json["error"], dict
-                            ):
+                            if "error" in retry_json and isinstance(retry_json["error"], dict):
                                 retry_error_data = retry_json["error"]
                         except Exception:
                             pass
 
                         # Check if the retry succeeded
-                        if (
-                            resp.status_code == 200
-                            and retry_error_data.get("type") != "unauthorized"
-                        ):
-                            print(
-                                f"✅ API successfully unlocked ({endpoint.name})! Resuming..."
-                            )
+                        if resp.status_code == 200 and retry_error_data.get("type") != "unauthorized":
+                            print(f"✅ API successfully unlocked ({endpoint.name})! Resuming...")
                             resp.raise_for_status()
                             # Skip the fallback below, continue to normal parsing
                         else:
@@ -242,17 +235,15 @@ def call_endpoint(
 
                     except Exception:
                         # Still locked/failed after waiting, let it fall through to the fallback logic below
-                        print(f"❌ API still locked after 2 minutes.")
+                        print("❌ API still locked after 2 minutes.")
                 else:
                     # No unlock URL provided, just print the standard error and skip the sleep
-                    print(f"\n{'='*60}")
+                    print(f"\n{'=' * 60}")
                     print(f"🔒 {error_msg.upper()} ({endpoint.name})")
-                    print(f"{'='*60}\n")
+                    print(f"{'=' * 60}\n")
 
                 # === Fallback Logic (Executes if no unlock_url, or if retry failed) ===
-                endpoint.health.mark_failure(
-                    EndpointStatus.KEY_LOCKED, cooldown_minutes=30
-                )
+                endpoint.health.mark_failure(EndpointStatus.KEY_LOCKED, cooldown_minutes=30)
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
                     fallback_model, fallback_endpoint = fallback
@@ -263,9 +254,7 @@ def call_endpoint(
                         task_id=task_id,
                         agent_name=agent_name,
                     )
-                    print(
-                        f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}"
-                    )
+                    print(f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(
                         messages,
                         max_tokens,
@@ -285,9 +274,7 @@ def call_endpoint(
                 retry_after = int(resp.headers.get("Retry-After", 60))
 
                 if retry_after > 60:  # If wait is > 1 minute, try fallback
-                    endpoint.health.mark_failure(
-                        EndpointStatus.RATE_LIMITED, cooldown_minutes=2
-                    )
+                    endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=2)
                     print(f"   Rate limit cooldown too long ({retry_after}s)")
 
                     fallback = endpoint_mgr.get_fallback_model(endpoint)
@@ -301,9 +288,7 @@ def call_endpoint(
                             task_id=task_id,  # You'll need to pass this through
                             agent_name=agent_name,  # You'll need to pass this through
                         )
-                        print(
-                            f"   → Falling back to {fallback_endpoint.name}/{fallback_model}"
-                        )
+                        print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
                         return call_endpoint(
                             messages,
                             max_tokens,
@@ -324,9 +309,7 @@ def call_endpoint(
                 print(f"💰 Token quota exhausted ({endpoint.name})")
 
                 # Mark endpoint as unavailable
-                endpoint.health.mark_failure(
-                    EndpointStatus.TOKEN_EXHAUSTED, cooldown_minutes=15
-                )
+                endpoint.health.mark_failure(EndpointStatus.TOKEN_EXHAUSTED, cooldown_minutes=15)
 
                 # Try fallback immediately
                 print(f"⚠️  {endpoint.name} marked as unavailable for 15 minutes")
@@ -341,9 +324,7 @@ def call_endpoint(
                         task_id=task_id,  # You'll need to pass this through
                         agent_name=agent_name,  # You'll need to pass this through
                     )
-                    print(
-                        f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}"
-                    )
+                    print(f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(
                         messages,
                         max_tokens,
@@ -354,21 +335,17 @@ def call_endpoint(
                         agent_name,
                     )
                 else:
-                    print(f"❌ No alternate endpoints available")
+                    print("❌ No alternate endpoints available")
                     return None, 0
 
             # ============= HANDLE 5xx SERVER ERRORS =============
             if resp.status_code >= 500:
                 wait_time = (2**attempt) + (time.time() % 1)
-                print(
-                    f"⚠️  Server error {resp.status_code} ({endpoint.name}). Retry {attempt+1}/{retry_count}"
-                )
+                print(f"⚠️  Server error {resp.status_code} ({endpoint.name}). Retry {attempt + 1}/{retry_count}")
 
                 # On last retry, try fallback
                 if attempt == retry_count - 1:
-                    endpoint.health.mark_failure(
-                        EndpointStatus.SERVER_ERROR, cooldown_minutes=5
-                    )
+                    endpoint.health.mark_failure(EndpointStatus.SERVER_ERROR, cooldown_minutes=5)
 
                     fallback = endpoint_mgr.get_fallback_model(endpoint)
                     if fallback:
@@ -381,9 +358,7 @@ def call_endpoint(
                             task_id=task_id,  # You'll need to pass this through
                             agent_name=agent_name,  # You'll need to pass this through
                         )
-                        print(
-                            f"→ Server unreachable. Falling back to {fallback_endpoint.name}/{fallback_model}"
-                        )
+                        print(f"→ Server unreachable. Falling back to {fallback_endpoint.name}/{fallback_model}")
                         return call_endpoint(
                             messages,
                             max_tokens,
@@ -408,9 +383,7 @@ def call_endpoint(
                 print(f"   Response keys: {list(data.keys())}")
 
                 # Mark endpoint as having issues
-                endpoint.health.mark_failure(
-                    EndpointStatus.UNAVAILABLE, cooldown_minutes=5
-                )
+                endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
 
                 # Try fallback
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
@@ -424,9 +397,7 @@ def call_endpoint(
                         task_id=task_id,  # You'll need to pass this through
                         agent_name=agent_name,  # You'll need to pass this through
                     )
-                    print(
-                        f"→ Falling back to {fallback_endpoint.name}/{fallback_model}"
-                    )
+                    print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(
                         messages,
                         max_tokens,
@@ -452,14 +423,10 @@ def call_endpoint(
 
         except requests.exceptions.Timeout:
             # ✅ Added Agent Attribution and Attempt Tracker
-            print(
-                f"  ⏱️  {agent_name.upper()} timed out calling {endpoint.name} (Attempt {attempt + 1}/{retry_count})"
-            )
+            print(f"  ⏱️  {agent_name.upper()} timed out calling {endpoint.name} (Attempt {attempt + 1}/{retry_count})")
 
             if attempt == retry_count - 1:
-                endpoint.health.mark_failure(
-                    EndpointStatus.UNAVAILABLE, cooldown_minutes=5
-                )
+                endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
 
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
@@ -471,9 +438,7 @@ def call_endpoint(
                         task_id=task_id,
                         agent_name=agent_name,
                     )
-                    print(
-                        f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}"
-                    )
+                    print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(
                         messages,
                         max_tokens,
@@ -486,7 +451,7 @@ def call_endpoint(
                 return None, 0
 
             # ✅ Make the retry visible
-            print(f"  🔄 Retrying {agent_name} in {2 ** attempt}s...")
+            print(f"  🔄 Retrying {agent_name} in {2**attempt}s...")
             time.sleep(2**attempt)
 
         except requests.exceptions.RequestException as e:
@@ -494,23 +459,17 @@ def call_endpoint(
 
             # Handle proxy or auth errors gracefully by pausing
             if "proxy" in error_str or "auth" in error_str or "forbidden" in error_str:
-                print(f"\n{'='*60}")
-                print(
-                    f"🔒 CONNECTION/PROXY ERROR for {agent_name.upper()} ({endpoint.name}): {e}"
-                )
-                print(f"⏳ Pausing for 2 minutes to allow you to fix the connection...")
-                print(f"{'='*60}\n")
+                print(f"\n{'=' * 60}")
+                print(f"🔒 CONNECTION/PROXY ERROR for {agent_name.upper()} ({endpoint.name}): {e}")
+                print("⏳ Pausing for 2 minutes to allow you to fix the connection...")
+                print(f"{'=' * 60}\n")
                 time.sleep(120)
             else:
                 # ✅ Added Agent Attribution to standard request failures
-                print(
-                    f"  ❌ {agent_name.upper()} request failed ({endpoint.name}) [Attempt {attempt + 1}/{retry_count}]: {e}"
-                )
+                print(f"  ❌ {agent_name.upper()} request failed ({endpoint.name}) [Attempt {attempt + 1}/{retry_count}]: {e}")
 
             if attempt == retry_count - 1:
-                endpoint.health.mark_failure(
-                    EndpointStatus.UNAVAILABLE, cooldown_minutes=5
-                )
+                endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
 
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
@@ -522,9 +481,7 @@ def call_endpoint(
                         task_id=task_id,
                         agent_name=agent_name,
                     )
-                    print(
-                        f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}"
-                    )
+                    print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(
                         messages,
                         max_tokens,
@@ -537,14 +494,12 @@ def call_endpoint(
 
                 return None, 0
 
-            print(f"  🔄 Retrying {agent_name} in {2 ** attempt}s...")
+            print(f"  🔄 Retrying {agent_name} in {2**attempt}s...")
             time.sleep(2**attempt)
 
         except Exception as e:
             # ✅ Added Agent Attribution to unexpected errors
-            print(
-                f"  ❌ {agent_name.upper()} encountered unexpected error ({endpoint.name}): {e}"
-            )
+            print(f"  ❌ {agent_name.upper()} encountered unexpected error ({endpoint.name}): {e}")
             import traceback
 
             traceback.print_exc()
@@ -561,9 +516,7 @@ def call_endpoint(
                     task_id=task_id,
                     agent_name=agent_name,
                 )
-                print(
-                    f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}"
-                )
+                print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
                 return call_endpoint(
                     messages,
                     max_tokens,
@@ -651,7 +604,7 @@ def call_agent(
 
     """
     Call an agent with automatic truncation detection and resume
-    
+
     Args:
         agent_name: Name of agent to call
         prompt: User prompt
@@ -660,7 +613,7 @@ def call_agent(
         model_override: Override model selection
         auto_resume: Automatically detect and resume truncated responses
         max_resume_attempts: How many times to retry resume (default 1)
-    
+
     Returns:
         Agent response (possibly merged if truncation occurred)
     """
@@ -670,7 +623,7 @@ def call_agent(
 
     # Config/env mock LLM — no network (unattended test mode)
     try:
-        from core.llm_test_mode import test_mode_enabled, mock_call_agent
+        from core.llm_test_mode import mock_call_agent, test_mode_enabled
 
         if test_mode_enabled(config):
             print(f"  🧪 test_mode: mock LLM response for {agent_name}")
@@ -689,9 +642,7 @@ def call_agent(
             rc_override = rc.get_model_override(agent_name)
             if rc_override:
                 model_override = rc_override
-                print(
-                    f"  🎛️  Resource controller: using {rc_override} for {agent_name}"
-                )
+                print(f"  🎛️  Resource controller: using {rc_override} for {agent_name}")
         except Exception:
             pass
     # ====================================================================
@@ -714,11 +665,10 @@ def call_agent(
     TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
 
     if agent_name not in TEXT_OUTPUT_AGENTS:
-
         schema_example = get_schema_example(agent_name)
 
         system_prompt += f"""
-        
+
 **MANDATORY OUTPUT FORMAT:**
 
 Your ENTIRE response must be valid JSON matching this structure EXACTLY:
@@ -760,17 +710,13 @@ If you cannot analyze the file, return:
         full_prompt_length += sum(len(m.get("content", "")) for m in context[-10:])
 
     print(f"  🤖 Calling {agent_name} via {endpoint_name}/{model or 'default'}...")
-    print(
-        f"     Prompt: {full_prompt_length} chars, Context: {len(context) if context else 0} msgs"
-    )
+    print(f"     Prompt: {full_prompt_length} chars, Context: {len(context) if context else 0} msgs")
 
     # Track start time for performance metrics
     start_time = time.time()
 
     # ============= CALL ENDPOINT =============
-    response, tokens = call_endpoint(
-        messages, model=model, task_id=task_id, agent_name=agent_name
-    )
+    response, tokens = call_endpoint(messages, model=model, task_id=task_id, agent_name=agent_name)
 
     # ============= ARCHIVE OR LOG ERROR =============
     if response is not None:
@@ -863,17 +809,13 @@ IMPORTANT: Start exactly where you left off. Don't repeat what you already wrote
                     None,
                 )
 
-                print(
-                    f"  ✅ {agent_name} resumed and merged ({len(merged)} chars total)"
-                )
+                print(f"  ✅ {agent_name} resumed and merged ({len(merged)} chars total)")
                 return merged
             else:
                 print(f"  ⚠️  {agent_name} resume failed, using truncated response")
 
     # ============= SUCCESS =============
-    save_conversation(
-        task_id, agent_name, "assistant", response[:500], raw_response=response
-    )
+    save_conversation(task_id, agent_name, "assistant", response[:500], raw_response=response)
     print(f"  ✅ {agent_name} responded ({tokens} tokens)")
     return response
 
@@ -1061,11 +1003,7 @@ def _extract_diff_content(text: str) -> str:
         if match:
             content = match.group(1)
             # Only use if it looks like a diff
-            if (
-                "---" in content
-                or "+++" in content
-                or content.startswith(("-", "+", " "))
-            ):
+            if "---" in content or "+++" in content or content.startswith(("-", "+", " ")):
                 return content.rstrip()
 
     # No markdown, return as-is

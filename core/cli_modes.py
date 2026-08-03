@@ -1,9 +1,9 @@
 """CLI operating modes and state management"""
 
-from enum import Enum
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional, List, Any
+from enum import Enum
+from typing import Optional
 
 
 class CLIMode(Enum):
@@ -49,28 +49,20 @@ class UnattendedConfig:
         return cls(
             max_duration_hours=float(unattended.get("max_duration_hours", 8.0)),
             auto_continue=bool(unattended.get("auto_continue", True)),
-            checkpoint_interval_minutes=int(
-                unattended.get("checkpoint_interval_minutes", 30)
-            ),
+            checkpoint_interval_minutes=int(unattended.get("checkpoint_interval_minutes", 30)),
             max_iterations_per_task=int(unattended.get("max_iterations_per_task", 20)),
             min_idle_minutes=float(unattended.get("min_idle_minutes", 5.0)),
             auto_generate_tasks=bool(unattended.get("auto_generate_tasks", True)),
-            prioritize_critical_issues=bool(
-                unattended.get("prioritize_critical_issues", True)
-            ),
+            prioritize_critical_issues=bool(unattended.get("prioritize_critical_issues", True)),
             auto_init_on_start=bool(unattended.get("auto_init_on_start", True)),
             seed_task=seed_task,
             seed_tasks=seed_tasks,
-            stop_when_backlog_empty=bool(
-                unattended.get("stop_when_backlog_empty", False)
-            ),
-            exit_on_preflight_failure=bool(
-                unattended.get("exit_on_preflight_failure", True)
-            ),
+            stop_when_backlog_empty=bool(unattended.get("stop_when_backlog_empty", False)),
+            exit_on_preflight_failure=bool(unattended.get("exit_on_preflight_failure", True)),
             _seed_queue=queue,
         )
 
-    def get_end_time(self, start_time: datetime = None) -> datetime:
+    def get_end_time(self, start_time: Optional[datetime] = None) -> datetime:
         """Get end time for unattended run"""
         if start_time is None:
             start_time = datetime.now()

@@ -6,7 +6,6 @@ No network calls; no pytest-mock / responses dependency.
 """
 
 import json
-import pytest
 
 
 class TestBaseAgentWithMock:
@@ -49,9 +48,7 @@ class TestBaseAgentWithMock:
 
     def test_per_agent_responses(self, mock_llm):
         mock_llm.set_response("orchestrator", '{"next_agent": "developer"}')
-        mock_llm.set_response(
-            "reviewer", '{"decision": "APPROVE", "reason": "looks good"}'
-        )
+        mock_llm.set_response("reviewer", '{"decision": "APPROVE", "reason": "looks good"}')
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
 

@@ -8,10 +8,11 @@ IMPORTANT: Run this from the directory containing config.json
 
 import sys
 from pathlib import Path
-from core.config import get_config, get_agent_prompts, find_config_file
+
+from core.cli_modes import CLIMode, UnattendedConfig, get_cli_mode_from_config
+from core.config import find_config_file, get_agent_prompts, get_config
 from core.db import init_db
 from interactive import interactive_loop
-from core.cli_modes import get_cli_mode_from_config, UnattendedConfig, CLIMode
 
 
 def main():
@@ -33,7 +34,7 @@ def main():
             missing_files.append(filename)
 
     if missing_files:
-        print(f"\n❌ ERROR: Missing configuration files:")
+        print("\n❌ ERROR: Missing configuration files:")
         for f in missing_files:
             print(f"  • {f}")
         print("\nPlease ensure all files exist in the same directory.")
@@ -61,12 +62,8 @@ def main():
     if mode == CLIMode.UNATTENDED:
         unattended_config = UnattendedConfig.from_config(config)
         print(f"   Duration: {unattended_config.max_duration_hours}h")
-        print(
-            f"   Max iterations per task: {unattended_config.max_iterations_per_task}"
-        )
-        print(
-            f"   Checkpoint interval: {unattended_config.checkpoint_interval_minutes}m"
-        )
+        print(f"   Max iterations per task: {unattended_config.max_iterations_per_task}")
+        print(f"   Checkpoint interval: {unattended_config.checkpoint_interval_minutes}m")
 
         from core.preflight import preflight_unattended
 
@@ -104,16 +101,16 @@ def main():
 
     # Only error if NO valid endpoints exist (unless test mode)
     if not valid_endpoints and not in_test_mode:
-        print(f"\n❌ ERROR: No valid API keys configured.")
-        print(f"\nAt least one endpoint needs a valid API key.")
+        print("\n❌ ERROR: No valid API keys configured.")
+        print("\nAt least one endpoint needs a valid API key.")
 
         if missing_keys:
-            print(f"\nMissing keys:")
+            print("\nMissing keys:")
             for key in missing_keys:
                 print(f"  • {key}")
 
         if placeholder_keys:
-            print(f"\nPlaceholder keys detected:")
+            print("\nPlaceholder keys detected:")
             for key in placeholder_keys:
                 print(f"  • {key}")
 
@@ -126,18 +123,14 @@ def main():
         print("  }")
         print("\n🔑 Get your keys:")
         for ep_name, ep_config in endpoints_config.items():
-            key_url = ep_config.get(
-                "key_management_url", "Contact system administrator"
-            )
+            key_url = ep_config.get("key_management_url", "Contact system administrator")
             print(f"  • {ep_name.title()}: {key_url}")
         print()
         sys.exit(1)
 
     # Warnings for optional endpoints
     if missing_keys or placeholder_keys:
-        print(
-            f"\n⚠️  Warning: Some endpoints are not configured (fallback unavailable):"
-        )
+        print("\n⚠️  Warning: Some endpoints are not configured (fallback unavailable):")
         for key in missing_keys:
             print(f"  • {key}")
         for key in placeholder_keys:
@@ -185,7 +178,7 @@ def main():
     try:
         test_file.touch()
         test_file.unlink()
-        print(f"✅ Project directory is writable")
+        print("✅ Project directory is writable")
     except Exception as e:
         print(f"⚠️  Warning: Project directory may not be writable: {e}")
 

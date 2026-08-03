@@ -1,3 +1,7 @@
+from typing import Optional
+
+from typing import List, Optional, Tuple
+
 # core/context_manager.py
 
 """
@@ -5,14 +9,13 @@ Smart context management - reads pre-computed token estimates
 Much faster - no recalculation at query time
 """
 
-from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 
-from core.db import get_db_path
 from core.config import get_config
-from core.token_estimator import estimate_messages
 from core.db_connection import get_db_connection
+from core.token_estimator import estimate_messages
 
 
 @dataclass
@@ -84,7 +87,7 @@ class ContextManager:
         task_id: str,
         user_command: str,
         conversation_history: List[Dict],
-        model: str = None,
+        model: Optional[str] = None,
     ) -> Tuple[str, Dict]:
         """
         Build context for orchestrator using pre-computed token counts
@@ -170,12 +173,10 @@ class ContextManager:
         # Add summary
         file_section += f"\n*Included {len(included_files)} files "
         file_section += f"({tokens_used:,} / {context_limit:,} tokens, "
-        file_section += f"{tokens_used/context_limit:.1%} utilization)*\n"
+        file_section += f"{tokens_used / context_limit:.1%} utilization)*\n"
 
         if excluded_files:
-            file_section += (
-                f"*Excluded {len(excluded_files)} files (insufficient budget)*\n"
-            )
+            file_section += f"*Excluded {len(excluded_files)} files (insufficient budget)*\n"
 
         final_context = base_context + file_section
 
@@ -191,9 +192,7 @@ class ContextManager:
 
         return final_context, metadata
 
-    def _get_prioritized_files_fast(
-        self, task_id: str, limit: int = 100
-    ) -> List[FileContext]:
+    def _get_prioritized_files_fast(self, task_id: str, limit: int = 100) -> List[FileContext]:
         """
         Get prioritized files with PRE-COMPUTED token estimates
         FAST - just one query with sorting
@@ -207,7 +206,7 @@ class ContextManager:
                 # Single query - reads pre-computed tokens
                 cursor.execute(
                     """
-                    SELECT 
+                    SELECT
                         pf.file_path,
                         pf.estimated_tokens,
                         pf.last_modified,
@@ -218,7 +217,7 @@ class ContextManager:
                         MAX(af.timestamp) as last_issue
                     FROM project_files pf
                     LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
-                    LEFT JOIN agent_feedback af ON pf.file_path = af.file_path 
+                    LEFT JOIN agent_feedback af ON pf.file_path = af.file_path
                         AND af.addressed = 0
                     WHERE pf.is_binary = 0 AND pf.estimated_tokens > 0
                     GROUP BY pf.file_path
@@ -245,9 +244,7 @@ class ContextManager:
                 ) = row
 
                 # Calculate priority score
-                priority_score = self._calculate_priority(
-                    file_path, last_modified, issue_count, size_bytes
-                )
+                priority_score = self._calculate_priority(file_path, last_modified, issue_count, size_bytes)
 
                 file_contexts.append(
                     FileContext(
@@ -271,9 +268,7 @@ class ContextManager:
             print(f"⚠️  Error loading files: {e}")
             return []
 
-    def _calculate_priority(
-        self, file_path: str, last_modified: str, issue_count: int, size_bytes: int
-    ) -> float:
+    def _calculate_priority(self, file_path: str, last_modified: str, issue_count: int, size_bytes: int) -> float:
         """Calculate priority score"""
         score = 0.0
 
@@ -342,7 +337,7 @@ class ContextManager:
                     SELECT id, agent_name, file_path, priority, category, message, suggestion
                     FROM agent_feedback
                     WHERE task_id = ? AND addressed = 0
-                    ORDER BY 
+                    ORDER BY
                         CASE priority
                             WHEN 'CRITICAL' THEN 1
                             WHEN 'HIGH' THEN 2
@@ -381,12 +376,7 @@ class ContextManager:
                         priority = item[3]
                         priority_counts[priority] = priority_counts.get(priority, 0) + 1
 
-                    summary = ", ".join(
-                        [
-                            f"{count} {priority}"
-                            for priority, count in sorted(priority_counts.items())
-                        ]
-                    )
+                    summary = ", ".join([f"{count} {priority}" for priority, count in sorted(priority_counts.items())])
                     message += f"**🔴 Unaddressed Feedback: {len(feedback_items)} items ({summary})**\n\n"
 
                     # Show top 10 items

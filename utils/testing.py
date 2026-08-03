@@ -42,9 +42,9 @@ def test_all_agents():
         "tech_writer",
     ]
 
-    print(f"\n{'='*60}")
-    print(f"🧪 Testing All Agents")
-    print(f"{'='*60}")
+    print(f"\n{'=' * 60}")
+    print("🧪 Testing All Agents")
+    print(f"{'=' * 60}")
 
     for agent in agents:
         test_agent(agent)

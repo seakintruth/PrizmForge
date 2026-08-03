@@ -1,3 +1,5 @@
+from typing import Dict, List, Optional
+
 """
 Agent Response Schemas - Dynamically Built from Database
 The database is the single source of truth.
@@ -8,10 +10,10 @@ FALLBACK MECHANISM:
   without touching this code
 """
 
-from typing import Dict, Any, List, Optional, Set
+import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-import json
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -264,17 +266,11 @@ def _create_fallback_schema(agent_name: str) -> AgentResponseSchema:
 
     # Infer array field name from agent name
     # Strip common suffixes and add "_findings"
-    base_name = (
-        agent_name.replace("_reviewer", "")
-        .replace("_analyzer", "")
-        .replace("_auditor", "")
-    )
+    base_name = agent_name.replace("_reviewer", "").replace("_analyzer", "").replace("_auditor", "")
     array_field = f"{base_name}_findings"
 
     # Create new schema with agent-specific name
-    return replace(
-        template, agent_name=agent_name, array_field=array_field, is_fallback=True
-    )
+    return replace(template, agent_name=agent_name, array_field=array_field, is_fallback=True)
 
 
 # ============= DYNAMIC VALUE DISCOVERY =============
@@ -285,7 +281,6 @@ def get_distinct_values(table: str, column: str) -> List[str]:
     Query database for distinct values in a column
     Returns actual values currently in use
     """
-    from core.db import get_db_path
     from core.db_connection import get_db_connection
 
     try:
@@ -301,9 +296,9 @@ def get_distinct_values(table: str, column: str) -> List[str]:
 
             # Get distinct non-null values
             cursor.execute(f"""
-                SELECT DISTINCT {column} 
-                FROM {table} 
-                WHERE {column} IS NOT NULL 
+                SELECT DISTINCT {column}
+                FROM {table}
+                WHERE {column} IS NOT NULL
                   AND {column} != ''
                 ORDER BY {column}
             """)
@@ -403,9 +398,7 @@ def get_schema(agent_name: str) -> Optional[AgentResponseSchema]:
     # Convention: ends with _reviewer, _analyzer, _auditor, or starts with jr_
     fallback_patterns = ["_reviewer", "_analyzer", "_auditor", "_checker", "_validator"]
 
-    if any(
-        agent_name.endswith(pattern) for pattern in fallback_patterns
-    ) or agent_name.startswith("jr_"):
+    if any(agent_name.endswith(pattern) for pattern in fallback_patterns) or agent_name.startswith("jr_"):
         print(f"    ℹ️  {agent_name}: Using fallback schema (jr_reviewer template)")
         return _create_fallback_schema(agent_name)
 
@@ -429,9 +422,7 @@ def get_prompt_schema_text(agent_name: str) -> str:
     return schema.build_prompt_schema(priority_values, category_values)
 
 
-def validate_agent_response(
-    agent_name: str, response: Dict[str, Any]
-) -> tuple[bool, List[str]]:
+def validate_agent_response(agent_name: str, response: Dict[str, Any]) -> tuple[bool, List[str]]:
     """Validate agent response against schema"""
     schema = get_schema(agent_name)
     if not schema:
@@ -446,11 +437,7 @@ def list_agents() -> List[str]:
 
 def get_agents_by_table(table_name: str) -> List[str]:
     """Get agents that write to a specific table"""
-    return [
-        agent_name
-        for agent_name, schema in AGENT_SCHEMAS.items()
-        if schema.db_table == table_name
-    ]
+    return [agent_name for agent_name, schema in AGENT_SCHEMAS.items() if schema.db_table == table_name]
 
 
 def is_using_fallback(agent_name: str) -> bool:

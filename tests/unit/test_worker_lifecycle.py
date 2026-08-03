@@ -13,8 +13,6 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -144,20 +142,14 @@ class TestHeuristicOptimizerDecisions:
         return ResourceState(**base)
 
     def test_optimize_returns_decision_or_none(self, temp_db, mock_minimal_config):
-        from agents.resource_controller_worker import (
-            HeuristicOptimizer,
-            ThrottleDecision,
-        )
+        from agents.resource_controller_worker import HeuristicOptimizer, ThrottleDecision
 
         opt = HeuristicOptimizer()
         decision = opt.optimize(self._state())
         assert decision is None or isinstance(decision, ThrottleDecision)
 
     def test_critical_budget_throttles(self, temp_db, mock_minimal_config):
-        from agents.resource_controller_worker import (
-            HeuristicOptimizer,
-            ThrottleDecision,
-        )
+        from agents.resource_controller_worker import HeuristicOptimizer, ThrottleDecision
 
         opt = HeuristicOptimizer()
         # Near-zero remaining budget should produce some throttle decision
@@ -176,9 +168,7 @@ class TestHeuristicOptimizerDecisions:
         from agents.resource_controller_worker import HeuristicOptimizer
 
         opt = HeuristicOptimizer()
-        opt.update_agent_performance(
-            "jr_reviewer", tokens_used=100, duration=1.5, feedback_generated=2
-        )
+        opt.update_agent_performance("jr_reviewer", tokens_used=100, duration=1.5, feedback_generated=2)
         # profiles should exist after update
         assert "jr_reviewer" in opt.agent_profiles or len(opt.agent_profiles) >= 0
 
@@ -207,13 +197,11 @@ class TestPoolBehavioralP2:
     """P2.1 — start / queue / stop with patched call_agent."""
 
     def test_start_queue_stop_with_mock_agent(self, mock_minimal_config, temp_db):
-        from unittest.mock import patch
-        from agents.parallel_workers import BackgroundAgentPool
         import time
 
-        with patch(
-            "agents.parallel_workers.call_agent", return_value='{"findings":[]}'
-        ):
+        from agents.parallel_workers import BackgroundAgentPool
+
+        with patch("agents.parallel_workers.call_agent", return_value='{"findings":[]}'):
             pool = BackgroundAgentPool()
             pool.start(task_id="p2_pool")
             try:
@@ -248,11 +236,7 @@ class TestRCOptimizerP2:
     """P2.3 — optimizer decision shapes."""
 
     def test_optimizer_levels_do_not_raise(self, temp_db, mock_minimal_config):
-        from agents.resource_controller_worker import (
-            HeuristicOptimizer,
-            ResourceState,
-            ThrottleDecision,
-        )
+        from agents.resource_controller_worker import HeuristicOptimizer, ResourceState, ThrottleDecision
 
         opt = HeuristicOptimizer()
         states = [

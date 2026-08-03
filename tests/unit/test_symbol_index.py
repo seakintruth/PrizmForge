@@ -24,11 +24,7 @@ def test_parse_python_symbols_basic():
 
 def test_upsert_and_fetch(temp_db):
     from core.db import init_db
-    from core.symbol_index import (
-        upsert_file_symbols,
-        fetch_symbol_rows,
-        format_symbol_json,
-    )
+    from core.symbol_index import fetch_symbol_rows, format_symbol_json, upsert_file_symbols
 
     init_db()
     n = upsert_file_symbols("app.py", "def main():\n    return 1\n")
@@ -44,7 +40,7 @@ def test_upsert_and_fetch(temp_db):
 
 def test_upsert_replaces_stale(temp_db):
     from core.db import init_db
-    from core.symbol_index import upsert_file_symbols, fetch_symbol_rows
+    from core.symbol_index import fetch_symbol_rows, upsert_file_symbols
 
     init_db()
     upsert_file_symbols("x.py", "def old():\n    pass\n")
@@ -57,8 +53,8 @@ def test_upsert_replaces_stale(temp_db):
 
 def test_json_context_block(temp_db):
     from core.db import init_db
+    from core.index_context import build_index_context_block, load_symbol_json_context
     from core.symbol_index import upsert_file_symbols
-    from core.index_context import load_symbol_json_context, build_index_context_block
 
     init_db()
     upsert_file_symbols("svc.py", "class Svc:\n    def run(self):\n        pass\n")

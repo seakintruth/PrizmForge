@@ -1,15 +1,17 @@
+from typing import List, Tuple
+
 """Prioritizer worker - intelligent multi-phase feedback processing"""
 
 import re
-from datetime import datetime, timedelta
 import threading
 import time
-from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Tuple
 
 from agents.base import call_agent
-from core.db_helpers import post_message
 from core.db_connection import get_db_connection
+from core.db_helpers import post_message
 from core.json_parser import parse_json_response
 
 
@@ -54,18 +56,16 @@ class PrioritizerWorker:
 
         self.running = True
         self.current_task_id = task_id
-        self.worker_thread = threading.Thread(
-            target=self._worker_loop, daemon=True, name="prioritizer-worker"
-        )
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="prioritizer-worker")
         self.worker_thread.start()
-        print(f"    🎯 Started prioritizer worker (multi-phase intelligent)")
+        print("    🎯 Started prioritizer worker (multi-phase intelligent)")
 
     def stop(self):
         """Stop the prioritizer worker"""
         self.running = False
         if self.worker_thread:
             self.worker_thread.join(timeout=2.0)
-        print(f"    🎯 Stopped prioritizer worker")
+        print("    🎯 Stopped prioritizer worker")
 
     def _worker_loop(self):
         """Main worker loop - wait for full cycle before starting timer"""
@@ -78,10 +78,10 @@ class PrioritizerWorker:
 
                 # Check if we should run a full cycle
                 if self._should_run_cycle():
-                    print(f"\n    🎯 ━━━ PRIORITIZER CYCLE START ━━━")
+                    print("\n    🎯 ━━━ PRIORITIZER CYCLE START ━━━")
                     self._run_full_prioritization_cycle()
                     self.processing_cycle_time = time.time()
-                    print(f"    🎯 ━━━ PRIORITIZER CYCLE COMPLETE ━━━\n")
+                    print("    🎯 ━━━ PRIORITIZER CYCLE COMPLETE ━━━\n")
                     self.last_prioritization = time.time()
 
             except Exception as e:
@@ -91,9 +91,7 @@ class PrioritizerWorker:
                 traceback.print_exc()
                 time.sleep(30)
 
-    def _filter_low_quality_feedback(
-        self, items: List[FeedbackItem]
-    ) -> Tuple[List[FeedbackItem], int]:
+    def _filter_low_quality_feedback(self, items: List[FeedbackItem]) -> Tuple[List[FeedbackItem], int]:
         """
         Filter out and auto-dismiss low-quality feedback.
         Returns (valid_items, dismissed_count)
@@ -202,33 +200,27 @@ class PrioritizerWorker:
         all_feedback = self._get_all_feedback()
 
         if not all_feedback:
-            print(f"    📊 No feedback to prioritize")
+            print("    📊 No feedback to prioritize")
             return
 
         print(f"    📊 Processing {len(all_feedback)} feedback items")
 
         # Phase 1: Quality filter
-        valid_feedback, dismissed_count = self._filter_low_quality_feedback(
-            all_feedback
-        )
+        valid_feedback, dismissed_count = self._filter_low_quality_feedback(all_feedback)
 
         if dismissed_count > 0:
-            print(
-                f"    🗑️  Phase 1: Dismissed {dismissed_count} low-quality items"
-            )  # ✅ Changed from Phase 0 to Phase 1
+            print(f"    🗑️  Phase 1: Dismissed {dismissed_count} low-quality items")  # ✅ Changed from Phase 0 to Phase 1
             print(f"    📊 Remaining: {len(valid_feedback)} valid items")
 
         if not valid_feedback:
-            print(f"    ✅ No valid feedback remaining after quality filter")
+            print("    ✅ No valid feedback remaining after quality filter")
             return
 
         # Phase 2: Categorize uncategorized (batches of 30)
         categorized = self._categorize_feedback(valid_feedback)
 
         if not categorized:
-            print(
-                f"    ✓ Phase 2: All items categorized"
-            )  # ✅ Changed to match phase number
+            print("    ✓ Phase 2: All items categorized")  # ✅ Changed to match phase number
 
         # Phase 3: Score within categories
         scored_by_category = self._score_within_categories(categorized)
@@ -248,7 +240,7 @@ class PrioritizerWorker:
                 # Get ALL unaddressed feedback
                 cursor.execute(
                     """
-                    SELECT 
+                    SELECT
                         id, agent_name, file_path, priority, category,
                         message, suggestion, timestamp
                     FROM agent_feedback
@@ -264,7 +256,7 @@ class PrioritizerWorker:
                 # Get unread messages
                 cursor.execute(
                     """
-                    SELECT 
+                    SELECT
                         id, from_agent, content, priority, timestamp
                     FROM messages
                     WHERE task_id = ?
@@ -326,7 +318,7 @@ class PrioritizerWorker:
         uncategorized = [item for item in items if item.category == "uncategorized"]
 
         if not uncategorized:
-            print(f"    ✓ Phase 1: All items categorized")
+            print("    ✓ Phase 1: All items categorized")
             return items
 
         print(f"    → Phase 1: Categorizing {len(uncategorized)} items (batches of 30)")
@@ -336,7 +328,7 @@ class PrioritizerWorker:
             batch = uncategorized[i : i + 30]
             self._categorize_batch(batch)
 
-        print(f"    ✓ Phase 1: Complete")
+        print("    ✓ Phase 1: Complete")
         return items
 
     def _categorize_batch(self, batch: List[FeedbackItem]):
@@ -344,7 +336,7 @@ class PrioritizerWorker:
         # Build prompt with message and suggestion context
         index_snip = ""
         try:
-            from core.index_context import load_symbol_json_context, load_index_text
+            from core.index_context import load_index_text, load_symbol_json_context
 
             paths = [getattr(it, "file_path", None) for it in batch]
             paths = [p for p in paths if p]
@@ -356,9 +348,7 @@ class PrioritizerWorker:
             if not index_snip.strip():
                 raw = load_index_text(which="production", max_chars=4_000)
                 if raw.strip():
-                    index_snip = (
-                        "Known source paths (Markdown fallback):\n" + raw + "\n\n"
-                    )
+                    index_snip = "Known source paths (Markdown fallback):\n" + raw + "\n\n"
             elif not index_snip.endswith("\n"):
                 index_snip += "\n"
         except Exception:
@@ -429,11 +419,9 @@ Respond with JSON ONLY:
         except Exception as e:
             print(f"    ⚠️  Error updating categories: {e}")
 
-    def _score_within_categories(
-        self, items: List[FeedbackItem]
-    ) -> Dict[str, List[FeedbackItem]]:
+    def _score_within_categories(self, items: List[FeedbackItem]) -> Dict[str, List[FeedbackItem]]:
         """Phase 2: Score items within each category"""
-        print(f"    → Phase 2: Scoring within categories")
+        print("    → Phase 2: Scoring within categories")
 
         # Group by category
         by_category = {}
@@ -455,9 +443,7 @@ Respond with JSON ONLY:
         prompt = f"Score these {len(items)} {category} items (0-100):\n\n"
 
         for item in items:
-            prompt += (
-                f"ID: {item.id} | Priority: {item.priority} | From: {item.from_agent}\n"
-            )
+            prompt += f"ID: {item.id} | Priority: {item.priority} | From: {item.from_agent}\n"
             prompt += f"Message: {item.message[:150]}\n\n"
 
         prompt += """
@@ -485,9 +471,7 @@ Respond with JSON ONLY:
             if not response:
                 return
 
-            data = parse_json_response(
-                response, expected_keys=["scored"], agent_name="prioritizer/categorize"
-            )
+            data = parse_json_response(response, expected_keys=["scored"], agent_name="prioritizer/categorize")
 
             if data and "scored" in data:
                 # Apply scores to items
@@ -499,11 +483,9 @@ Respond with JSON ONLY:
         except Exception as e:
             print(f"    ⚠️  Category scoring error: {e}")
 
-    def _cross_category_ranking(
-        self, by_category: Dict[str, List[FeedbackItem]]
-    ) -> List[FeedbackItem]:
+    def _cross_category_ranking(self, by_category: Dict[str, List[FeedbackItem]]) -> List[FeedbackItem]:
         """Phase 3: Cross-category prioritization"""
-        print(f"    → Phase 3: Cross-category ranking")
+        print("    → Phase 3: Cross-category ranking")
 
         # Flatten all items with scores
         all_items = []
@@ -593,14 +575,12 @@ Respond with JSON ONLY:
             message += f"   Score: {item.score:.0f}\n\n"
 
         # Post to orchestrator
-        post_message(
-            "prioritizer", "orchestrator", message, self.current_task_id, "HIGH"
-        )
+        post_message("prioritizer", "orchestrator", message, self.current_task_id, "HIGH")
 
         # Mark items as read
         self._mark_items_processed(ranked)
 
-        print(f"    ✓ Phase 4: Posted to orchestrator")
+        print("    ✓ Phase 4: Posted to orchestrator")
 
     def _mark_items_processed(self, items: List[FeedbackItem]):
         """Mark items as READ (not addressed - that happens when developer fixes them)"""
@@ -608,9 +588,7 @@ Respond with JSON ONLY:
             with get_db_connection() as conn:
                 for item in items:
                     if item.file_path == "<message>":
-                        conn.execute(
-                            "UPDATE messages SET read = 1 WHERE id = ?", (item.id,)
-                        )
+                        conn.execute("UPDATE messages SET read = 1 WHERE id = ?", (item.id,))
                     else:
                         # ✅ GOOD: Only mark messages as read, feedback stays unaddressed
                         # Feedback is marked addressed ONLY when developer actually fixes it

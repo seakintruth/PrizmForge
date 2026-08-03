@@ -5,20 +5,19 @@ Full test suite for Resource Controller core data structures
 and the adaptive ResourceControllerWorker.
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
 import threading
 import time
+
+import pytest
 
 4
 from agents.resource_controller_worker import (
     AgentProfile,
-    ResourceState,
-    ThrottleDecision,
     HeuristicOptimizer,
     ResourceControllerWorker,
+    ResourceState,
+    ThrottleDecision,
 )
-from tests.conftest import mock_minimal_config, temp_db  # type: ignore
 
 
 class TestAgentProfile:

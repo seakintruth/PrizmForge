@@ -2,7 +2,6 @@
 
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Optional
 
 
 class TokenBudget:
@@ -65,9 +64,7 @@ class TokenBudget:
     def can_spend(self, estimated_tokens: int) -> bool:
         """Check if we can spend tokens"""
         if self.remaining() < estimated_tokens:
-            print(
-                f"⚠️  Token budget exceeded: {self.get_used()//1000000}M / {self.max_tokens//1000000}M"
-            )
+            print(f"⚠️  Token budget exceeded: {self.get_used() // 1000000}M / {self.max_tokens // 1000000}M")
             return False
         return True
 
@@ -75,6 +72,4 @@ class TokenBudget:
         """Print current status"""
         used = self.get_used()
         pct = (used / self.max_tokens) * 100
-        print(
-            f"📊 Tokens: {used//1000000}M / {self.max_tokens//1000000}M ({pct:.1f}%) in last 4h"
-        )
+        print(f"📊 Tokens: {used // 1000000}M / {self.max_tokens // 1000000}M ({pct:.1f}%) in last 4h")

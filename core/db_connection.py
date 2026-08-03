@@ -1,9 +1,10 @@
+from typing import Optional
+
 """Thread-safe database connection with retry logic"""
 
 import sqlite3
 import time
 from contextlib import contextmanager
-from typing import Optional
 
 
 class DatabaseRetryError(Exception):
@@ -13,9 +14,7 @@ class DatabaseRetryError(Exception):
 
 
 @contextmanager
-def get_db_connection(
-    db_path: str = None, retries: int = 5, checkpoint_on_close: bool = True
-):
+def get_db_connection(db_path: Optional[str] = None, retries: int = 5, checkpoint_on_close: bool = True):
     """
     Get database connection with automatic commit/rollback
 
@@ -106,9 +105,7 @@ def _commit_with_retry(conn: sqlite3.Connection, retries: int = 5):
                     time.sleep(delay + jitter)
                 else:
                     # Final attempt failed
-                    raise DatabaseRetryError(
-                        f"Commit failed after {retries} retries: {e}"
-                    )
+                    raise DatabaseRetryError(f"Commit failed after {retries} retries: {e}")
             else:
                 # Different error - don't retry
                 raise
@@ -121,7 +118,7 @@ def _checkpoint_with_retry(conn: sqlite3.Connection, retries: int = 3):
     """
     for attempt in range(retries):
         try:
-            result = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
             # Success (even if some pages remain)
             return
 
@@ -133,9 +130,7 @@ def _checkpoint_with_retry(conn: sqlite3.Connection, retries: int = 3):
                 pass
 
 
-def execute_with_retry(
-    query: str, params: tuple = (), retries: int = 5, fetch_mode: str = None
-):
+def execute_with_retry(query: str, params: tuple = (), retries: int = 5, fetch_mode: Optional[str] = None):
     """
     Execute a query with automatic retry on lock errors
 
@@ -172,8 +167,6 @@ def execute_with_retry(
                     delay = min(0.1 * (2**attempt), 2.0)
                     time.sleep(delay)
                 else:
-                    raise DatabaseRetryError(
-                        f"Query failed after {retries} retries: {e}"
-                    )
+                    raise DatabaseRetryError(f"Query failed after {retries} retries: {e}")
             else:
                 raise

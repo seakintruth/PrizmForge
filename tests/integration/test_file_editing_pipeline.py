@@ -3,16 +3,12 @@ Integration tests for file editing pipeline.
 NO EXTERNAL DEPENDENCIES - uses only pytest + stdlib.
 """
 
-import pytest
 import json
-from pathlib import Path
 
 from core.db_connection import get_db_connection
 from file_editing import initialize_file_lines
-from workflow.proposal_builder import create_proposal_from_developer_output
 from file_editing.editing import apply_edit_proposal
-from file_editing.writer import materialize_proposal
-from core.config import get_config
+from workflow.proposal_builder import create_proposal_from_developer_output
 
 
 class TestFileEditingPipeline:
@@ -50,8 +46,8 @@ def goodbye():
         with get_db_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT line_guid FROM file_lines 
-                WHERE file_id = ? AND is_deleted = 0 
+                SELECT line_guid FROM file_lines
+                WHERE file_id = ? AND is_deleted = 0
                 ORDER BY sort_order
             """,
                 (file_id,),
@@ -92,7 +88,7 @@ def goodbye():
         with get_db_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT line_guid FROM file_lines 
+                SELECT line_guid FROM file_lines
                 WHERE file_id = ? ORDER BY sort_order
             """,
                 (file_id,),
@@ -143,7 +139,7 @@ def goodbye():
         with get_db_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT line_guid FROM file_lines 
+                SELECT line_guid FROM file_lines
                 WHERE file_id = ? ORDER BY sort_order
             """,
                 (file_id,),
@@ -181,7 +177,7 @@ def goodbye():
         with get_db_connection() as conn:
             cursor = conn.execute(
                 """
-                SELECT line_guid FROM file_lines 
+                SELECT line_guid FROM file_lines
                 WHERE file_id = ? ORDER BY sort_order
             """,
                 (file_id,),
@@ -212,7 +208,7 @@ def goodbye():
     def test_07_missing_rationale_autofix(self, temp_db):
         """Test that missing rationales are auto-fixed"""
         content = "line1"
-        init_result = initialize_file_lines("test_autofix.py", content)
+        initialize_file_lines("test_autofix.py", content)
 
         # Payload without operation rationale (but WITH top-level rationale)
         payload_str = json.dumps(

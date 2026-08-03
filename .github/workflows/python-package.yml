@@ -33,7 +33,7 @@ jobs:
 
       - name: Install formatter / lint / type tools
         run: |
-          python -m pip install --upgrade pip
+          python3 -m pip install --upgrade pip
           # prefer development requirements if present
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
@@ -44,20 +44,21 @@ jobs:
       - name: Run auto-formatters and autofixers
         run: |
           # Run black and isort (these will modify files)
-          black .
-          isort .
+          python3 -m black .
+          python3 -m isort .
 
           # Let ruff attempt fixes (unused imports, simple style issues)
-          ruff --fix .
+          python3 -m ruff check . --unsafe-fixes --fix
+          python3 -m ruff format .
 
       - name: Run ruff check
         run: |
-          ruff check .
+          python3 -m ruff check .
 
       - name: Run mypy (type checks, tolerate missing imports)
         run: |
           # ignore missing imports to reduce false positives in third-party code
-          mypy . --ignore-missing-imports || true
+          python3 -m mypy . --ignore-missing-imports || true
 
       - name: Fail if repo changed (auto-format created diffs)
         id: check_changes
@@ -98,7 +99,7 @@ jobs:
 
       - name: Install lint tooling
         run: |
-          python -m pip install --upgrade pip
+          python3 -m pip install --upgrade pip
           if [ -f requirements-dev.txt ]; then
             pip install -r requirements-dev.txt
           else
@@ -139,7 +140,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
+          python3 -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
           # tests may need dev deps too (responses, pytest-mock). Prefer requirements-dev.txt when present.
           if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi

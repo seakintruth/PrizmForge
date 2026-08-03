@@ -638,7 +638,7 @@ The worker runs on a schedule (typically every 5–10 minutes). When triggered:
     "agent_interactions": [...],
     "repetitive_patterns": "...",
     "issues_resolved": [...],
-    "can_be_forgotten": [...]
+    "can_be_forgotten": [...],
 }
 ```
 

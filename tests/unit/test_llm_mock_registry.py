@@ -1,10 +1,6 @@
 """P0.2 — call_agent patch target registry."""
 
-from tests.mocks.openai import (
-    CALL_AGENT_PATCH_TARGETS,
-    register_call_agent_patch_target,
-    MockLLM,
-)
+from tests.mocks.openai import CALL_AGENT_PATCH_TARGETS, MockLLM, register_call_agent_patch_target
 
 
 def test_registry_includes_core_sites():
@@ -15,7 +11,6 @@ def test_registry_includes_core_sites():
 
 
 def test_register_extends_targets():
-    before = CALL_AGENT_PATCH_TARGETS
     register_call_agent_patch_target("tests.fake_module.call_agent")
     from tests.mocks import openai as m
 

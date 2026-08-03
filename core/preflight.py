@@ -1,3 +1,5 @@
+from typing import Dict, List, Tuple
+
 """
 Unattended preflight checks (config-only runs).
 """
@@ -14,7 +16,7 @@ def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     Does not prompt. Test mode skips API key requirements.
     """
     errors: List[str] = []
-    from core.cli_modes import get_cli_mode_from_config, CLIMode
+    from core.cli_modes import CLIMode, get_cli_mode_from_config
     from core.llm_test_mode import test_mode_enabled
 
     mode = get_cli_mode_from_config(config)
@@ -53,6 +55,7 @@ def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
             if not val:
                 try:
                     import json
+
                     from core.config import find_config_file
 
                     key_file = find_config_file("api_key.json")
@@ -64,8 +67,7 @@ def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
                 valid += 1
         if valid == 0 and endpoints:
             errors.append(
-                "No valid API keys for configured endpoints "
-                "(set keys or enable llm.test_mode / PRIZMFORGE_TEST_MODE=1)"
+                "No valid API keys for configured endpoints (set keys or enable llm.test_mode / PRIZMFORGE_TEST_MODE=1)"
             )
 
     ok = len(errors) == 0

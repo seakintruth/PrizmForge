@@ -1,3 +1,5 @@
+from typing import Dict, List, Optional, Sequence
+
 """
 Structural symbol index: AST extract → sqlite file_symbols.
 
@@ -12,7 +14,7 @@ import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from core.db_connection import get_db_connection
 
@@ -47,13 +49,9 @@ def parse_python_symbols(source: str, module_path: str) -> List[Symbol]:
             symbols.append(Symbol("class", node.name, q, node.lineno))
             for item in node.body:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    symbols.append(
-                        Symbol("method", item.name, f"{q}.{item.name}", item.lineno)
-                    )
+                    symbols.append(Symbol("method", item.name, f"{q}.{item.name}", item.lineno))
         elif isinstance(node, ast.FunctionDef):
-            symbols.append(
-                Symbol("function", node.name, f"{mod_name}.{node.name}", node.lineno)
-            )
+            symbols.append(Symbol("function", node.name, f"{mod_name}.{node.name}", node.lineno))
         elif isinstance(node, ast.AsyncFunctionDef):
             symbols.append(
                 Symbol(
@@ -102,7 +100,7 @@ def rebuild_project_symbols(
 ) -> Dict[str, Any]:
     """Walk project_directory and rebuild file_symbols for text Python files."""
     from core.config import get_config
-    from core.file_operations import should_ignore_file, is_text_file
+    from core.file_operations import is_text_file, should_ignore_file
 
     if project_directory is None:
         project_directory = get_config().get("project_directory", "./project")
@@ -187,10 +185,7 @@ def fetch_symbol_rows(
         clauses.append("file_path LIKE ?")
         params.append(path_prefix.replace("\\", "/").rstrip("/") + "%")
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    sql = (
-        f"SELECT file_path, kind, name, qualname, lineno FROM file_symbols{where} "
-        f"ORDER BY file_path, lineno LIMIT ?"
-    )
+    sql = f"SELECT file_path, kind, name, qualname, lineno FROM file_symbols{where} ORDER BY file_path, lineno LIMIT ?"
     params.append(int(limit))
     try:
         with get_db_connection() as conn:

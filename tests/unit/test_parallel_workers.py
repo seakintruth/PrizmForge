@@ -1,16 +1,9 @@
-import pytest
-from unittest.mock import patch, MagicMock
-import threading
 import time
-from pathlib import Path
+from unittest.mock import patch
 
-from agents.parallel_workers import (
-    FileChangeEvent,
-    BackgroundAgentPool,
-    get_agent_pool,
-)
+import pytest
 
-from tests.conftest import mock_minimal_config, temp_db
+from agents.parallel_workers import BackgroundAgentPool, FileChangeEvent, get_agent_pool
 
 
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
@@ -45,9 +38,7 @@ class TestParallelWorkers:
         try:
             pool.start(task_id="test_task")
             time.sleep(0.5)
-            assert (
-                pool.running is True or pool.running is False
-            )  # start may no-op if no agents
+            assert pool.running is True or pool.running is False  # start may no-op if no agents
             pool.stop()
             assert pool.running is False
             assert pool.workers == [] or pool.workers is not None
@@ -66,16 +57,10 @@ class TestParallelWorkers:
         pool.start(task_id="test_task")
 
         try:
-            pool.queue_file_change(
-                file_path="test.py", operation="modified", content="test content"
-            )
+            pool.queue_file_change(file_path="test.py", operation="modified", content="test content")
             time.sleep(0.5)
             # Event accepted into queue or processed; pool still controllable
-            assert (
-                hasattr(pool, "queue")
-                or hasattr(pool, "file_queue")
-                or pool.running is not None
-            )
+            assert hasattr(pool, "queue") or hasattr(pool, "file_queue") or pool.running is not None
         finally:
             pool.stop()
             assert pool.running is False
@@ -89,9 +74,7 @@ class TestParallelWorkers:
         pool.start(task_id="test_task")
 
         try:
-            pool.queue_file_change(
-                file_path="test.py", operation="modified", content="def test(): pass"
-            )
+            pool.queue_file_change(file_path="test.py", operation="modified", content="def test(): pass")
             time.sleep(2)  # Give workers time to process
 
             # Call count is environment-dependent; ensure mock was installed and pool stops clean
@@ -177,9 +160,7 @@ class TestConcurrentBehavior:
     """Tests for concurrent behavior (slower tests)."""
 
     @patch("agents.parallel_workers.call_agent")
-    def test_multiple_file_changes_concurrent(
-        self, mock_call_agent, mock_minimal_config
-    ):
+    def test_multiple_file_changes_concurrent(self, mock_call_agent, mock_minimal_config):
         """Should handle multiple concurrent file changes."""
         mock_call_agent.return_value = '{"findings": [], "summary": "ok"}'
 

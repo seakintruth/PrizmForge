@@ -1,32 +1,34 @@
+from typing import Optional
+
 """CLI command handlers"""
 
-import os
-import json
 import csv
-from pathlib import Path
+import json
+import os
 from datetime import datetime
+from pathlib import Path
 
 from core.config import get_config
 from core.db import get_db_path, init_db
-from core.db_helpers import get_unaddressed_feedback
-from core.token_budget import TokenBudget
-from core.file_operations import (
-    should_ignore_file,
-    is_text_file,
-    sync_file_to_database,
-    generate_file_summary,
-    save_file_summary,
-)
 from core.db_connection import get_db_connection
+from core.db_helpers import get_unaddressed_feedback
+from core.file_operations import (
+    generate_file_summary,
+    is_text_file,
+    save_file_summary,
+    should_ignore_file,
+    sync_file_to_database,
+)
+from core.token_budget import TokenBudget
 
 # cli/commands.py - Update cmd_init() function
 
 
 def cmd_init():
     """Initialize and index project"""
-    print(f"\n{'='*60}")
-    print(f"📂 Indexing Project")
-    print(f"{'='*60}\n")
+    print(f"\n{'=' * 60}")
+    print("📂 Indexing Project")
+    print(f"{'=' * 60}\n")
 
     # ✅ ENSURE DATABASE IS INITIALIZED FIRST
     init_db()
@@ -54,9 +56,7 @@ def cmd_init():
 
             try:
                 rel_path = full_path.relative_to(project_dir)
-                rel_path_str = str(rel_path).replace(
-                    "\\", "/"
-                )  # Normalize path separators
+                rel_path_str = str(rel_path).replace("\\", "/")  # Normalize path separators
 
                 if should_ignore_file(rel_path_str):
                     skipped += 1
@@ -91,7 +91,7 @@ def cmd_init():
                 print(f"  ❌ Error: {filename}: {e}")
                 errors += 1
 
-    print(f"\n🧹 Checking for deleted files...")
+    print("\n🧹 Checking for deleted files...")
     deleted_count = 0
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -101,12 +101,8 @@ def cmd_init():
         for file_id, fpath in cursor.fetchall():
             full_path = project_dir / fpath
             if not full_path.exists():
-                conn.execute(
-                    "UPDATE files SET is_deleted = 1 WHERE file_id = ?", (file_id,)
-                )
-                conn.execute(
-                    "UPDATE file_lines SET is_deleted = 1 WHERE file_id = ?", (file_id,)
-                )
+                conn.execute("UPDATE files SET is_deleted = 1 WHERE file_id = ?", (file_id,))
+                conn.execute("UPDATE file_lines SET is_deleted = 1 WHERE file_id = ?", (file_id,))
                 print(f"  🗑️  Marked deleted (governed): {fpath}")
                 deleted_count += 1
 
@@ -121,25 +117,21 @@ def cmd_init():
                 print(f"  🗑️  Removed from index: {fpath}")
                 deleted_count += 1
 
-    print(f"\n{'='*60}")
-    print(f"📊 Indexing Results:")
+    print(f"\n{'=' * 60}")
+    print("📊 Indexing Results:")
     print(f"   ✅ Indexed: {indexed}")
     print(f"   ⏭️  Skipped: {skipped}")
     print(f"   🗑️  Deleted: {deleted_count}")
     if errors > 0:
         print(f"   ❌ Errors: {errors}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     # Structural indexes: sqlite file_symbols + Markdown export (no full dump)
     try:
         from core.index_context import refresh_target_indexes
 
-        print(
-            f"\n📚 Building target symbol index + Markdown maps → {project_dir / '.PrizmForge'}"
-        )
-        written = refresh_target_indexes(
-            project_directory=str(project_dir), full_dump=False, force=True
-        )
+        print(f"\n📚 Building target symbol index + Markdown maps → {project_dir / '.PrizmForge'}")
+        written = refresh_target_indexes(project_directory=str(project_dir), full_dump=False, force=True)
         sym = written.get("symbols") or {}
         print(
             f"   ✅ symbols: {sym.get('files', '?')} files / {sym.get('symbols', '?')} rows; "
@@ -192,10 +184,10 @@ def cmd_history(limit: int = 10):
         tasks = cursor.fetchall()
 
     if not tasks:
-        print(f"\\n📋 No tasks yet\\n")
+        print("\\n📋 No tasks yet\\n")
         return
 
-    print(f"\\n📋 Recent Tasks:")
+    print("\\n📋 Recent Tasks:")
     print("-" * 60)
     for task_id, desc, status, started, completed in tasks:
         icon = "✅" if status == "completed" else "🔄"
@@ -224,9 +216,9 @@ def cmd_feedback(task_id: str):
         print()
 
 
-def cmd_reset_endpoint(endpoint_name: str = None):
+def cmd_reset_endpoint(endpoint_name: Optional[str] = None):
     """Reset endpoint health status"""
-    from core.endpoint_manager import get_endpoint_manager, EndpointStatus
+    from core.endpoint_manager import get_endpoint_manager
 
     endpoint_mgr = get_endpoint_manager()
 
@@ -243,7 +235,7 @@ def cmd_reset_endpoint(endpoint_name: str = None):
         # Reset all endpoints
         for name, endpoint in endpoint_mgr.endpoints.items():
             endpoint.health.mark_success()
-        print(f"✅ Reset all endpoints to healthy status")
+        print("✅ Reset all endpoints to healthy status")
 
 
 def cmd_fallback_stats():
@@ -252,22 +244,22 @@ def cmd_fallback_stats():
 
     stats = get_fallback_stats()
 
-    print(f"\n📊 Endpoint Fallback Statistics")
+    print("\n📊 Endpoint Fallback Statistics")
     print("=" * 80)
     print(f"\nTotal fallbacks: {stats['total']}")
 
     if stats["by_reason"]:
-        print(f"\n📋 Fallbacks by Reason:")
+        print("\n📋 Fallbacks by Reason:")
         for reason, count in stats["by_reason"].items():
             print(f"   {reason:<30} {count:>5} times")
 
     if stats["by_endpoint"]:
-        print(f"\n🔄 Most Affected Endpoints:")
+        print("\n🔄 Most Affected Endpoints:")
         for endpoint, count in stats["by_endpoint"].items():
             print(f"   {endpoint:<30} {count:>5} fallbacks")
 
     if stats["recent"]:
-        print(f"\n⏰ Recent Fallbacks:")
+        print("\n⏰ Recent Fallbacks:")
         print("-" * 80)
         for timestamp, agent, orig, fallback, reason in stats["recent"]:
             print(f"{timestamp[:19]} | {agent:<15}")
@@ -276,7 +268,7 @@ def cmd_fallback_stats():
     print()
 
 
-def cmd_show_prompt(task_id: str, agent_name: str = None):
+def cmd_show_prompt(task_id: str, agent_name: Optional[str] = None):
     """Show prompts sent to agents"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -319,15 +311,15 @@ def cmd_show_prompt(task_id: str, agent_name: str = None):
         print(f"PROMPT ({len(prompt)} chars):")
         print(prompt[:500])
         if len(prompt) > 500:
-            print(f"... +{len(prompt)-500} more chars")
+            print(f"... +{len(prompt) - 500} more chars")
         print(f"\nRESPONSE ({len(response) if response else 0} chars):")
         print(response[:300] if response else "NO RESPONSE")
         if response and len(response) > 300:
-            print(f"... +{len(response)-300} more chars")
+            print(f"... +{len(response) - 300} more chars")
         print()
 
 
-def cmd_export_db(output_dir: str = None, task_id: str = None):
+def cmd_export_db(output_dir: Optional[str] = None, task_id: Optional[str] = None):
     """Export all database tables to CSV files"""
 
     # Set output directory
@@ -338,13 +330,11 @@ def cmd_export_db(output_dir: str = None, task_id: str = None):
         project_dir = Path(config.get("project_directory", "./project"))
         PrizmForge_dir = project_dir / ".PrizmForge"
         PrizmForge_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = (
-            PrizmForge_dir / "agents_exports" / datetime.now().strftime("%Y%m%d_%H%M%S")
-        )
+        output_dir = PrizmForge_dir / "agents_exports" / datetime.now().strftime("%Y%m%d_%H%M%S")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n📦 Exporting Database to CSV")
+    print("\n📦 Exporting Database to CSV")
     print("=" * 60)
     print(f"Output Directory: {output_dir.absolute()}")
     if task_id:
@@ -355,8 +345,8 @@ def cmd_export_db(output_dir: str = None, task_id: str = None):
 
         # Get all table names
         cursor.execute("""
-            SELECT name FROM sqlite_master 
-            WHERE type='table' 
+            SELECT name FROM sqlite_master
+            WHERE type='table'
             ORDER BY name
         """)
         tables = [row[0] for row in cursor.fetchall()]
@@ -399,7 +389,7 @@ def cmd_export_db(output_dir: str = None, task_id: str = None):
 
     print()
     print("=" * 60)
-    print(f"📊 Export Summary:")
+    print("📊 Export Summary:")
     print(f"   Tables exported: {exported_count}/{len(tables)}")
     print(f"   Total rows: {total_rows:,}")
     print(f"   Location: {output_dir.absolute()}")
@@ -419,7 +409,7 @@ def table_has_task_id(cursor, table_name: str) -> bool:
         return False
 
 
-def cmd_export_task(task_id: str, output_dir: str = None):
+def cmd_export_task(task_id: str, output_dir: Optional[str] = None):
     """Export all data for a specific task"""
     if output_dir is None:
         from core.config import get_config
@@ -428,11 +418,7 @@ def cmd_export_task(task_id: str, output_dir: str = None):
         project_dir = Path(config.get("project_directory", "./project"))
         PrizmForge_dir = project_dir / ".PrizmForge"
         PrizmForge_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = (
-            PrizmForge_dir
-            / "agents_exports"
-            / f"task_{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
+        output_dir = PrizmForge_dir / "agents_exports" / f"task_{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     cmd_export_db(output_dir, task_id)
 
@@ -455,7 +441,7 @@ def cmd_list_exports():
         print("\n📦 No exports found\n")
         return
 
-    print(f"\n📦 Available Exports:")
+    print("\n📦 Available Exports:")
     print("-" * 60)
 
     for export_dir in exports:
@@ -474,9 +460,7 @@ def cmd_list_exports():
     print()
 
 
-def cmd_export_specific_tables(
-    tables: list, output_dir: str = None, task_id: str = None
-):
+def cmd_export_specific_tables(tables: list, output_dir: Optional[str] = None, task_id: Optional[str] = None):
     """Export specific tables to CSV"""
 
     if output_dir is None:
@@ -486,15 +470,11 @@ def cmd_export_specific_tables(
         project_dir = Path(config.get("project_directory", "./project"))
         PrizmForge_dir = project_dir / ".PrizmForge"
         PrizmForge_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = (
-            PrizmForge_dir
-            / "agents_exports"
-            / f"custom_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
+        output_dir = PrizmForge_dir / "agents_exports" / f"custom_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n📦 Exporting Selected Tables")
+    print("\n📦 Exporting Selected Tables")
     print("=" * 60)
     print(f"Tables: {', '.join(tables)}")
     print(f"Output: {output_dir.absolute()}")
@@ -512,7 +492,7 @@ def cmd_export_specific_tables(
                 # Check if table exists
                 cursor.execute(
                     """
-                    SELECT name FROM sqlite_master 
+                    SELECT name FROM sqlite_master
                     WHERE type='table' AND name=?
                 """,
                     (table_name,),
@@ -559,7 +539,7 @@ def cmd_export_specific_tables(
     print()
 
 
-def cmd_archives(task_id: str = None):
+def cmd_archives(task_id: Optional[str] = None):
     """Show archived context summaries"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -585,10 +565,10 @@ def cmd_archives(task_id: str = None):
         archives = cursor.fetchall()
 
     if not archives:
-        print(f"\n📚 No archived context found\n")
+        print("\n📚 No archived context found\n")
         return
 
-    print(f"\n📚 Archived Context:")
+    print("\n📚 Archived Context:")
     print("-" * 60)
 
     for archive in archives:
@@ -638,10 +618,9 @@ def cmd_archives(task_id: str = None):
 def cmd_review_status():
     """Show background agent review status"""
     with get_db_connection() as conn:
-
         cursor = conn.cursor()
 
-        print(f"\n📊 Background Agent Review Status")
+        print("\n📊 Background Agent Review Status")
         print("=" * 60)
 
         for agent_name in ["jr_reviewer", "jr_researcher", "tech_writer"]:
@@ -650,7 +629,7 @@ def cmd_review_status():
             # Get review statistics
             cursor.execute(
                 """
-                SELECT 
+                SELECT
                     COUNT(*) as total_reviews,
                     COUNT(DISTINCT file_path) as unique_files,
                     SUM(feedback_count) as total_feedback
@@ -683,7 +662,7 @@ def cmd_review_status():
 
             recent = cursor.fetchall()
             if recent:
-                print(f"   Recent reviews:")
+                print("   Recent reviews:")
                 for file_path, reviewed_at, count in recent:
                     print(f"     • {file_path} ({reviewed_at[:19]}, {count}x)")
 
@@ -714,7 +693,7 @@ def cmd_endpoints():
 
     endpoint_mgr = get_endpoint_manager()
 
-    print(f"\n🌐 Available Endpoints:")
+    print("\n🌐 Available Endpoints:")
     print("=" * 60)
 
     for name, endpoint in endpoint_mgr.endpoints.items():
@@ -724,7 +703,7 @@ def cmd_endpoints():
         print(f"   Description: {endpoint.description}")
         print(f"   Includes model in payload: {endpoint.include_model_in_payload}")
 
-    print(f"\n\n📦 Available Models:")
+    print("\n\n📦 Available Models:")
     print("=" * 60)
 
     for model_name, model_info in endpoint_mgr.models.items():
@@ -736,7 +715,7 @@ def cmd_endpoints():
         print(f"   Temperature: {config.get('temperature')}")
         print(f"   Description: {config.get('description')}")
 
-    print(f"\n\n👥 Agent Assignments:")
+    print("\n\n👥 Agent Assignments:")
     print("=" * 60)
 
     from core.config import get_config
@@ -762,7 +741,7 @@ def cmd_endpoint_health():
     endpoint_mgr = get_endpoint_manager()
     health_summary = endpoint_mgr.get_health_summary()
 
-    print(f"\n🏥 Endpoint Health Status")
+    print("\n🏥 Endpoint Health Status")
     print("=" * 80)
 
     for endpoint_name, health in health_summary.items():
@@ -807,13 +786,13 @@ def cmd_endpoint_health():
         for ep in available_endpoints:
             print(f"   • {ep.name} (priority: {ep.priority})")
     else:
-        print(f"\n❌ NO ENDPOINTS CURRENTLY AVAILABLE")
-        print(f"   All endpoints are experiencing issues or in cooldown")
+        print("\n❌ NO ENDPOINTS CURRENTLY AVAILABLE")
+        print("   All endpoints are experiencing issues or in cooldown")
 
     print()
 
 
-def cmd_reports(task_id: str = None):
+def cmd_reports(task_id: Optional[str] = None):
     """List generated reports"""
     from core.config import get_config
 
@@ -848,7 +827,7 @@ def cmd_reports(task_id: str = None):
     print()
 
 
-def cmd_show_report(report_name: str = None):
+def cmd_show_report(report_name: Optional[str] = None):
     """Show a specific report or the latest"""
     from core.config import get_config
 
@@ -874,9 +853,9 @@ def cmd_show_report(report_name: str = None):
         print(f"\n❌ Report not found: {report_path.name}\n")
         return
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"📊 {report_path.name}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     content = report_path.read_text(encoding="utf-8")
     print(content)
@@ -890,7 +869,7 @@ def cmd_resource_status():
     try:
         rc = get_resource_controller()
 
-        print(f"\n⚖️  Resource Controller Status")
+        print("\n⚖️  Resource Controller Status")
         print("=" * 70)
 
         # Current decision
@@ -909,16 +888,12 @@ def cmd_resource_status():
         # Agent statistics (learned performance)
         stats = rc.get_agent_statistics()
         if stats:
-            print(f"\n📊 Agent Performance (Learned):")
-            print(
-                f"{'Agent':<20} {'Calls':>6} {'Feedback':>9} {'Per Call':>9} {'Tokens':>8} {'Value':>6}"
-            )
+            print("\n📊 Agent Performance (Learned):")
+            print(f"{'Agent':<20} {'Calls':>6} {'Feedback':>9} {'Per Call':>9} {'Tokens':>8} {'Value':>6}")
             print("-" * 70)
 
             # Sort by value score descending
-            sorted_agents = sorted(
-                stats.items(), key=lambda x: x[1]["value_score"], reverse=True
-            )
+            sorted_agents = sorted(stats.items(), key=lambda x: x[1]["value_score"], reverse=True)
 
             for agent_name, agent_stats in sorted_agents:
                 print(
@@ -932,7 +907,7 @@ def cmd_resource_status():
         # Recent decisions
         history = rc.get_decision_history(limit=5)
         if len(history) > 1:
-            print(f"\n📜 Recent Decisions:")
+            print("\n📜 Recent Decisions:")
             for i, dec in enumerate(reversed(history), 1):
                 print(f"  {i}. {dec.level}: {', '.join(dec.active_agents)}")
 
@@ -965,7 +940,7 @@ def cmd_json_parse_stats():
         """)
         totals = dict(cursor.fetchall())
 
-    print(f"\n📊 JSON Parsing Statistics")
+    print("\n📊 JSON Parsing Statistics")
     print("=" * 60)
 
     if not failures:
@@ -1017,7 +992,7 @@ def cmd_task_progress(task_id: str):
         cursor.execute(
             """
             SELECT COUNT(*) FROM agent_feedback
-            WHERE task_id = ? AND addressed = 0 
+            WHERE task_id = ? AND addressed = 0
             AND priority IN ('CRITICAL', 'HIGH')
         """,
             (task_id,),
@@ -1027,7 +1002,7 @@ def cmd_task_progress(task_id: str):
     print(f"\n📊 Task Progress: {task_id}")
     print("=" * 60)
 
-    print(f"\n📝 Recent File Changes:")
+    print("\n📝 Recent File Changes:")
     if mods:
         for file_path, operation, changed_by, timestamp in mods:
             print(f"  {timestamp[:19]} | {operation:6} | {file_path}")
@@ -1035,7 +1010,7 @@ def cmd_task_progress(task_id: str):
     else:
         print("  ⚠️  No files changed yet")
 
-    print(f"\n🤖 Agent Activity:")
+    print("\n🤖 Agent Activity:")
     if activity:
         for agent, calls in activity:
             print(f"  {agent:20} {calls:3} calls")
@@ -1057,20 +1032,20 @@ def cmd_help():
   project           - Show project info
   endpoints         - Show available API endpoints and models
   health            - Show endpoint health status and availability
-  
+
 🤖 TASK COMMANDS:
   <describe task>   - Start a new task
   feedback <id>     - Show feedback for task
   show_prompt <id>  - Show prompts sent to agents
   show_prompt <id> <agent> - Show prompts for specific agent
-  
+
 📊 REPORTS & MONITORING:
   reports           - List all generated reports
   report            - Show latest report
   report <name>     - Show specific report
   resource_status   - Show resource controller status
   review_status     - Show background agent activity
-  
+
 📊 SYSTEM COMMANDS:
   status            - Show token usage
   history [N]       - Show recent tasks
@@ -1100,7 +1075,6 @@ def cmd_help():
 
 
 # Append dynamic token URLs
-from core.config import get_config
 
 config = get_config()
 print("🌐 Where to get your tokens:")

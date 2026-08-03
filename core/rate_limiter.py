@@ -1,3 +1,5 @@
+from typing import Optional
+
 """Rate limiting for API calls - per-endpoint support"""
 
 import time
@@ -14,7 +16,7 @@ class RateLimiter:
         # ✅ NEW: Per-endpoint tracking
         self.endpoint_calls: Dict[str, deque] = {}
 
-    def wait_if_needed(self, endpoint_name: str = None):
+    def wait_if_needed(self, endpoint_name: Optional[str] = None):
         """Wait if rate limit would be exceeded"""
         now = time.time()
 
@@ -44,9 +46,7 @@ class RateLimiter:
         if len(calls) >= max_calls:
             sleep_time = calls[0] + 60 - now + 0.2
             if sleep_time > 0:
-                print(
-                    f"⏳ Rate limit ({endpoint_name or 'global'}): sleeping {sleep_time:.1f}s"
-                )
+                print(f"⏳ Rate limit ({endpoint_name or 'global'}): sleeping {sleep_time:.1f}s")
                 time.sleep(sleep_time)
 
         calls.append(now)

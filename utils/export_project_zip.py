@@ -1,3 +1,5 @@
+from typing import Optional
+
 #!/usr/bin/env python3
 """
 Export the PrizmForge project to a zip archive (includes ``report/``).
@@ -54,7 +56,6 @@ Tests are not run by this script; use ``bash utils/run_fast_tests.sh`` or pytest
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 import zipfile
@@ -91,7 +92,7 @@ SKIP_FILE_NAMES = {
 }
 
 
-def discover_project_root(start: Path | None = None) -> Path:
+def discover_project_root(start: Optional[Path | None] = None) -> Path:
     """Directory containing config.json (walk up from start or this file)."""
     candidates: list[Path] = []
     if start is not None:
@@ -188,10 +189,8 @@ def export_zip(
     }
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Consolidate and export PrizmForge to zip (includes report/)"
-    )
+def main(argv: Optional[list[str] | None] = None) -> int:
+    parser = argparse.ArgumentParser(description="Consolidate and export PrizmForge to zip (includes report/)")
     parser.add_argument(
         "--root",
         default=None,
@@ -238,10 +237,7 @@ def main(argv: list[str] | None = None) -> int:
     result = export_zip(root, out, include_name_prefix=not args.flat)
     print(f"OK: Wrote {result['path']}")
     print(f"  Files: {result['files']} (report/: {result['report_files']})")
-    print(
-        f"  Size:  {result['bytes']:,} bytes "
-        f"({result['bytes'] / 1024 / 1024:.2f} MB)"
-    )
+    print(f"  Size:  {result['bytes']:,} bytes ({result['bytes'] / 1024 / 1024:.2f} MB)")
     return 0
 
 

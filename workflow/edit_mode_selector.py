@@ -1,3 +1,5 @@
+from typing import Optional, Sequence
+
 """
 Edit mode selection and fallback policy.
 
@@ -39,9 +41,7 @@ class ModeDecision:
     change_hint: Optional[str] = None  # "small" | "medium" | "large" | None
 
 
-def _estimate_change_size(
-    instructions: str = "", files_needed: Optional[Sequence[str]] = None
-) -> str:
+def _estimate_change_size(instructions: str = "", files_needed: Optional[Sequence[str]] = None) -> str:
     """
     Very lightweight heuristic for change complexity.
     Returns 'small' | 'medium' | 'large'.
@@ -305,8 +305,8 @@ START YOUR JSON OUTPUT NOW:"""
     # Default: GUID / governed operations
     schema = ""
     try:
-        from pathlib import Path
         import json as json_lib
+        from pathlib import Path
 
         schema_file = Path(__file__).parent.parent / "agent_schemas" / "developer.json"
         if schema_file.exists():

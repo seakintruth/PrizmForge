@@ -1,13 +1,16 @@
+from typing import Tuple
+
+from typing import Callable
+
 """
 Truncation detection and recovery
 Detects incomplete LLM responses and requests continuation
 """
 
 import re
-import json
-from typing import Tuple, Optional, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
+from typing import Optional, Tuple
 
 
 class TruncationType(Enum):
@@ -184,23 +187,19 @@ class TruncationDetector:
         # Check for incomplete hunks
         lines = diff_text.split("\n")
         in_hunk = False
-        last_hunk_complete = True
 
         for line in lines:
             if line.startswith("@@"):
                 in_hunk = True
-                last_hunk_complete = False
             elif line.startswith("---") or line.startswith("+++"):
                 in_hunk = False
             elif in_hunk and line.startswith(" "):
                 # Context line at end of hunk suggests completion
-                last_hunk_complete = True
+                pass
 
         # If last line is a change (+/-) without context, likely truncated
         last_line = lines[-1].strip() if lines else ""
-        if last_line.startswith(("+", "-")) and not last_line.startswith(
-            ("+++", "---")
-        ):
+        if last_line.startswith(("+", "-")) and not last_line.startswith(("+++", "---")):
             return TruncationResult(
                 is_truncated=True,
                 truncation_type=TruncationType.DIFF,
@@ -327,9 +326,7 @@ class TruncationDetector:
     def _build_json_resume_hint(self, partial_json: str) -> str:
         """Build smart resume hint for JSON"""
         # Find last complete key
-        last_key_match = re.findall(
-            r'"(\w+)":\s*(?:"[^"]*"|[\d]+|true|false|null)', partial_json
-        )
+        last_key_match = re.findall(r'"(\w+)":\s*(?:"[^"]*"|[\d]+|true|false|null)', partial_json)
 
         if last_key_match:
             last_key = last_key_match[-1]
@@ -355,7 +352,7 @@ def detect_and_resume(
     agent_name: str,
     original_prompt: str,
     expected_format: str = "auto",
-    call_agent_fn: callable = None,
+    call_agent_fn: Optional[Callable] = None,
 ) -> Tuple[str, bool]:
     """
     Convenience function: detect truncation and auto-resume
@@ -377,14 +374,10 @@ def detect_and_resume(
         return response, False
 
     if not call_agent_fn:
-        print(
-            f"    ⚠️  {agent_name}: Response appears truncated but no resume function provided"
-        )
+        print(f"    ⚠️  {agent_name}: Response appears truncated but no resume function provided")
         return response, False
 
-    print(
-        f"    🔄 {agent_name}: Response truncated ({result.truncation_type.value}), requesting continuation..."
-    )
+    print(f"    🔄 {agent_name}: Response truncated ({result.truncation_type.value}), requesting continuation...")
 
     # Build resume prompt
     resume_prompt = f"""Your previous response was cut off. Please continue from where you left off.

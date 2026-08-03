@@ -1,9 +1,13 @@
+from typing import Optional
+
+from typing import Dict, Optional
+
 """Configuration management"""
 
 import json
-from pathlib import Path
-from typing import Optional, Dict, Any
 import os
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 _config_cache = None
 _prompts_cache = None
@@ -67,7 +71,7 @@ def find_config_file(filename: str) -> Path:
     return Path.cwd() / filename
 
 
-def load_config(config_path: str = None) -> Dict[str, Any]:
+def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     """Load configuration from JSON file"""
     if config_path is None:
         config_file = find_config_file("config.json")
@@ -161,9 +165,7 @@ def ensure_project_directory(config: Optional[Dict[str, Any]] = None) -> Path:
     try:
         path.relative_to(repo)
     except ValueError:
-        raise ValueError(
-            f"project_directory must stay under repo root: {path} is outside {repo}"
-        )
+        raise ValueError(f"project_directory must stay under repo root: {path} is outside {repo}")
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -211,55 +213,36 @@ def validate_config(config: Dict[str, Any]) -> None:
             "planned_diff",
         }
         if method is not None and method not in known:
-            errors.append(
-                f"file_editing.method {method!r} is not recognized; "
-                f"expected one of {sorted(known)}"
-            )
+            errors.append(f"file_editing.method {method!r} is not recognized; expected one of {sorted(known)}")
         if preferred is not None:
             if not isinstance(preferred, list) or not preferred:
-                errors.append(
-                    "file_editing.preferred_modes must be a non-empty list when present"
-                )
+                errors.append("file_editing.preferred_modes must be a non-empty list when present")
             else:
                 bad = [m for m in preferred if m not in known]
                 if bad:
-                    errors.append(
-                        f"file_editing.preferred_modes has unknown modes: {bad}"
-                    )
+                    errors.append(f"file_editing.preferred_modes has unknown modes: {bad}")
         if fallback is not None:
             if not isinstance(fallback, list) or not fallback:
-                errors.append(
-                    "file_editing.fallback_order must be a non-empty list when present"
-                )
+                errors.append("file_editing.fallback_order must be a non-empty list when present")
             else:
                 bad = [m for m in fallback if m not in known]
                 if bad:
-                    errors.append(
-                        f"file_editing.fallback_order has unknown modes: {bad}"
-                    )
+                    errors.append(f"file_editing.fallback_order has unknown modes: {bad}")
         threshold = fe.get("small_file_threshold_lines")
         if threshold is not None and (not isinstance(threshold, int) or threshold < 1):
-            errors.append(
-                "file_editing.small_file_threshold_lines must be a positive integer"
-            )
+            errors.append("file_editing.small_file_threshold_lines must be a positive integer")
 
     cs = config.get("content_safety")
     if cs is not None:
         if not isinstance(cs, dict):
             errors.append("content_safety must be an object/dict when present")
         else:
-            if "disallow_binary_content" in cs and not isinstance(
-                cs["disallow_binary_content"], bool
-            ):
-                errors.append(
-                    "content_safety.disallow_binary_content must be a boolean"
-                )
+            if "disallow_binary_content" in cs and not isinstance(cs["disallow_binary_content"], bool):
+                errors.append("content_safety.disallow_binary_content must be a boolean")
             be = cs.get("blocked_extensions")
             if be is not None:
                 if not isinstance(be, list) or not all(isinstance(x, str) for x in be):
-                    errors.append(
-                        "content_safety.blocked_extensions must be a list of strings"
-                    )
+                    errors.append("content_safety.blocked_extensions must be a list of strings")
 
     if errors:
         raise ValueError("config.json validation failed:\n  - " + "\n  - ".join(errors))

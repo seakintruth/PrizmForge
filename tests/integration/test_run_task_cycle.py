@@ -46,8 +46,8 @@ def cycle_env(temp_db, tmp_path, monkeypatch):
 
 def test_run_task_cycle_find_replace(mock_llm, cycle_env, temp_db):
     """Orchestrator → developer → reviewer path under MockLLM."""
-    from workflow.task_runner import run_task_cycle
     from file_editing.db import get_db_connection, reconstruct_file_content
+    from workflow.task_runner import run_task_cycle
 
     orch_dev = json.dumps(
         {
@@ -96,9 +96,7 @@ def test_run_task_cycle_find_replace(mock_llm, cycle_env, temp_db):
             run_task_cycle("cycle_test_1", "Rename OLD to NEW in app.py", max_turns=3)
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", ("app.py",)
-        ).fetchone()
+        row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("app.py",)).fetchone()
         assert row is not None
         body = reconstruct_file_content(conn, row[0])
         assert "NEW" in body
@@ -107,8 +105,8 @@ def test_run_task_cycle_find_replace(mock_llm, cycle_env, temp_db):
 
 def test_run_task_cycle_multi_turn_then_complete(mock_llm, cycle_env, temp_db):
     """Turn1 developer edit; turn2 complete — counters and content."""
-    from workflow.task_runner import run_task_cycle
     from file_editing.db import get_db_connection, reconstruct_file_content
+    from workflow.task_runner import run_task_cycle
 
     orch_dev = json.dumps(
         {
@@ -158,9 +156,7 @@ def test_run_task_cycle_multi_turn_then_complete(mock_llm, cycle_env, temp_db):
             run_task_cycle("cycle_multi", "Rename OLD to NEW", max_turns=4)
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", ("app.py",)
-        ).fetchone()
+        row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("app.py",)).fetchone()
         assert row is not None
         body = reconstruct_file_content(conn, row[0])
         assert "NEW" in body
@@ -168,9 +164,9 @@ def test_run_task_cycle_multi_turn_then_complete(mock_llm, cycle_env, temp_db):
 
 def test_run_task_cycle_reviewer_reject(mock_llm, cycle_env, temp_db):
     """REJECT must not materialize successful content change."""
-    from workflow.task_runner import run_task_cycle
-    from file_editing.db import get_db_connection, reconstruct_file_content
     from core.events import list_events
+    from file_editing.db import get_db_connection, reconstruct_file_content
+    from workflow.task_runner import run_task_cycle
 
     orch_dev = json.dumps(
         {
@@ -212,9 +208,7 @@ def test_run_task_cycle_reviewer_reject(mock_llm, cycle_env, temp_db):
     )
     mock_llm.set_response(
         "reviewer",
-        json.dumps(
-            {"decision": "REJECT", "reason": "too risky", "suggestions": ["be careful"]}
-        ),
+        json.dumps({"decision": "REJECT", "reason": "too risky", "suggestions": ["be careful"]}),
     )
 
     with mock_llm.patch_call_agent():
@@ -222,15 +216,11 @@ def test_run_task_cycle_reviewer_reject(mock_llm, cycle_env, temp_db):
             run_task_cycle("cycle_reject", "Rename OLD to NEW", max_turns=3)
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT file_id FROM files WHERE file_path = ?", ("app.py",)
-        ).fetchone()
+        row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("app.py",)).fetchone()
         body = reconstruct_file_content(conn, row[0])
         # Rejected: content should remain OLD
         assert "OLD" in body
-        st = conn.execute(
-            "SELECT status FROM edit_proposals ORDER BY created_at DESC LIMIT 1"
-        ).fetchone()
+        st = conn.execute("SELECT status FROM edit_proposals ORDER BY created_at DESC LIMIT 1").fetchone()
         if st:
             assert st[0] in ("rejected", "pending", "error", "approved", "applied")
             # Prefer rejected when pipeline completed review

@@ -1,6 +1,6 @@
 import json
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # Schema output directory
 SCHEMA_DIR = Path(__file__).parent.parent / "agent_schemas"
@@ -183,9 +183,7 @@ SUPPORT_WORKER_SCHEMAS = {
                 "Fixed database connection leak in core/db.py",
                 "Resolved JSON parsing failures",
             ],
-            "can_be_forgotten": [
-                "Routine code review comments that were immediately addressed"
-            ],
+            "can_be_forgotten": ["Routine code review comments that were immediately addressed"],
         },
     },
     "prioritizer": {
@@ -312,7 +310,7 @@ def generate_all_schemas():
     print(f"  - Background agents: {background_count}")
     print(f"  - Core agents: {core_count}")
     print(f"  - Support workers: {support_count}")
-    print(f"  - Metadata: 1")
+    print("  - Metadata: 1")
     print("\nNext steps:")
     print("  1. Review generated schemas in agent_schemas/")
     print("  2. Update agents/base.py to load these schemas")
@@ -322,14 +320,15 @@ def generate_all_schemas():
 
 def generate_readme():
     """Generate README.md for the agent_schemas directory"""
-    readme_content = """# Agent Schema Files
+    readme_content = (
+        """# Agent Schema Files
 
 Generated schemas for PrizmForge multi-agent system.
 
 ## Categories
 
 - **Background Agents**: jr_reviewer, jr_researcher, tech_writer, security_reviewer, deployment_validator
-- **Core Agents**: orchestrator, developer, reviewer  
+- **Core Agents**: orchestrator, developer, reviewer
 - **Support Workers**: archivist, prioritizer, project_reporter, resource_controller
 
 ## GUID Format
@@ -343,7 +342,10 @@ from core.agent_schemas import get_schema_example
 schema = get_schema_example("jr_reviewer")
 ```
 
-Last generated: """ + datetime.now().strftime("%Y-%m-%d %H:%M") + "\n"
+Last generated: """
+        + datetime.now().strftime("%Y-%m-%d %H:%M")
+        + "\n"
+    )
 
     readme_path = SCHEMA_DIR / "README.md"
     with open(readme_path, "w", encoding="utf-8") as f:

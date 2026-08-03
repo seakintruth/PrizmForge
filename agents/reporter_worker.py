@@ -1,15 +1,15 @@
+from typing import Optional
+
 """Project Reporter Worker — generates human-readable audit reports"""
 
+import json
 import threading
 import time
-import json
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Dict, Optional
 
 from agents.base import call_agent
-from core.db import get_db_path
 from core.config import get_config
 from core.db_connection import get_db_connection
 
@@ -36,13 +36,9 @@ class ProjectReporterWorker:
         self.task_id = task_id
         self._load_last_state()
 
-        self.worker_thread = threading.Thread(
-            target=self._worker_loop, daemon=True, name="project-reporter-worker"
-        )
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="project-reporter-worker")
         self.worker_thread.start()
-        print(
-            f"    📊 Started Project Reporter worker (interval: {self.config.get('interval_minutes', 60)} min)"
-        )
+        print(f"    📊 Started Project Reporter worker (interval: {self.config.get('interval_minutes', 60)} min)")
 
     def stop(self):
         self.running = False
@@ -76,11 +72,7 @@ class ProjectReporterWorker:
                     VALUES (1, ?, ?, ?)
                 """,
                     (
-                        (
-                            self.last_report_time.isoformat()
-                            if self.last_report_time
-                            else None
-                        ),
+                        (self.last_report_time.isoformat() if self.last_report_time else None),
                         self.last_file_count,
                         self.last_line_delta,
                     ),
@@ -268,34 +260,19 @@ class ProjectReporterWorker:
             "total_files_changed": len(set(m[0] for m in modifications)),
             "trigger": (
                 "time"
-                if (datetime.now() - start_time).total_seconds()
-                >= self.config.get("interval_minutes", 60) * 60
+                if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60
                 else "change"
             ),
         }
 
     def _build_prompt(self, data: Dict) -> str:
-        mods = "\n".join(
-            [
-                f"- {m[0]} ({m[1]}) by {m[2]} at {m[3][:16]}"
-                for m in data["modifications"][:15]
-            ]
-        )
-        commits = (
-            "\n".join([f"- {c}" for c in data["git_commits"][:8]])
-            if data["git_commits"]
-            else "No git commits recorded"
-        )
-        feedback = "\n".join(
-            [
-                f"- [{f[2]}] {f[1]}: {f[3][:80]} (by {f[0]})"
-                for f in data["addressed_feedback"][:10]
-            ]
-        )
+        mods = "\n".join([f"- {m[0]} ({m[1]}) by {m[2]} at {m[3][:16]}" for m in data["modifications"][:15]])
+        commits = "\n".join([f"- {c}" for c in data["git_commits"][:8]]) if data["git_commits"] else "No git commits recorded"
+        feedback = "\n".join([f"- [{f[2]}] {f[1]}: {f[3][:80]} (by {f[0]})" for f in data["addressed_feedback"][:10]])
 
-        return f"""Generate a human-readable project report for the period {data['start_time'].strftime('%Y-%m-%d %H:%M')} to {data['end_time'].strftime('%Y-%m-%d %H:%M')}.
+        return f"""Generate a human-readable project report for the period {data["start_time"].strftime("%Y-%m-%d %H:%M")} to {data["end_time"].strftime("%Y-%m-%d %H:%M")}.
 
-**Files Modified ({data['total_files_changed']}):**
+**Files Modified ({data["total_files_changed"]}):**
 {mods}
 
 **Git Commits:**
@@ -304,7 +281,7 @@ class ProjectReporterWorker:
 **Addressed High-Priority Feedback:**
 {feedback}
 
-**Trigger:** {data['trigger']}
+**Trigger:** {data["trigger"]}
 
 Please produce the full Markdown report following the exact structure defined in your system prompt."""
 

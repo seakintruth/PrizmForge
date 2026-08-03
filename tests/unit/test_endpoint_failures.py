@@ -76,9 +76,7 @@ def test_401_does_not_block_two_minutes(endpoint_config):
 def test_429_response_shape(endpoint_config):
     from core.http_client import post_json
 
-    with patch(
-        "requests.post", return_value=_resp(429, {"error": {"message": "rate limited"}})
-    ):
+    with patch("requests.post", return_value=_resp(429, {"error": {"message": "rate limited"}})):
         r = post_json("http://example.invalid/v1", json_body={})
         assert r.status_code == 429
         assert "rate" in r.json()["error"]["message"]
@@ -96,7 +94,7 @@ def test_call_agent_empty_when_endpoint_always_fails(mock_llm, endpoint_config):
 
 
 def test_http_5xx_via_post_json(endpoint_config):
-    from core.http_client import post_json, HttpError
+    from core.http_client import HttpError, post_json
 
     with patch("requests.post", return_value=_resp(503, {"error": "unavailable"})):
         r = post_json("http://example.invalid/v1", json_body={})

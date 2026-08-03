@@ -1,7 +1,9 @@
+from typing import Dict, List, Optional, Union
+
 # file_editing/edit_payload.py
 import json
-from dataclasses import dataclass, field, asdict
-from typing import List, Literal, Optional, Union, Dict, Any
+from dataclasses import asdict, dataclass, field
+from typing import Any, Dict, List, Literal, Optional, Union
 
 
 # ✅ ADDED kw_only=True to all dataclasses to fix inheritance ordering issues
@@ -13,16 +15,14 @@ class BaseOperation:
     def __post_init__(self):
         # Pydantic-like Type Validation
         if not isinstance(self.rationale, str):
-            raise ValueError(f"rationale must be a string")
+            raise ValueError("rationale must be a string")
 
         # Auto-expand too-short rationales
         if len(self.rationale) < 10:
             self.rationale = f"{self.rationale} (applied as specified in task)"
 
         if len(self.rationale) > 500:
-            raise ValueError(
-                f"rationale must be <= 500 characters (got {len(self.rationale)})"
-            )
+            raise ValueError(f"rationale must be <= 500 characters (got {len(self.rationale)})")
 
 
 @dataclass(kw_only=True)
@@ -101,9 +101,7 @@ class FindReplace(BaseOperation):
             raise ValueError("find must be a non-empty string")
         if not isinstance(self.replace, str):
             raise ValueError("replace must be a string")
-        if self.count is not None and (
-            not isinstance(self.count, int) or self.count < 0
-        ):
+        if self.count is not None and (not isinstance(self.count, int) or self.count < 0):
             raise ValueError("count must be None or a non-negative integer")
 
 
@@ -181,9 +179,7 @@ class EditPayload:
             raise ValueError(f"Invalid JSON string: {e}")
 
         if not isinstance(data, dict):
-            raise ValueError(
-                "JSON must resolve to an object/dictionary at the root level"
-            )
+            raise ValueError("JSON must resolve to an object/dictionary at the root level")
 
         return cls.model_validate(data)
 
@@ -196,9 +192,7 @@ class EditPayload:
 
             op_type = op_data.get("type")
             if not op_type:
-                raise ValueError(
-                    f"Operation at index {i} is missing required 'type' field"
-                )
+                raise ValueError(f"Operation at index {i} is missing required 'type' field")
 
             # Pydantic-like Discriminator mapping with clean TypeError wrapping
             # Pydantic-like Discriminator mapping with auto-fix for missing rationale
@@ -227,92 +221,28 @@ class EditPayload:
 
                 # Now create the operation object
                 if op_type == "replace_block":
-                    ops.append(
-                        ReplaceBlock(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in ReplaceBlock.__annotations__
-                            }
-                        )
-                    )
+                    ops.append(ReplaceBlock(**{k: v for k, v in op_kwargs.items() if k in ReplaceBlock.__annotations__}))
                 elif op_type == "insert_after":
-                    ops.append(
-                        InsertAfter(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in InsertAfter.__annotations__
-                            }
-                        )
-                    )
+                    ops.append(InsertAfter(**{k: v for k, v in op_kwargs.items() if k in InsertAfter.__annotations__}))
                 elif op_type == "delete_lines":
-                    ops.append(
-                        DeleteLines(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in DeleteLines.__annotations__
-                            }
-                        )
-                    )
+                    ops.append(DeleteLines(**{k: v for k, v in op_kwargs.items() if k in DeleteLines.__annotations__}))
                 elif op_type == "update_documentation":
                     ops.append(
-                        UpdateDocumentation(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in UpdateDocumentation.__annotations__
-                            }
-                        )
+                        UpdateDocumentation(**{k: v for k, v in op_kwargs.items() if k in UpdateDocumentation.__annotations__})
                     )
                 elif op_type == "create_file":
-                    ops.append(
-                        CreateFile(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in CreateFile.__annotations__
-                            }
-                        )
-                    )
+                    ops.append(CreateFile(**{k: v for k, v in op_kwargs.items() if k in CreateFile.__annotations__}))
                 elif op_type == "find_replace":
-                    ops.append(
-                        FindReplace(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in FindReplace.__annotations__
-                            }
-                        )
-                    )
+                    ops.append(FindReplace(**{k: v for k, v in op_kwargs.items() if k in FindReplace.__annotations__}))
                 elif op_type == "full_replace":
-                    ops.append(
-                        FullReplace(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in FullReplace.__annotations__
-                            }
-                        )
-                    )
+                    ops.append(FullReplace(**{k: v for k, v in op_kwargs.items() if k in FullReplace.__annotations__}))
                 elif op_type == "apply_diff":
-                    ops.append(
-                        ApplyDiff(
-                            **{
-                                k: v
-                                for k, v in op_kwargs.items()
-                                if k in ApplyDiff.__annotations__
-                            }
-                        )
-                    )
+                    ops.append(ApplyDiff(**{k: v for k, v in op_kwargs.items() if k in ApplyDiff.__annotations__}))
                 else:
                     raise ValueError(f"Unknown operation type: '{op_type}'")
 
             except TypeError as e:
-                raise ValueError(
-                    f"Validation failed for operation '{op_type}' at index {i}: Missing required fields. ({e})"
-                )
+                raise ValueError(f"Validation failed for operation '{op_type}' at index {i}: Missing required fields. ({e})")
 
         try:
             return cls(
@@ -322,9 +252,7 @@ class EditPayload:
                 rationale=data.get("rationale"),
             )
         except TypeError as e:
-            raise ValueError(
-                f"Validation failed for EditPayload: Missing required top-level fields. ({e})"
-            )
+            raise ValueError(f"Validation failed for EditPayload: Missing required top-level fields. ({e})")
 
     def model_dump_json(self) -> str:
         return json.dumps(asdict(self))
