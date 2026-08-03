@@ -1,4 +1,12 @@
-# core/response_parser.py
+from typing import Optional, Any
+import logging
+
+# Import the canonical ParseResult used across the repo
+from core.json_parser import ParseResult
+
+logger = logging.getLogger(__name__)
+
+
 class ResponseParser:
     """Single source of truth for LLM response parsing"""
     
@@ -20,4 +28,4 @@ class ResponseParser:
                 logger.debug(f"Strategy {strategy.__name__} failed: {e}")
                 continue
         
-        return ParseResult(success=False, error="All strategies failed")
+        return ParseResult(status=ParseResult.__dataclass_fields__ and None, error="All strategies failed", data=None, raw_json=None, confidence=0.0)  # placeholder if needed
