@@ -26,6 +26,7 @@ def _hash(content: str) -> str:
 # Path containment
 # ---------------------------------------------------------------------------
 
+
 class TestPathContainment:
     def test_legitimate_relative_write(self, monkeypatch, tmp_path):
         proj = tmp_path / "project"
@@ -34,6 +35,7 @@ class TestPathContainment:
 
         monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(tmp_path / "t.db"))
         from core import config as config_mod
+
         original = config_mod.get_config
 
         def fake_config():
@@ -44,6 +46,7 @@ class TestPathContainment:
         monkeypatch.setattr(config_mod, "get_config", fake_config)
 
         from file_editing.writer import write_file_to_disk
+
         result = write_file_to_disk("src/hello.py", "print(1)\n")
         assert result["status"] == "success"
         assert (proj / "src" / "hello.py").read_text() == "print(1)\n"
@@ -54,6 +57,7 @@ class TestPathContainment:
         monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(tmp_path / "t.db"))
 
         from core import config as config_mod
+
         original = config_mod.get_config
 
         def fake_config():
@@ -64,6 +68,7 @@ class TestPathContainment:
         monkeypatch.setattr(config_mod, "get_config", fake_config)
 
         from file_editing.writer import write_file_to_disk
+
         result = write_file_to_disk("../../etc/passwd", "pwned\n")
         assert result["status"] == "error"
         assert "escape" in result["message"].lower()
@@ -75,6 +80,7 @@ class TestPathContainment:
         monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(tmp_path / "t.db"))
 
         from core import config as config_mod
+
         original = config_mod.get_config
 
         def fake_config():
@@ -85,6 +91,7 @@ class TestPathContainment:
         monkeypatch.setattr(config_mod, "get_config", fake_config)
 
         from file_editing.writer import write_file_to_disk
+
         result = write_file_to_disk(str(outside), "nope\n")
         assert result["status"] == "error"
         assert "escape" in result["message"].lower()
@@ -94,19 +101,25 @@ class TestPathContainment:
 # Mode selection + fallback
 # ---------------------------------------------------------------------------
 
+
 class TestEditModeSelector:
     def test_small_file_prefers_full_replace(self):
         from workflow.edit_mode_selector import select_edit_mode, MODE_FULL_REPLACE
+
         d = select_edit_mode(file_line_count=40, instructions="rewrite helper")
         assert d.selected_mode == MODE_FULL_REPLACE
 
     def test_rename_prefers_find_replace(self):
         from workflow.edit_mode_selector import select_edit_mode, MODE_FIND_REPLACE
-        d = select_edit_mode(file_line_count=400, instructions="rename old_name to new_name")
+
+        d = select_edit_mode(
+            file_line_count=400, instructions="rename old_name to new_name"
+        )
         assert d.selected_mode == MODE_FIND_REPLACE
 
     def test_large_prefers_guid(self):
         from workflow.edit_mode_selector import select_edit_mode, MODE_GUID
+
         d = select_edit_mode(
             file_line_count=900,
             instructions="refactor the architecture across modules",
@@ -115,6 +128,7 @@ class TestEditModeSelector:
 
     def test_fallback_chain_order(self):
         from workflow.edit_mode_selector import next_fallback_mode
+
         mode = "guid"
         tried = []
         while mode:
@@ -127,6 +141,7 @@ class TestEditModeSelector:
             validate_developer_edit_response,
             EditFailureReason,
         )
+
         r = validate_developer_edit_response(
             '{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text"}'
         )
@@ -135,6 +150,7 @@ class TestEditModeSelector:
 
     def test_validator_detects_find_replace(self):
         from core.edit_response_validator import validate_developer_edit_response
+
         r = validate_developer_edit_response(
             '{"target_file_path":"a.py","find":"old","replace":"new"}'
         )
@@ -146,11 +162,13 @@ class TestEditModeSelector:
 # Hash conflict + missing GUID (governed apply path)
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def governed_db(monkeypatch, tmp_path):
     db_path = tmp_path / "gov.db"
     monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(db_path))
     from core.db import init_db
+
     init_db()
     return db_path
 
@@ -177,12 +195,14 @@ class TestConcurrencyAndGuids:
             "target_file_path": "demo/sample.py",
             "summary": "Update print statement",
             "rationale": "Change the printed message for clarity",
-            "operations": [{
-                "type": "replace_block",
-                "start_line_guid": target_guid,
-                "new_content": ["    print('updated')"],
-                "rationale": "Replace print line",
-            }],
+            "operations": [
+                {
+                    "type": "replace_block",
+                    "start_line_guid": target_guid,
+                    "new_content": ["    print('updated')"],
+                    "rationale": "Replace print line",
+                }
+            ],
         }
         prop = create_proposal_from_developer_output(payload, 1, "demo/sample.py")
         assert prop["status"] == "success"
@@ -214,12 +234,14 @@ class TestConcurrencyAndGuids:
             "target_file_path": "demo/g.py",
             "summary": "Replace missing guid",
             "rationale": "Attempt to edit a non-existent line guid",
-            "operations": [{
-                "type": "replace_block",
-                "start_line_guid": "guid-does-not-exist",
-                "new_content": ["z = 3"],
-                "rationale": "Replace nonexistent line",
-            }],
+            "operations": [
+                {
+                    "type": "replace_block",
+                    "start_line_guid": "guid-does-not-exist",
+                    "new_content": ["z = 3"],
+                    "rationale": "Replace nonexistent line",
+                }
+            ],
         }
         prop = create_proposal_from_developer_output(payload, 1, "demo/g.py")
         assert prop["status"] == "success"
@@ -245,16 +267,22 @@ class TestConcurrencyAndGuids:
             "target_file_path": "demo/r.py",
             "summary": "Rename old to new",
             "rationale": "Consistent naming across the module",
-            "operations": [{
-                "type": "find_replace",
-                "find": "old",
-                "replace": "new",
-                "rationale": "Rename identifier",
-            }],
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "old",
+                    "replace": "new",
+                    "rationale": "Rename identifier",
+                }
+            ],
         }
         prop = create_proposal_from_developer_output(
-            payload, 1, "demo/r.py",
-            selected_mode="guid", fallback_used=True, final_mode="find_replace",
+            payload,
+            1,
+            "demo/r.py",
+            selected_mode="guid",
+            fallback_used=True,
+            final_mode="find_replace",
         )
         assert prop["status"] == "success"
         assert prop["fallback_used"] is True
@@ -280,11 +308,13 @@ class TestConcurrencyAndGuids:
 class TestRepoRootContainment:
     def test_get_repo_root_returns_path(self):
         from core.config import get_repo_root
+
         root = get_repo_root()
         assert root.is_absolute()
 
     def test_ensure_project_directory_under_repo(self, tmp_path, monkeypatch):
         from core import config as config_mod
+
         # Use a subdir of real repo root via monkeypatch of get_repo_root
         fake_repo = tmp_path / "repo"
         fake_repo.mkdir()
@@ -298,6 +328,7 @@ class TestRepoRootContainment:
     def test_ensure_project_directory_rejects_escape(self, tmp_path, monkeypatch):
         from core import config as config_mod
         import pytest
+
         fake_repo = tmp_path / "repo"
         fake_repo.mkdir()
         outside = tmp_path / "outside"

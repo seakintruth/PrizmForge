@@ -26,8 +26,7 @@ def publish_event(
     try:
         with get_db_connection() as conn:
             # Ensure table exists on older DBs
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT,
@@ -37,8 +36,7 @@ def publish_event(
                     payload_json TEXT,
                     proposal_id TEXT
                 )
-                """
-            )
+                """)
             cur = conn.execute(
                 """
                 INSERT INTO events (task_id, ts, type, source, payload_json, proposal_id)
@@ -65,8 +63,7 @@ def list_events(
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
     with get_db_connection() as conn:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT,
@@ -76,8 +73,7 @@ def list_events(
                 payload_json TEXT,
                 proposal_id TEXT
             )
-            """
-        )
+            """)
         q = "SELECT id, task_id, ts, type, source, payload_json, proposal_id FROM events WHERE 1=1"
         params: list = []
         if task_id:
@@ -91,13 +87,15 @@ def list_events(
         rows = conn.execute(q, params).fetchall()
         out = []
         for r in rows:
-            out.append({
-                "id": r[0],
-                "task_id": r[1],
-                "ts": r[2],
-                "type": r[3],
-                "source": r[4],
-                "payload": json.loads(r[5] or "{}"),
-                "proposal_id": r[6],
-            })
+            out.append(
+                {
+                    "id": r[0],
+                    "task_id": r[1],
+                    "ts": r[2],
+                    "type": r[3],
+                    "source": r[4],
+                    "payload": json.loads(r[5] or "{}"),
+                    "proposal_id": r[6],
+                }
+            )
         return out

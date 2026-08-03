@@ -9,6 +9,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 import threading
 import time
+
 4
 from agents.resource_controller_worker import (
     AgentProfile,
@@ -190,7 +191,6 @@ class TestResourceControllerWorker:
         t.start()
         t.join(timeout=2)
         assert not worker.running
-
 
 
 if __name__ == "__main__":

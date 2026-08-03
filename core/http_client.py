@@ -19,7 +19,9 @@ from urllib import request as urllib_request
 class HttpResponse:
     """Small response object compatible with the bits agents.base uses."""
 
-    def __init__(self, status_code: int, body: bytes, headers: Optional[Dict[str, str]] = None):
+    def __init__(
+        self, status_code: int, body: bytes, headers: Optional[Dict[str, str]] = None
+    ):
         self.status_code = status_code
         self._body = body or b""
         self.headers = headers or {}
@@ -110,7 +112,11 @@ def post_json(
     if prefer_requests:
         try:
             return _post_with_requests(
-                url, headers=headers, json_body=json_body, timeout=timeout, proxies=proxies
+                url,
+                headers=headers,
+                json_body=json_body,
+                timeout=timeout,
+                proxies=proxies,
             )
         except ImportError:
             pass
@@ -122,6 +128,7 @@ def post_json(
 def has_requests() -> bool:
     try:
         import requests  # noqa: F401
+
         return True
     except ImportError:
         return False

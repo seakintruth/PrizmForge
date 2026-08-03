@@ -40,6 +40,7 @@ def temp_db(monkeypatch):
 
     # Initialize schema
     from core.db import init_db
+
     init_db()
 
     yield db_path
@@ -80,7 +81,7 @@ def mock_minimal_config(monkeypatch):
                 "include_model_in_payload": True,
                 "response_path": ["choices", 0, "message", "content"],
                 "priority": 10,
-                "rate_limit_per_minute": 60
+                "rate_limit_per_minute": 60,
             }
         },
         "models": {
@@ -88,14 +89,14 @@ def mock_minimal_config(monkeypatch):
                 "endpoint": "mock",
                 "max_output_tokens": 1024,
                 "max_context_tokens": 100000,
-                "temperature": 0.5
+                "temperature": 0.5,
             }
         },
         "agent_model_preferences": {
             "developer": "mock-model",
             "reviewer": "mock-model",
-            "orchestrator": "mock-model"
-        }
+            "orchestrator": "mock-model",
+        },
     }
 
     monkeypatch.setattr(core_config, "get_config", lambda: minimal_config)
@@ -106,6 +107,7 @@ def mock_minimal_config(monkeypatch):
 def capsys_and_temp_db(temp_db, capsys):
     """Convenience fixture that combines temp DB + output capture."""
     return {"db_path": temp_db, "capsys": capsys}
+
 
 @pytest.fixture
 def mock_openai_chat(monkeypatch):
@@ -132,6 +134,7 @@ def mock_openai_chat(monkeypatch):
     # Also patch the top-level name in case other modules import requests
     try:
         import requests as _requests
+
         monkeypatch.setattr(_requests, "post", _fake_post)
     except Exception:
         pass
@@ -161,6 +164,7 @@ def mock_llm():
                 ...
     """
     from tests.mocks.openai import MockLLM
+
     return MockLLM()
 
 
@@ -172,4 +176,3 @@ def mock_llm_patched(mock_llm):
     """
     with mock_llm.patch_call_agent():
         yield mock_llm
-

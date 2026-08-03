@@ -26,6 +26,7 @@ def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     pd = config.get("project_directory") or "./project"
     try:
         from core.config import find_config_file
+
         base = find_config_file("config.json").parent
     except Exception:
         base = Path.cwd()
@@ -53,6 +54,7 @@ def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
                 try:
                     import json
                     from core.config import find_config_file
+
                     key_file = find_config_file("api_key.json")
                     keys = json.loads(key_file.read_text(encoding="utf-8"))
                     val = keys.get(key_name, "")

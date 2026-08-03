@@ -113,11 +113,14 @@ class TestTaskRunnerMockedFromCLILayer:
         calls = []
 
         def fake_cycle(task_id, user_command, max_turns=20, **kwargs):
-            calls.append({"task_id": task_id, "cmd": user_command, "max_turns": max_turns})
+            calls.append(
+                {"task_id": task_id, "cmd": user_command, "max_turns": max_turns}
+            )
             return {"status": "ok", "mocked": True}
 
         with patch("workflow.task_runner.run_task_cycle", side_effect=fake_cycle):
             from workflow.task_runner import run_task_cycle
+
             run_task_cycle("cli_task_1", "do nothing", max_turns=1)
 
         assert len(calls) == 1
@@ -126,22 +129,32 @@ class TestTaskRunnerMockedFromCLILayer:
 
     def test_interactive_imports_run_task_cycle(self):
         import interactive
+
         assert "run_task_cycle" in dir(interactive)
 
 
 class TestCLIModes:
     def test_cli_mode_enum(self):
         from core.cli_modes import CLIMode, UnattendedConfig
+
         assert CLIMode.SEMI_ATTENDED.value == "semi_attended"
         assert CLIMode.UNATTENDED.value == "unattended"
-        cfg = UnattendedConfig.from_config({
-            "cli_mode": {"unattended": {"max_duration_hours": 2.5, "max_iterations_per_task": 5}}
-        })
+        cfg = UnattendedConfig.from_config(
+            {
+                "cli_mode": {
+                    "unattended": {
+                        "max_duration_hours": 2.5,
+                        "max_iterations_per_task": 5,
+                    }
+                }
+            }
+        )
         assert cfg.max_duration_hours == 2.5
         assert cfg.max_iterations_per_task == 5
 
     def test_get_cli_mode_from_config_default(self):
         from core.cli_modes import get_cli_mode_from_config, CLIMode
+
         mode = get_cli_mode_from_config({})
         assert mode in (CLIMode.SEMI_ATTENDED, CLIMode.UNATTENDED)
 
@@ -149,4 +162,5 @@ class TestCLIModes:
 class TestMainModule:
     def test_main_module_importable(self):
         import main as main_mod
+
         assert callable(main_mod.main)

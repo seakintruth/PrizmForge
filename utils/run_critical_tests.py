@@ -89,6 +89,7 @@ class TestMockLLM(unittest.TestCase):
         llm.set_response("developer", '{"ok": true}')
         with llm.patch_call_agent():
             from agents.base import call_agent
+
             result = call_agent("developer", "hi", task_id="smoke1")
         self.assertEqual(result, '{"ok": true}')
         self.assertEqual(len(llm.calls_for("developer")), 1)
@@ -103,24 +104,39 @@ class TestEditPayloadOps(unittest.TestCase):
                 "target_file_path": "a.py",
                 "summary": "find replace rename",
                 "rationale": "rename identifier across module",
-                "operations": [{"type": "find_replace", "find": "a", "replace": "b", "rationale": "rename"}],
+                "operations": [
+                    {
+                        "type": "find_replace",
+                        "find": "a",
+                        "replace": "b",
+                        "rationale": "rename",
+                    }
+                ],
             },
             {
                 "target_file_path": "a.py",
                 "summary": "full file replace",
                 "rationale": "rewrite small file completely now",
-                "operations": [{"type": "full_replace", "new_content": "x = 1\n", "rationale": "rewrite"}],
+                "operations": [
+                    {
+                        "type": "full_replace",
+                        "new_content": "x = 1\n",
+                        "rationale": "rewrite",
+                    }
+                ],
             },
             {
                 "target_file_path": "a.py",
                 "summary": "replace block line",
                 "rationale": "replace a single guided line block",
-                "operations": [{
-                    "type": "replace_block",
-                    "start_line_guid": "g1",
-                    "new_content": ["line"],
-                    "rationale": "replace",
-                }],
+                "operations": [
+                    {
+                        "type": "replace_block",
+                        "start_line_guid": "g1",
+                        "new_content": ["line"],
+                        "rationale": "replace",
+                    }
+                ],
             },
         ):
             obj = EditPayload.model_validate(payload)

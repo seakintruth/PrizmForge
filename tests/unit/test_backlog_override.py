@@ -55,7 +55,11 @@ def test_redirect_background_when_small_backlog(temp_db):
     task_id = "bl_redir"
     with get_db_connection() as conn:
         _seed_feedback(conn, task_id, 3)
-        decision = {"next_agent": "background", "instructions": "bg work", "model": None}
+        decision = {
+            "next_agent": "background",
+            "instructions": "bg work",
+            "model": None,
+        }
         out = apply_backlog_overrides(task_id, decision, conn, force_threshold=50)
     assert out["next_agent"] == "developer"
     assert "OVERRIDE:" in out["reasoning"]

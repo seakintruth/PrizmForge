@@ -24,7 +24,11 @@ def test_parse_python_symbols_basic():
 
 def test_upsert_and_fetch(temp_db):
     from core.db import init_db
-    from core.symbol_index import upsert_file_symbols, fetch_symbol_rows, format_symbol_json
+    from core.symbol_index import (
+        upsert_file_symbols,
+        fetch_symbol_rows,
+        format_symbol_json,
+    )
 
     init_db()
     n = upsert_file_symbols("app.py", "def main():\n    return 1\n")

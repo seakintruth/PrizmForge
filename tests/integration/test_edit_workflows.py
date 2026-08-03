@@ -24,8 +24,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _guids_for(file_path: str):
     from file_editing.db import get_db_connection
+
     with get_db_connection() as conn:
         rows = conn.execute(
             """
@@ -41,6 +43,7 @@ def _guids_for(file_path: str):
 
 def _approve(proposal_id: str):
     from file_editing.db import get_db_connection
+
     with get_db_connection() as conn:
         conn.execute(
             "UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?",
@@ -50,6 +53,7 @@ def _approve(proposal_id: str):
 
 def _content(file_path: str) -> str:
     from file_editing.db import get_db_connection, reconstruct_file_content
+
     with get_db_connection() as conn:
         row = conn.execute(
             "SELECT file_id FROM files WHERE file_path = ?", (file_path,)
@@ -62,6 +66,7 @@ def _content(file_path: str) -> str:
 # Pipeline workflows (no LLM required)
 # ---------------------------------------------------------------------------
 
+
 class TestFindReplaceWorkflow:
     def test_proposal_approve_apply(self, temp_db):
         from file_editing.writer import initialize_file_lines
@@ -73,15 +78,19 @@ class TestFindReplaceWorkflow:
             "target_file_path": "wf/rename.py",
             "summary": "Rename old_name to new_name",
             "rationale": "Consistent naming across the module",
-            "operations": [{
-                "type": "find_replace",
-                "find": "old_name",
-                "replace": "new_name",
-                "rationale": "Rename identifier",
-            }],
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "old_name",
+                    "replace": "new_name",
+                    "rationale": "Rename identifier",
+                }
+            ],
         }
         prop = create_proposal_from_developer_output(
-            payload, 1, "wf/rename.py",
+            payload,
+            1,
+            "wf/rename.py",
             selected_mode="guid",
             fallback_used=True,
             final_mode="find_replace",
@@ -107,14 +116,18 @@ class TestFullReplaceWorkflow:
             "target_file_path": "wf/small.py",
             "summary": "Rewrite small file",
             "rationale": "Complete rewrite of a small helper module",
-            "operations": [{
-                "type": "full_replace",
-                "new_content": "a = 10\nb = 20\nc = 30\n",
-                "rationale": "Replace entire file content",
-            }],
+            "operations": [
+                {
+                    "type": "full_replace",
+                    "new_content": "a = 10\nb = 20\nc = 30\n",
+                    "rationale": "Replace entire file content",
+                }
+            ],
         }
         prop = create_proposal_from_developer_output(
-            payload, 1, "wf/small.py",
+            payload,
+            1,
+            "wf/small.py",
             selected_mode="full_replace",
             final_mode="full_replace",
         )
@@ -142,12 +155,14 @@ class TestGuidReplaceWorkflow:
             "target_file_path": "wf/guid.py",
             "summary": "Update print statement",
             "rationale": "Change the printed greeting message",
-            "operations": [{
-                "type": "replace_block",
-                "start_line_guid": guids[1],
-                "new_content": ["    print('new')"],
-                "rationale": "Replace print line",
-            }],
+            "operations": [
+                {
+                    "type": "replace_block",
+                    "start_line_guid": guids[1],
+                    "new_content": ["    print('new')"],
+                    "rationale": "Replace print line",
+                }
+            ],
         }
         prop = create_proposal_from_developer_output(payload, 1, "wf/guid.py")
         assert prop["status"] == "success"
@@ -190,15 +205,20 @@ class TestDiffWorkflow:
             "target_file_path": "wf/diff.py",
             "summary": "Update print via diff",
             "rationale": "Apply planned unified diff to print statement",
-            "operations": [{
-                "type": "apply_diff",
-                "diff": diff,
-                "rationale": "Apply unified diff",
-            }],
+            "operations": [
+                {
+                    "type": "apply_diff",
+                    "diff": diff,
+                    "rationale": "Apply unified diff",
+                }
+            ],
         }
         prop = create_proposal_from_developer_output(
-            payload, 1, "wf/diff.py",
-            selected_mode="diff", final_mode="diff",
+            payload,
+            1,
+            "wf/diff.py",
+            selected_mode="diff",
+            final_mode="diff",
         )
         assert prop["status"] == "success"
         _approve(prop["proposal_id"])
@@ -210,6 +230,7 @@ class TestDiffWorkflow:
 # ---------------------------------------------------------------------------
 # Mode selection / validation workflows
 # ---------------------------------------------------------------------------
+
 
 class TestModeSelectionWorkflow:
     def test_tshirt_and_fallback_chain(self):
@@ -269,39 +290,56 @@ class TestValidationWorkflow:
 # Scripted multi-agent workflows (MockLLM)
 # ---------------------------------------------------------------------------
 
+
 class TestMockedAgentWorkflow:
     def test_orchestrator_developer_reviewer_sequence(self, mock_llm):
         """Script a short multi-agent turn sequence without network."""
-        mock_llm.set_responses("orchestrator", [
-            json.dumps({
-                "next_agent": "developer",
-                "instructions": "Rename old_name to new_name in wf/x.py",
-                "files_needed": ["wf/x.py"],
-                "reasoning": "Highest priority backlog item",
-            }),
-            json.dumps({
-                "next_agent": "complete",
-                "instructions": "Done",
-                "reasoning": "All feedback addressed",
-            }),
-        ])
-        mock_llm.set_responses("developer", [
-            "FILES_NEEDED: wf/x.py\nPLAN: rename old_name to new_name",
-            json.dumps({
-                "target_file_path": "wf/x.py",
-                "summary": "Rename identifier",
-                "rationale": "Consistent naming across the module",
-                "operations": [{
-                    "type": "find_replace",
-                    "find": "old_name",
-                    "replace": "new_name",
-                    "rationale": "Rename identifier",
-                }],
-            }),
-        ])
+        mock_llm.set_responses(
+            "orchestrator",
+            [
+                json.dumps(
+                    {
+                        "next_agent": "developer",
+                        "instructions": "Rename old_name to new_name in wf/x.py",
+                        "files_needed": ["wf/x.py"],
+                        "reasoning": "Highest priority backlog item",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "next_agent": "complete",
+                        "instructions": "Done",
+                        "reasoning": "All feedback addressed",
+                    }
+                ),
+            ],
+        )
+        mock_llm.set_responses(
+            "developer",
+            [
+                "FILES_NEEDED: wf/x.py\nPLAN: rename old_name to new_name",
+                json.dumps(
+                    {
+                        "target_file_path": "wf/x.py",
+                        "summary": "Rename identifier",
+                        "rationale": "Consistent naming across the module",
+                        "operations": [
+                            {
+                                "type": "find_replace",
+                                "find": "old_name",
+                                "replace": "new_name",
+                                "rationale": "Rename identifier",
+                            }
+                        ],
+                    }
+                ),
+            ],
+        )
         mock_llm.set_response(
             "reviewer",
-            json.dumps({"decision": "APPROVE", "reason": "Looks correct", "suggestions": []}),
+            json.dumps(
+                {"decision": "APPROVE", "reason": "Looks correct", "suggestions": []}
+            ),
         )
 
         with mock_llm.patch_call_agent():
@@ -332,14 +370,19 @@ class TestMockedAgentWorkflow:
         from core.edit_response_validator import validate_developer_edit_response
         from workflow.edit_mode_selector import next_fallback_mode
 
-        mock_llm.set_responses("developer", [
-            "Sorry I cannot produce JSON right now.",
-            json.dumps({
-                "target_file_path": "a.py",
-                "find": "old",
-                "replace": "new",
-            }),
-        ])
+        mock_llm.set_responses(
+            "developer",
+            [
+                "Sorry I cannot produce JSON right now.",
+                json.dumps(
+                    {
+                        "target_file_path": "a.py",
+                        "find": "old",
+                        "replace": "new",
+                    }
+                ),
+            ],
+        )
 
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
@@ -371,26 +414,34 @@ class TestMockedAgentWorkflow:
         initialize_file_lines("wf/mock.py", "value = OLD\n")
         mock_llm.set_response(
             "developer",
-            json.dumps({
-                "target_file_path": "wf/mock.py",
-                "summary": "Replace OLD with NEW",
-                "rationale": "Update constant value for the new release",
-                "operations": [{
-                    "type": "find_replace",
-                    "find": "OLD",
-                    "replace": "NEW",
-                    "rationale": "Replace constant",
-                }],
-            }),
+            json.dumps(
+                {
+                    "target_file_path": "wf/mock.py",
+                    "summary": "Replace OLD with NEW",
+                    "rationale": "Update constant value for the new release",
+                    "operations": [
+                        {
+                            "type": "find_replace",
+                            "find": "OLD",
+                            "replace": "NEW",
+                            "rationale": "Replace constant",
+                        }
+                    ],
+                }
+            ),
         )
 
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
+
             raw = call_agent("developer", "replace OLD", task_id="wf_mock")
 
         prop = create_proposal_from_developer_output(
-            raw, 1, "wf/mock.py",
-            selected_mode="find_replace", final_mode="find_replace",
+            raw,
+            1,
+            "wf/mock.py",
+            selected_mode="find_replace",
+            final_mode="find_replace",
         )
         assert prop["status"] == "success"
         _approve(prop["proposal_id"])

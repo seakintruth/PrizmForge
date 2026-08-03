@@ -5,7 +5,12 @@ High-priority tests for EndpointManager.
 """
 
 import pytest
-from core.endpoint_manager import EndpointConfig, EndpointStatus, EndpointHealth, EndpointManager
+from core.endpoint_manager import (
+    EndpointConfig,
+    EndpointStatus,
+    EndpointHealth,
+    EndpointManager,
+)
 
 
 class TestEndpointConfig:
@@ -16,8 +21,8 @@ class TestEndpointConfig:
             name="openai",
             config={
                 "base_url": "https://api.openai.com/v1/chat/completions",
-                "api_key_name": "OPENAI_API_KEY"
-            }
+                "api_key_name": "OPENAI_API_KEY",
+            },
         )
         assert config.name == "openai"
         assert config.base_url == "https://api.openai.com/v1/chat/completions"
@@ -67,8 +72,7 @@ class TestEndpointManagerAdvanced:
         manager = EndpointManager(config={})
         try:
             payload = manager.build_payload(
-                messages=[{"role": "user", "content": "Hello"}],
-                model="test-model"
+                messages=[{"role": "user", "content": "Hello"}], model="test-model"
             )
             assert isinstance(payload, dict)
         except Exception:

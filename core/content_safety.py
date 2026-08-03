@@ -26,12 +26,30 @@ from typing import Any, Dict, FrozenSet, Optional, Set, Tuple, Union
 
 # Default path suffixes refused by extension check (binary containers only).
 # Override via content_safety.blocked_extensions in config.json.
-DEFAULT_BLOCKED_EXTENSIONS = frozenset({
-    ".msi", ".msp", ".msm", ".msu",
-    ".exe", ".dll", ".sys", ".com", ".scr", ".cpl", ".ocx", ".drv",
-    ".bin", ".iso", ".img", ".dmg",
-    ".appx", ".appxbundle", ".msix", ".cab",
-})
+DEFAULT_BLOCKED_EXTENSIONS = frozenset(
+    {
+        ".msi",
+        ".msp",
+        ".msm",
+        ".msu",
+        ".exe",
+        ".dll",
+        ".sys",
+        ".com",
+        ".scr",
+        ".cpl",
+        ".ocx",
+        ".drv",
+        ".bin",
+        ".iso",
+        ".img",
+        ".dmg",
+        ".appx",
+        ".appxbundle",
+        ".msix",
+        ".cab",
+    }
+)
 
 # Kept as alias for tests/docs that import the name
 BLOCKED_BINARY_EXTENSIONS = DEFAULT_BLOCKED_EXTENSIONS
@@ -56,11 +74,14 @@ def _normalize_ext(ext: str) -> str:
     return e if e.startswith(".") else "." + e
 
 
-def get_content_safety_settings(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def get_content_safety_settings(
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Read content_safety flags; safe defaults if config missing."""
     if config is None:
         try:
             from core.config import get_config
+
             config = get_config()
         except Exception:
             config = {}

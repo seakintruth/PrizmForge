@@ -54,7 +54,9 @@ def _decision(**kwargs):
 def test_orchestrator_routes_developer(mock_llm, orch_env, temp_db):
     from agents.orchestrator import call_orchestrator
 
-    mock_llm.set_response("orchestrator", _decision(next_agent="developer", files_needed=["x.py"]))
+    mock_llm.set_response(
+        "orchestrator", _decision(next_agent="developer", files_needed=["x.py"])
+    )
     with mock_llm.patch_call_agent():
         with patch("agents.orchestrator.get_context_manager") as gcm:
             gcm.return_value.build_orchestrator_context.return_value = (

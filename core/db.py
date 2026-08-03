@@ -1,4 +1,5 @@
 """Database initialization and schema"""
+
 import sqlite3
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from pathlib import Path
 def get_db_path() -> str:
     """Get database path under the target project (not /tmp)."""
     import os
+
     env_path = os.environ.get("PRIZMFORGE_DB_PATH")
     if env_path:
         path = Path(env_path).expanduser()
@@ -15,6 +17,7 @@ def get_db_path() -> str:
         return str(path)
 
     from core.config import get_config, find_config_file
+
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project")).expanduser()
     if not project_dir.is_absolute():
@@ -39,13 +42,16 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
             if not stmt:
                 continue
             meaningful = [
-                l for l in stmt.splitlines()
+                l
+                for l in stmt.splitlines()
                 if l.strip() and not l.strip().startswith("--")
             ]
             if meaningful:
                 conn.execute(stmt)
     tail = chr(10).join(buf).strip()
-    if tail and any(l.strip() and not l.strip().startswith("--") for l in tail.splitlines()):
+    if tail and any(
+        l.strip() and not l.strip().startswith("--") for l in tail.splitlines()
+    ):
         conn.execute(tail)
 
 
@@ -54,7 +60,7 @@ def init_db():
     try:
         db_path = get_db_path()
         print(f"🔍 Initializing database at: {db_path}")
-        
+
         conn = sqlite3.connect(db_path, timeout=60.0)
         cursor = conn.cursor()
         try:
@@ -523,28 +529,32 @@ def init_db():
         except Exception:
             pass
         conn.commit()
-        
+
         # Verify critical tables exist
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;"
+        )
         tables = [row[0] for row in cursor.fetchall()]
-        
-        critical_tables = ['files', 'file_lines', 'errors', 'messages', 'tasks']
+
+        critical_tables = ["files", "file_lines", "errors", "messages", "tasks"]
         missing_tables = [t for t in critical_tables if t not in tables]
-        
+
         if missing_tables:
             conn.close()
             raise RuntimeError(f"❌ Failed to create tables: {missing_tables}")
-        
+
         conn.close()
         print(f"✅ Database initialized successfully: {db_path}")
         print(f"   📊 Total tables created: {len(tables)}")
         return True
-        
+
     except Exception as e:
         print(f"❌ Database initialization failed: {e}")
         import traceback
+
         traceback.print_exc()
         raise
+
 
 if __name__ == "__main__":
     # Allow running this script directly to initialize DB

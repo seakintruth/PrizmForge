@@ -36,8 +36,8 @@ class TestParallelWorkers:
         """Agent pool should initialize correctly."""
         pool = BackgroundAgentPool()
         assert pool is not None
-        assert hasattr(pool, 'start')
-        assert hasattr(pool, 'stop')
+        assert hasattr(pool, "start")
+        assert hasattr(pool, "stop")
 
     def test_agent_pool_start_stop(self, mock_minimal_config):
         """Agent pool should start and stop without crashing."""
@@ -45,7 +45,9 @@ class TestParallelWorkers:
         try:
             pool.start(task_id="test_task")
             time.sleep(0.5)
-            assert pool.running is True or pool.running is False  # start may no-op if no agents
+            assert (
+                pool.running is True or pool.running is False
+            )  # start may no-op if no agents
             pool.stop()
             assert pool.running is False
             assert pool.workers == [] or pool.workers is not None
@@ -62,16 +64,18 @@ class TestParallelWorkers:
         """Should be able to queue file changes."""
         pool = BackgroundAgentPool()
         pool.start(task_id="test_task")
-        
+
         try:
             pool.queue_file_change(
-                file_path="test.py",
-                operation="modified",
-                content="test content"
+                file_path="test.py", operation="modified", content="test content"
             )
             time.sleep(0.5)
             # Event accepted into queue or processed; pool still controllable
-            assert hasattr(pool, "queue") or hasattr(pool, "file_queue") or pool.running is not None
+            assert (
+                hasattr(pool, "queue")
+                or hasattr(pool, "file_queue")
+                or pool.running is not None
+            )
         finally:
             pool.stop()
             assert pool.running is False
@@ -80,18 +84,16 @@ class TestParallelWorkers:
     def test_worker_processes_events(self, mock_call_agent, mock_minimal_config):
         """Workers should process queued events."""
         mock_call_agent.return_value = '{"findings": [], "summary": "ok"}'
-        
+
         pool = BackgroundAgentPool()
         pool.start(task_id="test_task")
-        
+
         try:
             pool.queue_file_change(
-                file_path="test.py",
-                operation="modified",
-                content="def test(): pass"
+                file_path="test.py", operation="modified", content="def test(): pass"
             )
             time.sleep(2)  # Give workers time to process
-            
+
             # Call count is environment-dependent; ensure mock was installed and pool stops clean
             assert mock_call_agent.call_count >= 0
             assert isinstance(mock_call_agent.call_count, int)
@@ -111,7 +113,7 @@ class TestParallelWorkers:
         """Force review cycle should queue files."""
         pool = get_agent_pool()
         pool.start(task_id="test_task")
-        
+
         try:
             pool.force_review_cycle(file_limit=5)
             time.sleep(1)
@@ -127,19 +129,19 @@ class TestAgentPoolConfiguration:
     def test_agent_configs_loaded(self):
         """Agent pool should load configs from config.json."""
         pool = BackgroundAgentPool()
-        assert hasattr(pool, 'agent_configs')
+        assert hasattr(pool, "agent_configs")
         assert isinstance(pool.agent_configs, dict)
 
     def test_modification_agents_list(self):
         """Should have list of modification-triggered agents."""
         pool = BackgroundAgentPool()
-        assert hasattr(pool, 'modification_agents')
+        assert hasattr(pool, "modification_agents")
         assert isinstance(pool.modification_agents, list)
 
     def test_random_review_agents_list(self):
         """Should have list of random review agents."""
         pool = BackgroundAgentPool()
-        assert hasattr(pool, 'random_review_agents')
+        assert hasattr(pool, "random_review_agents")
         assert isinstance(pool.random_review_agents, list)
 
 
@@ -150,7 +152,7 @@ class TestAgentPoolActiveControl:
         """Should be able to enable/disable specific agents."""
         pool = BackgroundAgentPool()
         pool.start(task_id="test_task")
-        
+
         try:
             pool.set_active_agents(["jr_reviewer", "prioritizer"])
             assert pool.active_agents_filter is not None
@@ -162,7 +164,7 @@ class TestAgentPoolActiveControl:
         """Should be able to adjust feeder interval."""
         pool = BackgroundAgentPool()
         pool.start(task_id="test_task")
-        
+
         try:
             pool.set_feeder_interval(60)
             assert pool.feeder_interval == 60
@@ -175,24 +177,26 @@ class TestConcurrentBehavior:
     """Tests for concurrent behavior (slower tests)."""
 
     @patch("agents.parallel_workers.call_agent")
-    def test_multiple_file_changes_concurrent(self, mock_call_agent, mock_minimal_config):
+    def test_multiple_file_changes_concurrent(
+        self, mock_call_agent, mock_minimal_config
+    ):
         """Should handle multiple concurrent file changes."""
         mock_call_agent.return_value = '{"findings": [], "summary": "ok"}'
-        
+
         pool = BackgroundAgentPool()
         pool.start(task_id="test_task")
-        
+
         try:
             # Queue multiple files
             for i in range(10):
                 pool.queue_file_change(
                     file_path=f"test_{i}.py",
                     operation="modified",
-                    content=f"def test_{i}(): pass"
+                    content=f"def test_{i}(): pass",
                 )
-            
+
             time.sleep(3)  # Give workers time
-            
+
             # Should have processed some events
             assert mock_call_agent.call_count >= 0  # Flexible
         finally:
@@ -201,7 +205,7 @@ class TestConcurrentBehavior:
     def test_start_stop_lifecycle(self):
         """Should handle multiple start/stop cycles."""
         pool = BackgroundAgentPool()
-        
+
         for i in range(3):
             pool.start(task_id=f"test_task_{i}")
             time.sleep(0.5)

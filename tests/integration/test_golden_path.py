@@ -26,6 +26,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Thin harness mirroring task_runner's developer → materialize path
 # ---------------------------------------------------------------------------
 
+
 def run_governed_edit_once(
     *,
     target_file: str,
@@ -136,6 +137,7 @@ def run_governed_edit_once(
 
 def _init_file(rel_path: str, content: str, project_dir: Path) -> None:
     from file_editing.writer import initialize_file_lines
+
     # Also seed on disk so materialize path is realistic
     full = project_dir / rel_path
     full.parent.mkdir(parents=True, exist_ok=True)
@@ -147,8 +149,11 @@ def _init_file(rel_path: str, content: str, project_dir: Path) -> None:
 # Tests
 # ---------------------------------------------------------------------------
 
+
 class TestGoldenPathFindReplace:
-    def test_orchestrator_developer_reviewer_materialize(self, temp_db, mock_llm, tmp_path):
+    def test_orchestrator_developer_reviewer_materialize(
+        self, temp_db, mock_llm, tmp_path
+    ):
         """Full golden path with MockLLM-scripted agent responses."""
         project_dir = tmp_path / "proj"
         project_dir.mkdir()
@@ -157,28 +162,34 @@ class TestGoldenPathFindReplace:
 
         mock_llm.set_response(
             "orchestrator",
-            json.dumps({
-                "next_agent": "developer",
-                "instructions": f"Rename old_value to new_value in {rel}",
-                "files_needed": [rel],
-                "reasoning": "Identifier rename",
-            }),
+            json.dumps(
+                {
+                    "next_agent": "developer",
+                    "instructions": f"Rename old_value to new_value in {rel}",
+                    "files_needed": [rel],
+                    "reasoning": "Identifier rename",
+                }
+            ),
         )
         developer_payload = {
             "target_file_path": rel,
             "summary": "Rename old_value to new_value",
             "rationale": "Consistent naming for the application constant",
-            "operations": [{
-                "type": "find_replace",
-                "find": "old_value",
-                "replace": "new_value",
-                "rationale": "Rename identifier",
-            }],
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "old_value",
+                    "replace": "new_value",
+                    "rationale": "Rename identifier",
+                }
+            ],
         }
         mock_llm.set_response("developer", json.dumps(developer_payload))
         mock_llm.set_response(
             "reviewer",
-            json.dumps({"decision": "APPROVE", "reason": "Safe rename", "suggestions": []}),
+            json.dumps(
+                {"decision": "APPROVE", "reason": "Safe rename", "suggestions": []}
+            ),
         )
 
         with mock_llm.patch_call_agent():
@@ -221,20 +232,27 @@ class TestGoldenPathFallback:
         rel = "lib/util.py"
         _init_file(rel, "x = ALPHA\ny = ALPHA\n", project_dir)
 
-        mock_llm.set_responses("developer", [
-            "I am unable to emit proper JSON for GUID mode right now.",
-            json.dumps({
-                "target_file_path": rel,
-                "summary": "Rename ALPHA to BETA",
-                "rationale": "Update constant across the utility module",
-                "operations": [{
-                    "type": "find_replace",
-                    "find": "ALPHA",
-                    "replace": "BETA",
-                    "rationale": "Rename constant",
-                }],
-            }),
-        ])
+        mock_llm.set_responses(
+            "developer",
+            [
+                "I am unable to emit proper JSON for GUID mode right now.",
+                json.dumps(
+                    {
+                        "target_file_path": rel,
+                        "summary": "Rename ALPHA to BETA",
+                        "rationale": "Update constant across the utility module",
+                        "operations": [
+                            {
+                                "type": "find_replace",
+                                "find": "ALPHA",
+                                "replace": "BETA",
+                                "rationale": "Rename constant",
+                            }
+                        ],
+                    }
+                ),
+            ],
+        )
 
         mode = "guid"
         tried = []
@@ -243,8 +261,11 @@ class TestGoldenPathFallback:
 
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
+
             for _ in range(4):
-                raw = call_agent("developer", f"edit with mode={mode}", task_id="gold_fb")
+                raw = call_agent(
+                    "developer", f"edit with mode={mode}", task_id="gold_fb"
+                )
                 v = validate_developer_edit_response(raw)
                 if v.is_valid:
                     final_raw = raw
@@ -294,20 +315,25 @@ class TestGoldenPathFullReplace:
         new_body = "a = 100\nb = 200\nc = 300\n"
         mock_llm.set_response(
             "developer",
-            json.dumps({
-                "target_file_path": rel,
-                "summary": "Rewrite tiny helper",
-                "rationale": "Full rewrite of a small configuration helper module",
-                "operations": [{
-                    "type": "full_replace",
-                    "new_content": new_body,
-                    "rationale": "Replace entire file",
-                }],
-            }),
+            json.dumps(
+                {
+                    "target_file_path": rel,
+                    "summary": "Rewrite tiny helper",
+                    "rationale": "Full rewrite of a small configuration helper module",
+                    "operations": [
+                        {
+                            "type": "full_replace",
+                            "new_content": new_body,
+                            "rationale": "Replace entire file",
+                        }
+                    ],
+                }
+            ),
         )
 
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
+
             raw = call_agent("developer", "rewrite tiny.py", task_id="gold_fr")
 
         progress = run_governed_edit_once(

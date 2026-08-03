@@ -22,6 +22,7 @@ _MIN_REFRESH_INTERVAL_SEC = 2.0
 def indexes_dir(project_directory: Optional[str] = None) -> Path:
     if project_directory is None:
         from core.config import get_config
+
         project_directory = get_config().get("project_directory", "./project")
     return Path(project_directory).expanduser().resolve() / ".PrizmForge" / "indexes"
 
@@ -139,6 +140,7 @@ def refresh_target_indexes(
 
     if project_directory is None:
         from core.config import get_config
+
         project_directory = get_config().get("project_directory", "./project")
     root = str(Path(project_directory).expanduser().resolve())
 

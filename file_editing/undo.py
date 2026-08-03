@@ -14,20 +14,22 @@ from typing import Any, Dict, Optional
 from core.db_connection import get_db_connection
 from core.events import publish_event
 from file_editing.db import reconstruct_file_content
-from file_editing.writer import initialize_file_lines, write_file_to_disk, materialize_proposal
+from file_editing.writer import (
+    initialize_file_lines,
+    write_file_to_disk,
+    materialize_proposal,
+)
 
 
 def ensure_snapshot_table(conn) -> None:
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS proposal_snapshots (
             proposal_id TEXT PRIMARY KEY,
             file_path TEXT NOT NULL,
             content_before TEXT,
             created_at TEXT
         )
-        """
-    )
+        """)
 
 
 def snapshot_before_apply(proposal_id: str) -> Dict[str, Any]:
@@ -64,7 +66,10 @@ def undo_proposal(proposal_id: str, *, write_disk: bool = True) -> Dict[str, Any
             (proposal_id,),
         ).fetchone()
         if not snap:
-            return {"status": "error", "message": f"no snapshot for proposal {proposal_id}"}
+            return {
+                "status": "error",
+                "message": f"no snapshot for proposal {proposal_id}",
+            }
         path, content = snap[0], snap[1] if snap[1] is not None else ""
 
     init = initialize_file_lines(path, content)

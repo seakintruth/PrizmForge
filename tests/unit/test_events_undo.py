@@ -13,7 +13,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 def test_publish_and_list_events(temp_db):
     from core.events import publish_event, list_events
-    eid = publish_event("proposal.created", source="test", task_id="t1", proposal_id="p1", payload={"a": 1})
+
+    eid = publish_event(
+        "proposal.created",
+        source="test",
+        task_id="t1",
+        proposal_id="p1",
+        payload={"a": 1},
+    )
     assert eid is not None
     rows = list_events(task_id="t1")
     assert any(r["type"] == "proposal.created" for r in rows)
@@ -32,12 +39,14 @@ def test_undo_restores_content(temp_db):
             "target_file_path": "undo/demo.py",
             "summary": "change value",
             "rationale": "Modify constant for undo test case",
-            "operations": [{
-                "type": "find_replace",
-                "find": "a = 1",
-                "replace": "a = 2",
-                "rationale": "bump",
-            }],
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "a = 1",
+                    "replace": "a = 2",
+                    "rationale": "bump",
+                }
+            ],
         },
         1,
         "undo/demo.py",
@@ -45,24 +54,35 @@ def test_undo_restores_content(temp_db):
     assert prop["status"] == "success"
     pid = prop["proposal_id"]
     with get_db_connection() as conn:
-        conn.execute("UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?", (pid,))
+        conn.execute(
+            "UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?",
+            (pid,),
+        )
     snapshot_before_apply(pid)
     assert apply_edit_proposal(pid)["status"] == "success"
     with get_db_connection() as conn:
-        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)).fetchone()[0]
+        fid = conn.execute(
+            "SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)
+        ).fetchone()[0]
         assert "a = 2" in reconstruct_file_content(conn, fid)
     und = undo_proposal(pid, write_disk=False)
     assert und["status"] == "success"
     with get_db_connection() as conn:
-        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)).fetchone()[0]
+        fid = conn.execute(
+            "SELECT file_id FROM files WHERE file_path = ?", ("undo/demo.py",)
+        ).fetchone()[0]
         assert "a = 1" in reconstruct_file_content(conn, fid)
 
 
 def test_undo_without_snapshot_errors(temp_db):
     from file_editing.undo import undo_proposal
+
     result = undo_proposal("nonexistent-proposal-id", write_disk=False)
     assert result["status"] == "error"
-    assert "snapshot" in result["message"].lower() or "no snapshot" in result["message"].lower()
+    assert (
+        "snapshot" in result["message"].lower()
+        or "no snapshot" in result["message"].lower()
+    )
 
 
 def test_proposal_created_emits_event(temp_db):
@@ -74,12 +94,14 @@ def test_proposal_created_emits_event(temp_db):
             "target_file_path": "evt/new.py",
             "summary": "emit event on create",
             "rationale": "Verify proposal.created is published to event log",
-            "operations": [{
-                "type": "create_file",
-                "target_file_path": "evt/new.py",
-                "initial_content": ["print(1)"],
-                "rationale": "bootstrap",
-            }],
+            "operations": [
+                {
+                    "type": "create_file",
+                    "target_file_path": "evt/new.py",
+                    "initial_content": ["print(1)"],
+                    "rationale": "bootstrap",
+                }
+            ],
         },
         1,
         "evt/new.py",
@@ -115,12 +137,14 @@ def test_create_file_then_materialize(temp_db, tmp_path, monkeypatch):
             "target_file_path": "pkg/hello.py",
             "summary": "create hello module",
             "rationale": "Materialize a brand new file via create_file op",
-            "operations": [{
-                "type": "create_file",
-                "target_file_path": "pkg/hello.py",
-                "initial_content": ["def hi():", "    return 1"],
-                "rationale": "new module",
-            }],
+            "operations": [
+                {
+                    "type": "create_file",
+                    "target_file_path": "pkg/hello.py",
+                    "initial_content": ["def hi():", "    return 1"],
+                    "rationale": "new module",
+                }
+            ],
         },
         1,
         "pkg/hello.py",

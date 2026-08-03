@@ -49,33 +49,41 @@ def test_run_task_cycle_find_replace(mock_llm, cycle_env, temp_db):
     from workflow.task_runner import run_task_cycle
     from file_editing.db import get_db_connection, reconstruct_file_content
 
-    orch_dev = json.dumps({
-        "next_agent": "developer",
-        "instructions": "Rename OLD to NEW in app.py",
-        "files_needed": ["app.py"],
-        "reasoning": "identifier rename",
-    })
-    orch_done = json.dumps({
-        "next_agent": "complete",
-        "instructions": "done",
-        "reasoning": "finished",
-    })
+    orch_dev = json.dumps(
+        {
+            "next_agent": "developer",
+            "instructions": "Rename OLD to NEW in app.py",
+            "files_needed": ["app.py"],
+            "reasoning": "identifier rename",
+        }
+    )
+    orch_done = json.dumps(
+        {
+            "next_agent": "complete",
+            "instructions": "done",
+            "reasoning": "finished",
+        }
+    )
     mock_llm.set_responses("orchestrator", [orch_dev, orch_done, orch_done])
     mock_llm.set_responses(
         "developer",
         [
             "FILES_NEEDED: app.py\nPLAN: rename OLD to NEW",
-            json.dumps({
-                "target_file_path": "app.py",
-                "summary": "rename OLD to NEW",
-                "rationale": "Consistent naming for the application constant",
-                "operations": [{
-                    "type": "find_replace",
-                    "find": "OLD",
-                    "replace": "NEW",
-                    "rationale": "rename",
-                }],
-            }),
+            json.dumps(
+                {
+                    "target_file_path": "app.py",
+                    "summary": "rename OLD to NEW",
+                    "rationale": "Consistent naming for the application constant",
+                    "operations": [
+                        {
+                            "type": "find_replace",
+                            "find": "OLD",
+                            "replace": "NEW",
+                            "rationale": "rename",
+                        }
+                    ],
+                }
+            ),
         ],
     )
     mock_llm.set_response(
@@ -102,34 +110,42 @@ def test_run_task_cycle_multi_turn_then_complete(mock_llm, cycle_env, temp_db):
     from workflow.task_runner import run_task_cycle
     from file_editing.db import get_db_connection, reconstruct_file_content
 
-    orch_dev = json.dumps({
-        "next_agent": "developer",
-        "instructions": "Rename OLD to NEW in app.py",
-        "files_needed": ["app.py"],
-        "reasoning": "edit",
-    })
-    orch_done = json.dumps({
-        "next_agent": "complete",
-        "instructions": "done",
-        "reasoning": "finished",
-        "files_needed": [],
-    })
+    orch_dev = json.dumps(
+        {
+            "next_agent": "developer",
+            "instructions": "Rename OLD to NEW in app.py",
+            "files_needed": ["app.py"],
+            "reasoning": "edit",
+        }
+    )
+    orch_done = json.dumps(
+        {
+            "next_agent": "complete",
+            "instructions": "done",
+            "reasoning": "finished",
+            "files_needed": [],
+        }
+    )
     mock_llm.set_responses("orchestrator", [orch_dev, orch_done, orch_done, orch_done])
     mock_llm.set_responses(
         "developer",
         [
             "FILES_NEEDED: app.py\nPLAN: rename",
-            json.dumps({
-                "target_file_path": "app.py",
-                "summary": "rename OLD to NEW",
-                "rationale": "Consistent naming for the application constant",
-                "operations": [{
-                    "type": "find_replace",
-                    "find": "OLD",
-                    "replace": "NEW",
-                    "rationale": "rename",
-                }],
-            }),
+            json.dumps(
+                {
+                    "target_file_path": "app.py",
+                    "summary": "rename OLD to NEW",
+                    "rationale": "Consistent naming for the application constant",
+                    "operations": [
+                        {
+                            "type": "find_replace",
+                            "find": "OLD",
+                            "replace": "NEW",
+                            "rationale": "rename",
+                        }
+                    ],
+                }
+            ),
         ],
     )
     mock_llm.set_response(
@@ -156,39 +172,49 @@ def test_run_task_cycle_reviewer_reject(mock_llm, cycle_env, temp_db):
     from file_editing.db import get_db_connection, reconstruct_file_content
     from core.events import list_events
 
-    orch_dev = json.dumps({
-        "next_agent": "developer",
-        "instructions": "Rename OLD to NEW in app.py",
-        "files_needed": ["app.py"],
-        "reasoning": "edit",
-    })
-    orch_done = json.dumps({
-        "next_agent": "complete",
-        "instructions": "stop",
-        "reasoning": "stop",
-        "files_needed": [],
-    })
+    orch_dev = json.dumps(
+        {
+            "next_agent": "developer",
+            "instructions": "Rename OLD to NEW in app.py",
+            "files_needed": ["app.py"],
+            "reasoning": "edit",
+        }
+    )
+    orch_done = json.dumps(
+        {
+            "next_agent": "complete",
+            "instructions": "stop",
+            "reasoning": "stop",
+            "files_needed": [],
+        }
+    )
     mock_llm.set_responses("orchestrator", [orch_dev, orch_done, orch_done])
     mock_llm.set_responses(
         "developer",
         [
             "FILES_NEEDED: app.py\nPLAN: rename",
-            json.dumps({
-                "target_file_path": "app.py",
-                "summary": "rename OLD to NEW",
-                "rationale": "Consistent naming for the application constant",
-                "operations": [{
-                    "type": "find_replace",
-                    "find": "OLD",
-                    "replace": "NEW",
-                    "rationale": "rename",
-                }],
-            }),
+            json.dumps(
+                {
+                    "target_file_path": "app.py",
+                    "summary": "rename OLD to NEW",
+                    "rationale": "Consistent naming for the application constant",
+                    "operations": [
+                        {
+                            "type": "find_replace",
+                            "find": "OLD",
+                            "replace": "NEW",
+                            "rationale": "rename",
+                        }
+                    ],
+                }
+            ),
         ],
     )
     mock_llm.set_response(
         "reviewer",
-        json.dumps({"decision": "REJECT", "reason": "too risky", "suggestions": ["be careful"]}),
+        json.dumps(
+            {"decision": "REJECT", "reason": "too risky", "suggestions": ["be careful"]}
+        ),
     )
 
     with mock_llm.patch_call_agent():

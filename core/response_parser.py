@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class ResponseParser:
     """Single source of truth for LLM response parsing"""
-    
+
     def __init__(self, expected_format: str = "json"):
         self.expected_format = expected_format
         self.strategies = [
@@ -17,7 +17,7 @@ class ResponseParser:
             self._extract_code_block,
             self._extract_raw_json,
         ]
-    
+
     def parse(self, response: str) -> ParseResult:
         for strategy in self.strategies:
             try:
@@ -27,5 +27,11 @@ class ResponseParser:
             except Exception as e:
                 logger.debug(f"Strategy {strategy.__name__} failed: {e}")
                 continue
-        
-        return ParseResult(status=ParseResult.__dataclass_fields__ and None, error="All strategies failed", data=None, raw_json=None, confidence=0.0)  # placeholder if needed
+
+        return ParseResult(
+            status=ParseResult.__dataclass_fields__ and None,
+            error="All strategies failed",
+            data=None,
+            raw_json=None,
+            confidence=0.0,
+        )  # placeholder if needed

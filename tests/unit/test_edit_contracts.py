@@ -21,6 +21,7 @@ SCHEMA_DIR = PROJECT_ROOT / "agent_schemas"
 
 def _approve(proposal_id: str):
     from file_editing.db import get_db_connection
+
     with get_db_connection() as conn:
         conn.execute(
             "UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?",
@@ -30,6 +31,7 @@ def _approve(proposal_id: str):
 
 def _content(path: str) -> str:
     from file_editing.db import get_db_connection, reconstruct_file_content
+
     with get_db_connection() as conn:
         row = conn.execute(
             "SELECT file_id FROM files WHERE file_path = ?", (path,)
@@ -39,6 +41,7 @@ def _content(path: str) -> str:
 
 def _guids(path: str):
     from file_editing.db import get_db_connection
+
     with get_db_connection() as conn:
         rows = conn.execute(
             """
@@ -61,85 +64,101 @@ OP_PAYLOADS = {
         "target_file_path": "c.py",
         "summary": "rename",
         "rationale": "Consistent naming across the utility module",
-        "operations": [{
-            "type": "find_replace",
-            "find": "old",
-            "replace": "new",
-            "rationale": "rename",
-        }],
+        "operations": [
+            {
+                "type": "find_replace",
+                "find": "old",
+                "replace": "new",
+                "rationale": "rename",
+            }
+        ],
     },
     "full_replace": {
         "target_file_path": "c.py",
         "summary": "rewrite",
         "rationale": "Complete rewrite of a small helper file",
-        "operations": [{
-            "type": "full_replace",
-            "new_content": "x = 1\n",
-            "rationale": "full",
-        }],
+        "operations": [
+            {
+                "type": "full_replace",
+                "new_content": "x = 1\n",
+                "rationale": "full",
+            }
+        ],
     },
     "replace_block": {
         "target_file_path": "c.py",
         "summary": "replace line",
         "rationale": "Update a single guided line block in place",
-        "operations": [{
-            "type": "replace_block",
-            "start_line_guid": "guid-1",
-            "new_content": ["updated"],
-            "rationale": "rb",
-        }],
+        "operations": [
+            {
+                "type": "replace_block",
+                "start_line_guid": "guid-1",
+                "new_content": ["updated"],
+                "rationale": "rb",
+            }
+        ],
     },
     "insert_after": {
         "target_file_path": "c.py",
         "summary": "insert",
         "rationale": "Insert a new line after an existing guided line",
-        "operations": [{
-            "type": "insert_after",
-            "after_guid": "guid-1",
-            "new_content": ["inserted"],
-            "rationale": "ins",
-        }],
+        "operations": [
+            {
+                "type": "insert_after",
+                "after_guid": "guid-1",
+                "new_content": ["inserted"],
+                "rationale": "ins",
+            }
+        ],
     },
     "delete_lines": {
         "target_file_path": "c.py",
         "summary": "delete",
         "rationale": "Remove an obsolete guided line from the file",
-        "operations": [{
-            "type": "delete_lines",
-            "start_line_guid": "guid-1",
-            "rationale": "del",
-        }],
+        "operations": [
+            {
+                "type": "delete_lines",
+                "start_line_guid": "guid-1",
+                "rationale": "del",
+            }
+        ],
     },
     "create_file": {
         "target_file_path": "new.py",
         "summary": "create new file",
         "rationale": "Create a new module with initial content body",
-        "operations": [{
-            "type": "create_file",
-            "target_file_path": "new.py",
-            "initial_content": ["print(1)"],
-            "rationale": "create file",
-        }],
+        "operations": [
+            {
+                "type": "create_file",
+                "target_file_path": "new.py",
+                "initial_content": ["print(1)"],
+                "rationale": "create file",
+            }
+        ],
     },
     "apply_diff": {
         "target_file_path": "c.py",
         "summary": "apply unified diff",
         "rationale": "Apply a unified diff patch to update one line",
-        "operations": [{
-            "type": "apply_diff",
-            "diff": "--- a/c.py\n+++ b/c.py\n@@ -1 +1 @@\n-old\n+new\n",
-            "rationale": "apply diff",
-        }],
+        "operations": [
+            {
+                "type": "apply_diff",
+                "diff": "--- a/c.py\n+++ b/c.py\n@@ -1 +1 @@\n-old\n+new\n",
+                "rationale": "apply diff",
+            }
+        ],
     },
     "update_documentation": {
         "target_file_path": "c.py",
         "summary": "update file docs",
         "rationale": "Refresh module documentation comment block text",
-        "operations": [{
-            "type": "update_documentation",
-            "new_content": "Updated docs",
-            "rationale": "update docs",
-        }],
+        "operations": [
+            {
+                "type": "update_documentation",
+                "new_content": "Updated docs",
+                "rationale": "update docs",
+            }
+        ],
     },
 }
 
@@ -148,19 +167,23 @@ class TestEditPayloadContracts:
     @pytest.mark.parametrize("op_type", list(OP_PAYLOADS.keys()))
     def test_payload_parses(self, op_type):
         from file_editing.edit_payload import EditPayload
+
         obj = EditPayload.model_validate(OP_PAYLOADS[op_type])
         assert obj.operations
         assert obj.operations[0].type == op_type
 
     def test_unknown_type_rejected(self):
         from file_editing.edit_payload import EditPayload
+
         with pytest.raises(Exception):
-            EditPayload.model_validate({
-                "target_file_path": "c.py",
-                "summary": "bad",
-                "rationale": "This should fail validation for unknown type",
-                "operations": [{"type": "telepathy", "rationale": "x"}],
-            })
+            EditPayload.model_validate(
+                {
+                    "target_file_path": "c.py",
+                    "summary": "bad",
+                    "rationale": "This should fail validation for unknown type",
+                    "operations": [{"type": "telepathy", "rationale": "x"}],
+                }
+            )
 
 
 class TestDeveloperSchemaFile:
@@ -181,6 +204,7 @@ class TestDeveloperSchemaFile:
 # Apply contracts (DB) for implemented ops
 # ---------------------------------------------------------------------------
 
+
 class TestApplyContracts:
     def test_find_replace_apply(self, temp_db):
         from file_editing.writer import initialize_file_lines
@@ -193,12 +217,14 @@ class TestApplyContracts:
                 "target_file_path": "ops/fr.py",
                 "summary": "rename",
                 "rationale": "Consistent naming across the utility module",
-                "operations": [{
-                    "type": "find_replace",
-                    "find": "old",
-                    "replace": "new",
-                    "rationale": "rename",
-                }],
+                "operations": [
+                    {
+                        "type": "find_replace",
+                        "find": "old",
+                        "replace": "new",
+                        "rationale": "rename",
+                    }
+                ],
             },
             1,
             "ops/fr.py",
@@ -219,11 +245,13 @@ class TestApplyContracts:
                 "target_file_path": "ops/full.py",
                 "summary": "rewrite",
                 "rationale": "Complete rewrite of a small helper file",
-                "operations": [{
-                    "type": "full_replace",
-                    "new_content": "z = 9\n",
-                    "rationale": "full",
-                }],
+                "operations": [
+                    {
+                        "type": "full_replace",
+                        "new_content": "z = 9\n",
+                        "rationale": "full",
+                    }
+                ],
             },
             1,
             "ops/full.py",
@@ -245,12 +273,14 @@ class TestApplyContracts:
                 "target_file_path": "ops/rb.py",
                 "summary": "replace middle",
                 "rationale": "Update a single guided line block in place",
-                "operations": [{
-                    "type": "replace_block",
-                    "start_line_guid": g[1],
-                    "new_content": ["LINE2"],
-                    "rationale": "rb",
-                }],
+                "operations": [
+                    {
+                        "type": "replace_block",
+                        "start_line_guid": g[1],
+                        "new_content": ["LINE2"],
+                        "rationale": "rb",
+                    }
+                ],
             },
             1,
             "ops/rb.py",
@@ -272,12 +302,14 @@ class TestApplyContracts:
                 "target_file_path": "ops/ins.py",
                 "summary": "insert",
                 "rationale": "Insert a new line after an existing guided line",
-                "operations": [{
-                    "type": "insert_after",
-                    "after_guid": g[0],
-                    "new_content": ["mid"],
-                    "rationale": "ins",
-                }],
+                "operations": [
+                    {
+                        "type": "insert_after",
+                        "after_guid": g[0],
+                        "new_content": ["mid"],
+                        "rationale": "ins",
+                    }
+                ],
             },
             1,
             "ops/ins.py",
@@ -300,11 +332,13 @@ class TestApplyContracts:
                 "target_file_path": "ops/del.py",
                 "summary": "delete",
                 "rationale": "Remove an obsolete guided line from the file",
-                "operations": [{
-                    "type": "delete_lines",
-                    "start_line_guid": g[1],
-                    "rationale": "del",
-                }],
+                "operations": [
+                    {
+                        "type": "delete_lines",
+                        "start_line_guid": g[1],
+                        "rationale": "del",
+                    }
+                ],
             },
             1,
             "ops/del.py",
@@ -335,11 +369,13 @@ class TestApplyContracts:
                 "target_file_path": "ops/diff.py",
                 "summary": "apply unified diff",
                 "rationale": "Apply a unified diff patch to update one line",
-                "operations": [{
-                    "type": "apply_diff",
-                    "diff": diff,
-                    "rationale": "diff",
-                }],
+                "operations": [
+                    {
+                        "type": "apply_diff",
+                        "diff": diff,
+                        "rationale": "diff",
+                    }
+                ],
             },
             1,
             "ops/diff.py",
@@ -349,7 +385,6 @@ class TestApplyContracts:
         result = apply_edit_proposal(prop["proposal_id"])
         assert result["status"] == "success"
         assert "WORLD" in _content("ops/diff.py")
-
 
     def test_create_file_apply(self, temp_db):
         from workflow.proposal_builder import create_proposal_from_developer_output
@@ -361,12 +396,14 @@ class TestApplyContracts:
                 "target_file_path": "ops/brand_new.py",
                 "summary": "create new helper",
                 "rationale": "Add a new module for helper utilities",
-                "operations": [{
-                    "type": "create_file",
-                    "target_file_path": "ops/brand_new.py",
-                    "initial_content": ["x = 1", "y = 2"],
-                    "rationale": "bootstrap module",
-                }],
+                "operations": [
+                    {
+                        "type": "create_file",
+                        "target_file_path": "ops/brand_new.py",
+                        "initial_content": ["x = 1", "y = 2"],
+                        "rationale": "bootstrap module",
+                    }
+                ],
             },
             1,
             "ops/brand_new.py",
@@ -390,12 +427,14 @@ class TestApplyContracts:
                 "target_file_path": "ops/exists.py",
                 "summary": "create should fail",
                 "rationale": "Should not overwrite existing governed file",
-                "operations": [{
-                    "type": "create_file",
-                    "target_file_path": "ops/exists.py",
-                    "initial_content": ["nope = 1"],
-                    "rationale": "should fail",
-                }],
+                "operations": [
+                    {
+                        "type": "create_file",
+                        "target_file_path": "ops/exists.py",
+                        "initial_content": ["nope = 1"],
+                        "rationale": "should fail",
+                    }
+                ],
             },
             1,
             "ops/exists.py",
@@ -406,6 +445,7 @@ class TestApplyContracts:
         assert result["status"] == "error"
         # proposal must not be left as applied
         from file_editing.db import get_db_connection
+
         with get_db_connection() as conn:
             st = conn.execute(
                 "SELECT status FROM edit_proposals WHERE proposal_id = ?",
@@ -425,11 +465,13 @@ class TestApplyContracts:
                 "target_file_path": "ops/bad_diff.py",
                 "summary": "bad diff payload",
                 "rationale": "Malformed unified diff should not apply",
-                "operations": [{
-                    "type": "apply_diff",
-                    "diff": "this is not a unified diff at all",
-                    "rationale": "invalid",
-                }],
+                "operations": [
+                    {
+                        "type": "apply_diff",
+                        "diff": "this is not a unified diff at all",
+                        "rationale": "invalid",
+                    }
+                ],
             },
             1,
             "ops/bad_diff.py",
@@ -450,10 +492,15 @@ class TestApplyContracts:
     def test_apply_diff_empty(self, temp_db):
         from file_editing.edit_payload import EditPayload
         import pytest
+
         with pytest.raises(Exception):
-            EditPayload.model_validate({
-                "target_file_path": "x.py",
-                "summary": "empty diff op",
-                "rationale": "Empty diff must fail validation",
-                "operations": [{"type": "apply_diff", "diff": "   ", "rationale": "empty"}],
-            })
+            EditPayload.model_validate(
+                {
+                    "target_file_path": "x.py",
+                    "summary": "empty diff op",
+                    "rationale": "Empty diff must fail validation",
+                    "operations": [
+                        {"type": "apply_diff", "diff": "   ", "rationale": "empty"}
+                    ],
+                }
+            )

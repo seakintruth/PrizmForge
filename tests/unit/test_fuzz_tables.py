@@ -23,9 +23,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 JSON_CASES = [
     # (label, input, expect_ok)
     ("plain_object", '{"a": 1}', True),
-    ("fenced_json", "```json\n{\"a\": 2}\n```", True),
-    ("fenced_plain", "```\n{\"b\": 3}\n```", True),
-    ("leading_text", "Sure! Here you go:\n{\"c\": 4}\n", True),
+    ("fenced_json", '```json\n{"a": 2}\n```', True),
+    ("fenced_plain", '```\n{"b": 3}\n```', True),
+    ("leading_text", 'Sure! Here you go:\n{"c": 4}\n', True),
     ("trailing_text", '{"d": 5}\nThanks!', True),
     ("empty", "", False),
     ("whitespace", "   \n\t  ", False),
@@ -37,14 +37,18 @@ JSON_CASES = [
 
 
 class TestJsonParserFuzzTable:
-    @pytest.mark.parametrize("label,text,expect_ok", JSON_CASES, ids=[c[0] for c in JSON_CASES])
+    @pytest.mark.parametrize(
+        "label,text,expect_ok", JSON_CASES, ids=[c[0] for c in JSON_CASES]
+    )
     def test_parse_cases(self, label, text, expect_ok):
         from core.json_parser import parse_json_response
 
         result = parse_json_response(text, agent_name="fuzz")
         if expect_ok:
             assert result is not None, f"{label}: expected parse success for {text!r}"
-            assert isinstance(result, (dict, list)), f"{label}: unexpected type {type(result)}"
+            assert isinstance(
+                result, (dict, list)
+            ), f"{label}: unexpected type {type(result)}"
         else:
             assert result is None or isinstance(result, (dict, list))
 
@@ -65,7 +69,9 @@ PATH_CASES = [
 
 
 class TestPathContainmentFuzzTable:
-    @pytest.mark.parametrize("label,rel,should_succeed", PATH_CASES, ids=[c[0] for c in PATH_CASES])
+    @pytest.mark.parametrize(
+        "label,rel,should_succeed", PATH_CASES, ids=[c[0] for c in PATH_CASES]
+    )
     def test_path_cases(self, label, rel, should_succeed, monkeypatch, tmp_path):
         from core import config as config_mod
         from file_editing.writer import write_file_to_disk

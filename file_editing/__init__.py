@@ -6,14 +6,19 @@
 
 from .edit_payload import EditPayload
 from .db import (
-    get_db_connection, 
-    log_error, 
+    get_db_connection,
+    log_error,
     initialize_database,
     reconstruct_file_content,
-    capture_current_hashes
+    capture_current_hashes,
 )
 from .editing import apply_edit_proposal, validate_proposal
-from .writer import materialize_proposal, write_file_to_disk, invalidate_other_proposals, initialize_file_lines
+from .writer import (
+    materialize_proposal,
+    write_file_to_disk,
+    invalidate_other_proposals,
+    initialize_file_lines,
+)
 
 __version__ = "1.4"
 
@@ -29,5 +34,5 @@ __all__ = [
     "materialize_proposal",
     "write_file_to_disk",
     "invalidate_other_proposals",
-    "initialize_file_lines",     
+    "initialize_file_lines",
 ]

@@ -30,6 +30,7 @@ def test_mode_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
     if config is None:
         try:
             from core.config import get_config
+
             config = get_config()
         except Exception:
             return False
@@ -92,6 +93,7 @@ def mock_call_agent(
     if config is None:
         try:
             from core.config import get_config
+
             config = get_config()
         except Exception:
             config = {}

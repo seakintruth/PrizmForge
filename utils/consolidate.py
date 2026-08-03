@@ -342,9 +342,19 @@ def write_index_files(root_dir: str, report_dir: str, indexes: dict) -> dict:
     written["combined"] = str(combined_path.resolve())
 
     for filename, title, writer, key in (
-        ("index_production.md", "Production code index", _write_production_index, "production"),
+        (
+            "index_production.md",
+            "Production code index",
+            _write_production_index,
+            "production",
+        ),
         ("index_tests.md", "Test suite index", _write_test_index, "test"),
-        ("index_docs.md", "Markdown documentation index", _write_markdown_index, "markdown"),
+        (
+            "index_docs.md",
+            "Markdown documentation index",
+            _write_markdown_index,
+            "markdown",
+        ),
     ):
         p = report / filename
         with p.open("w", encoding="utf-8") as out:
@@ -356,7 +366,6 @@ def write_index_files(root_dir: str, report_dir: str, indexes: dict) -> dict:
         written[key] = str(p.resolve())
 
     return written
-
 
 
 def generate_target_indexes(
@@ -387,21 +396,23 @@ def generate_target_indexes(
         written["full"] = os.path.join(out_dir, "project_review.md")
     pointer = Path(out_dir) / "README.md"
     pointer.write_text(
-        "\n".join([
-            f"Generated: {_generation_stamp()}",
-            "",
-            "# Target repository indexes",
-            "",
-            "Generated on init for agent/human context.",
-            "",
-            "- `INDEX.md` — combined (prefer this for LLM context)",
-            "- `index_production.md` — source modules/symbols",
-            "- `index_tests.md` — tests",
-            "- `index_docs.md` — markdown headings",
-            "",
-            "Regenerate via CLI `init`.",
-            "",
-        ]),
+        "\n".join(
+            [
+                f"Generated: {_generation_stamp()}",
+                "",
+                "# Target repository indexes",
+                "",
+                "Generated on init for agent/human context.",
+                "",
+                "- `INDEX.md` — combined (prefer this for LLM context)",
+                "- `index_production.md` — source modules/symbols",
+                "- `index_tests.md` — tests",
+                "- `index_docs.md` — markdown headings",
+                "",
+                "Regenerate via CLI `init`.",
+                "",
+            ]
+        ),
         encoding="utf-8",
     )
     written["readme"] = str(pointer)
@@ -421,7 +432,11 @@ def consolidate_project(
     out_abs = os.path.abspath(output_filename)
     report_dir = os.path.dirname(out_abs) or "."
     # Guard: refuse absolute root paths like /report (sandbox __file__ pitfall)
-    if report_dir in ("/", "\\") or report_dir.rstrip("/\\") in ("", "report") and out_abs.startswith("/report"):
+    if (
+        report_dir in ("/", "\\")
+        or report_dir.rstrip("/\\") in ("", "report")
+        and out_abs.startswith("/report")
+    ):
         report_dir = os.path.join(os.path.abspath(os.getcwd()), "report")
         out_abs = os.path.join(report_dir, os.path.basename(output_filename))
         output_filename = out_abs
@@ -457,7 +472,9 @@ def consolidate_project(
         outfile.write("## Table of contents\n\n")
         outfile.write("1. [Index: Production code](#index-production-code)\n")
         outfile.write("2. [Index: Test suite](#index-test-suite)\n")
-        outfile.write("3. [Index: Markdown documentation](#index-markdown-documentation)\n")
+        outfile.write(
+            "3. [Index: Markdown documentation](#index-markdown-documentation)\n"
+        )
         outfile.write("4. [Full file contents](#full-file-contents)\n\n")
         outfile.write("---\n\n")
 
@@ -479,7 +496,10 @@ def consolidate_project(
                 relative_path = os.path.relpath(file_path, root_dir).replace("\\", "/")
                 if relative_path.endswith("report/project_review.md"):
                     continue
-                if relative_path.startswith("report/index_") or relative_path == "report/INDEX.md":
+                if (
+                    relative_path.startswith("report/index_")
+                    or relative_path == "report/INDEX.md"
+                ):
                     continue
 
                 if file.endswith(".py"):
@@ -511,11 +531,10 @@ def consolidate_project(
             print(f"     - {k}: {v}")
 
 
-
-
 def _generation_stamp() -> str:
     """UTC timestamp line for generated index/report files."""
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
@@ -575,7 +594,10 @@ if __name__ == "__main__":
     forge_root = discover_project_root()
     report_dir = os.path.join(forge_root, "report")
     # Never write to filesystem root (e.g. /report when script lived in /box)
-    if report_dir in ("/report", "\\report") or os.path.dirname(report_dir) in ("/", "\\"):
+    if report_dir in ("/report", "\\report") or os.path.dirname(report_dir) in (
+        "/",
+        "\\",
+    ):
         report_dir = os.path.join(os.path.abspath(os.getcwd()), "report")
         forge_root = os.path.abspath(os.getcwd())
 
@@ -613,6 +635,7 @@ if __name__ == "__main__":
     if args.target or root is None and args.indexes_only:
         try:
             from core.config import get_config
+
             cfg = get_config()
             if args.target or root is None:
                 root = root or cfg.get("project_directory") or forge_root
@@ -632,7 +655,9 @@ if __name__ == "__main__":
             print(f"   - {k}: {v}")
     else:
         # Full consolidation to out_dir/project_review.md (indexes always written unless indexes-only false with only full)
-        out_review = os.path.join(out_dir if args.target else report_dir, "project_review.md")
+        out_review = os.path.join(
+            out_dir if args.target else report_dir, "project_review.md"
+        )
         if args.target:
             generate_target_indexes(root, out_dir, full_dump=bool(args.full))
         else:

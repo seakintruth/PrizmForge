@@ -108,7 +108,12 @@ def rebuild_project_symbols(
         project_directory = get_config().get("project_directory", "./project")
     root = Path(project_directory).expanduser().resolve()
     if not root.is_dir():
-        return {"status": "error", "message": f"not a directory: {root}", "files": 0, "symbols": 0}
+        return {
+            "status": "error",
+            "message": f"not a directory: {root}",
+            "files": 0,
+            "symbols": 0,
+        }
 
     files_n = 0
     symbols_n = 0
@@ -118,7 +123,15 @@ def rebuild_project_symbols(
         dirnames[:] = [
             d
             for d in dirnames
-            if d not in {".git", "__pycache__", ".venv", "venv", "node_modules", ".PrizmForge"}
+            if d
+            not in {
+                ".git",
+                "__pycache__",
+                ".venv",
+                "venv",
+                "node_modules",
+                ".PrizmForge",
+            }
             and not d.startswith(".")
         ]
         for name in filenames:

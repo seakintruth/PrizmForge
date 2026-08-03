@@ -24,6 +24,7 @@ if str(ROOT) not in sys.path:
 def _has_usable_key() -> bool:
     try:
         from core.config import get_config
+
         cfg = get_config()
     except Exception as e:
         print(f"SKIP: cannot load config ({e})")
@@ -54,6 +55,7 @@ def main() -> int:
 
     try:
         from agents.base import call_agent
+
         result = call_agent(
             agent_name="orchestrator",
             prompt='Reply with a minimal JSON object: {"next_agent": "complete", "instructions": "smoke", "reasoning": "smoke test"}',

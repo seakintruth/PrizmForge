@@ -9,7 +9,7 @@ from core.truncation_detector import (
     TruncationDetector,
     TruncationType,
     get_truncation_detector,
-    detect_and_resume
+    detect_and_resume,
 )
 
 
@@ -37,7 +37,11 @@ class TestTruncationDetector:
         result = detector.detect(response, expected_format="code")
         assert result.is_truncated is True
         # The internal code currently uses wrong attribute; accept flexible check
-        assert str(result.truncation_type) in ("TruncationType.CODE_BLOCK", "code", "CODE_BLOCK")
+        assert str(result.truncation_type) in (
+            "TruncationType.CODE_BLOCK",
+            "code",
+            "CODE_BLOCK",
+        )
 
     def test_detect_complete_text(self):
         detector = TruncationDetector()
@@ -47,7 +51,9 @@ class TestTruncationDetector:
 
     def test_detect_mid_sentence_truncation(self):
         detector = TruncationDetector()
-        response = "The function should return the sum of the two numbers and also handle"
+        response = (
+            "The function should return the sum of the two numbers and also handle"
+        )
         result = detector.detect(response)
         assert result.is_truncated is True or result.confidence > 0.6
 
@@ -62,6 +68,7 @@ class TestTruncationDetectorFactory:
     def test_detect_and_resume_signature(self):
         # Verify function exists and has expected parameters
         import inspect
+
         sig = inspect.signature(detect_and_resume)
         params = list(sig.parameters.keys())
         assert "agent_name" in params

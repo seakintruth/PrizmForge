@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
-
 # Canonical mode names used across the system
 MODE_GUID = "guid"
 MODE_DIFF = "diff"
@@ -32,6 +31,7 @@ DEFAULT_FALLBACK_ORDER: List[str] = [
 @dataclass
 class ModeDecision:
     """Result of mode selection."""
+
     selected_mode: str
     reason: str
     fallback_chain: List[str]
@@ -39,7 +39,9 @@ class ModeDecision:
     change_hint: Optional[str] = None  # "small" | "medium" | "large" | None
 
 
-def _estimate_change_size(instructions: str = "", files_needed: Optional[Sequence[str]] = None) -> str:
+def _estimate_change_size(
+    instructions: str = "", files_needed: Optional[Sequence[str]] = None
+) -> str:
     """
     Very lightweight heuristic for change complexity.
     Returns 'small' | 'medium' | 'large'.
@@ -49,13 +51,27 @@ def _estimate_change_size(instructions: str = "", files_needed: Optional[Sequenc
 
     # Strong signals for small, localized changes
     small_signals = (
-        "rename", "typo", "fix typo", "string", "constant",
-        "replace", "find and replace", "one line", "single line",
-        "comment", "docstring only",
+        "rename",
+        "typo",
+        "fix typo",
+        "string",
+        "constant",
+        "replace",
+        "find and replace",
+        "one line",
+        "single line",
+        "comment",
+        "docstring only",
     )
     large_signals = (
-        "refactor", "rewrite", "redesign", "migrate", "overhaul",
-        "multiple files", "across the codebase", "architecture",
+        "refactor",
+        "rewrite",
+        "redesign",
+        "migrate",
+        "overhaul",
+        "multiple files",
+        "across the codebase",
+        "architecture",
     )
 
     if any(s in text for s in large_signals) or n_files >= 3:
@@ -291,6 +307,7 @@ START YOUR JSON OUTPUT NOW:"""
     try:
         from pathlib import Path
         import json as json_lib
+
         schema_file = Path(__file__).parent.parent / "agent_schemas" / "developer.json"
         if schema_file.exists():
             with open(schema_file) as f:

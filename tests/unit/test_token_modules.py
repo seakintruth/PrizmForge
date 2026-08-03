@@ -28,7 +28,7 @@ class TestTokenEstimator:
     def test_estimate_messages(self):
         messages = [
             {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"}
+            {"role": "assistant", "content": "Hi there!"},
         ]
         total = estimate_messages(messages)
         assert isinstance(total, int)

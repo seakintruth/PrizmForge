@@ -14,9 +14,6 @@ import json
 
 from .db import get_db_connection, log_error
 
-
-
-
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -28,12 +25,15 @@ RENUMBER_GAP = 1024.0
 def _compute_hash(content: str) -> str:
     return hashlib.md5(content.encode()).hexdigest()
 
-def _validate_guid_exists(conn: sqlite3.Connection, file_id: int, line_guid: str) -> bool:
+
+def _validate_guid_exists(
+    conn: sqlite3.Connection, file_id: int, line_guid: str
+) -> bool:
     if not line_guid:
         return False
     row = conn.execute(
         "SELECT 1 FROM file_lines WHERE line_guid = ? AND file_id = ? AND is_deleted = 0",
-        (line_guid, file_id)
+        (line_guid, file_id),
     ).fetchone()
     return row is not None
 
@@ -44,25 +44,35 @@ def _validate_operation_guids(conn: sqlite3.Connection, file_id: int, op) -> boo
     Supports replace_block, delete_lines, and insert_after.
     find_replace does not use GUIDs and always passes.
     """
-    if op.type in ("find_replace", "full_replace", "apply_diff", "create_file", "update_documentation"):
+    if op.type in (
+        "find_replace",
+        "full_replace",
+        "apply_diff",
+        "create_file",
+        "update_documentation",
+    ):
         return True  # content-level ops; no GUID references
     if op.type == "replace_block":
         if not _validate_guid_exists(conn, file_id, op.start_line_guid):
             return False
-        if getattr(op, 'end_line_guid', None) and not _validate_guid_exists(conn, file_id, op.end_line_guid):
+        if getattr(op, "end_line_guid", None) and not _validate_guid_exists(
+            conn, file_id, op.end_line_guid
+        ):
             return False
         return True
 
     elif op.type == "delete_lines":
         if not _validate_guid_exists(conn, file_id, op.start_line_guid):
             return False
-        if getattr(op, 'end_line_guid', None) and not _validate_guid_exists(conn, file_id, op.end_line_guid):
+        if getattr(op, "end_line_guid", None) and not _validate_guid_exists(
+            conn, file_id, op.end_line_guid
+        ):
             return False
         return True
 
     elif op.type == "insert_after":
         # after_guid can be None (for new/empty files)
-        after_guid = getattr(op, 'after_guid', None)
+        after_guid = getattr(op, "after_guid", None)
         if after_guid is None:
             return True
         return _validate_guid_exists(conn, file_id, after_guid)
@@ -72,15 +82,13 @@ def _validate_operation_guids(conn: sqlite3.Connection, file_id: int, op) -> boo
 
 
 def get_insert_sort_order(
-    conn: sqlite3.Connection, 
-    file_id: int, 
-    after_guid: Optional[str] = None
+    conn: sqlite3.Connection, file_id: int, after_guid: Optional[str] = None
 ) -> float:
     try:
         if after_guid is None:
             min_row = conn.execute(
                 "SELECT MIN(sort_order) FROM file_lines WHERE file_id = ? AND is_deleted = 0",
-                (file_id,)
+                (file_id,),
             ).fetchone()
             if min_row and min_row[0] is not None:
                 return min_row[0] - (INITIAL_GAP / 2)
@@ -88,7 +96,7 @@ def get_insert_sort_order(
 
         row = conn.execute(
             "SELECT sort_order FROM file_lines WHERE line_guid = ? AND is_deleted = 0",
-            (after_guid,)
+            (after_guid,),
         ).fetchone()
         if row:
             current = row[0]
@@ -96,7 +104,7 @@ def get_insert_sort_order(
                 """SELECT sort_order FROM file_lines 
                    WHERE file_id = ? AND sort_order > ? AND is_deleted = 0
                    ORDER BY sort_order LIMIT 1""",
-                (file_id, current)
+                (file_id, current),
             ).fetchone()
 
             if next_row and next_row[0] is not None:
@@ -109,37 +117,47 @@ def get_insert_sort_order(
 
         max_row = conn.execute(
             "SELECT MAX(sort_order) FROM file_lines WHERE file_id = ? AND is_deleted = 0",
-            (file_id,)
+            (file_id,),
         ).fetchone()
         return (max_row[0] or 0.0) + INITIAL_GAP
 
     except Exception as e:
-        log_error("file_editing", "get_insert_sort_order", "HIGH", str(e), file_id=file_id)
+        log_error(
+            "file_editing", "get_insert_sort_order", "HIGH", str(e), file_id=file_id
+        )
         raise
 
 
 def renumber_sort_orders(conn: sqlite3.Connection, file_id: int) -> None:
     try:
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT line_guid FROM file_lines 
             WHERE file_id = ? AND is_deleted = 0 
             ORDER BY sort_order
-        """, (file_id,))
+        """,
+            (file_id,),
+        )
         line_guids = [row[0] for row in cursor.fetchall()]
 
         for i, line_guid in enumerate(line_guids):
             new_sort = (i + 1) * RENUMBER_GAP
             conn.execute(
                 "UPDATE file_lines SET sort_order = ? WHERE line_guid = ?",
-                (new_sort, line_guid)
+                (new_sort, line_guid),
             )
 
         log_error(
-            "file_editing", "renumber_sort_orders", "INFO",
-            f"Renumbered {len(line_guids)} lines", file_id=file_id
+            "file_editing",
+            "renumber_sort_orders",
+            "INFO",
+            f"Renumbered {len(line_guids)} lines",
+            file_id=file_id,
         )
     except Exception as e:
-        log_error("file_editing", "renumber_sort_orders", "HIGH", str(e), file_id=file_id)
+        log_error(
+            "file_editing", "renumber_sort_orders", "HIGH", str(e), file_id=file_id
+        )
         raise
 
 
@@ -152,15 +170,26 @@ def validate_proposal(conn, proposal: dict) -> bool:
         for guid in affected:
             row = conn.execute(
                 "SELECT content_hash FROM file_lines WHERE line_guid = ? AND is_deleted = 0",
-                (guid,)
+                (guid,),
             ).fetchone()
             if not row or row[0] != expected.get(guid):
-                log_error("file_editing", "validation", "HIGH",
-                          f"Hash mismatch on line {guid}", proposal_id=proposal.get("proposal_id"))
+                log_error(
+                    "file_editing",
+                    "validation",
+                    "HIGH",
+                    f"Hash mismatch on line {guid}",
+                    proposal_id=proposal.get("proposal_id"),
+                )
                 return False
         return True
     except Exception as e:
-        log_error("file_editing", "validation", "HIGH", str(e), proposal_id=proposal.get("proposal_id"))
+        log_error(
+            "file_editing",
+            "validation",
+            "HIGH",
+            str(e),
+            proposal_id=proposal.get("proposal_id"),
+        )
         return False
 
 
@@ -168,19 +197,20 @@ def validate_proposal(conn, proposal: dict) -> bool:
 # Core Apply Functions with Detailed Return Values
 # =============================================================================
 
+
 def apply_replace_block(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
     """
     Replace a range of lines.
     Returns detailed information about the operation.
     """
     start_guid = op.start_line_guid
-    end_guid = getattr(op, 'end_line_guid', None)
-    new_content = getattr(op, 'new_content', [])
+    end_guid = getattr(op, "end_line_guid", None)
+    new_content = getattr(op, "new_content", [])
 
     # Get sort orders
     start_row = conn.execute(
         "SELECT sort_order FROM file_lines WHERE line_guid = ? AND file_id = ? AND is_deleted = 0",
-        (start_guid, file_id)
+        (start_guid, file_id),
     ).fetchone()
 
     if not start_row:
@@ -192,51 +222,60 @@ def apply_replace_block(conn: sqlite3.Connection, file_id: int, op) -> Dict[str,
     if end_guid:
         end_row = conn.execute(
             "SELECT sort_order FROM file_lines WHERE line_guid = ? AND file_id = ? AND is_deleted = 0",
-            (end_guid, file_id)
+            (end_guid, file_id),
         ).fetchone()
         if end_row:
             end_sort = end_row[0]
 
     # Count lines that will be deleted
-    count_row = conn.execute("""
+    count_row = conn.execute(
+        """
         SELECT COUNT(*) FROM file_lines 
         WHERE file_id = ? 
           AND sort_order >= ? 
           AND sort_order <= ?
           AND is_deleted = 0
-    """, (file_id, start_sort, end_sort)).fetchone()
+    """,
+        (file_id, start_sort, end_sort),
+    ).fetchone()
     lines_deleted = count_row[0] if count_row else 0
 
     # Soft delete the range
-    conn.execute("""
+    conn.execute(
+        """
         UPDATE file_lines 
         SET is_deleted = 1 
         WHERE file_id = ? 
           AND sort_order >= ? 
           AND sort_order <= ?
           AND is_deleted = 0
-    """, (file_id, start_sort, end_sort))
+    """,
+        (file_id, start_sort, end_sort),
+    )
 
     # Insert new lines
     for i, line in enumerate(new_content):
         new_guid = str(uuid4())
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO file_lines 
                 (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
             VALUES (?, ?, ?, ?, ?, 1, 0)
-        """, (new_guid, file_id, start_sort + (i * 0.5), line, _compute_hash(line)))
+        """,
+            (new_guid, file_id, start_sort + (i * 0.5), line, _compute_hash(line)),
+        )
 
     return {
         "status": "success",
         "lines_deleted": lines_deleted,
-        "lines_inserted": len(new_content)
+        "lines_inserted": len(new_content),
     }
 
 
 def apply_insert_after(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
     """Insert new lines after a specific GUID."""
-    after_guid = getattr(op, 'after_guid', None)
-    new_contents = getattr(op, 'new_content', [])
+    after_guid = getattr(op, "after_guid", None)
+    new_contents = getattr(op, "new_content", [])
 
     if not new_contents:
         return {"status": "success", "lines_inserted": 0}
@@ -245,17 +284,17 @@ def apply_insert_after(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
     for content in new_contents:
         new_sort = get_insert_sort_order(conn, file_id, current_after)
         new_guid = str(uuid4())
-        conn.execute("""
+        conn.execute(
+            """
             INSERT INTO file_lines 
                 (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
             VALUES (?, ?, ?, ?, ?, 1, 0)
-        """, (new_guid, file_id, new_sort, content, _compute_hash(content)))
+        """,
+            (new_guid, file_id, new_sort, content, _compute_hash(content)),
+        )
         current_after = new_guid
 
-    return {
-        "status": "success",
-        "lines_inserted": len(new_contents)
-    }
+    return {"status": "success", "lines_inserted": len(new_contents)}
 
 
 def apply_delete_lines(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
@@ -263,11 +302,11 @@ def apply_delete_lines(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
     Delete a range of lines using start_line_guid and optional end_line_guid.
     """
     start_guid = op.start_line_guid
-    end_guid = getattr(op, 'end_line_guid', None)
+    end_guid = getattr(op, "end_line_guid", None)
 
     start_row = conn.execute(
         "SELECT sort_order FROM file_lines WHERE line_guid = ? AND file_id = ? AND is_deleted = 0",
-        (start_guid, file_id)
+        (start_guid, file_id),
     ).fetchone()
 
     if not start_row:
@@ -279,47 +318,53 @@ def apply_delete_lines(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
     if end_guid:
         end_row = conn.execute(
             "SELECT sort_order FROM file_lines WHERE line_guid = ? AND file_id = ? AND is_deleted = 0",
-            (end_guid, file_id)
+            (end_guid, file_id),
         ).fetchone()
         if end_row:
             end_sort = end_row[0]
 
     # Count lines in range
-    count_row = conn.execute("""
+    count_row = conn.execute(
+        """
         SELECT COUNT(*) FROM file_lines 
         WHERE file_id = ? 
           AND sort_order >= ? 
           AND sort_order <= ?
           AND is_deleted = 0
-    """, (file_id, start_sort, end_sort)).fetchone()
+    """,
+        (file_id, start_sort, end_sort),
+    ).fetchone()
     lines_deleted = count_row[0] if count_row else 0
 
     # Soft delete the range
-    conn.execute("""
+    conn.execute(
+        """
         UPDATE file_lines 
         SET is_deleted = 1 
         WHERE file_id = ? 
           AND sort_order >= ? 
           AND sort_order <= ?
           AND is_deleted = 0
-    """, (file_id, start_sort, end_sort))
+    """,
+        (file_id, start_sort, end_sort),
+    )
 
-    return {
-        "status": "success",
-        "lines_deleted": lines_deleted
-    }
+    return {"status": "success", "lines_deleted": lines_deleted}
 
 
 def apply_update_documentation(conn: sqlite3.Connection, file_id: int, op):
-    new_content = getattr(op, 'new_content', '')
-    conn.execute("""
+    new_content = getattr(op, "new_content", "")
+    conn.execute(
+        """
         INSERT INTO file_documentation (file_id, content, version, updated_at)
         VALUES (?, ?, 1, datetime('now'))
         ON CONFLICT(file_id) DO UPDATE SET 
             content = excluded.content,
             version = file_documentation.version + 1,
             updated_at = datetime('now')
-    """, (file_id, new_content))
+    """,
+        (file_id, new_content),
+    )
 
 
 def apply_find_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
@@ -336,8 +381,7 @@ def apply_find_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
 
     # Resolve file path for re-initialization
     row = conn.execute(
-        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0",
-        (file_id,)
+        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0", (file_id,)
     ).fetchone()
     if not row:
         return {"status": "error", "message": f"file_id {file_id} not found"}
@@ -403,8 +447,7 @@ def apply_full_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
     from .writer import initialize_file_lines
 
     row = conn.execute(
-        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0",
-        (file_id,)
+        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0", (file_id,)
     ).fetchone()
     if not row:
         return {"status": "error", "message": f"file_id {file_id} not found"}
@@ -435,7 +478,6 @@ def apply_full_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
     }
 
 
-
 def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
     """
     Apply a unified diff to file content.
@@ -445,8 +487,7 @@ def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
     from .writer import initialize_file_lines
 
     row = conn.execute(
-        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0",
-        (file_id,)
+        "SELECT file_path FROM files WHERE file_id = ? AND is_deleted = 0", (file_id,)
     ).fetchone()
     if not row:
         return {"status": "error", "message": f"file_id {file_id} not found"}
@@ -457,6 +498,7 @@ def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
 
     try:
         import difflib
+
         # Prefer stdlib if the diff is a proper unified diff from difflib
         original_lines = original.splitlines(keepends=True)
         # Normalize diff line endings
@@ -467,7 +509,10 @@ def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
         # Fall back to applying with a minimal hunk parser
         new_lines = _apply_unified_diff(original_lines, diff_lines)
         if new_lines is None:
-            return {"status": "error", "message": "Failed to apply unified diff (no matching context)"}
+            return {
+                "status": "error",
+                "message": "Failed to apply unified diff (no matching context)",
+            }
 
         new_content = "".join(new_lines)
         # Ensure trailing newline consistency
@@ -518,6 +563,7 @@ def _apply_unified_diff(original_lines, diff_lines):
         if raw.startswith("@@"):
             # Parse hunk header: @@ -start,count +start,count @@
             import re
+
             m = re.search(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", raw)
             if not m:
                 i += 1
@@ -578,7 +624,6 @@ def _apply_unified_diff(original_lines, diff_lines):
     return out
 
 
-
 def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
     """
     Create a new file in the governed store from a create_file operation.
@@ -606,7 +651,11 @@ def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, A
     ).fetchone()
     check_id = None
     if row_existing:
-        check_id = row_existing["file_id"] if hasattr(row_existing, "keys") else row_existing[0]
+        check_id = (
+            row_existing["file_id"]
+            if hasattr(row_existing, "keys")
+            else row_existing[0]
+        )
     if check_id is not None:
         existing = conn.execute(
             "SELECT COUNT(*) FROM file_lines WHERE file_id = ? AND is_deleted = 0",
@@ -634,11 +683,15 @@ def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, A
         # empty file is allowed if explicitly empty list; non-empty required only when content is whitespace-only from bad data
         pass
 
-    safety = validate_source_content(content if content is not None else "", file_path=file_path)
+    safety = validate_source_content(
+        content if content is not None else "", file_path=file_path
+    )
     if not safety.get("ok"):
         return {"status": "error", "message": safety.get("message", "content rejected")}
 
-    init_result = initialize_file_lines(file_path, content if content is not None else "")
+    init_result = initialize_file_lines(
+        file_path, content if content is not None else ""
+    )
     if init_result.get("status") != "success":
         return {
             "status": "error",
@@ -663,22 +716,35 @@ def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:
             return {"status": "error", "message": "Proposal not approved"}
 
         if not validate_proposal(conn, dict(proposal_row)):
-            log_error("file_editing", "apply", "HIGH", "Optimistic validation failed", 
-                      proposal_id=proposal_id)
+            log_error(
+                "file_editing",
+                "apply",
+                "HIGH",
+                "Optimistic validation failed",
+                proposal_id=proposal_id,
+            )
             return {"status": "conflicted"}
 
         try:
             from .edit_payload import EditPayload
+
             payload = EditPayload.model_validate_json(proposal_row["edit_payload"])
             file_id = proposal_row["target_file_id"]
 
             # Strict GUID validation
             for op in payload.operations:
                 if not _validate_operation_guids(conn, file_id, op):
-                    log_error("file_editing", "apply", "HIGH",
-                              f"Referenced line GUID not found in operation: {op.type}",
-                              proposal_id=proposal_id)
-                    return {"status": "conflicted", "message": "Referenced line GUID not found"}
+                    log_error(
+                        "file_editing",
+                        "apply",
+                        "HIGH",
+                        f"Referenced line GUID not found in operation: {op.type}",
+                        proposal_id=proposal_id,
+                    )
+                    return {
+                        "status": "conflicted",
+                        "message": "Referenced line GUID not found",
+                    }
 
             operation_results = []
 
@@ -707,15 +773,25 @@ def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:
                     result = apply_create_file(conn, file_id, op)
                     operation_results.append(result)
                 else:
-                    operation_results.append({
-                        "status": "error",
-                        "message": f"Unknown operation type: {getattr(op, 'type', op)}",
-                    })
+                    operation_results.append(
+                        {
+                            "status": "error",
+                            "message": f"Unknown operation type: {getattr(op, 'type', op)}",
+                        }
+                    )
 
             # Any failed op => terminal error, do not mark applied
-            failed = [r for r in operation_results if isinstance(r, dict) and r.get("status") not in ("success", None)]
+            failed = [
+                r
+                for r in operation_results
+                if isinstance(r, dict) and r.get("status") not in ("success", None)
+            ]
             # update_documentation may return None historically — treat missing status as ok only for empty dict issues
-            failed = [r for r in operation_results if isinstance(r, dict) and r.get("status") == "error"]
+            failed = [
+                r
+                for r in operation_results
+                if isinstance(r, dict) and r.get("status") == "error"
+            ]
             if failed:
                 conn.execute(
                     "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
@@ -730,13 +806,13 @@ def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:
 
             conn.execute(
                 "UPDATE edit_proposals SET status = 'applied' WHERE proposal_id = ?",
-                (proposal_id,)
+                (proposal_id,),
             )
 
             return {
                 "status": "success",
                 "proposal_id": proposal_id,
-                "operations": operation_results
+                "operations": operation_results,
             }
 
         except Exception as e:

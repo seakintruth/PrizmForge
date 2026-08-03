@@ -27,7 +27,10 @@ from workflow.edit_mode_selector import (
     MODE_DIFF,
     DEFAULT_FALLBACK_ORDER,
 )
-from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
+from workflow.proposal_builder import (
+    create_proposal_from_developer_output,
+    update_proposal_status,
+)
 from file_editing.writer import materialize_proposal
 from file_editing.undo import snapshot_before_apply
 from core.events import publish_event
@@ -125,7 +128,9 @@ def run_developer_mutation(
                 already_tried=modes_tried,
             )
             if next_mode:
-                print(f"   ↪️  Empty response; falling back {edit_method} → {next_mode}")
+                print(
+                    f"   ↪️  Empty response; falling back {edit_method} → {next_mode}"
+                )
                 edit_method = next_mode
                 fallback_used = True
                 continue
@@ -171,7 +176,12 @@ def run_developer_mutation(
     progress["valid_edit_payloads"] = progress.get("valid_edit_payloads", 0) + 1
     if fallback_used:
         progress["fallback_successes"] = progress.get("fallback_successes", 0) + 1
-        publish_event("edit.fallback_used", source="developer_edit", task_id=task_id, payload={"modes_tried": modes_tried, "final_mode": edit_method})
+        publish_event(
+            "edit.fallback_used",
+            source="developer_edit",
+            task_id=task_id,
+            payload={"modes_tried": modes_tried, "final_mode": edit_method},
+        )
 
     data = validation.data or {}
     data = _normalize_payload(data, edit_method, requested_files)
@@ -229,7 +239,13 @@ def run_developer_mutation(
     if decision_result == "REJECT":
         print(f"   ❌ Reviewer rejected proposal: {reason}")
         update_proposal_status(proposal_id, "rejected")
-        publish_event("proposal.rejected", source="reviewer", task_id=task_id, proposal_id=proposal_id, payload={"reason": reason})
+        publish_event(
+            "proposal.rejected",
+            source="reviewer",
+            task_id=task_id,
+            proposal_id=proposal_id,
+            payload={"reason": reason},
+        )
         post_message(
             "reviewer",
             "orchestrator",
@@ -246,17 +262,31 @@ def run_developer_mutation(
 
     print(f"   ✅ Reviewer approved proposal {proposal_id}")
     update_proposal_status(proposal_id, "approved")
-    publish_event("proposal.approved", source="reviewer", task_id=task_id, proposal_id=proposal_id)
+    publish_event(
+        "proposal.approved", source="reviewer", task_id=task_id, proposal_id=proposal_id
+    )
     print("   📝 Materializing changes to disk...")
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)
     if mat.get("status") == "success":
-        publish_event("edit.materialized", source="writer", task_id=task_id, proposal_id=proposal_id, payload=mat if isinstance(mat, dict) else {})
+        publish_event(
+            "edit.materialized",
+            source="writer",
+            task_id=task_id,
+            proposal_id=proposal_id,
+            payload=mat if isinstance(mat, dict) else {},
+        )
         progress["files_modified"] = progress.get("files_modified", 0) + 1
         progress["materialize_successes"] = progress.get("materialize_successes", 0) + 1
         progress["last_file_change"] = current_turn
     else:
-        publish_event("edit.failed", source="writer", task_id=task_id, proposal_id=proposal_id, payload=mat if isinstance(mat, dict) else {})
+        publish_event(
+            "edit.failed",
+            source="writer",
+            task_id=task_id,
+            proposal_id=proposal_id,
+            payload=mat if isinstance(mat, dict) else {},
+        )
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
         print(f"   ⚠️  Materialize status: {mat}")
 
@@ -295,6 +325,7 @@ def _build_generation_prompt(
     index_snip = ""
     try:
         from core.index_context import load_symbol_json_context, load_index_text
+
         index_snip = load_symbol_json_context(
             file_paths=requested_files or None,
             max_rows=50,
@@ -304,9 +335,7 @@ def _build_generation_prompt(
             raw_idx = load_index_text(which="production", max_chars=6_000)
             if raw_idx.strip():
                 index_snip = (
-                    "\n**Structural index (Markdown fallback):**\n"
-                    + raw_idx
-                    + "\n"
+                    "\n**Structural index (Markdown fallback):**\n" + raw_idx + "\n"
                 )
         elif index_snip and not index_snip.startswith("\n"):
             index_snip = "\n" + index_snip
@@ -326,7 +355,9 @@ def _build_generation_prompt(
     return "\n".join(parts)
 
 
-def _normalize_payload(data: dict, edit_method: str, requested_files: List[str]) -> dict:
+def _normalize_payload(
+    data: dict, edit_method: str, requested_files: List[str]
+) -> dict:
     """Normalize top-level full_replace / diff shapes into operations form."""
     out = dict(data)
     if not out.get("target_file_path") and requested_files:
@@ -334,29 +365,41 @@ def _normalize_payload(data: dict, edit_method: str, requested_files: List[str])
 
     if "operations" not in out:
         if "new_content" in out:
-            out["operations"] = [{
-                "type": "full_replace",
-                "new_content": out.get("new_content"),
-                "rationale": out.get("rationale") or out.get("summary") or "full replace",
-            }]
+            out["operations"] = [
+                {
+                    "type": "full_replace",
+                    "new_content": out.get("new_content"),
+                    "rationale": out.get("rationale")
+                    or out.get("summary")
+                    or "full replace",
+                }
+            ]
             out["_final_mode"] = MODE_FULL_REPLACE
         elif "diff" in out:
-            out["operations"] = [{
-                "type": "apply_diff",
-                "diff": out.get("diff"),
-                "rationale": out.get("rationale") or out.get("summary") or "apply diff",
-            }]
+            out["operations"] = [
+                {
+                    "type": "apply_diff",
+                    "diff": out.get("diff"),
+                    "rationale": out.get("rationale")
+                    or out.get("summary")
+                    or "apply diff",
+                }
+            ]
             out["_final_mode"] = MODE_DIFF
         elif out.get("find") is not None:
-            out["operations"] = [{
-                "type": "find_replace",
-                "find": out.get("find"),
-                "replace": out.get("replace", ""),
-                "rationale": out.get("rationale") or "find replace",
-            }]
+            out["operations"] = [
+                {
+                    "type": "find_replace",
+                    "find": out.get("find"),
+                    "replace": out.get("replace", ""),
+                    "rationale": out.get("rationale") or "find replace",
+                }
+            ]
     # Ensure summary/rationale meet minimums when possible
     if not out.get("summary"):
-        out["summary"] = out.get("rationale") or f"Edit {out.get('target_file_path', 'file')}"
+        out["summary"] = (
+            out.get("rationale") or f"Edit {out.get('target_file_path', 'file')}"
+        )
     if not out.get("rationale"):
         out["rationale"] = out.get("summary") or "Developer edit mutation"
     return out

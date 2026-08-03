@@ -20,7 +20,7 @@ def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> i
     """Get existing file_id or create a new file record."""
     cursor = conn.execute(
         "SELECT file_id FROM files WHERE file_path = ? AND is_deleted = 0",
-        (target_file_path,)
+        (target_file_path,),
     )
     row = cursor.fetchone()
     if row:
@@ -29,7 +29,7 @@ def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> i
     cursor = conn.execute(
         """INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
            VALUES (?, 1, 0, 0)""",
-        (target_file_path,)
+        (target_file_path,),
     )
     return cursor.lastrowid
 
@@ -58,9 +58,7 @@ def _get_affected_guids_from_operation(op) -> List[str]:
 
 
 def _capture_hashes_for_operations(
-    conn: sqlite3.Connection,
-    file_id: int,
-    payload: EditPayload
+    conn: sqlite3.Connection, file_id: int, payload: EditPayload
 ) -> tuple[list[str], dict]:
     """Capture current hashes for optimistic concurrency validation."""
     affected_guids: list[str] = []
@@ -73,7 +71,7 @@ def _capture_hashes_for_operations(
             for guid in guids:
                 row = conn.execute(
                     "SELECT content_hash FROM file_lines WHERE line_guid = ? AND is_deleted = 0",
-                    (guid,)
+                    (guid,),
                 ).fetchone()
                 if row:
                     expected_hashes[guid] = row[0]
@@ -99,7 +97,9 @@ def create_proposal_from_developer_output(
 
         with get_db_connection() as conn:
             file_id = _get_or_create_file_id(conn, target_file_path)
-            affected_guids, expected_hashes = _capture_hashes_for_operations(conn, file_id, payload)
+            affected_guids, expected_hashes = _capture_hashes_for_operations(
+                conn, file_id, payload
+            )
 
             proposal_id = str(uuid4())
 
@@ -110,7 +110,9 @@ def create_proposal_from_developer_output(
                 ("final_mode", "TEXT"),
             ):
                 try:
-                    conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
+                    conn.execute(
+                        f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}"
+                    )
                 except Exception:
                     pass  # column already exists
 
@@ -124,7 +126,8 @@ def create_proposal_from_developer_output(
                 mode_tag += "] "
             full_rationale = mode_tag + base_rationale
 
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO edit_proposals (
                     proposal_id,
                     target_file_id,
@@ -145,24 +148,28 @@ def create_proposal_from_developer_output(
                     fallback_used,
                     final_mode
                 ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
-            """, (
-                proposal_id,
-                file_id,
-                target_file_path,
-                payload.model_dump_json(),
-                json.dumps(affected_guids),
-                json.dumps(expected_hashes),
-                proposed_by_agent_id,
-                full_rationale,
-                selected_mode,
-                1 if fallback_used else 0,
-                final_mode or selected_mode,
-            ))
+            """,
+                (
+                    proposal_id,
+                    file_id,
+                    target_file_path,
+                    payload.model_dump_json(),
+                    json.dumps(affected_guids),
+                    json.dumps(expected_hashes),
+                    proposed_by_agent_id,
+                    full_rationale,
+                    selected_mode,
+                    1 if fallback_used else 0,
+                    final_mode or selected_mode,
+                ),
+            )
 
             log_error(
-                "proposal_builder", "create_proposal", "INFO",
+                "proposal_builder",
+                "create_proposal",
+                "INFO",
                 f"Proposal created: {proposal_id} for {target_file_path}",
-                proposal_id=proposal_id
+                proposal_id=proposal_id,
             )
 
             result = {
@@ -173,7 +180,7 @@ def create_proposal_from_developer_output(
                 "selected_mode": selected_mode,
                 "fallback_used": fallback_used,
                 "final_mode": final_mode or selected_mode,
-                "message": "Proposal created and ready for review"
+                "message": "Proposal created and ready for review",
             }
 
         # Publish outside the DB connection to avoid lock contention
@@ -191,38 +198,45 @@ def create_proposal_from_developer_output(
 
     except Exception as e:
         log_error("proposal_builder", "create_proposal", "HIGH", str(e))
-        return {
-            "status": "error",
-            "message": f"Failed to create proposal: {str(e)}"
-        }
+        return {"status": "error", "message": f"Failed to create proposal: {str(e)}"}
 
 
 def update_proposal_status(
-    proposal_id: str,
-    new_status: str,
-    reviewed_by_agent_id: Optional[int] = None
+    proposal_id: str, new_status: str, reviewed_by_agent_id: Optional[int] = None
 ) -> bool:
     """Update proposal status and set reviewed_at when a reviewer acts."""
-    allowed_statuses = {"pending", "under_review", "approved", "rejected", "applied", "needs_revalidation"}
+    allowed_statuses = {
+        "pending",
+        "under_review",
+        "approved",
+        "rejected",
+        "applied",
+        "needs_revalidation",
+    }
     if new_status not in allowed_statuses:
         return False
 
     try:
         with get_db_connection() as conn:
             if reviewed_by_agent_id:
-                conn.execute("""
+                conn.execute(
+                    """
                     UPDATE edit_proposals 
                     SET status = ?, 
                         reviewed_by_agent_id = ?, 
                         reviewed_at = datetime('now')
                     WHERE proposal_id = ?
-                """, (new_status, reviewed_by_agent_id, proposal_id))
+                """,
+                    (new_status, reviewed_by_agent_id, proposal_id),
+                )
             else:
                 conn.execute(
                     "UPDATE edit_proposals SET status = ? WHERE proposal_id = ?",
-                    (new_status, proposal_id)
+                    (new_status, proposal_id),
                 )
         return True
     except Exception as e:
-        log_error("proposal_builder", "update_status", "HIGH", str(e), proposal_id=proposal_id)
+        log_error(
+            "proposal_builder", "update_status", "HIGH", str(e), proposal_id=proposal_id
+        )
         return False

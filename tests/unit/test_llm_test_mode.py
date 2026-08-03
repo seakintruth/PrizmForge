@@ -20,12 +20,15 @@ def test_mock_orchestrator_json():
 
 
 def test_scripted_override():
-    cfg = {"llm": {"test_mode": True, "mock_responses": {"developer": '{"operations":[]}'}}}
+    cfg = {
+        "llm": {"test_mode": True, "mock_responses": {"developer": '{"operations":[]}'}}
+    }
     assert "operations" in ltm.mock_call_agent("developer", "x", "t", cfg)
 
 
 def test_mock_response_queue():
     from core import llm_test_mode as ltm
+
     ltm.reset_mock_queues()
     cfg = {
         "llm": {

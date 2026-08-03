@@ -14,6 +14,7 @@ class TestAgentExecutionBasic:
         mock_llm.set_response("developer", "print('hello')")
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
+
             result = call_agent(
                 agent_name="developer",
                 prompt="Write a hello world function",
@@ -26,6 +27,7 @@ class TestAgentExecutionBasic:
         mock_llm.set_default('{"error": "unknown"}')
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
+
             result = call_agent(
                 agent_name="this_agent_does_not_exist",
                 prompt="Test prompt",
@@ -44,6 +46,7 @@ class TestAgentExecutionBasic:
         )
         with mock_llm.patch_call_agent():
             from agents.base import call_agent
+
             r1 = call_agent("orchestrator", "start", task_id="seq1")
             r2 = call_agent("orchestrator", "continue", task_id="seq1")
         assert "developer" in r1

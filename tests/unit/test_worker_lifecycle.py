@@ -22,6 +22,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 class TestBoundedSet:
     def test_evicts_oldest(self):
         from agents.parallel_workers import BoundedSet
+
         s = BoundedSet(max_size=3)
         for i in range(5):
             s.add(f"f{i}")
@@ -32,6 +33,7 @@ class TestBoundedSet:
 
     def test_clear(self):
         from agents.parallel_workers import BoundedSet
+
         s = BoundedSet(max_size=10)
         s.add("a")
         s.clear()
@@ -41,6 +43,7 @@ class TestBoundedSet:
 class TestPoolLifecycle:
     def test_idempotent_stop(self, mock_minimal_config):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         pool.stop()  # never started
         pool.stop()  # again
@@ -50,6 +53,7 @@ class TestPoolLifecycle:
 
     def test_start_stop_clears_running_flag(self, mock_minimal_config):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         # May start with zero agents depending on config — still must not hang
         pool.start(task_id="life1")
@@ -62,6 +66,7 @@ class TestPoolLifecycle:
 
     def test_start_when_already_running_is_noop(self, mock_minimal_config):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         pool.start(task_id="life2")
         try:
@@ -73,6 +78,7 @@ class TestPoolLifecycle:
 
     def test_force_review_when_not_running(self, mock_minimal_config, capsys):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         pool.force_review_cycle(file_limit=2)
         out = capsys.readouterr().out.lower()
@@ -82,6 +88,7 @@ class TestPoolLifecycle:
 class TestActiveAgentControl:
     def test_pause_all_feedback_agents(self, mock_minimal_config):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         pool.start(task_id="ctrl1")
         try:
@@ -94,6 +101,7 @@ class TestActiveAgentControl:
 
     def test_reenable_subset(self, mock_minimal_config):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         pool.start(task_id="ctrl2")
         try:
@@ -106,6 +114,7 @@ class TestActiveAgentControl:
 
     def test_feeder_interval_under_lock(self, mock_minimal_config):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         pool.start(task_id="ctrl3")
         try:
@@ -120,6 +129,7 @@ class TestActiveAgentControl:
 class TestHeuristicOptimizerDecisions:
     def _state(self, **kwargs):
         from agents.resource_controller_worker import ResourceState
+
         base = dict(
             tokens_used_in_window=10000,
             tokens_remaining=490000,
@@ -134,28 +144,41 @@ class TestHeuristicOptimizerDecisions:
         return ResourceState(**base)
 
     def test_optimize_returns_decision_or_none(self, temp_db, mock_minimal_config):
-        from agents.resource_controller_worker import HeuristicOptimizer, ThrottleDecision
+        from agents.resource_controller_worker import (
+            HeuristicOptimizer,
+            ThrottleDecision,
+        )
+
         opt = HeuristicOptimizer()
         decision = opt.optimize(self._state())
         assert decision is None or isinstance(decision, ThrottleDecision)
 
     def test_critical_budget_throttles(self, temp_db, mock_minimal_config):
-        from agents.resource_controller_worker import HeuristicOptimizer, ThrottleDecision
+        from agents.resource_controller_worker import (
+            HeuristicOptimizer,
+            ThrottleDecision,
+        )
+
         opt = HeuristicOptimizer()
         # Near-zero remaining budget should produce some throttle decision
-        decision = opt.optimize(self._state(
-            tokens_remaining=1000,
-            max_tokens=500000,
-            budget_percentage=0.01,
-            current_burn_rate=50000.0,
-        ))
+        decision = opt.optimize(
+            self._state(
+                tokens_remaining=1000,
+                max_tokens=500000,
+                budget_percentage=0.01,
+                current_burn_rate=50000.0,
+            )
+        )
         # May be ThrottleDecision or None depending on internals; must not raise
         assert decision is None or isinstance(decision, ThrottleDecision)
 
     def test_update_agent_performance(self, temp_db, mock_minimal_config):
         from agents.resource_controller_worker import HeuristicOptimizer
+
         opt = HeuristicOptimizer()
-        opt.update_agent_performance("jr_reviewer", tokens_used=100, duration=1.5, feedback_generated=2)
+        opt.update_agent_performance(
+            "jr_reviewer", tokens_used=100, duration=1.5, feedback_generated=2
+        )
         # profiles should exist after update
         assert "jr_reviewer" in opt.agent_profiles or len(opt.agent_profiles) >= 0
 
@@ -163,6 +186,7 @@ class TestHeuristicOptimizerDecisions:
 class TestResourceControllerLifecycle:
     def test_double_stop_safe(self, mock_minimal_config):
         from agents.resource_controller_worker import ResourceControllerWorker
+
         w = ResourceControllerWorker()
         w.stop()
         w.stop()
@@ -170,6 +194,7 @@ class TestResourceControllerLifecycle:
 
     def test_start_stop(self, mock_minimal_config):
         from agents.resource_controller_worker import ResourceControllerWorker
+
         w = ResourceControllerWorker()
         w.start(task_id="rc1")
         time.sleep(0.3)
@@ -186,7 +211,9 @@ class TestPoolBehavioralP2:
         from agents.parallel_workers import BackgroundAgentPool
         import time
 
-        with patch("agents.parallel_workers.call_agent", return_value='{"findings":[]}'):
+        with patch(
+            "agents.parallel_workers.call_agent", return_value='{"findings":[]}'
+        ):
             pool = BackgroundAgentPool()
             pool.start(task_id="p2_pool")
             try:
@@ -203,6 +230,7 @@ class TestPoolBehavioralP2:
 
     def test_pause_active_agents_clears_filter(self, mock_minimal_config, temp_db):
         from agents.parallel_workers import BackgroundAgentPool
+
         pool = BackgroundAgentPool()
         pool.start(task_id="p2_pause")
         try:
@@ -220,7 +248,11 @@ class TestRCOptimizerP2:
     """P2.3 — optimizer decision shapes."""
 
     def test_optimizer_levels_do_not_raise(self, temp_db, mock_minimal_config):
-        from agents.resource_controller_worker import HeuristicOptimizer, ResourceState, ThrottleDecision
+        from agents.resource_controller_worker import (
+            HeuristicOptimizer,
+            ResourceState,
+            ThrottleDecision,
+        )
 
         opt = HeuristicOptimizer()
         states = [

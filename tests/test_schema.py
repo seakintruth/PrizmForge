@@ -50,18 +50,28 @@ def test_init_db_creates_all_tables():
 
     # Core system tables we expect
     core_tables = {
-        "messages", "tasks", "token_log", "conversation_history",
-        "project_files", "agent_feedback", "project_reports"
+        "messages",
+        "tasks",
+        "token_log",
+        "conversation_history",
+        "project_files",
+        "agent_feedback",
+        "project_reports",
     }
 
     # Governed editing tables
     governed_tables = {
-        "files", "file_lines", "edit_proposals",
-        "file_documentation", "file_write_log"
+        "files",
+        "file_lines",
+        "edit_proposals",
+        "file_documentation",
+        "file_write_log",
     }
 
     missing_core = core_tables - existing_tables
     missing_governed = governed_tables - existing_tables
 
     assert not missing_core, f"Missing core tables after init_db(): {missing_core}"
-    assert not missing_governed, f"Missing governed editing tables after init_db(): {missing_governed}"
+    assert (
+        not missing_governed
+    ), f"Missing governed editing tables after init_db(): {missing_governed}"

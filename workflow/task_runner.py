@@ -1,6 +1,7 @@
 """Main task execution workflow"""
+
 import time
-from datetime import datetime 
+from datetime import datetime
 import json
 import re
 from typing import Optional
@@ -8,11 +9,16 @@ from typing import Optional
 from agents.orchestrator import call_orchestrator
 from agents.base import call_agent
 from agents.parallel_workers import get_agent_pool
-from core.db_helpers import create_task, complete_task, post_message, age_feedback_backlog
+from core.db_helpers import (
+    create_task,
+    complete_task,
+    post_message,
+    age_feedback_backlog,
+)
 from core.file_operations import (
     get_file_content_from_db,
     format_file_for_agent,
-    format_file_with_guids,      # GUID-aware version for Developer/Reviewer
+    format_file_with_guids,  # GUID-aware version for Developer/Reviewer
 )
 from core.config import get_config
 from core.db_connection import get_db_connection
@@ -33,20 +39,28 @@ from workflow.edit_mode_selector import (
 )
 
 # Governed editing imports
-from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
+from workflow.proposal_builder import (
+    create_proposal_from_developer_output,
+    update_proposal_status,
+)
 from workflow.developer_edit import run_developer_mutation
 from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
 from file_editing.writer import materialize_proposal
 from file_editing.db import log_error
 
-def run_task_cycle(task_id: str, user_command: str, max_turns: int = 20,
-                time_box_minutes: Optional[int] = None):
+
+def run_task_cycle(
+    task_id: str,
+    user_command: str,
+    max_turns: int = 20,
+    time_box_minutes: Optional[int] = None,
+):
     """Run complete task cycle with orchestration"""
     config = get_config()
-    
+
     if time_box_minutes is None:
         time_box_minutes = config.get("default_iteration_minutes", 5)
-    
+
     min_iterations = config.get("min_iterations_before_complete", 3)
     background_enabled = config.get("background_agents_enabled", True)
 
@@ -55,14 +69,19 @@ def run_task_cycle(task_id: str, user_command: str, max_turns: int = 20,
     # Legacy single-method setting is treated as a soft preference only
     legacy_method = fe_cfg.get("method", "guid_sloc")
     preferred_modes = fe_cfg.get("preferred_modes") or (
-        [legacy_method] if legacy_method in ("guid_sloc", "guid", "full_replace", "planned_diff", "find_replace") else None
+        [legacy_method]
+        if legacy_method
+        in ("guid_sloc", "guid", "full_replace", "planned_diff", "find_replace")
+        else None
     )
     # Normalize legacy names
     if preferred_modes:
         preferred_modes = [
-            "guid" if m in ("guid_sloc", "guid") else
-            "diff" if m in ("planned_diff", "diff") else
-            m
+            (
+                "guid"
+                if m in ("guid_sloc", "guid")
+                else "diff" if m in ("planned_diff", "diff") else m
+            )
             for m in preferred_modes
         ]
     fallback_order = fe_cfg.get("fallback_order") or list(DEFAULT_FALLBACK_ORDER)
@@ -71,31 +90,34 @@ def run_task_cycle(task_id: str, user_command: str, max_turns: int = 20,
     print(f"\n{'='*60}")
     print(f"🚀 Task: {task_id}")
     print(f"⏱️  Iteration: {time_box_minutes}m | Min iterations: {min_iterations}")
-    print(f"📝 Edit modes: preferred={preferred_modes or 'auto'} | fallback={fallback_order}")
+    print(
+        f"📝 Edit modes: preferred={preferred_modes or 'auto'} | fallback={fallback_order}"
+    )
     print(f"{'='*60}\n")
-    
+
     create_task(task_id, user_command)
     start_time = time.time()
 
     # Backlog hygiene: age out old LOW items and cap unbounded growth
     try:
-        fe_age = (config.get("feedback") or {})
+        fe_age = config.get("feedback") or {}
         aging = age_feedback_backlog(
             max_age_days_low=int(fe_age.get("max_age_days_low", 7)),
             max_unaddressed=int(fe_age.get("max_unaddressed", 200)),
         )
         if aging.get("dismissed_low") or aging.get("trimmed_medium"):
-            print(f"🧹 Backlog aging: dismissed_low={aging.get('dismissed_low', 0)} "
-                  f"trimmed_medium={aging.get('trimmed_medium', 0)}")
+            print(
+                f"🧹 Backlog aging: dismissed_low={aging.get('dismissed_low', 0)} "
+                f"trimmed_medium={aging.get('trimmed_medium', 0)}"
+            )
     except Exception as e:
         print(f"   ⚠️  Backlog aging skipped: {e}")
 
-    
     if background_enabled:
         agent_pool = get_agent_pool()
         agent_pool.start(task_id)
         print()
-    
+
     conversation_context = []
     current_turn = 0
 
@@ -124,78 +146,117 @@ def run_task_cycle(task_id: str, user_command: str, max_turns: int = 20,
 
             elapsed_total = (time.time() - start_time) / 60
             time_remaining = (iteration_end - time.time()) / 60
-            
+
             print(f"\n{'='*60}")
-            print(f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m")
+            print(
+                f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m"
+            )
             print(f"{'='*60}\n")
-            
+
             while orchestrator_attempts < MAX_ORCHESTRATOR_RETRIES and not decision:
                 orchestrator_attempts += 1
                 if orchestrator_attempts > 1:
-                    print(f"   🔄 Orchestrator retry {orchestrator_attempts}/{MAX_ORCHESTRATOR_RETRIES}...")
-                
+                    print(
+                        f"   🔄 Orchestrator retry {orchestrator_attempts}/{MAX_ORCHESTRATOR_RETRIES}..."
+                    )
+
                 decision = call_orchestrator(
-                    task_id, user_command, conversation_context,
-                    current_turn, max_turns, time_remaining
+                    task_id,
+                    user_command,
+                    conversation_context,
+                    current_turn,
+                    max_turns,
+                    time_remaining,
                 )
-                
+
                 try:
                     with get_db_connection() as conn:
                         cursor = conn.cursor()
-                        
-                        cursor.execute("""
+
+                        cursor.execute(
+                            """
                             SELECT COUNT(*) FROM agent_feedback
                             WHERE task_id = ? AND addressed = 0
-                        """, (task_id,))
+                        """,
+                            (task_id,),
+                        )
                         total_backlog = cursor.fetchone()[0]
-                        
+
                         decision = apply_backlog_overrides(task_id, decision, conn)
                         total_backlog = count_unaddressed_feedback(conn, task_id)
-                        if decision and decision.get("reasoning", "").startswith("BACKLOG OVERRIDE"):
-                            print(f"   🚨 BACKLOG OVERRIDE: {decision.get('reasoning')}")
-                        elif decision and "OVERRIDE:" in str(decision.get("reasoning", "")):
-                            print(f"   🔄 REDIRECT: background → developer (backlog: {total_backlog})")
+                        if decision and decision.get("reasoning", "").startswith(
+                            "BACKLOG OVERRIDE"
+                        ):
+                            print(
+                                f"   🚨 BACKLOG OVERRIDE: {decision.get('reasoning')}"
+                            )
+                        elif decision and "OVERRIDE:" in str(
+                            decision.get("reasoning", "")
+                        ):
+                            print(
+                                f"   🔄 REDIRECT: background → developer (backlog: {total_backlog})"
+                            )
 
                 except Exception as e:
                     print(f"   ⚠️  Backlog check failed: {e}")
 
                 if not decision and orchestrator_attempts < MAX_ORCHESTRATOR_RETRIES:
-                    post_message("system", "orchestrator", 
-                        "Previous response failed to parse. Please respond with valid JSON.", task_id, "CRITICAL")
+                    post_message(
+                        "system",
+                        "orchestrator",
+                        "Previous response failed to parse. Please respond with valid JSON.",
+                        task_id,
+                        "CRITICAL",
+                    )
                     time.sleep(2)
-            
+
             next_agent = decision.get("next_agent", "complete")
             instructions = decision.get("instructions", "")
             files_needed = decision.get("files_needed", [])
             model_choice = decision.get("model")
 
             print(f"📋 Decision: {next_agent}")
-            
-            conversation_context.append({"role": "assistant", "content": json.dumps(decision)})
-            
+
+            conversation_context.append(
+                {"role": "assistant", "content": json.dumps(decision)}
+            )
+
             # =====================================================
             # COMPLETION HANDLING
             # =====================================================
             if next_agent == "complete":
                 if current_turn < min_iterations:
-                    post_message("system", "orchestrator", 
-                        f"Task completion requested too early.", task_id, "HIGH")
+                    post_message(
+                        "system",
+                        "orchestrator",
+                        f"Task completion requested too early.",
+                        task_id,
+                        "HIGH",
+                    )
                     continue
-                
+
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT COUNT(*) FROM agent_feedback
                         WHERE task_id = ? AND addressed = 0 
                         AND priority IN ('CRITICAL', 'HIGH')
-                    """, (task_id,))
+                    """,
+                        (task_id,),
+                    )
                     critical_count = cursor.fetchone()[0]
-                
+
                 if critical_count > 0:
-                    post_message("system", "orchestrator", 
-                        f"{critical_count} CRITICAL/HIGH items remain.", task_id, "CRITICAL")
+                    post_message(
+                        "system",
+                        "orchestrator",
+                        f"{critical_count} CRITICAL/HIGH items remain.",
+                        task_id,
+                        "CRITICAL",
+                    )
                     continue
-                
+
                 print(f"✅ Task marked complete after {current_turn} iterations")
                 complete_task(task_id, "Completed by orchestrator decision")
                 continue
@@ -221,56 +282,74 @@ FILES_NEEDED: path/to/file1.py, path/to/file2.py
 PLAN: [brief explanation]"""
 
                 print(f"\n💭 Phase 1: Developer analyzing task...")
-                understanding = call_agent("developer", understanding_prompt, task_id, 
-                                        conversation_context, model_choice)
-                
+                understanding = call_agent(
+                    "developer",
+                    understanding_prompt,
+                    task_id,
+                    conversation_context,
+                    model_choice,
+                )
+
                 if not understanding:
                     print(f"   ❌ Developer failed to respond")
                     continue
-                
+
                 print(f"   ✅ Developer response received")
-                
+
                 # === EXTRACT FILES FROM PHASE 1 ===
                 requested_files = []
-                
-                files_match = re.search(r'FILES_NEEDED:\s*(.+?)(?:\n|$)', understanding, re.IGNORECASE)
+
+                files_match = re.search(
+                    r"FILES_NEEDED:\s*(.+?)(?:\n|$)", understanding, re.IGNORECASE
+                )
                 if files_match:
                     files_str = files_match.group(1)
-                    requested_files = [f.strip() for f in files_str.split(',')]
+                    requested_files = [f.strip() for f in files_str.split(",")]
                     print(f"   📋 Developer requested: {', '.join(requested_files)}")
-                
+
                 if not requested_files and files_needed:
                     requested_files = files_needed
-                    print(f"   📋 Using orchestrator's files: {', '.join(requested_files)}")
-                
+                    print(
+                        f"   📋 Using orchestrator's files: {', '.join(requested_files)}"
+                    )
+
                 if not requested_files:
-                    file_pattern = r'(?:^|\s)([a-zA-Z0-9_/.-]+\.(?:py|json|js|txt|md))'
+                    file_pattern = r"(?:^|\s)([a-zA-Z0-9_/.-]+\.(?:py|json|js|txt|md))"
                     found_files = re.findall(file_pattern, understanding)
                     if found_files:
                         requested_files = list(set(found_files))[:3]
-                        print(f"   🔍 Extracted from text: {', '.join(requested_files)}")
-                
+                        print(
+                            f"   🔍 Extracted from text: {', '.join(requested_files)}"
+                        )
+
                 if not requested_files:
                     print(f"   ⚠️  No files identified, using first from feedback")
                     addressing_ids = decision.get("addressing_feedback_ids", [])
                     if addressing_ids:
                         with get_db_connection() as conn:
                             cursor = conn.cursor()
-                            cursor.execute("""
+                            cursor.execute(
+                                """
                                 SELECT file_path FROM agent_feedback 
                                 WHERE id = ? LIMIT 1
-                            """, (addressing_ids[0],))
+                            """,
+                                (addressing_ids[0],),
+                            )
                             row = cursor.fetchone()
                             if row:
                                 requested_files = [row[0]]
-                
+
                 if not requested_files:
                     print(f"   ❌ Cannot determine target files")
-                    post_message("developer", "orchestrator",
-                                "Cannot identify files to modify from task description",
-                                task_id, "HIGH")
+                    post_message(
+                        "developer",
+                        "orchestrator",
+                        "Cannot identify files to modify from task description",
+                        task_id,
+                        "HIGH",
+                    )
                     continue
-                
+
                 # Validate files exist
                 valid_files = []
                 for fpath in requested_files:
@@ -279,11 +358,11 @@ PLAN: [brief explanation]"""
                         valid_files.append(fpath)
                     else:
                         print(f"   ⚠️  File not found in DB: {fpath}")
-                
+
                 if not valid_files:
                     print(f"   ❌ None of the requested files exist")
                     continue
-                
+
                 requested_files = valid_files
 
                 # === DEVELOPER MUTATION (extracted) ===
@@ -302,24 +381,33 @@ PLAN: [brief explanation]"""
                     current_turn=current_turn,
                 )
                 if mut.get("status") not in ("success", "rejected"):
-                    print(f"   ⚠️  Developer mutation status: {mut.get('status')} {mut.get('message', '')}")
+                    print(
+                        f"   ⚠️  Developer mutation status: {mut.get('status')} {mut.get('message', '')}"
+                    )
 
             # BACKGROUND AGENTS – Yield control
             # =====================================================
             elif next_agent == "background":
                 try:
-                    from agents.resource_controller_worker import get_resource_controller
-                    
+                    from agents.resource_controller_worker import (
+                        get_resource_controller,
+                    )
+
                     rc = get_resource_controller()
                     current_decision = rc.get_current_decision()
-                    
+
                     # Check if in backlog mode
-                    if current_decision and current_decision.level == "BACKLOG_PROCESSING":
+                    if (
+                        current_decision
+                        and current_decision.level == "BACKLOG_PROCESSING"
+                    ):
                         with get_db_connection() as conn:
                             cursor = conn.cursor()
-                            cursor.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0")
+                            cursor.execute(
+                                "SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0"
+                            )
                             backlog_count = cursor.fetchone()[0]
-                            
+
                             cursor.execute("""
                                 SELECT id, priority, category, file_path, message, suggestion
                                 FROM agent_feedback
@@ -335,13 +423,20 @@ PLAN: [brief explanation]"""
                                 LIMIT 1
                             """)
                             top_item = cursor.fetchone()
-                            
+
                             if not top_item:
                                 print(f"   ℹ️  Backlog cleared! Marking complete.")
                                 next_agent = "complete"
                             else:
-                                fb_id, priority, category, file_path, message, suggestion = top_item
-                                
+                                (
+                                    fb_id,
+                                    priority,
+                                    category,
+                                    file_path,
+                                    message,
+                                    suggestion,
+                                ) = top_item
+
                                 cursor.execute("""
                                     SELECT id, priority, category, file_path, message
                                     FROM agent_feedback
@@ -357,11 +452,15 @@ PLAN: [brief explanation]"""
                                     LIMIT 4 OFFSET 1
                                 """)
                                 next_items = cursor.fetchall()
-                        
+
                         if top_item:
-                            print(f"   ⚠️  Orchestrator chose 'background', but agents are PAUSED (backlog: {backlog_count})")
-                            print(f"   🔄 Redirecting to 'developer' to work on prioritized feedback")
-                            
+                            print(
+                                f"   ⚠️  Orchestrator chose 'background', but agents are PAUSED (backlog: {backlog_count})"
+                            )
+                            print(
+                                f"   🔄 Redirecting to 'developer' to work on prioritized feedback"
+                            )
+
                             developer_instructions = f"""**BACKLOG PROCESSING MODE - {backlog_count} items to address**
 
 **YOUR TASK: Fix the highest priority item**
@@ -370,50 +469,72 @@ PLAN: [brief explanation]"""
 - File: `{file_path}`
 - Issue: {message}
 """
-                            
+
                             if suggestion:
-                                developer_instructions += f"- Suggested fix: {suggestion}\n"
-                            
+                                developer_instructions += (
+                                    f"- Suggested fix: {suggestion}\n"
+                                )
+
                             if next_items:
-                                developer_instructions += f"\n**Context - Next items in queue:**\n"
-                                for idx, (nxt_id, nxt_priority, nxt_category, nxt_file, nxt_message) in enumerate(next_items, 2):
+                                developer_instructions += (
+                                    f"\n**Context - Next items in queue:**\n"
+                                )
+                                for idx, (
+                                    nxt_id,
+                                    nxt_priority,
+                                    nxt_category,
+                                    nxt_file,
+                                    nxt_message,
+                                ) in enumerate(next_items, 2):
                                     developer_instructions += f"{idx}. [{nxt_priority}] {nxt_category} in `{nxt_file}` - {nxt_message[:60]}...\n"
-                            
+
                             developer_instructions += f"""
 **IMPORTANT:**
 - Create EditPayload with operations to fix item #{fb_id}
 - Reference feedback_id {fb_id} in your proposal rationale
 - Focus ONLY on this item - don't try to fix everything at once
 """
-                            
-                            post_message("system", "orchestrator",
-                                        f"🚨 BACKLOG MODE: {backlog_count} items. Processing item #{fb_id}: [{priority}] {category}",
-                                        task_id, "HIGH")
-                            
-                            print(f"   📋 Target: Item #{fb_id} - [{priority}] {category}")
+
+                            post_message(
+                                "system",
+                                "orchestrator",
+                                f"🚨 BACKLOG MODE: {backlog_count} items. Processing item #{fb_id}: [{priority}] {category}",
+                                task_id,
+                                "HIGH",
+                            )
+
+                            print(
+                                f"   📋 Target: Item #{fb_id} - [{priority}] {category}"
+                            )
                             print(f"   📄 File: {file_path}")
-                            print(f"   💡 Issue: {message[:80]}{'...' if len(message) > 80 else ''}")
-                            
+                            print(
+                                f"   💡 Issue: {message[:80]}{'...' if len(message) > 80 else ''}"
+                            )
+
                             # Recursively call developer path (simplified - just log it)
-                            print(f"   🔄 Would process via developer agent (implementation needed)")
-                    
+                            print(
+                                f"   🔄 Would process via developer agent (implementation needed)"
+                            )
+
                     else:
                         # NORMAL MODE: Yield to background agents
                         print("   ⏸️  Yielding to background agents...")
-                        
+
                         try:
                             resource_controller = get_resource_controller()
-                            resource_controller.temporarily_disable_throttling(duration_seconds=30)
+                            resource_controller.temporarily_disable_throttling(
+                                duration_seconds=30
+                            )
                             print("     🔓 Resource restrictions temporarily lifted")
                         except Exception:
                             pass
-                        
+
                         try:
                             agent_pool = get_agent_pool()
-                            
+
                             with get_db_connection() as conn:
                                 cursor = conn.cursor()
-                                
+
                                 cursor.execute("""
                                     SELECT file_path FROM project_files 
                                     WHERE is_binary = 0 
@@ -421,7 +542,7 @@ PLAN: [brief explanation]"""
                                     LIMIT 5
                                 """)
                                 recent_files = [row[0] for row in cursor.fetchall()]
-                                
+
                                 cursor.execute("""
                                     SELECT file_path FROM project_files 
                                     WHERE is_binary = 0 
@@ -429,9 +550,9 @@ PLAN: [brief explanation]"""
                                     LIMIT 5
                                 """)
                                 random_files = [row[0] for row in cursor.fetchall()]
-                            
+
                             all_files = list(set(recent_files + random_files))
-                            
+
                             for file_path in all_files:
                                 try:
                                     content = get_file_content_from_db(file_path)
@@ -439,29 +560,32 @@ PLAN: [brief explanation]"""
                                         agent_pool.queue_file_change(
                                             file_path=file_path,
                                             operation="review",
-                                            content=content
+                                            content=content,
                                         )
                                 except Exception as e:
                                     print(f"     ⚠️  Failed to queue {file_path}: {e}")
-                            
-                            print(f"     📤 Queued {len(all_files)} files for background review")
-                        
+
+                            print(
+                                f"     📤 Queued {len(all_files)} files for background review"
+                            )
+
                         except Exception as e:
                             print(f"     ⚠️  Failed to queue files: {e}")
-                        
+
                         time.sleep(8)
-                
+
                 except Exception as e:
                     print(f"   ⚠️  Background agent handling error: {e}")
                     import traceback
+
                     traceback.print_exc()
-            
+
             else:
                 print(f"⚠️  Unknown or unsupported agent decision: {next_agent}")
 
             if time.time() >= iteration_end:
                 print(f"\n⏰ Iteration timeout")
-            
+
             time.sleep(0.5)
 
     finally:
@@ -469,7 +593,9 @@ PLAN: [brief explanation]"""
             get_agent_pool().stop()
 
     print(f"\n{'='*60}")
-    print(f"📊 Task Summary | Iterations: {current_turn} | Duration: {(time.time()-start_time)/60:.1f}m")
+    print(
+        f"📊 Task Summary | Iterations: {current_turn} | Duration: {(time.time()-start_time)/60:.1f}m"
+    )
     print(f"   Files Modified: {progress['files_modified']}")
     print(f"   Developer calls: {progress.get('developer_calls', 0)}")
     print(f"   Valid edit payloads: {progress.get('valid_edit_payloads', 0)}")

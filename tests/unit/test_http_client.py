@@ -20,6 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 class TestHttpClient:
     def test_has_requests(self):
         from core.http_client import has_requests
+
         # In this environment requests is installed
         assert isinstance(has_requests(), bool)
 
@@ -28,9 +29,9 @@ class TestHttpClient:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
-        mock_resp.content = json.dumps({
-            "choices": [{"message": {"content": "hello"}}]
-        }).encode()
+        mock_resp.content = json.dumps(
+            {"choices": [{"message": {"content": "hello"}}]}
+        ).encode()
         mock_resp.headers = {"Content-Type": "application/json"}
 
         with patch("requests.post", return_value=mock_resp) as mocked:
@@ -67,7 +68,9 @@ class TestHttpClient:
             def open(self, req, timeout=None):
                 return FakeResp()
 
-        with patch("core.http_client.urllib_request.build_opener", return_value=FakeOpener()):
+        with patch(
+            "core.http_client.urllib_request.build_opener", return_value=FakeOpener()
+        ):
             r = post_json(
                 "http://example.invalid/v1",
                 json_body={"a": 1},
@@ -78,6 +81,7 @@ class TestHttpClient:
 
     def test_http_error_raise_for_status(self):
         from core.http_client import HttpResponse, HttpError
+
         r = HttpResponse(500, b"fail")
         with pytest.raises(HttpError):
             r.raise_for_status()
@@ -87,6 +91,7 @@ class TestEndpointResilienceMocks:
     def test_401_response_shape(self):
         """Simulate key-locked style body the call_endpoint path inspects."""
         from core.http_client import HttpResponse
+
         body = {
             "error": {
                 "type": "unauthorized",
@@ -101,6 +106,7 @@ class TestEndpointResilienceMocks:
 
     def test_rate_limit_429_body(self):
         from core.http_client import HttpResponse
+
         r = HttpResponse(429, b'{"error": {"message": "rate limited"}}')
         assert r.status_code == 429
         assert "rate" in r.json()["error"]["message"]
@@ -109,17 +115,19 @@ class TestEndpointResilienceMocks:
         """Existing fixture continues to work for HTTP-layer tests."""
         mock_openai_chat(response_text="RESILIENCE_OK")
         import agents.base as base_mod
+
         # base still imports requests; fixture patches agents.base.requests.post
         # and top-level requests.post — post_json goes through requests.post
         with patch("requests.post") as mocked:
             mocked.return_value = MagicMock(
                 status_code=200,
-                content=json.dumps({
-                    "choices": [{"message": {"content": "RESILIENCE_OK"}}]
-                }).encode(),
+                content=json.dumps(
+                    {"choices": [{"message": {"content": "RESILIENCE_OK"}}]}
+                ).encode(),
                 headers={},
             )
             from core.http_client import post_json
+
             r = post_json("http://localhost/v1", json_body={})
             assert r.status_code == 200
 
@@ -127,6 +135,7 @@ class TestEndpointResilienceMocks:
 class TestRateLimiter:
     def test_rate_limiter_basic(self):
         from core.rate_limiter import RateLimiter
+
         rl = RateLimiter(60)
         # wait_if_needed should return without sleeping when under limit
         rl.wait_if_needed()

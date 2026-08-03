@@ -34,6 +34,7 @@ class TestRateLimiter:
 
     def test_rate_limiter_thread_safety(self):
         import threading
+
         limiter = RateLimiter(max_calls_per_minute=1000)
         errors = []
 

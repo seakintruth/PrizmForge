@@ -11,6 +11,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 def test_normalize_full_replace_shape():
     from workflow.developer_edit import _normalize_payload
+
     data = {
         "target_file_path": "a.py",
         "new_content": "x = 1\n",
@@ -24,6 +25,7 @@ def test_normalize_full_replace_shape():
 
 def test_normalize_find_top_level():
     from workflow.developer_edit import _normalize_payload
+
     data = {"find": "OLD", "replace": "NEW", "summary": "rename ident"}
     out = _normalize_payload(data, "find_replace", ["b.py"])
     assert out["target_file_path"] == "b.py"
@@ -32,6 +34,7 @@ def test_normalize_find_top_level():
 
 def test_normalize_diff_shape():
     from workflow.developer_edit import _normalize_payload
+
     data = {
         "diff": "--- a\n+++ b\n",
         "summary": "apply patch",

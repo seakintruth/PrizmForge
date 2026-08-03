@@ -50,6 +50,7 @@ def endpoint_config(monkeypatch, temp_db):
     monkeypatch.setattr(config_mod, "get_config", fake)
     # reset token budget singleton if any
     import agents.base as base
+
     base._token_budget = None
     return fake()
 
@@ -75,7 +76,9 @@ def test_401_does_not_block_two_minutes(endpoint_config):
 def test_429_response_shape(endpoint_config):
     from core.http_client import post_json
 
-    with patch("requests.post", return_value=_resp(429, {"error": {"message": "rate limited"}})):
+    with patch(
+        "requests.post", return_value=_resp(429, {"error": {"message": "rate limited"}})
+    ):
         r = post_json("http://example.invalid/v1", json_body={})
         assert r.status_code == 429
         assert "rate" in r.json()["error"]["message"]
@@ -87,6 +90,7 @@ def test_call_agent_empty_when_endpoint_always_fails(mock_llm, endpoint_config):
     mock_llm._queues["developer"] = [""]
     with mock_llm.patch_call_agent():
         from agents.base import call_agent
+
         out = call_agent("developer", "hi", task_id="fail1")
     assert out == "" or out is None or isinstance(out, str)
 

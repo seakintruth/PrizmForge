@@ -29,11 +29,14 @@ class EditFailureReason(Enum):
 @dataclass
 class EditValidationResult:
     """Result of validating a developer edit response."""
+
     is_valid: bool
     reason: Optional[EditFailureReason] = None
     message: str = ""
     data: Optional[Dict[str, Any]] = None
-    detected_mode: Optional[str] = None  # "guid" | "find_replace" | "full_replace" | "diff" | None
+    detected_mode: Optional[str] = (
+        None  # "guid" | "find_replace" | "full_replace" | "diff" | None
+    )
 
     @property
     def should_fallback(self) -> bool:
@@ -108,7 +111,9 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:
     # Full-file replacement
     if "new_content" in data:
         new_content = data.get("new_content")
-        if new_content is None or (isinstance(new_content, str) and not new_content.strip()):
+        if new_content is None or (
+            isinstance(new_content, str) and not new_content.strip()
+        ):
             return EditValidationResult(
                 is_valid=False,
                 reason=EditFailureReason.FULL_REPLACE_MISSING_CONTENT,
@@ -132,7 +137,11 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:
             message="Valid find_replace payload",
         )
 
-    if "replacements" in data and isinstance(data["replacements"], list) and data["replacements"]:
+    if (
+        "replacements" in data
+        and isinstance(data["replacements"], list)
+        and data["replacements"]
+    ):
         return EditValidationResult(
             is_valid=True,
             data=data,
@@ -153,7 +162,12 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:
     operations = data.get("operations")
     if operations is None:
         # Some models emit a single operation at the top level
-        if data.get("type") in {"replace_block", "insert_after", "delete_lines", "find_replace"}:
+        if data.get("type") in {
+            "replace_block",
+            "insert_after",
+            "delete_lines",
+            "find_replace",
+        }:
             return EditValidationResult(
                 is_valid=True,
                 data=data,
@@ -185,9 +199,7 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:
         )
 
     # Basic structural check: at least one operation has a type
-    has_typed_op = any(
-        isinstance(op, dict) and op.get("type") for op in operations
-    )
+    has_typed_op = any(isinstance(op, dict) and op.get("type") for op in operations)
     if not has_typed_op:
         return EditValidationResult(
             is_valid=False,

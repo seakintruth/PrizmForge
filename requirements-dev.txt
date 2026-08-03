@@ -8,14 +8,20 @@ pytest>=7.4.0
 pytest-mock>=3.12.0
 
 # Optional: parallel / timeout plugins (not required)
-# pytest-timeout>=2.2.0
-# pytest-xdist>=3.5.0
+pytest-timeout>=2.2.0
+pytest-xdist>=3.5.0
 
-# Optional: code quality (recommended on workstations; not required to run tests)
+# Code quality (recommended)
 black>=23.0.0
 flake8>=6.1.0
+isort>=5.13.0
 
-# Optional: only if present on your mirror
-# isort>=5.13.0
-# pylint>=3.0.0
-# coverage>=7.0.0
+# Lint / fast fixer
+ruff>=0.24.0
+
+# Type checking
+mypy>=1.5.0
+
+# Optional
+pylint>=3.0.0
+coverage>=7.0.0

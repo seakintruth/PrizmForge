@@ -30,11 +30,10 @@ def register_call_agent_patch_target(dotted_path: str) -> None:
         CALL_AGENT_PATCH_TARGETS = tuple(list(CALL_AGENT_PATCH_TARGETS) + [dotted_path])
 
 
-
-
 # ---------------------------------------------------------------------------
 # HTTP-level mock (patches requests.post)
 # ---------------------------------------------------------------------------
+
 
 def make_chat_completion_payload(
     response_text: str,
@@ -73,13 +72,18 @@ def make_requests_response(
     """Return a MagicMock that looks like a successful requests.Response."""
     mock_resp = MagicMock()
     mock_resp.status_code = status_code
-    mock_resp.json.return_value = make_chat_completion_payload(response_text, model=model)
+    mock_resp.json.return_value = make_chat_completion_payload(
+        response_text, model=model
+    )
     mock_resp.text = json.dumps(mock_resp.json.return_value)
     mock_resp.raise_for_status = MagicMock()
     if status_code >= 400:
+
         def _raise():
             import requests
+
             raise requests.exceptions.HTTPError(f"HTTP {status_code}")
+
         mock_resp.raise_for_status.side_effect = _raise
     return mock_resp
 
@@ -95,13 +99,16 @@ def mock_openai_chat_completion(
     Returns the mock response object. Use as a context manager via the
     returned patch, or prefer the `mock_llm_http` fixture.
     """
-    mock_resp = make_requests_response(response_text, status_code=status_code, model=model)
+    mock_resp = make_requests_response(
+        response_text, status_code=status_code, model=model
+    )
     return patch("agents.base.requests.post", return_value=mock_resp)
 
 
 # ---------------------------------------------------------------------------
 # High-level scripted mock for call_agent / call_endpoint
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class LLMCallRecord:
