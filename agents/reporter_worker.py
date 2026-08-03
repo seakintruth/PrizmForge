@@ -1,10 +1,10 @@
-from typing import Optional
 
 """Project Reporter Worker — generates human-readable audit reports"""
 
 import json
 import threading
 import time
+from typing import Optional
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional

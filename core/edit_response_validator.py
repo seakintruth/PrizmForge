@@ -1,5 +1,3 @@
-from typing import Dict, Optional
-
 """
 Edit response validator – early detection of failed developer outputs.
 
@@ -14,7 +12,6 @@ import json
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
-
 
 class EditFailureReason(Enum):
     EMPTY_RESPONSE = "empty_response"

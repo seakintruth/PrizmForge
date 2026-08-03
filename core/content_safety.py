@@ -1,5 +1,3 @@
-from typing import Dict, Optional, Set, Tuple, Union
-
 """
 Reject binary payloads that must never enter governed source trees.
 
@@ -25,6 +23,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 from typing import Any, Dict, FrozenSet, Optional, Set, Tuple, Union
+
 
 # Default path suffixes refused by extension check (binary containers only).
 # Override via content_safety.blocked_extensions in config.json.

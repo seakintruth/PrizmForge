@@ -1,5 +1,3 @@
-from typing import Dict, List, Tuple
-
 """
 Unattended preflight checks (config-only runs).
 """
@@ -8,7 +6,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
-
 
 def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """

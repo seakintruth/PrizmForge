@@ -1,7 +1,3 @@
-from typing import Optional
-
-from typing import List, Optional, Tuple
-
 # core/context_manager.py
 
 """
@@ -12,7 +8,6 @@ Much faster - no recalculation at query time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.token_estimator import estimate_messages

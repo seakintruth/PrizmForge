@@ -1,5 +1,3 @@
-from typing import Dict, List, Optional
-
 """
 Thin mutation-path event log (Phase D1).
 

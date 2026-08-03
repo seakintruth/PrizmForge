@@ -1,6 +1,3 @@
-from typing import Optional
-
-from typing import Dict, Optional
 
 """Configuration management"""
 

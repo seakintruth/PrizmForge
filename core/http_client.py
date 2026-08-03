@@ -1,5 +1,3 @@
-from typing import Dict, Optional
-
 """
 Minimal HTTP JSON POST helper.
 

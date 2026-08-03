@@ -1,10 +1,9 @@
-from typing import Optional
-
 """Thread-safe database connection with retry logic"""
 
 import sqlite3
 import time
 from contextlib import contextmanager
+from typing import Optional
 
 
 class DatabaseRetryError(Exception):

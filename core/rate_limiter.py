@@ -1,10 +1,8 @@
-from typing import Optional
-
 """Rate limiting for API calls - per-endpoint support"""
 
 import time
 from collections import deque
-from typing import Dict
+from typing import Dict, Optional
 
 
 class RateLimiter:

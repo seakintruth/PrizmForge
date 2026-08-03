@@ -1,7 +1,3 @@
-from typing import Tuple
-
-from typing import Callable
-
 """
 Truncation detection and recovery
 Detects incomplete LLM responses and requests continuation
@@ -10,8 +6,7 @@ Detects incomplete LLM responses and requests continuation
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple
-
+from typing import Optional, Tuple, Callable
 
 class TruncationType(Enum):
     """Type of truncation detected"""

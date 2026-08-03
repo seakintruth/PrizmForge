@@ -1,7 +1,3 @@
-from typing import Optional
-
-from typing import List, Tuple
-
 #!/usr/bin/env python3
 """
 Build structural code indexes and optional full source consolidation.
@@ -60,7 +56,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 IGNORED_DIRS = {
     "report",  # generated reviews/indexes; do not re-index

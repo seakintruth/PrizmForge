@@ -1,7 +1,3 @@
-from typing import Optional
-
-from typing import List, Optional
-
 """
 ./agents/resource_controller_worker.py
 Resource Controller - Heuristic Implementation
@@ -24,6 +20,7 @@ Philosophy:
 import json
 import threading
 import time
+
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional

@@ -1,10 +1,10 @@
-from typing import Optional
-
 """CLI command handlers"""
 
 import csv
 import json
 import os
+
+from typing import Optional
 from datetime import datetime
 from pathlib import Path
 

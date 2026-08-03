@@ -1,5 +1,3 @@
-from typing import Optional, Sequence
-
 """
 Edit mode selection and fallback policy.
 

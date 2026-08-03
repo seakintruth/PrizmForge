@@ -1,6 +1,3 @@
-from typing import Optional
-
-from typing import List
 
 # =============================================================================
 # PrizmForge/file_editing/db.py
@@ -13,8 +10,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List
-
+from typing import Dict, List, Optional
 
 def get_db_path() -> str:
     """

@@ -1,5 +1,3 @@
-from typing import Optional
-
 #!/usr/bin/env python3
 """
 Export the PrizmForge project to a zip archive (includes ``report/``).
@@ -59,6 +57,7 @@ import argparse
 import subprocess
 import sys
 import zipfile
+from typing import Optional
 from datetime import datetime, timezone
 from pathlib import Path
 

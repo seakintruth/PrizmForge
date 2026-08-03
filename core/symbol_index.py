@@ -1,5 +1,3 @@
-from typing import Dict, List, Optional, Sequence
-
 """
 Structural symbol index: AST extract → sqlite file_symbols.
 

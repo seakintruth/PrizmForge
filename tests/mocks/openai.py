@@ -1,5 +1,3 @@
-from typing import Dict, List, Optional, Sequence
-
 """
 tests/mocks/openai.py
 
@@ -12,6 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
+
 from unittest.mock import MagicMock, patch
 
 # Modules that do `from agents.base import call_agent` must be listed here.

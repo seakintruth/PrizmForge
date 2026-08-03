@@ -1,5 +1,3 @@
-from typing import Dict, List, Optional
-
 """
 Developer mutation pipeline extracted from task_runner.
 
@@ -14,7 +12,6 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional
-
 from agents.base import call_agent
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message

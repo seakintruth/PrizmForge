@@ -161,6 +161,8 @@ class OptionalizeParams(cst.CSTTransformer):
                 return updated.with_changes(annotation=new_ann)
         return updated
 
+"""
+# Don't run this, it's too aggressive and will break code.
 
 def run_optionalize_defaults(root: Path) -> int:
     changed = 0
@@ -185,6 +187,7 @@ def run_optionalize_defaults(root: Path) -> int:
             changed += 1
     return changed
 
+"""
 
 # === Codemod 4: Add Any annotations to simple untyped assignments ===
 class AddAnyAnn(cst.CSTTransformer):
