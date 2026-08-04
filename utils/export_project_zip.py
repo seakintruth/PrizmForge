@@ -57,9 +57,9 @@ import argparse
 import subprocess
 import sys
 import zipfile
-from typing import Optional
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 SKIP_DIR_NAMES = {
     "__pycache__",

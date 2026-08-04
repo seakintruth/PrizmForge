@@ -1,11 +1,3 @@
-from typing import Dict, List, Optional
-
-# =============================================================================
-# PrizmForge/file_editing/writer.py
-# Version: 1.4 - Critical column name fixes + improved invalidation + init files
-# Purpose: FileWriterAgent - Materializes proposals to disk + git + invalidation
-# =============================================================================
-
 import hashlib
 import json
 import os
@@ -19,6 +11,12 @@ from core.content_safety import validate_source_content
 
 from .db import get_db_connection, log_error, reconstruct_file_content
 from .editing import apply_edit_proposal
+
+# =============================================================================
+# PrizmForge/file_editing/writer.py
+# Version: 1.4 - Critical column name fixes + improved invalidation + init files
+# Purpose: FileWriterAgent - Materializes proposals to disk + git + invalidation
+# =============================================================================
 
 
 def _compute_hash(content: str) -> str:

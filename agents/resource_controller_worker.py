@@ -20,7 +20,6 @@ Philosophy:
 import json
 import threading
 import time
-
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
@@ -141,7 +140,7 @@ class HeuristicOptimizer:
                 try:
                     data = json.loads(profile_json)
                     profiles[agent_name] = AgentProfile.from_dict(data)
-                except:
+                except Exception:
                     pass
 
             # Fill in defaults for missing agents

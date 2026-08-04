@@ -1,4 +1,3 @@
-
 """Configuration management"""
 
 import json

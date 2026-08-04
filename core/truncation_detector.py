@@ -6,7 +6,8 @@ Detects incomplete LLM responses and requests continuation
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple, Callable
+from typing import Callable, Optional, Tuple
+
 
 class TruncationType(Enum):
     """Type of truncation detected"""

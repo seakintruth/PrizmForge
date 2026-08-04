@@ -1,12 +1,3 @@
-from typing import Dict, List, Optional
-
-# =============================================================================
-# PrizmForge/workflow/proposal_builder.py
-# Version: 1.7
-# Purpose: Bridge between Developer agent output and governed edit proposals
-#          Fully aligned with current edit_proposals schema
-# =============================================================================
-
 import json
 import sqlite3
 from typing import Any, Dict, List, Optional
@@ -15,6 +6,13 @@ from uuid import uuid4
 from core.events import publish_event
 from file_editing.db import get_db_connection, log_error
 from file_editing.edit_payload import EditPayload
+
+# =============================================================================
+# PrizmForge/workflow/proposal_builder.py
+# Version: 1.7
+# Purpose: Bridge between Developer agent output and governed edit proposals
+#          Fully aligned with current edit_proposals schema
+# =============================================================================
 
 
 def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> int:

@@ -3,7 +3,7 @@ from typing import List, Optional
 """Database helper functions"""
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
 from core.db_connection import get_db_connection
 

@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from core.db_connection import get_db_connection
 from core.token_estimator import estimate_tokens
@@ -493,5 +493,5 @@ def post_file_metadata_to_bus(file_path: str, operation: str, summary: Dict, tas
         # Also post to orchestrator
         msg = f"📁 {operation.upper()}: {file_path}\n{summary.get('purpose', '')}\n{summary.get('line_count', 0)} lines"
         post_message("file_manager", "orchestrator", msg, task_id, "MEDIUM")
-    except:
+    except Exception:
         pass

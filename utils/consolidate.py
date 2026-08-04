@@ -56,7 +56,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional, Tuple
 
 IGNORED_DIRS = {
     "report",  # generated reviews/indexes; do not re-index

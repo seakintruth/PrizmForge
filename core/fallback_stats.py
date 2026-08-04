@@ -79,5 +79,5 @@ def get_fallback_stats() -> Dict:
             "by_endpoint": by_endpoint,
             "recent": recent,
         }
-    except:
+    except Exception:
         return {"total": 0, "by_reason": {}, "by_endpoint": {}, "recent": []}

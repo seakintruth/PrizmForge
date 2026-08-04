@@ -13,7 +13,6 @@ from __future__ import annotations
 import time
 from pathlib import Path
 from typing import Dict, Optional, Sequence
-from typing import Optional, Sequence
 
 DEFAULT_MAX_CHARS = 24_000
 _last_refresh_mono: float = 0.0

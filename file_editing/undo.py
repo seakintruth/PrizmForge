@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Dict
+
 from core.db_connection import get_db_connection
 from core.events import publish_event
 from file_editing.db import reconstruct_file_content

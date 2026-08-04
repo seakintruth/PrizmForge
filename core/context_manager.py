@@ -8,6 +8,7 @@ Much faster - no recalculation at query time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.token_estimator import estimate_messages
@@ -277,7 +278,7 @@ class ContextManager:
                 score += 30
             elif age_hours < 168:
                 score += 10
-        except:
+        except Exception:
             pass
 
         # Has issues (+30 per issue, max 60)

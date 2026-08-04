@@ -11,7 +11,7 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
 from agents.base import call_agent
 from agents.response_cleaner import clean_llm_response
@@ -440,7 +440,7 @@ class BackgroundAgentPool:
                 }
             else:
                 metadata = None
-        except:
+        except Exception:
             content_hash = None
             metadata = None
 

@@ -1,12 +1,3 @@
-from typing import Dict, Optional
-
-# =============================================================================
-# PrizmForge/file_editing/editing.py
-# Version: 1.6 - Range-based editing + Detailed operation results
-# Purpose: Core editing engine with optimistic validation, safe range operations,
-#          and detailed feedback on lines affected.
-# =============================================================================
-
 import hashlib
 import json
 import sqlite3
@@ -16,6 +7,14 @@ from uuid import uuid4
 from core.content_safety import validate_source_content
 
 from .db import get_db_connection, log_error
+
+# =============================================================================
+# PrizmForge/file_editing/editing.py
+# Version: 1.6 - Range-based editing + Detailed operation results
+# Purpose: Core editing engine with optimistic validation, safe range operations,
+#          and detailed feedback on lines affected.
+# =============================================================================
+
 
 # =============================================================================
 # Configuration

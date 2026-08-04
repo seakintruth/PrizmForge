@@ -1,6 +1,7 @@
-from typing import List, Optional, Tuple
-
-"""Base agent functionality with multi-endpoint support"""
+"""
+Base agent
+ - functionality with multi-endpoint support
+"""
 
 import re
 import time

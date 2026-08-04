@@ -3,10 +3,9 @@
 import csv
 import json
 import os
-
-from typing import Optional
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from core.config import get_config
 from core.db import get_db_path, init_db
@@ -405,7 +404,7 @@ def table_has_task_id(cursor, table_name: str) -> bool:
         cursor.execute(f"PRAGMA table_info({table_name})")
         columns = [row[1] for row in cursor.fetchall()]
         return "task_id" in columns
-    except:
+    except Exception:
         return False
 
 
@@ -602,14 +601,14 @@ def cmd_archives(task_id: Optional[str] = None):
             decisions = json.loads(key_decisions)
             if decisions:
                 print(f"   Key decisions: {', '.join(decisions[:3])}")
-        except:
+        except Exception:
             pass
 
         try:
             files = json.loads(files_modified)
             if files:
                 print(f"   Files: {', '.join(files[:5])}")
-        except:
+        except Exception:
             pass
 
     print()

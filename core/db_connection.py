@@ -74,7 +74,7 @@ def get_db_connection(db_path: Optional[str] = None, retries: int = 5, checkpoin
         # Rollback on any exception in user code
         try:
             conn.rollback()
-        except:
+        except Exception:
             pass
         raise
 
@@ -82,7 +82,7 @@ def get_db_connection(db_path: Optional[str] = None, retries: int = 5, checkpoin
         # Always close connection
         try:
             conn.close()
-        except:
+        except Exception:
             pass
 
 

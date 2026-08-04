@@ -30,7 +30,7 @@ def main():
             config_file = find_config_file(filename)
             if not config_file.exists():
                 missing_files.append(filename)
-        except:
+        except Exception:
             missing_files.append(filename)
 
     if missing_files:

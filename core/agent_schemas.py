@@ -13,7 +13,7 @@ FALLBACK MECHANISM:
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass

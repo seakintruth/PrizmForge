@@ -7,7 +7,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict
 
 from agents.base import call_agent
 from core.db_connection import get_db_connection

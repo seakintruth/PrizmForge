@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Optional
+
 from core.db_connection import get_db_connection
 
 

@@ -1,4 +1,3 @@
-
 # =============================================================================
 # PrizmForge/file_editing/db.py
 # Version: 1.3 - Consolidated database path with core.db
@@ -11,6 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional
+
 
 def get_db_path() -> str:
     """

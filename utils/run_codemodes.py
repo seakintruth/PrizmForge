@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-""""
+""" "
 utils/run_codemods.py
 
 Run a set of conservative LibCST-based codemods and a targeted edit_payload union expansion.
@@ -14,6 +14,7 @@ Usage:
   # Override project root
   python codemods/run_codemods.py /abs/path/to/project
 """
+
 import argparse
 import re
 import sys
@@ -35,7 +36,9 @@ SKIP_PATTERNS = ["tests", "test_", "site-packages"]
 # targeted file & replacement for the edit_payload union widening (adjust if needed)
 EDIT_PAYLOAD_FILE = "file_editing/edit_payload.py"
 EDIT_PAYLOAD_OLD = r"list\[ReplaceBlock\]"
-EDIT_PAYLOAD_NEW = "list[ReplaceBlock | InsertAfter | DeleteLines | UpdateDocumentation | CreateFile | FindReplace | FullReplace | ApplyDiff]"
+EDIT_PAYLOAD_NEW = (
+    "list[ReplaceBlock | InsertAfter | DeleteLines | UpdateDocumentation | CreateFile | FindReplace | FullReplace | ApplyDiff]"
+)
 
 
 # === Helpers ===
@@ -161,6 +164,7 @@ class OptionalizeParams(cst.CSTTransformer):
                 return updated.with_changes(annotation=new_ann)
         return updated
 
+
 """
 # Don't run this, it's too aggressive and will break code.
 
@@ -189,6 +193,7 @@ def run_optionalize_defaults(root: Path) -> int:
 
 """
 
+
 # === Codemod 4: Add Any annotations to simple untyped assignments ===
 class AddAnyAnn(cst.CSTTransformer):
     def __init__(self) -> None:
@@ -202,7 +207,9 @@ class AddAnyAnn(cst.CSTTransformer):
         if m.matches(tgt, m.Name()) and not isinstance(updated, cst.AnnAssign):
             name = tgt.value
             self.add_any = True
-            ann = cst.AnnAssign(target=cst.Name(name), annotation=cst.Annotation(cst.Name("Any")), value=updated.value, simple=1)
+            ann = cst.AnnAssign(
+                target=cst.Name(name), annotation=cst.Annotation(cst.Name("Any")), value=updated.value, simple=1
+            )
             return ann
         return updated
 

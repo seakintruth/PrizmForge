@@ -5,7 +5,9 @@ Extracted so production rules can be unit-tested without a full task cycle.
 """
 
 from __future__ import annotations
+
 from typing import Any, Dict, Optional, Tuple
+
 
 def count_unaddressed_feedback(conn, task_id: str) -> int:
     row = conn.execute(

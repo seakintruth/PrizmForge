@@ -29,7 +29,7 @@ class TokenBudget:
             )
             self.usage = [(row[1], row[0]) for row in cursor.fetchall()]
             conn.close()  # Explicit close
-        except:
+        except Exception:
             self.usage = []
 
     def add_usage(self, tokens: int):
@@ -50,7 +50,7 @@ class TokenBudget:
             )
             conn.commit()
             conn.close()
-        except:
+        except Exception:
             pass
 
     def get_used(self) -> int:

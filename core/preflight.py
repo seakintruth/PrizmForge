@@ -7,6 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+
 def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     """
     Returns (ok, errors).

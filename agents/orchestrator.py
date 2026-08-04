@@ -53,7 +53,7 @@ def call_orchestrator(
                 (task_id,),
             )
             total, critical, high, medium, low = cursor.fetchone()
-    except:
+    except Exception:
         total, critical, high, medium, low = 0, 0, 0, 0, 0
 
     # Get CLI mode to know if we should allow 'complete'
@@ -62,7 +62,7 @@ def call_orchestrator(
 
         cli_mode = get_cli_mode_from_config(config)
         is_unattended = cli_mode == CLIMode.UNATTENDED
-    except:
+    except Exception:
         is_unattended = False
 
     prompt = f"""{context_str}

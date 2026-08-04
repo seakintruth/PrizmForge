@@ -1,6 +1,7 @@
-from typing import List
-
-"""Background archivist - monitors, archives, and restores context"""
+"""
+Background archivist
+ - monitors, archives, and restores context
+"""
 
 import json
 import threading
@@ -182,8 +183,6 @@ class ArchivistWorker:
 
                 # Don't archive more than once per 10 minutes
                 if last_archive:
-                    from datetime import datetime, timedelta
-
                     last_time = datetime.fromisoformat(last_archive)
                     if datetime.now() - last_time < timedelta(minutes=10):
                         return
@@ -339,7 +338,7 @@ class ArchivistWorker:
                         decisions = json.loads(key_decisions)
                         if decisions:
                             restoration += f"Key Decisions: {', '.join(decisions[:3])}\n"
-                    except:
+                    except Exception:
                         pass
 
                     restoration += "\n"
@@ -398,7 +397,7 @@ class ArchivistWorker:
             key_decisions = json.dumps(data.get("key_decisions", []))
             files_modified = "[]"  # Not tracking files in message archive
 
-        except:
+        except Exception:
             summary = "Archived messages (parse failed)"
             key_decisions = "[]"
             files_modified = "[]"
