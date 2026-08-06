@@ -9,6 +9,7 @@
   "background_agents_enabled": false,
   "cli_mode": {
     "mode": "unattended",
+    "_notes" : "Mode is semi_attended or unattended",
     "unattended": {
       "max_duration_hours": 0.08,
       "auto_continue": true,
@@ -20,7 +21,7 @@
       "auto_init_on_start": true,
       "seed_task": "Build an example Python Shiny app (shiny package for Python, or a minimal Streamlit/Shiny-like alternative if shiny is unavailable) that helps display canned report images. Include: a small gallery or viewer for sample report image files, navigation between images, and clear README for how to run the app. Place the app under the project_directory with sample placeholder images or documented paths for canned report screenshots.",
       "seed_tasks": [],
-      "stop_when_backlog_empty": false,
+      "stop_when_backlog_empty": true,
       "exit_on_preflight_failure": true
     }
   },
@@ -58,13 +59,13 @@
   },
   "default_endpoint": "gemini",
   "fallback_settings": {
-    "enabled": false,
+    "enabled": true,
     "max_fallback_attempts": 2,
     "cooldown_on_exhaustion_minutes": 5,
     "cooldown_on_lock_minutes": 1,
     "cooldown_on_rate_limit_minutes": 1,
     "cooldown_on_error_minutes": 5,
-    "prefer_same_provider": false,
+    "prefer_same_provider": true,
     "log_fallbacks": true
   },
   "models": {
@@ -121,8 +122,8 @@
     "security_reviewer": "gemini-3.6-flash"
   },
   "proxy": {
-    "http": "",
-    "https": ""
+    "http": "http://NMCIProxyB1:8080",
+    "https": "http://NMCIProxyB1Secure:8443"
   },
   "proxy_original": {
     "http": "http://NMCIProxyB1:8080",
@@ -190,7 +191,7 @@
   },
   "background_feeder": {
     "interval_seconds": 30,
-    "files_per_agent_default": 3
+    "files_per_agent_default": 10
   },
   "file_operations": {
     "max_file_size_kb": 1000,
@@ -207,14 +208,14 @@
     ]
   },
   "file_editing": {
-    "method": "full_replace",
+    "method": "find_replace",
     "_options": [
       "guid",
       "find_replace",
       "full_replace",
       "diff"
     ],
-    "_note": "Multi-mode editing with t-shirt sizing. 'method' is a soft legacy preference. preferred_modes + fallback_order drive selection.",
+    "_note": "Multi-mode editing with t-shirt sizing. 'method' is a soft legacy preference. preferred_modes + fallback_order drive selection. Files smaller than small_file_threshold_lines default to full_replace",
     "preferred_modes": [
       "guid",
       "find_replace",
@@ -260,7 +261,7 @@
     "_note": "Backlog aging for unattended runs"
   },
   "llm": {
-    "test_mode": true,
+    "test_mode": false,
     "mock_responses": {
       "orchestrator": [
         "{\"feedback_summary\": \"Seed task: build Shiny report image viewer\", \"next_agent\": \"developer\", \"instructions\": \"Create a Python Shiny app that displays canned report images from report_images/. Replace app.py, update README.md, ensure report_images exists.\", \"reasoning\": \"test_mode mock: route to developer for seed Shiny app\", \"files_needed\": [\"app.py\", \"README.md\"], \"addressing_feedback_ids\": []}",

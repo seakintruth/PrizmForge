@@ -251,23 +251,29 @@ PLAN: [brief explanation]"""
 
                 files_match = re.search(r"FILES_NEEDED:\s*(.+?)(?:\n|$)", understanding, re.IGNORECASE)
                 if files_match:
-                    files_str = files_match.group(1)
-                    requested_files = [f.strip() for f in files_str.split(",")]
-                    print(f"   📋 Developer requested: {', '.join(requested_files)}")
+                    files_str = files_match.group(1).strip()
+                    if files_str.upper() not in ("NONE", "N/A", "NONE.", "N/A."):
+                        requested_files = [
+                            f.strip()
+                            for f in files_str.split(",")
+                            if f.strip().upper() not in ("NONE", "N/A")
+                        ]
 
                 if not requested_files and files_needed:
-                    requested_files = files_needed
-                    print(f"   📋 Using orchestrator's files: {', '.join(requested_files)}")
+                    requested_files = [
+                        f for f in files_needed if f and f.upper() not in ("NONE", "N/A")
+                    ]
+                    if requested_files:
+                        print(f"   📋 Using orchestrator's files_needed: {', '.join(requested_files)}")
 
                 if not requested_files:
-                    file_pattern = r"(?:^|\s)([a-zA-Z0-9_/.-]+\.(?:py|json|js|txt|md))"
+                    file_pattern = r"(?:^|\s|`)([-a-zA-Z0-9_/\.]+\.(?:py|json|js|txt|md|png|html|css|yaml|yml))(?:$|\s|`)"
                     found_files = re.findall(file_pattern, understanding)
                     if found_files:
-                        requested_files = list(set(found_files))[:3]
+                        requested_files = list(dict.fromkeys(found_files))[:4]
                         print(f"   🔍 Extracted from text: {', '.join(requested_files)}")
 
                 if not requested_files:
-                    print("   ⚠️  No files identified, using first from feedback")
                     addressing_ids = decision.get("addressing_feedback_ids", [])
                     if addressing_ids:
                         with get_db_connection() as conn:
@@ -284,28 +290,21 @@ PLAN: [brief explanation]"""
                                 requested_files = [row[0]]
 
                 if not requested_files:
-                    print("   ❌ Cannot determine target files")
-                    post_message(
-                        "developer",
-                        "orchestrator",
-                        "Cannot identify files to modify from task description",
-                        task_id,
-                        "HIGH",
+                    requested_files = ["app.py", "README.md"]
+                    print(
+                        f"   🚀 Cold-start default: Assigning initial target files: {', '.join(requested_files)}"
                     )
-                    continue
 
-                # Validate files exist
+                # Validate / Filter files:
                 valid_files = []
                 for fpath in requested_files:
-                    content = get_file_content_from_db(fpath)
-                    if content is not None:
+                    content_db = get_file_content_from_db(fpath)
+                    if content_db is not None:
                         valid_files.append(fpath)
+                        print(f"   📄 Existing file found in DB: {fpath}")
                     else:
-                        print(f"   ⚠️  File not found in DB: {fpath}")
-
-                if not valid_files:
-                    print("   ❌ None of the requested files exist")
-                    continue
+                        valid_files.append(fpath)
+                        print(f"   ✨ New file target registered for creation: {fpath}")
 
                 requested_files = valid_files
 
@@ -444,6 +443,7 @@ PLAN: [brief explanation]"""
                         print("   ⏸️  Yielding to background agents...")
 
                         try:
+
                             resource_controller = get_resource_controller()
                             resource_controller.temporarily_disable_throttling(duration_seconds=30)
                             print("     🔓 Resource restrictions temporarily lifted")

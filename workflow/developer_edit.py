@@ -17,6 +17,7 @@ from agents.base import call_agent
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.edit_response_validator import validate_developer_edit_response
+from core.index_context import load_symbol_json_context
 from core.events import publish_event
 from core.file_operations import format_file_with_guids, get_file_content_from_db
 from file_editing.undo import snapshot_before_apply
@@ -304,6 +305,8 @@ def run_developer_mutation(
         "materialize": mat,
     }
 
+# workflow/developer_edit.py
+
 
 def _build_generation_prompt(
     *,
@@ -312,37 +315,37 @@ def _build_generation_prompt(
     files_content: List[str],
     requested_files: List[str],
 ) -> str:
-    joined = "\n\n".join(files_content)
-    index_snip = ""
-    try:
-        from core.index_context import load_index_text, load_symbol_json_context
+  joined = "\n\n".join(files_content) if files_content else "No existing files."
 
-        index_snip = load_symbol_json_context(
-            file_paths=requested_files or None,
-            max_rows=50,
-            label="Symbols for target files",
-        )
-        if not index_snip.strip():
-            raw_idx = load_index_text(which="production", max_chars=6_000)
-            if raw_idx.strip():
-                index_snip = "\n**Structural index (Markdown fallback):**\n" + raw_idx + "\n"
-        elif index_snip and not index_snip.startswith("\n"):
-            index_snip = "\n" + index_snip
-    except Exception:
-        pass
-    parts = [
-        instructions,
-        index_snip,
-        f"**Required edit mode: {edit_method}**",
-        f"Target files: {', '.join(requested_files)}",
-        "",
-        "File content:",
-        joined,
-        "",
-        "Output ONLY valid JSON for the edit payload (see developer schema). Prefer the requested mode.",
-    ]
-    return "\n".join(parts)
+  index_snip = ""
+  try:
+    index_snip = load_symbol_json_context(
+        file_paths=requested_files or None,
+        max_rows=50,
+        label="Symbols for target files",
+    )
+  except Exception:
+    pass
 
+  parts = [
+      instructions,
+      index_snip,
+      f"**Required edit mode: {edit_method}**",
+      f"Target files to create/update: {', '.join(requested_files)}",
+      "",
+      "File content:",
+      joined,
+      "",
+      "CRITICAL INSTRUCTIONS FOR FILE CREATION & MODIFICATION:",
+      "- To create a new file or completely write a file, use operation type"
+      ' "create_file" or "full_replace".',
+      '- "create_file" format: {"type": "create_file", "target_file_path":'
+      ' "app.py", "initial_content": ["line1", "line2"], "rationale": "..."}',
+      '- "full_replace" format: {"type": "full_replace", "target_file_path":'
+      ' "app.py", "new_content": "full source text", "rationale": "..."}',
+      "- Respond ONLY with valid JSON matching the developer schema.",
+  ]
+  return "\n".join(parts)
 
 def _normalize_payload(data: dict, edit_method: str, requested_files: List[str]) -> dict:
     """Normalize top-level full_replace / diff shapes into operations form."""
