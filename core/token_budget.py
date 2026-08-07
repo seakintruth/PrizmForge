@@ -2,7 +2,7 @@
 
 import sqlite3
 from datetime import datetime, timedelta
-
+from core.db_connection import get_db_connection
 
 class TokenBudget:
     """Track token usage over time"""
@@ -17,10 +17,9 @@ class TokenBudget:
         """Cleanup on deletion (helps with Windows file locks)"""
         pass  # All connections are closed immediately after use
 
-    def load_from_db(self):
-        """Load recent usage from database"""
-        try:
-            conn = sqlite3.connect(self.db_path)
+def load_from_db(self):
+    try:
+        with get_db_connection(checkpoint_on_close=False) as conn:
             cursor = conn.cursor()
             cutoff = (datetime.now() - timedelta(hours=4)).isoformat()
             cursor.execute(
@@ -28,9 +27,8 @@ class TokenBudget:
                 (cutoff,),
             )
             self.usage = [(row[1], row[0]) for row in cursor.fetchall()]
-            conn.close()  # Explicit close
-        except Exception:
-            self.usage = []
+    except Exception:
+        self.usage = []
 
     def add_usage(self, tokens: int):
         """Add token usage"""
@@ -43,13 +41,12 @@ class TokenBudget:
 
         # Persist to DB
         try:
-            conn = sqlite3.connect(self.db_path)
-            conn.execute(
-                "INSERT INTO token_log (timestamp, tokens_used) VALUES (?, ?)",
-                (timestamp, tokens),
-            )
-            conn.commit()
-            conn.close()
+            with get_db_connection(checkpoint_on_close=False) as conn:
+                conn.execute(
+                    "INSERT INTO token_log (timestamp, tokens_used) VALUES (?, ?)",
+                    (timestamp, tokens),
+                )
+                conn.commit()
         except Exception:
             pass
 

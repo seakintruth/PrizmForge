@@ -189,18 +189,25 @@ def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: L
 
 
 def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
-    """Apply proposal (if needed), write to disk, invalidate overlapping proposals, optional git commit."""
+    """
+    Apply proposal (if needed), write ALL modified files in the proposal to disk,
+    invalidate overlapping proposals, and perform git commit if enabled.
+    """
+    from file_editing.edit_payload import EditPayload
+    from workflow.proposal_builder import _get_or_create_file_id
+
     with get_db_connection() as conn:
-        proposal = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
+        proposal = conn.execute(
+            "SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)
+        ).fetchone()
 
         if not proposal:
             return {"status": "error", "message": "Proposal not found"}
 
-        # Apply if not already applied
+        # Apply in DB if not already applied
         if proposal["status"] != "applied":
             apply_result = apply_edit_proposal(proposal_id)
             if apply_result.get("status") != "success":
-                # Ensure proposal is left in a terminal, observable state
                 terminal = apply_result.get("status") or "error"
                 if terminal not in ("conflicted", "error", "failed"):
                     terminal = "error"
@@ -213,100 +220,73 @@ def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
                     pass
                 return apply_result
 
-        # Get file path - sqlite3.Row supports dict-like access with []
-        file_row = conn.execute(
-            "SELECT file_path FROM files WHERE file_id = ?",
-            (proposal["target_file_id"],),
-        ).fetchone()
+        # Collect ALL target file paths touched by this proposal
+        affected_paths = set()
+        if proposal["target_file_path"]:
+            affected_paths.add(proposal["target_file_path"])
 
-        # ✅ FIX: Use [] access instead of .get()
-        if file_row:
-            target_path = file_row["file_path"]
-        else:
-            # Fallback to proposal's target_file_path
-            target_path = proposal["target_file_path"]
+        try:
+            payload = EditPayload.model_validate_json(proposal["edit_payload"])
+            for op in payload.operations:
+                op_path = getattr(op, "target_file_path", None)
+                if op_path:
+                    affected_paths.add(op_path)
+        except Exception as e:
+            log_error("file_editing", "materialize", "MEDIUM", f"Payload parse warning: {e}", proposal_id=proposal_id)
 
-        content = reconstruct_file_content(conn, proposal["target_file_id"])
-        result = write_file_to_disk(target_path, content, proposal_id)
+        # Materialize each affected file to disk
+        write_results = []
+        for target_path in affected_paths:
+            op_file_id = _get_or_create_file_id(conn, target_path)
+            content = reconstruct_file_content(conn, op_file_id)
+            res = write_file_to_disk(target_path, content, proposal_id)
 
-        if result.get("status") == "success":
-            try:
-                from core.index_context import refresh_file_symbols
-
-                # relative path for DB
-                rel = str(target_path).replace("\\", "/")
+            if res.get("status") == "success":
+                # Refresh symbol index
                 try:
+                    from core.index_context import refresh_file_symbols
                     from core.config import get_config
-
                     pd = Path(get_config().get("project_directory", "./project")).resolve()
                     rel = str(Path(target_path).resolve().relative_to(pd)).replace("\\", "/")
+                    if rel.endswith(".py"):
+                        refresh_file_symbols(rel, content)
+                except Exception as _idx_err:
+                    log_error("file_editing", "index_refresh", "LOW", f"Symbol index refresh failed: {_idx_err}", proposal_id=proposal_id)
+
+                conn.execute(
+                    "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
+                    (op_file_id,),
+                )
+                conn.execute(
+                    "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'success')",
+                    (proposal_id, op_file_id),
+                )
+                
+                # Optional git commit for this file
+                try:
+                    project_root = Path(target_path).parent
+                    subprocess.run(["git", "add", target_path], cwd=project_root, check=False, timeout=10)
+                    subprocess.run(
+                        ["git", "commit", "-m", f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"],
+                        cwd=project_root, check=False, timeout=10,
+                    )
                 except Exception:
-                    rel = Path(target_path).name
-                if rel.endswith(".py"):
-                    refresh_file_symbols(rel, content)
-            except Exception as _idx_err:
-                log_error(
-                    "file_editing",
-                    "index_refresh",
-                    "LOW",
-                    f"symbol index after materialize failed: {_idx_err}",
-                    proposal_id=proposal_id,
-                )
-            # Update file metadata (correct column: file_id)
-            conn.execute(
-                "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
-                (proposal["target_file_id"],),
-            )
-            # Log write
-            conn.execute(
-                "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'success')",
-                (proposal_id, proposal["target_file_id"]),
-            )
-
-            # Invalidate other proposals (core safety feature)
-            # ✅ FIX: Use [] access or handle None
-            affected_guids_json = proposal["affected_line_guids"]
-            if affected_guids_json:
-                affected = json.loads(affected_guids_json)
+                    pass
             else:
-                affected = []
+                conn.execute("UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?", (proposal_id,))
+                conn.execute("INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'error')", (proposal_id, op_file_id))
 
-            invalidate_other_proposals(conn, proposal_id, affected)
+            write_results.append(res)
 
-            # Optional git commit (best effort)
-            try:
-                project_root = Path(target_path).parent
-                subprocess.run(
-                    ["git", "add", target_path],
-                    cwd=project_root,
-                    check=False,
-                    timeout=10,
-                )
-                subprocess.run(
-                    [
-                        "git",
-                        "commit",
-                        "-m",
-                        f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
-                    ],
-                    cwd=project_root,
-                    check=False,
-                    timeout=10,
-                )
-            except Exception:
-                pass  # Git is optional
-        else:
-            # Disk write failed after successful apply — mark proposal terminal
-            try:
-                conn.execute(
-                    "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
-                    (proposal_id,),
-                )
-                conn.execute(
-                    "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'error')",
-                    (proposal_id, proposal["target_file_id"]),
-                )
-            except Exception:
-                pass
+        # Invalidate overlapping proposals
+        affected_guids_json = proposal["affected_line_guids"]
+        affected = json.loads(affected_guids_json) if affected_guids_json else []
+        invalidate_other_proposals(conn, proposal_id, affected)
 
-        return result
+        overall_success = all(r.get("status") == "success" for r in write_results)
+        return {
+            "status": "success" if overall_success else "error",
+            "proposal_id": proposal_id,
+            "materialized_files": list(affected_paths),
+            "results": write_results,
+        }

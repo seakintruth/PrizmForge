@@ -8,7 +8,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 @dataclass(kw_only=True)
 class BaseOperation:
     type: str
-    rationale: str = "Change as specified"  # ✅ Default value
+    target_file_path: Optional[str] = None 
+    rationale: str = "Change as specified"
 
     def __post_init__(self):
         # Pydantic-like Type Validation

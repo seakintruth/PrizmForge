@@ -63,7 +63,6 @@ def _extract_json_object(text: str) -> Optional[str]:
 
     return cleaned[start : end + 1]
 
-
 def validate_developer_edit_response(response: str) -> EditValidationResult:
     """
     Classify a raw developer agent response as a usable edit or a failure.
@@ -85,6 +84,36 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:
             is_valid=False,
             reason=EditFailureReason.NO_JSON,
             message="No JSON object found in developer response",
+        )
+
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as e:
+        return EditValidationResult(
+            is_valid=False,
+            reason=EditFailureReason.INVALID_JSON,
+            message=f"JSON parse error: {e}",
+        )
+
+    # Support root-level list of operation objects
+    if isinstance(data, list) and len(data) > 0 and all(isinstance(item, dict) for item in data):
+        target_path = None
+        for item in data:
+            if isinstance(item, dict) and item.get("target_file_path"):
+                target_path = item.get("target_file_path")
+                break
+        data = {
+            "target_file_path": target_path or "",
+            "summary": "Multi-operation edit proposal",
+            "rationale": "Multi-operation edit proposal",
+            "operations": data,
+        }
+
+    if not isinstance(data, dict):
+        return EditValidationResult(
+            is_valid=False,
+            reason=EditFailureReason.UNKNOWN_STRUCTURE,
+            message="Root JSON value is not an object or array of operations",
         )
 
     try:
