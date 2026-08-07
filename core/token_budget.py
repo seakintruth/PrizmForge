@@ -2,7 +2,9 @@
 
 import sqlite3
 from datetime import datetime, timedelta
+
 from core.db_connection import get_db_connection
+
 
 class TokenBudget:
     """Track token usage over time"""
@@ -17,36 +19,36 @@ class TokenBudget:
         """Cleanup on deletion (helps with Windows file locks)"""
         pass  # All connections are closed immediately after use
 
-def load_from_db(self):
-    try:
-        with get_db_connection(checkpoint_on_close=False) as conn:
-            cursor = conn.cursor()
-            cutoff = (datetime.now() - timedelta(hours=4)).isoformat()
-            cursor.execute(
-                "SELECT tokens_used, timestamp FROM token_log WHERE timestamp > ?",
-                (cutoff,),
-            )
-            self.usage = [(row[1], row[0]) for row in cursor.fetchall()]
-    except Exception:
-        self.usage = []
+    def load_from_db(self):
+        """Load recent token usage from database inside 4-hour window"""
+        try:
+            with get_db_connection(db_path=self.db_path, checkpoint_on_close=False) as conn:
+                cursor = conn.cursor()
+                cutoff = (datetime.now() - timedelta(hours=4)).isoformat()
+                cursor.execute(
+                    "SELECT tokens_used, timestamp FROM token_log WHERE timestamp > ?",
+                    (cutoff,),
+                )
+                self.usage = [(row[1], row[0]) for row in cursor.fetchall()]
+        except Exception:
+            self.usage = []
 
     def add_usage(self, tokens: int):
-        """Add token usage"""
+        """Add token usage and persist to database"""
         timestamp = datetime.now().isoformat()
         self.usage.append((timestamp, tokens))
 
-        # Remove old entries
+        # Remove old entries older than 4 hours
         cutoff = (datetime.now() - timedelta(hours=4)).isoformat()
         self.usage = [(t, tok) for t, tok in self.usage if t >= cutoff]
 
         # Persist to DB
         try:
-            with get_db_connection(checkpoint_on_close=False) as conn:
+            with get_db_connection(db_path=self.db_path, checkpoint_on_close=False) as conn:
                 conn.execute(
                     "INSERT INTO token_log (timestamp, tokens_used) VALUES (?, ?)",
                     (timestamp, tokens),
                 )
-                conn.commit()
         except Exception:
             pass
 
@@ -68,5 +70,5 @@ def load_from_db(self):
     def print_status(self):
         """Print current status"""
         used = self.get_used()
-        pct = (used / self.max_tokens) * 100
+        pct = (used / self.max_tokens) * 100 if self.max_tokens else 0
         print(f"📊 Tokens: {used // 1000000}M / {self.max_tokens // 1000000}M ({pct:.1f}%) in last 4h")
