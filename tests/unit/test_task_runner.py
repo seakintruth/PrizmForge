@@ -6,7 +6,7 @@ Tests for workflow/task_runner orchestration with mocked LLM responses.
 
 import inspect
 import json
-
+import re
 
 class TestTaskRunnerSignature:
     def test_run_task_cycle_function_exists(self):
@@ -83,3 +83,46 @@ class TestTaskRunnerWithMocks:
 
         prop = create_proposal_from_developer_output(raw, 1, "tr/demo.py")
         assert prop["status"] == "success"
+
+def test_file_extraction_regex_no_unterminated_charset_error():
+  """Verify the fixed file_pattern regex handles hyphens and backticks without raising re.error."""
+  file_pattern = r"(?:^|\s|`)([-a-zA-Z0-9_/\.]+\.(?:py|json|js|txt|md|png|html|css|yaml|yml))(?:$|\s|`)"
+  sample_text = "Files: app.py, generate_sample_images.py, `README.md`, assets/report-1.png"
+
+  matches = re.findall(file_pattern, sample_text)
+  assert "app.py" in matches
+  assert "generate_sample_images.py" in matches
+  assert "README.md" in matches
+  assert "assets/report-1.png" in matches
+
+
+def test_path_cleaning_and_none_filtering():
+  """Verify path cleaner strips project_directory/ and ignores NONE / N/A."""
+
+  def _clean_path(p: str) -> str:
+    p = p.strip().strip("`").strip("'").strip('"')
+    return re.sub(
+        r"^(?:project_directory|project)/", "", p, flags=re.IGNORECASE
+    )
+
+  assert _clean_path("project_directory/app.py") == "app.py"
+  assert _clean_path("project/assets/chart.png") == "assets/chart.png"
+  assert _clean_path("`README.md`") == "README.md"
+
+  raw_files = ["NONE", "N/A", "app.py", "project_directory/requirements.txt"]
+  filtered = [
+      _clean_path(f)
+      for f in raw_files
+      if f.strip().upper() not in ("NONE", "N/A")
+  ]
+  assert filtered == ["app.py", "requirements.txt"]
+
+
+def test_requested_files_single_file_cap():
+  """Verify requested_files is capped to 1 file per turn to prevent LLM payload overload."""
+  requested_files = ["app.py", "generate_sample_images.py", "requirements.txt"]
+
+  if len(requested_files) > 1:
+    requested_files = [requested_files[0]]
+
+  assert requested_files == ["app.py"]

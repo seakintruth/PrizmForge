@@ -168,3 +168,65 @@ def test_orchestrator_empty_agent_response(mock_llm, orch_env, temp_db):
             )
             decision = call_orchestrator("t5", "cmd", [], 1, 10, 5.0)
     assert decision is None
+
+def test_orchestrator_cold_start_short_circuit(temp_db, orch_env):
+  """When project directory has 0 files and 0 backlog, route to developer without LLM call."""
+  from agents.orchestrator import call_orchestrator
+
+  with patch("agents.orchestrator.get_context_manager") as gcm:
+    gcm.return_value.build_orchestrator_context.return_value = (
+        "ctx",
+        {
+            "tokens_used": 10,
+            "context_limit": 100000,
+            "context_utilization": 0.01,
+            "total_project_files": 0,  # Cold start
+            "files_included": [],
+            "files_excluded": [],
+        },
+    )
+    decision = call_orchestrator("t_cold", "Build Shiny app", [], 1, 5, 5.0)
+
+  assert decision is not None
+  assert decision["next_agent"] == "developer"
+  assert "Programmatic short-circuit" in decision["reasoning"]
+
+
+def test_orchestrator_background_disabled_override(
+    mock_llm, temp_db, orch_env, monkeypatch
+):
+  """When background_agents_enabled=False, override LLM decision from background to developer."""
+  from agents.orchestrator import call_orchestrator
+  from core import config as config_mod
+
+  # Force background_agents_enabled = False
+  original_get_config = config_mod.get_config
+
+  def fake_config():
+
+    c = dict(original_get_config())
+    c["background_agents_enabled"] = False
+    return c
+
+  monkeypatch.setattr(config_mod, "get_config", fake_config)
+
+  # Mock LLM returning 'background'
+  mock_llm.set_response("orchestrator", '{"next_agent": "background"}')
+
+  with mock_llm.patch_call_agent():
+    with patch("agents.orchestrator.get_context_manager") as gcm:
+      gcm.return_value.build_orchestrator_context.return_value = (
+          "ctx",
+          {
+              "tokens_used": 10,
+              "context_limit": 100000,
+              "context_utilization": 0.01,
+              "total_project_files": 1,
+              "files_included": [{"path": "app.py"}],
+              "files_excluded": [],
+          },
+      )
+      decision = call_orchestrator("t_override", "Build app", [], 1, 5, 5.0)
+
+  assert decision["next_agent"] == "developer"
+  assert "Overridden: background_agents_enabled is False" in decision["reasoning"]

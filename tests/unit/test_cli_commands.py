@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from unittest.mock import patch
+from cli import commands as cli_commands
+from core import config as core_config
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -160,3 +162,31 @@ class TestMainModule:
         import main as main_mod
 
         assert callable(main_mod.main)
+
+def test_cmd_init_creates_and_updates_gitignore(tmp_path, monkeypatch, temp_db):
+  """Verify cmd_init creates .gitignore containing .PrizmForge/ or appends if missing."""
+
+  proj_dir = tmp_path / "test_project"
+  proj_dir.mkdir()
+
+  def fake_config():
+
+    return {
+        "project_directory": str(proj_dir),
+        "git": False,
+        "background_agents_enabled": False,
+    }
+
+  monkeypatch.setattr(core_config, "get_config", fake_config)
+
+  # Run init
+  cli_commands.cmd_init()
+
+  gitignore = proj_dir / ".gitignore"
+  assert gitignore.exists()
+  assert ".PrizmForge/" in gitignore.read_text(encoding="utf-8")
+
+  # Run init again (idempotency check)
+  cli_commands.cmd_init()
+  content = gitignore.read_text(encoding="utf-8")
+  assert content.count(".PrizmForge/") == 1
