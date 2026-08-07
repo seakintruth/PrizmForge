@@ -24,7 +24,7 @@ def call_orchestrator(
   context_str, metadata = context_mgr.build_orchestrator_context(
       task_id, user_command, conversation_context, model
   )
-  file_count = len(metadata.get("files_included", []))
+  file_count = metadata.get("total_project_files", 0)
 
   # Get feedback backlog count
   try:

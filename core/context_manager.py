@@ -77,7 +77,6 @@ class ContextManager:
         # Conservative default for unknown models
         print(f"⚠️  Unknown model '{model}', using default context limit")
         return self.default_context_limit
-
     def build_orchestrator_context(
         self,
         task_id: str,
@@ -86,10 +85,28 @@ class ContextManager:
         model: Optional[str] = None,
     ) -> Tuple[str, Dict]:
         """
-        Build context for orchestrator using pre-computed token counts
-        FAST - just reads from database, no recalculation
+        Build context for orchestrator using pre-computed token counts.
+        FAST - just reads from database, no recalculation.
         """
         context_limit = self.get_model_context_limit(model)
+
+        # 1. Count all non-binary files across all subdirectories
+        total_project_files = 0
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT COUNT(*) FROM project_files 
+                    WHERE is_binary = 0 
+                      AND file_path NOT LIKE '.PrizmForge/%'
+                      AND file_path NOT LIKE '.git/%'
+                """)
+                row = cursor.fetchone()
+                total_project_files = row[0] if row else 0
+        except Exception as e:
+
+            print(f"⚠️ Failed to query project_files count: {e}")
+            total_project_files = 0
 
         # Base prompt
         base_context = f"**Task:** {user_command}\n\n"
@@ -105,7 +122,7 @@ class ContextManager:
             priority_tokens = len(prioritized_msg) // 4
             base_context += prioritized_msg + "\n\n"
 
-        # Structural index from target .PrizmForge/indexes (map, not full sources)
+        # Structural index from target .PrizmForge/indexes
         index_tokens = 0
         try:
             from core.index_context import build_index_context_block
@@ -122,21 +139,23 @@ class ContextManager:
         # Reserve 5% for system prompt + response
         available_for_files = int(context_limit * 0.95) - tokens_used
 
+        # Early return if context budget is exhausted
         if available_for_files < 1000:
             return base_context, {
                 "tokens_used": tokens_used,
                 "tokens_available": 0,
                 "context_limit": context_limit,
+                "context_utilization": tokens_used / context_limit if context_limit else 0,
+                "total_project_files": total_project_files,
                 "files_included": [],
                 "files_excluded": "all",
                 "truncation_reason": "No budget for files",
             }
 
-        # ============= FAST: Read pre-computed tokens from database =============
+        # Read pre-computed token estimates from database
         file_contexts = self._get_prioritized_files_fast(task_id)
-        # ========================================================================
 
-        # Pack files until we hit limit
+        # Pack files until context limit is reached
         included_files = []
         excluded_files = []
         remaining_budget = available_for_files
@@ -145,7 +164,6 @@ class ContextManager:
 
         for fc in file_contexts:
             if fc.estimated_tokens <= remaining_budget:
-                # Include
                 file_section += self._format_file_summary(fc) + "\n"
                 included_files.append(
                     {
@@ -157,7 +175,6 @@ class ContextManager:
                 remaining_budget -= fc.estimated_tokens
                 tokens_used += fc.estimated_tokens
             else:
-                # Exclude
                 excluded_files.append(
                     {
                         "path": fc.file_path,
@@ -166,7 +183,7 @@ class ContextManager:
                     }
                 )
 
-        # Add summary
+        # Add file summary line
         file_section += f"\n*Included {len(included_files)} files "
         file_section += f"({tokens_used:,} / {context_limit:,} tokens, "
         file_section += f"{tokens_used / context_limit:.1%} utilization)*\n"
@@ -176,11 +193,13 @@ class ContextManager:
 
         final_context = base_context + file_section
 
+        # Final metadata dictionary passed to callers
         metadata = {
             "tokens_used": tokens_used,
-            "tokens_available": context_limit - tokens_used,
+            "tokens_available": max(0, context_limit - tokens_used),
             "context_limit": context_limit,
-            "context_utilization": tokens_used / context_limit,
+            "context_utilization": tokens_used / context_limit if context_limit else 0,
+            "total_project_files": total_project_files,  # Total non-binary count across all subdirectories
             "files_included": included_files,
             "files_excluded": excluded_files,
             "truncation_reason": "Budget limit" if excluded_files else "All files fit",

@@ -9,18 +9,28 @@
   "background_agents_enabled": false,
   "cli_mode": {
     "mode": "unattended",
-    "_notes" : "Mode is semi_attended or unattended",
+    "_mode_options": [
+      "interactive",
+      "semi_attended",
+      "unattended"
+    ],
     "unattended": {
-      "max_duration_hours": 0.08,
+      "max_duration_hours": 1.5,
       "auto_continue": true,
-      "checkpoint_interval_minutes": 30,
-      "max_iterations_per_task": 5,
-      "min_idle_minutes": 0.02,
+      "checkpoint_interval_minutes": 15,
+      "max_iterations_per_task": 15,
+      "min_idle_minutes": 5,
       "auto_generate_tasks": true,
       "prioritize_critical_issues": true,
       "auto_init_on_start": true,
-      "seed_task": "Build an example Python Shiny app (shiny package for Python, or a minimal Streamlit/Shiny-like alternative if shiny is unavailable) that helps display canned report images. Include: a small gallery or viewer for sample report image files, navigation between images, and clear README for how to run the app. Place the app under the project_directory with sample placeholder images or documented paths for canned report screenshots.",
-      "seed_tasks": [],
+      "seed_task": "Build an example Python Shiny app (shiny package for Python) that helps display canned report images. Include: a small gallery or viewer for sample report image files, navigation between images, and clear README for how to run the app. Place the app files (e.g. app.py, README.md, requirements.txt) directly in the root of the project directory with sample placeholder images in assets/ or www/.",
+      "seed_tasks": [
+        "Add an interactive image zoom and pan feature to app.py for high-resolution canned report screenshots.",
+        "Implement a metadata sidebar in app.py displaying report file size, last modified timestamp, and report category tags.",
+        "Create a script generate_sample_reports.py under assets/ that programmatically generates 3 sample synthetic report charts (sales, traffic, latency) using matplotlib or pillow.",
+        "Add export functionality to app.py allowing users to download selected report images as a zip archive.",
+        "Create comprehensive unit and integration tests in tests/test_app.py validating Shiny app reactive outputs and file gallery indexing."
+      ],
       "stop_when_backlog_empty": true,
       "exit_on_preflight_failure": true
     }

@@ -1,5 +1,4 @@
 """CLI command handlers"""
-
 import csv
 import json
 import os
@@ -35,6 +34,23 @@ def cmd_init():
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))
     project_dir.mkdir(parents=True, exist_ok=True)
+
+
+    # =========================================================================
+    # Ensure .gitignore exists and contains .PrizmForge/
+    # =========================================================================
+    gitignore_path = project_dir / ".gitignore"
+    gitignore_entry = ".PrizmForge/"
+
+    if not gitignore_path.exists():
+        gitignore_path.write_text(f"{gitignore_entry}\n", encoding="utf-8")
+        print(f"  📝 Created .gitignore containing '{gitignore_entry}'")
+    else:
+        content = gitignore_path.read_text(encoding="utf-8")
+        if gitignore_entry not in content:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
+                f.write(f"\n# PrizmForge local data\n{gitignore_entry}\n")
+            print(f"  📝 Added '{gitignore_entry}' to existing .gitignore")
 
     print(f"Scanning: {project_dir.absolute()}\n")
 
