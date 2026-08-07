@@ -15,6 +15,30 @@ from workflow.task_runner import run_task_cycle
 # Global flag for graceful shutdown
 _shutdown_requested = False
 
+def resolve_task_description(config: dict, task_index: int) -> str:
+    """
+    Resolves the task prompt based on user precedence:
+    1. Highest Priority: Scalar `seed_task` for the initial run (task_index == 0) if provided.
+    2. Secondary Priority: `seed_tasks` list items in order.
+    3. Fallback: Scalar `seed_task` or default prompt.
+    """
+    scalar_seed = config.get("seed_task")
+    seed_tasks = config.get("seed_tasks", [])
+
+    # Highest Priority: Use scalar seed_task on the first task run (task_index 0) if present
+    if scalar_seed and task_index == 0:
+        return scalar_seed
+
+    # Adjust list index if scalar_seed was executed on index 0
+    list_index = task_index - 1 if scalar_seed else task_index
+
+    # Secondary Priority: Process seed_tasks list items in order
+    if seed_tasks and isinstance(seed_tasks, list) and 0 <= list_index < len(seed_tasks):
+        return seed_tasks[list_index]
+
+    # Fallback
+    return scalar_seed or "Default system task description"
+
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -61,9 +85,14 @@ def should_continue_unattended(state: CLIState, config: UnattendedConfig) -> boo
     return True
 
 
-def generate_next_task(state: CLIState, config: UnattendedConfig) -> str:
-    """Generate next task based on project state"""
-    # Priority 0: config seed_task / seed_tasks queue
+def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: Optional[dict] = None) -> str:
+    """Generate next task based on project state and precedence rules"""
+    # Priority 0: Check scalar seed_task and seed_tasks queue via precedence resolver
+    if config_dict:
+        task_prompt = resolve_task_description(config_dict, state.task_counter - 1)
+        if task_prompt and task_prompt != "Default system task description":
+            return task_prompt
+
     if config._seed_queue:
         return config._seed_queue.pop(0)
     if not config.auto_generate_tasks:
@@ -215,9 +244,14 @@ def load_checkpoint() -> Optional[CLIState]:
         return None
 
 
-def run_unattended_mode(config: UnattendedConfig):
+def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = None):
     """Run unattended mode loop"""
     global _shutdown_requested
+
+    # Load raw_config if not passed
+    if raw_config is None:
+        from core.config import get_config
+        raw_config = get_config()
 
     # Try to load checkpoint
     state = load_checkpoint()
@@ -258,11 +292,8 @@ def run_unattended_mode(config: UnattendedConfig):
     # Main unattended loop
     while should_continue_unattended(state, config):
         try:
-            # Generate task
-            if config.auto_generate_tasks:
-                task_description = generate_next_task(state, config)
-            else:
-                task_description = "Continue development based on project state and feedback"
+            # Generate task using scalar-first precedence logic
+            task_description = generate_next_task(state, config, config_dict=raw_config)
 
             task_id = f"task_{state.task_counter:03d}"
             state.task_counter += 1
@@ -272,7 +303,7 @@ def run_unattended_mode(config: UnattendedConfig):
             remaining = config.max_duration_hours - elapsed
 
             print(f"\n{'=' * 60}")
-            print(f"🎯 AUTO-GENERATED TASK: {task_id}")
+            print(f"🎯 TASK EXECUTION: {task_id}")
             print(f"   {task_description}")
             print(f"   Elapsed: {elapsed:.1f}h | Remaining: {remaining:.1f}h")
             print(f"{'=' * 60}\n")
@@ -311,7 +342,6 @@ def run_unattended_mode(config: UnattendedConfig):
                 idle_minutes = config.min_idle_minutes
                 print(f"\n⏸️  Pausing {idle_minutes:.1f}m before next task...")
 
-                # Sleep in small intervals to check shutdown flag
                 sleep_intervals = int(idle_minutes * 60 / 10)  # Check every 10 seconds
                 for _ in range(sleep_intervals):
                     if _shutdown_requested:
@@ -319,7 +349,6 @@ def run_unattended_mode(config: UnattendedConfig):
                     time.sleep(10)
 
         except KeyboardInterrupt:
-            # Graceful shutdown
             if not _shutdown_requested:
                 _shutdown_requested = True
             save_checkpoint(state)
@@ -331,7 +360,6 @@ def run_unattended_mode(config: UnattendedConfig):
 
             traceback.print_exc()
 
-            # Save checkpoint and recover
             save_checkpoint(state)
 
             if not _shutdown_requested:
@@ -349,17 +377,9 @@ def run_unattended_mode(config: UnattendedConfig):
     print(f"Tasks completed: {state.task_counter - 1}")
     print(f"Total iterations: {state.total_iterations}")
     print(f"Files modified: {state.total_files_modified}")
-    print(f"Checkpoints saved: {state.total_iterations // config.checkpoint_interval_minutes + 1}")
 
-    if _shutdown_requested:
-        print("\nStatus: Gracefully shutdown by user")
-    else:
-        print("\nStatus: Completed full duration")
-
-    print("=" * 60 + "\n")
-
-    # Save final checkpoint
     save_checkpoint(state)
+
 
     # Final summary (config-only run, no prompt)
     print("\n" + "=" * 60)
@@ -671,18 +691,15 @@ def run_semi_attended_mode():
 def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: Optional[UnattendedConfig] = None):
     """Main interactive loop - routes to appropriate mode"""
 
-    # Setup signal handler for graceful shutdown
     signal.signal(signal.SIGINT, signal_handler)
 
     if mode == CLIMode.UNATTENDED:
-        # Unattended mode - continuous operation
+        from core.config import get_config
+        raw_config = get_config()
+
         if unattended_config is None:
-            from core.config import get_config
+            unattended_config = UnattendedConfig.from_config(raw_config)
 
-            config = get_config()
-            unattended_config = UnattendedConfig.from_config(config)
-
-        run_unattended_mode(unattended_config)
+        run_unattended_mode(unattended_config, raw_config=raw_config)
     else:
-        # Semi-attended mode - wait for human input
         run_semi_attended_mode()

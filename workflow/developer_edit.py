@@ -33,6 +33,109 @@ from workflow.edit_mode_selector import (
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 
 
+def _build_generation_prompt(
+    *,
+    instructions: str,
+    edit_method: str,
+    files_content: List[str],
+    requested_files: List[str],
+    fallback_used: bool = False,
+    previous_reason: Optional[str] = None,
+) -> str:
+    """Build prompt for Developer LLM, injecting explicit warning on fallback."""
+    joined = "\n\n".join(files_content) if files_content else "No existing files."
+
+    index_snip = ""
+    try:
+        index_snip = load_symbol_json_context(
+            file_paths=requested_files or None,
+            max_rows=50,
+            label="Symbols for target files",
+        )
+    except Exception:
+        pass
+
+    parts = [
+        instructions,
+        index_snip,
+        f"**Required edit mode: {edit_method}**",
+        f"Target files to create/update: {', '.join(requested_files)}",
+        "",
+        "File content:",
+        joined,
+        "",
+    ]
+
+    # 🎯 PHASE 2 INJECTION: Explicit clean re-prompting context on mode fallback
+    if fallback_used or edit_method == MODE_FULL_REPLACE:
+        fallback_banner = (
+            "======================================================================\n"
+            "⚠️ CRITICAL FALLBACK INSTRUCTION — FULL FILE REPLACE REQUIRED\n"
+            "======================================================================\n"
+            "You are operating in FULL_REPLACE mode (or falling back after a failed edit).\n\n"
+            "REQUIREMENTS FOR 'new_content':\n"
+            "1. You MUST supply the COMPLETE file content from Line 1 through the END.\n"
+            "2. DO NOT provide partial line snippets, placeholders, or truncated code.\n"
+            "3. Ensure all existing functions and imports are fully preserved.\n"
+            "======================================================================\n"
+        )
+        if previous_reason:
+            fallback_banner += f"Previous Failure Reason: {previous_reason}\n\n"
+        parts.append(fallback_banner)
+
+    parts.extend([
+        "CRITICAL INSTRUCTIONS FOR FILE CREATION & MODIFICATION:",
+        '- To create a new file or completely write a file, use operation type "create_file" or "full_replace".',
+        '- "create_file" format: {"type": "create_file", "target_file_path": "app.py", "initial_content": ["line1", "line2"], "rationale": "..."}',
+        '- "full_replace" format: {"type": "full_replace", "target_file_path": "app.py", "new_content": "full source text", "rationale": "..."}',
+        "- Respond ONLY with valid JSON matching the developer schema.",
+    ])
+    
+    return "\n".join(parts)
+
+
+def _normalize_payload(data: dict, edit_method: str, requested_files: List[str]) -> dict:
+    """Normalize top-level full_replace / diff shapes into operations form."""
+    out = dict(data)
+    if not out.get("target_file_path") and requested_files:
+        out["target_file_path"] = requested_files[0]
+
+    if "operations" not in out:
+        if "new_content" in out:
+            out["operations"] = [
+                {
+                    "type": "full_replace",
+                    "new_content": out.get("new_content"),
+                    "rationale": out.get("rationale") or out.get("summary") or "full replace",
+                }
+            ]
+            out["_final_mode"] = MODE_FULL_REPLACE
+        elif "diff" in out:
+            out["operations"] = [
+                {
+                    "type": "apply_diff",
+                    "diff": out.get("diff"),
+                    "rationale": out.get("rationale") or out.get("summary") or "apply diff",
+                }
+            ]
+            out["_final_mode"] = MODE_DIFF
+        elif out.get("find") is not None:
+            out["operations"] = [
+                {
+                    "type": "find_replace",
+                    "find": out.get("find"),
+                    "replace": out.get("replace", ""),
+                    "rationale": out.get("rationale") or "find replace",
+                }
+            ]
+
+    if not out.get("summary"):
+        out["summary"] = out.get("rationale") or f"Edit {out.get('target_file_path', 'file')}"
+    if not out.get("rationale"):
+        out["rationale"] = out.get("summary") or "Developer edit mutation"
+    return out
+
+
 def run_developer_mutation(
     *,
     task_id: str,
@@ -50,8 +153,6 @@ def run_developer_mutation(
 ) -> Dict[str, Any]:
     """
     Execute mode selection through materialize for one developer turn.
-
-    Returns a result dict: {status, proposal_id?, edit_method?, fallback_used?}
     Updates progress counters in-place.
     """
     if not requested_files:
@@ -98,18 +199,23 @@ def run_developer_mutation(
     response = None
     validation = None
     fallback_used = False
+    last_reason = None
     max_mode_attempts = len(mode_decision.fallback_chain) or 4
 
     for _attempt in range(max_mode_attempts):
         modes_tried.append(edit_method)
         print(f"   🧪 Generating edit (mode={edit_method}, attempt={_attempt + 1})")
 
+        # 🎯 PHASE 2 INJECTION: Pass fallback state and last_reason into prompt builder
         gen_prompt = _build_generation_prompt(
             instructions=instructions,
             edit_method=edit_method,
             files_content=files_content,
             requested_files=requested_files,
+            fallback_used=fallback_used,
+            previous_reason=last_reason,
         )
+
         progress["developer_calls"] = progress.get("developer_calls", 0) + 1
         response = call_agent(
             "developer",
@@ -118,6 +224,7 @@ def run_developer_mutation(
             conversation_context,
             model_choice,
         )
+
         if not response:
             next_mode = next_fallback_mode(
                 edit_method,
@@ -128,16 +235,20 @@ def run_developer_mutation(
                 print(f"   ↪️  Empty response; falling back {edit_method} → {next_mode}")
                 edit_method = next_mode
                 fallback_used = True
+                last_reason = "Empty LLM response"
                 continue
             break
 
+        # Validate response structure (no line limits enforced)
         validation = validate_developer_edit_response(response)
         if validation.is_valid:
             print(f"   ✅ Valid edit payload ({validation.detected_mode})")
             break
 
         reason = getattr(validation.reason, "value", validation.reason) or "invalid"
+        last_reason = str(reason)
         print(f"   ⚠️  Invalid developer JSON ({reason})")
+
         next_mode = next_fallback_mode(
             edit_method,
             fallback_chain=mode_decision.fallback_chain,
@@ -154,6 +265,7 @@ def run_developer_mutation(
             edit_method = next_mode
             fallback_used = True
             continue
+
         post_message(
             "developer",
             "orchestrator",
@@ -216,7 +328,6 @@ def run_developer_mutation(
             reason = decision_data.get("reason", "")
             suggestions = decision_data.get("suggestions") or []
         except Exception:
-            # Non-JSON reviewer: default approve with note
             decision_result = "APPROVE"
             reason = "reviewer response not JSON; defaulting to APPROVE"
 
@@ -304,86 +415,3 @@ def run_developer_mutation(
         "fallback_used": fallback_used,
         "materialize": mat,
     }
-
-# workflow/developer_edit.py
-
-
-def _build_generation_prompt(
-    *,
-    instructions: str,
-    edit_method: str,
-    files_content: List[str],
-    requested_files: List[str],
-) -> str:
-  joined = "\n\n".join(files_content) if files_content else "No existing files."
-
-  index_snip = ""
-  try:
-    index_snip = load_symbol_json_context(
-        file_paths=requested_files or None,
-        max_rows=50,
-        label="Symbols for target files",
-    )
-  except Exception:
-    pass
-
-  parts = [
-      instructions,
-      index_snip,
-      f"**Required edit mode: {edit_method}**",
-      f"Target files to create/update: {', '.join(requested_files)}",
-      "",
-      "File content:",
-      joined,
-      "",
-      "CRITICAL INSTRUCTIONS FOR FILE CREATION & MODIFICATION:",
-      "- To create a new file or completely write a file, use operation type"
-      ' "create_file" or "full_replace".',
-      '- "create_file" format: {"type": "create_file", "target_file_path":'
-      ' "app.py", "initial_content": ["line1", "line2"], "rationale": "..."}',
-      '- "full_replace" format: {"type": "full_replace", "target_file_path":'
-      ' "app.py", "new_content": "full source text", "rationale": "..."}',
-      "- Respond ONLY with valid JSON matching the developer schema.",
-  ]
-  return "\n".join(parts)
-
-def _normalize_payload(data: dict, edit_method: str, requested_files: List[str]) -> dict:
-    """Normalize top-level full_replace / diff shapes into operations form."""
-    out = dict(data)
-    if not out.get("target_file_path") and requested_files:
-        out["target_file_path"] = requested_files[0]
-
-    if "operations" not in out:
-        if "new_content" in out:
-            out["operations"] = [
-                {
-                    "type": "full_replace",
-                    "new_content": out.get("new_content"),
-                    "rationale": out.get("rationale") or out.get("summary") or "full replace",
-                }
-            ]
-            out["_final_mode"] = MODE_FULL_REPLACE
-        elif "diff" in out:
-            out["operations"] = [
-                {
-                    "type": "apply_diff",
-                    "diff": out.get("diff"),
-                    "rationale": out.get("rationale") or out.get("summary") or "apply diff",
-                }
-            ]
-            out["_final_mode"] = MODE_DIFF
-        elif out.get("find") is not None:
-            out["operations"] = [
-                {
-                    "type": "find_replace",
-                    "find": out.get("find"),
-                    "replace": out.get("replace", ""),
-                    "rationale": out.get("rationale") or "find replace",
-                }
-            ]
-    # Ensure summary/rationale meet minimums when possible
-    if not out.get("summary"):
-        out["summary"] = out.get("rationale") or f"Edit {out.get('target_file_path', 'file')}"
-    if not out.get("rationale"):
-        out["rationale"] = out.get("summary") or "Developer edit mutation"
-    return out

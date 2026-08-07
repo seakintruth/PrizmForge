@@ -15,6 +15,7 @@ from core.db import init_db
 from interactive import interactive_loop
 
 
+
 def main():
     """Initialize and start system"""
     print("\n" + "=" * 60)

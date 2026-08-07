@@ -5,6 +5,7 @@ Useful for debugging JSON parsing failures and seeing what the LLM actually retu
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -16,56 +17,89 @@ from core.db import get_db_path
 from core.db_connection import get_db_connection
 
 
-def list_recent_developer_responses(task_id=None, limit=10, agent_name="developer"):
-    """List recent developer responses with summary info."""
+def list_recent_developer_responses(
+    task_id=None,
+    limit=10,
+    agent_name="developer",
+    file_filter=None,
+    modified_only=False,
+):
+    """List recent developer responses with summary info, file filtering, and exact Reviewer approval matching."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        if task_id:
-            cursor.execute(
-                """
-                SELECT id, timestamp, agent_name, parse_success,
-                       LENGTH(prompt) as prompt_len,
-                       LENGTH(response) as response_len
-                FROM agent_responses_archive
-                WHERE agent_name = ? AND task_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """,
-                (agent_name, task_id, limit),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT id, timestamp, agent_name, task_id, parse_success,
-                       LENGTH(prompt) as prompt_len,
-                       LENGTH(response) as response_len
-                FROM agent_responses_archive
-                WHERE agent_name = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """,
-                (agent_name, limit),
-            )
+        query_conditions = ["r.agent_name = ?"]
+        params = [agent_name]
 
+        if task_id:
+            query_conditions.append("r.task_id = ?")
+            params.append(task_id)
+
+        if file_filter:
+            query_conditions.append("(r.prompt LIKE ? OR r.response LIKE ? OR p.target_file_path LIKE ?)")
+            file_pattern = f"%{file_filter}%"
+            params.extend([file_pattern, file_pattern, file_pattern])
+
+        where_clause = " AND ".join(query_conditions)
+
+        if modified_only:
+            # Match Developer response r to the immediate Reviewer response (id + 1 or + 2) that APPROVED the edit
+            query = f"""
+                SELECT DISTINCT
+                    r.id, r.timestamp, r.agent_name, r.task_id, r.parse_success,
+                    LENGTH(r.prompt) as prompt_len,
+                    LENGTH(r.response) as response_len,
+                    p.target_file_path as modified_file
+                FROM agent_responses_archive r
+                JOIN agent_responses_archive rev ON (rev.id = r.id + 1 OR rev.id = r.id + 2)
+                    AND rev.agent_name = 'reviewer'
+                    AND rev.response LIKE '%"decision": "APPROVE"%'
+                    AND rev.response NOT LIKE '%"decision": "REJECT"%'
+                JOIN edit_proposals p ON p.status = 'applied'
+                WHERE {where_clause}
+                ORDER BY r.timestamp DESC
+                LIMIT ?
+            """
+        else:
+            query = f"""
+                SELECT DISTINCT
+                    r.id, r.timestamp, r.agent_name, r.task_id, r.parse_success,
+                    LENGTH(r.prompt) as prompt_len,
+                    LENGTH(r.response) as response_len,
+                    NULL as modified_file
+                FROM agent_responses_archive r
+                WHERE {where_clause}
+                ORDER BY r.timestamp DESC
+                LIMIT ?
+            """
+
+        params.append(limit)
+        cursor.execute(query, params)
         responses = cursor.fetchall()
 
+
     if not responses:
-        print(f"\n❌ No {agent_name} responses found")
+        file_msg = f" mentioning '{file_filter}'" if file_filter else ""
+        mod_msg = " that resulted in file changes" if modified_only else ""
+        print(f"\n❌ No {agent_name} responses found{file_msg}{mod_msg}")
         return []
 
     print(f"\n{'=' * 80}")
-    print(f"📋 Recent {agent_name.upper()} Responses ({len(responses)} found)")
+    filter_msgs = []
+    if file_filter:
+        filter_msgs.append(f"Filtered by file: '{file_filter}'")
+    if modified_only:
+        filter_msgs.append("Modified Files Only")
+
+    filter_str = f" ({', '.join(filter_msgs)})" if filter_msgs else ""
+    print(f"📋 Recent {agent_name.upper()} Responses ({len(responses)} found){filter_str}")
     print(f"{'=' * 80}\n")
 
     for row in responses:
-        if task_id:
-            resp_id, timestamp, agent, parse_ok, prompt_len, resp_len = row
-            task = task_id
-        else:
-            resp_id, timestamp, agent, task, parse_ok, prompt_len, resp_len = row
-
+        resp_id, timestamp, agent, task, parse_ok, prompt_len, resp_len, mod_file = row
         status = "✅ Parsed" if parse_ok else "❌ Parse Failed"
+        if mod_file:
+            status += f" (File Modified: {mod_file})"
 
         print(f"ID: {resp_id}")
         print(f"   Time: {timestamp}")
@@ -131,7 +165,6 @@ def show_response_detail(response_id, show_full=False, max_chars=2000):
     elif show_full or len(response) <= max_chars:
         print(response)
     else:
-        # Show first and last parts
         half = max_chars // 2
         print(response[:half])
         print(f"\n... +{len(response) - max_chars:,} more chars ...\n")
@@ -145,7 +178,6 @@ def show_response_detail(response_id, show_full=False, max_chars=2000):
         print("🔍 DIAGNOSTIC INFO:")
         print("-" * 80)
 
-        # Check response characteristics
         if not response or response.strip() == "":
             print("❌ Response is empty or whitespace only")
             print("   → This causes 'Expecting value: line 1 column 1' error")
@@ -153,11 +185,11 @@ def show_response_detail(response_id, show_full=False, max_chars=2000):
             print("   1. LLM returned nothing (timeout, content filter, error)")
             print("   2. Network/API error (check endpoint_health table)")
             print("   3. Response was lost in transmission")
-        elif not response.strip().startswith("{"):
-            print(f"⚠️  Response doesn't start with '{{' (starts with: {response.strip()[:50]})")
-            print("   → Response may be wrapped in markdown or text")
-        elif response.count("{") != response.count("}"):
-            print(f"⚠️  Unmatched braces: {response.count('{')} open, {response.count('}')} close")
+        elif not response.strip().startswith("{") and not response.strip().startswith("["):
+            print(f"⚠️  Response doesn't start with '{{' or '[' (starts with: {response.strip()[:50]})")
+            print("   → Response may be wrapped in markdown or conversational text")
+        elif response.count("{") != response.count("}") or response.count("[") != response.count("]"):
+            print("⚠️  Unmatched brackets or braces in JSON")
             print("   → Response may be truncated")
         else:
             print("⚠️  Response looks like JSON but parser failed")
@@ -166,54 +198,50 @@ def show_response_detail(response_id, show_full=False, max_chars=2000):
         print()
 
 
-def show_failed_parses(task_id=None, limit=10):
-    """Show only responses that failed to parse."""
+def show_failed_parses(task_id=None, limit=10, file_filter=None):
+    """Show only responses that failed to parse with optional file filtering."""
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        if task_id:
-            cursor.execute(
-                """
-                SELECT id, timestamp, agent_name, parse_error,
-                       LENGTH(prompt) as prompt_len,
-                       LENGTH(response) as response_len
-                FROM agent_responses_archive
-                WHERE parse_success = 0 AND task_id = ?
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """,
-                (task_id, limit),
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT id, timestamp, agent_name, task_id, parse_error,
-                       LENGTH(prompt) as prompt_len,
-                       LENGTH(response) as response_len
-                FROM agent_responses_archive
-                WHERE parse_success = 0
-                ORDER BY timestamp DESC
-                LIMIT ?
-            """,
-                (limit,),
-            )
+        query_conditions = ["parse_success = 0"]
+        params = []
 
+        if task_id:
+            query_conditions.append("task_id = ?")
+            params.append(task_id)
+
+        if file_filter:
+            query_conditions.append("(prompt LIKE ? OR response LIKE ?)")
+            file_pattern = f"%{file_filter}%"
+            params.extend([file_pattern, file_pattern])
+
+        where_clause = " AND ".join(query_conditions)
+        query = f"""
+            SELECT id, timestamp, agent_name, task_id, parse_error,
+                   LENGTH(prompt) as prompt_len,
+                   LENGTH(response) as response_len
+            FROM agent_responses_archive
+            WHERE {where_clause}
+            ORDER BY timestamp DESC
+            LIMIT ?
+        """
+        params.append(limit)
+
+        cursor.execute(query, params)
         failures = cursor.fetchall()
 
     if not failures:
-        print("\n✅ No parse failures found!\n")
+        file_msg = f" mentioning '{file_filter}'" if file_filter else ""
+        print(f"\n✅ No parse failures found{file_msg}!\n")
         return
 
+    filter_msg = f" (Filtered by file: '{file_filter}')" if file_filter else ""
     print(f"\n{'=' * 80}")
-    print(f"❌ Parse Failures ({len(failures)} found)")
+    print(f"❌ Parse Failures ({len(failures)} found){filter_msg}")
     print(f"{'=' * 80}\n")
 
     for row in failures:
-        if task_id:
-            resp_id, timestamp, agent, error, prompt_len, resp_len = row
-            task = task_id
-        else:
-            resp_id, timestamp, agent, task, error, prompt_len, resp_len = row
+        resp_id, timestamp, agent, task, error, prompt_len, resp_len = row
 
         print(f"ID: {resp_id} | {timestamp}")
         print(f"   Agent: {agent} | Task: {task}")
@@ -228,20 +256,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # List recent developer responses
-  python query_developer_responses.py --list
+  # Export database tables to CSV files
+  python query_developer_responses.py --export
 
-  # List for specific task
-  python query_developer_responses.py --list --task task_001
+  # Export database tables for a specific task
+  python query_developer_responses.py --export --task task_001
 
-  # Show full detail for response ID 42
-  python query_developer_responses.py --show 42 --full
+  # List all developer responses that resulted in actual file modifications
+  python query_developer_responses.py --list -m
 
-  # Show only failed parses
-  python query_developer_responses.py --failures
+  # List responses that modified app.py
+  python query_developer_responses.py --list --file app.py -m -n 50
 
-  # Show latest response
-  python query_developer_responses.py --latest --full
+  # Show full detail for response ID 84
+  python query_developer_responses.py --show 84 --full
         """,
     )
 
@@ -253,12 +281,30 @@ Examples:
         action="store_true",
         help="Show only responses that failed to parse",
     )
+    parser.add_argument(
+        "-e",
+        "--export",
+        action="store_true",
+        help="Export database tables to CSV files using cli.commands.cmd_export_db",
+    )
+    parser.add_argument(
+        "-m",
+        "--modified-files",
+        "--modified",
+        action="store_true",
+        dest="modified_only",
+        help="Only show responses that resulted in an applied edit / file modification",
+    )
     parser.add_argument("--task", metavar="TASK_ID", help="Filter by task ID")
+    parser.add_argument("-f", "--file", metavar="FILE_PATH", help="Filter responses mentioning specific file path (e.g. app.py)")
     parser.add_argument("--agent", default="developer", help="Agent name to query (default: developer)")
     parser.add_argument(
+        "-n",
+        "--number",
         "--limit",
         type=int,
         default=10,
+        dest="limit",
         help="Number of responses to show (default: 10)",
     )
     parser.add_argument("--full", action="store_true", help="Show full response (no truncation)")
@@ -272,25 +318,41 @@ Examples:
     args = parser.parse_args()
 
     # Validate at least one action specified
-    if not any([args.list, args.show, args.latest, args.failures]):
+    if not any([args.list, args.show, args.latest, args.failures, args.export]):
         parser.print_help()
         sys.exit(1)
 
     print(f"\n🔍 Querying database: {get_db_path()}\n")
 
     try:
-        if args.failures:
-            show_failed_parses(task_id=args.task, limit=args.limit)
+        if args.export:
+            from cli.commands import cmd_export_db
+
+            cmd_export_db(task_id=args.task)
+
+        elif args.failures:
+            show_failed_parses(task_id=args.task, limit=args.limit, file_filter=args.file)
 
         elif args.list:
-            list_recent_developer_responses(task_id=args.task, limit=args.limit, agent_name=args.agent)
+            list_recent_developer_responses(
+                task_id=args.task,
+                limit=args.limit,
+                agent_name=args.agent,
+                file_filter=args.file,
+                modified_only=args.modified_only,
+            )
 
         elif args.show:
             show_response_detail(args.show, show_full=args.full, max_chars=args.max_chars)
 
         elif args.latest:
-            # Get latest ID
-            response_ids = list_recent_developer_responses(task_id=args.task, limit=1, agent_name=args.agent)
+            response_ids = list_recent_developer_responses(
+                task_id=args.task,
+                limit=1,
+                agent_name=args.agent,
+                file_filter=args.file,
+                modified_only=args.modified_only,
+            )
             if response_ids:
                 show_response_detail(response_ids[0], show_full=args.full, max_chars=args.max_chars)
 
