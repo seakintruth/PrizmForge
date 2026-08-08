@@ -184,9 +184,7 @@ def validate_source_content(
         return {
             "ok": False,
             "message": (
-                f"Refusing path {file_path!r}: {reason}. "
-                "Remove it from content_safety.blocked_extensions to allow this path "
-                "(content checks may still apply)."
+                f"Refusing path {file_path!r}: {reason}. Remove it from content_safety.blocked_extensions to allow this path (content checks may still apply)."
             ),
         }
 

@@ -1,5 +1,3 @@
-from typing import List, Optional
-
 """Parallel background agent workers with continuous file feeding"""
 
 import queue
@@ -11,13 +9,18 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List, Optional
 
+from agents.archivist_worker import get_archivist_worker
 from agents.base import call_agent
+from agents.prioritizer_worker import get_prioritizer_worker
+from agents.reporter_worker import get_reporter_worker
 from agents.response_cleaner import clean_llm_response
+from core.config import get_config
 from core.db import get_db_path
 from core.db_helpers import post_message, save_agent_feedback
 from core.file_operations import compute_file_hash, format_file_with_guids
+from core.json_parser import parse_json_response
 from file_editing.db import log_error
 
 
@@ -60,7 +63,6 @@ class BoundedSet:
 
 class BackgroundAgentPool:
     def __init__(self):
-        from core.config import get_config
 
         self.event_queue = queue.Queue()
         self.workers = []
@@ -173,6 +175,8 @@ class BackgroundAgentPool:
         Sets running=False first so worker loops exit, then joins threads and
         drains the queue. Support workers are stopped after analysis workers.
         """
+        from agents.resource_controller_worker import get_resource_controller  # noqa: E402, PLC0415
+
         with self._state_lock:
             if not self.running and not self.workers and self.feeder_thread is None:
                 return
@@ -181,11 +185,6 @@ class BackgroundAgentPool:
             self._join_workers_unlocked(timeout=2.0)
 
         # Support workers outside state lock (they manage their own threads)
-        from agents.archivist_worker import get_archivist_worker
-        from agents.prioritizer_worker import get_prioritizer_worker
-        from agents.reporter_worker import get_reporter_worker
-        from agents.resource_controller_worker import get_resource_controller
-
         get_archivist_worker().stop()
         get_prioritizer_worker().stop()
         get_reporter_worker().stop()
@@ -198,10 +197,7 @@ class BackgroundAgentPool:
 
     def _start_support_workers(self, task_id: str):
         """Start archivist, prioritizer, reporter, resource controller"""
-        from agents.archivist_worker import get_archivist_worker
-        from agents.prioritizer_worker import get_prioritizer_worker
-        from agents.reporter_worker import get_reporter_worker
-        from agents.resource_controller_worker import get_resource_controller
+        from agents.resource_controller_worker import get_resource_controller  # noqa: E402, PLC0415
 
         get_archivist_worker().start(task_id)
         get_prioritizer_worker().start(task_id)
@@ -616,7 +612,6 @@ class BackgroundAgentPool:
 
     def _parse_and_save_feedback(self, agent_name: str, event: FileChangeEvent, response: str):
         """Parse response and save feedback"""
-        from core.json_parser import parse_json_response
 
         try:
             data = parse_json_response(response, expected_keys=None, strict=False, agent_name=agent_name)
@@ -674,18 +669,9 @@ class BackgroundAgentPool:
 
                 category = (item.get("category") or item.get("type") or item.get("kind") or "other").lower()
 
-                message = (
-                    item.get("message")
-                    or item.get("issue")
-                    or item.get("description")
-                    or item.get("finding")
-                    or item.get("observation")
-                    or str(item)
-                )
+                message = item.get("message") or item.get("issue") or item.get("description") or item.get("finding") or item.get("observation") or str(item)
 
-                suggestion = (
-                    item.get("suggestion") or item.get("fix") or item.get("recommendation") or item.get("solution") or ""
-                )
+                suggestion = item.get("suggestion") or item.get("fix") or item.get("recommendation") or item.get("solution") or ""
 
                 # ✅ REQUIRE: Must have at least a message
                 if not message or len(str(message)) < 10:
@@ -794,7 +780,7 @@ class BackgroundAgentPool:
             return
         try:
             try:
-                from agents.resource_controller_worker import get_resource_controller
+                from agents.resource_controller_worker import get_resource_controller  # noqa: E402, PLC0415
 
                 rc = get_resource_controller()
                 rc.temporarily_disable_throttling(duration_seconds=45)

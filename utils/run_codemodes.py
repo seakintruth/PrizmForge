@@ -36,9 +36,7 @@ SKIP_PATTERNS = ["tests", "test_", "site-packages"]
 # targeted file & replacement for the edit_payload union widening (adjust if needed)
 EDIT_PAYLOAD_FILE = "file_editing/edit_payload.py"
 EDIT_PAYLOAD_OLD = r"list\[ReplaceBlock\]"
-EDIT_PAYLOAD_NEW = (
-    "list[ReplaceBlock | InsertAfter | DeleteLines | UpdateDocumentation | CreateFile | FindReplace | FullReplace | ApplyDiff]"
-)
+EDIT_PAYLOAD_NEW = "list[ReplaceBlock | InsertAfter | DeleteLines | UpdateDocumentation | CreateFile | FindReplace | FullReplace | ApplyDiff]"
 
 
 # === Helpers ===
@@ -207,9 +205,7 @@ class AddAnyAnn(cst.CSTTransformer):
         if m.matches(tgt, m.Name()) and not isinstance(updated, cst.AnnAssign):
             name = tgt.value
             self.add_any = True
-            ann = cst.AnnAssign(
-                target=cst.Name(name), annotation=cst.Annotation(cst.Name("Any")), value=updated.value, simple=1
-            )
+            ann = cst.AnnAssign(target=cst.Name(name), annotation=cst.Annotation(cst.Name("Any")), value=updated.value, simple=1)
             return ann
         return updated
 
@@ -258,10 +254,10 @@ def run_widen_edit_payload(root: Path) -> int:
 ALL_TRANSFORMS = {
     "fix_callable": run_fix_callable,
     "add_typing_imports": run_add_typing_imports,
-    "optionalize_defaults": run_optionalize_defaults,
     "add_any_annotations": run_add_any_annotations,
     "widen_edit_payload": run_widen_edit_payload,
 }
+# Removed     "optionalize_defaults": run_optionalize_defaults, as an all_transforms
 
 
 def parse_args():

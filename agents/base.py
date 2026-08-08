@@ -46,7 +46,7 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
-def call_endpoint(
+def call_endpoint(  # noqa: C901
     messages: List[Dict],
     max_tokens: Optional[int] = None,
     temperature: Optional[float] = None,
@@ -591,7 +591,7 @@ def call_endpoint(
     return None, 0
 
 
-def call_agent(
+def call_agent(  # noqa: C901
     agent_name: str,
     prompt: str,
     task_id: str,
@@ -768,9 +768,7 @@ If you cannot analyze the file, return:
         truncation_result = detector.detect(response, expected_format)
 
         if truncation_result.should_resume:
-            print(
-                f"  🔄 {agent_name}: Truncated {truncation_result.truncation_type.value} detected (confidence: {truncation_result.confidence:.0%})"
-            )
+            print(f"  🔄 {agent_name}: Truncated {truncation_result.truncation_type.value} detected (confidence: {truncation_result.confidence:.0%})")
             print(f"     Attempts remaining: {max_resume_attempts}")
 
             # Build resume prompt

@@ -245,10 +245,7 @@ def collect_indexes(root_dir: str) -> Dict[str, List[FileIndex]]:
 
 def _write_production_index(out, files: List[FileIndex]) -> None:
     out.write("## Index: Production code\n\n")
-    out.write(
-        "Modules, classes, and top-level functions/methods under "
-        "agents/, cli/, core/, file_editing/, workflow/, utils/, and root entrypoints.\n\n"
-    )
+    out.write("Modules, classes, and top-level functions/methods under agents/, cli/, core/, file_editing/, workflow/, utils/, and root entrypoints.\n\n")
     for entry in files:
         out.write(f"### `{entry.path}`\n\n")
         if not entry.symbols:
@@ -268,11 +265,7 @@ def _write_test_index(out, files: List[FileIndex]) -> None:
     out.write("Test modules and discovered test callables / helpers.\n\n")
     for entry in files:
         out.write(f"### `{entry.path}`\n\n")
-        tests = [
-            s
-            for s in entry.symbols
-            if s.kind != "module" and (s.name.startswith("test_") or s.name.startswith("Test") or ".test_" in s.qualname)
-        ]
+        tests = [s for s in entry.symbols if s.kind != "module" and (s.name.startswith("test_") or s.name.startswith("Test") or ".test_" in s.qualname)]
         others = [s for s in entry.symbols if s.kind != "module" and s not in tests]
         if tests:
             out.write("**Tests / test classes**\n\n")
@@ -407,7 +400,7 @@ def generate_target_indexes(
     return written
 
 
-def consolidate_project(
+def consolidate_project(  # noqa: C901
     root_dir: str,
     output_filename: str = "project_review.md",
     *,
@@ -497,10 +490,7 @@ def consolidate_project(
                 outfile.write("\n```\n\n---\n\n")
 
     print(f"✅ Consolidation complete! Created: {out_abs}")
-    print(
-        f"   Indexes — production: {len(indexes['production'])}, "
-        f"tests: {len(indexes['test'])}, markdown: {len(indexes['markdown'])}"
-    )
+    print(f"   Indexes — production: {len(indexes['production'])}, tests: {len(indexes['test'])}, markdown: {len(indexes['markdown'])}")
     if index_paths:
         print("   Standalone index files:")
         for k, v in index_paths.items():

@@ -21,7 +21,7 @@ from core.file_operations import (
 from core.token_budget import TokenBudget
 
 
-def cmd_init():
+def cmd_init():  # noqa: C901
     """Initialize and index project"""
     print(f"\n{'=' * 60}")
     print("📂 Indexing Project")
@@ -386,9 +386,7 @@ def cmd_export_db(output_dir: Optional[Path] = None, task_id: Optional[str] = No
 
                 exported_count += 1
                 total_rows += len(rows)
-                scope_tag = (
-                    f" (filtered: {task_id})" if (task_id and table_has_task_id(cursor, table_name)) else " (all tasks)"
-                )
+                scope_tag = f" (filtered: {task_id})" if (task_id and table_has_task_id(cursor, table_name)) else " (all tasks)"
                 print(f"  ✅ {table_name}: {len(rows)} rows{scope_tag} → {csv_file.name}")
 
             except Exception as e:

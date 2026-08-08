@@ -296,9 +296,7 @@ Examples:
         help="Only show responses that resulted in an applied edit / file modification",
     )
     parser.add_argument("--task", metavar="TASK_ID", help="Filter by task ID")
-    parser.add_argument(
-        "-f", "--file", metavar="FILE_PATH", help="Filter responses mentioning specific file path (e.g. app.py)"
-    )
+    parser.add_argument("-f", "--file", metavar="FILE_PATH", help="Filter responses mentioning specific file path (e.g. app.py)")
     parser.add_argument("--agent", default="developer", help="Agent name to query (default: developer)")
     parser.add_argument(
         "-n",

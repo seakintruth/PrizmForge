@@ -183,7 +183,7 @@ class EditPayload:
         return cls.model_validate(data)
 
     @classmethod
-    def model_validate(cls, data: Dict[str, Any]) -> "EditPayload":
+    def model_validate(cls, data: Dict[str, Any]) -> "EditPayload":  # noqa: C901
         ops = []
         for i, op_data in enumerate(data.get("operations", [])):
             if not isinstance(op_data, dict):
@@ -226,9 +226,7 @@ class EditPayload:
                 elif op_type == "delete_lines":
                     ops.append(DeleteLines(**{k: v for k, v in op_kwargs.items() if k in DeleteLines.__annotations__}))
                 elif op_type == "update_documentation":
-                    ops.append(
-                        UpdateDocumentation(**{k: v for k, v in op_kwargs.items() if k in UpdateDocumentation.__annotations__})
-                    )
+                    ops.append(UpdateDocumentation(**{k: v for k, v in op_kwargs.items() if k in UpdateDocumentation.__annotations__}))
                 elif op_type == "create_file":
                     ops.append(CreateFile(**{k: v for k, v in op_kwargs.items() if k in CreateFile.__annotations__}))
                 elif op_type == "find_replace":

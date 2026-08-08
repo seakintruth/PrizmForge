@@ -135,9 +135,7 @@ class TestEditModeSelector:
     def test_validator_detects_empty_ops(self):
         from core.edit_response_validator import EditFailureReason, validate_developer_edit_response
 
-        r = validate_developer_edit_response(
-            '{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text"}'
-        )
+        r = validate_developer_edit_response('{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text"}')
         assert not r.is_valid
         assert r.reason == EditFailureReason.EMPTY_OPERATIONS
 

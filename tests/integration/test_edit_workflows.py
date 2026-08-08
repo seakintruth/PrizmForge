@@ -178,25 +178,9 @@ class TestDiffWorkflow:
             "wf/diff.py",
             "def hello():\n    print('old')\n    return True\n",
         )
-        diff = (
-            "--- a/wf/diff.py\n"
-            "+++ b/wf/diff.py\n"
-            "@@ -1,3 +1,3 @@\n"
-            " def hello():\n"
-            '-    print("old")\n'
-            '+    print("new")\n'
-            "     return True\n"
-        )
+        diff = '--- a/wf/diff.py\n+++ b/wf/diff.py\n@@ -1,3 +1,3 @@\n def hello():\n-    print("old")\n+    print("new")\n     return True\n'
         # Use matching quotes to original content
-        diff = (
-            "--- a/wf/diff.py\n"
-            "+++ b/wf/diff.py\n"
-            "@@ -1,3 +1,3 @@\n"
-            " def hello():\n"
-            "-    print('old')\n"
-            "+    print('new')\n"
-            "     return True\n"
-        )
+        diff = "--- a/wf/diff.py\n+++ b/wf/diff.py\n@@ -1,3 +1,3 @@\n def hello():\n-    print('old')\n+    print('new')\n     return True\n"
         payload = {
             "target_file_path": "wf/diff.py",
             "summary": "Update print via diff",
@@ -261,9 +245,7 @@ class TestValidationWorkflow:
         from core.edit_response_validator import EditFailureReason, validate_developer_edit_response
         from workflow.edit_mode_selector import next_fallback_mode
 
-        bad = validate_developer_edit_response(
-            '{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text here"}'
-        )
+        bad = validate_developer_edit_response('{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text here"}')
         assert not bad.is_valid
         assert bad.reason == EditFailureReason.EMPTY_OPERATIONS
 

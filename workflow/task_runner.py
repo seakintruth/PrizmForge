@@ -23,7 +23,7 @@ from workflow.edit_mode_selector import (
 # Governed editing imports
 
 
-def run_task_cycle(
+def run_task_cycle(  # noqa: C901
     task_id: str,
     user_command: str,
     max_turns: int = 20,
@@ -47,9 +47,7 @@ def run_task_cycle(
     )
     # Normalize legacy names
     if preferred_modes:
-        preferred_modes = [
-            ("guid" if m in ("guid_sloc", "guid") else "diff" if m in ("planned_diff", "diff") else m) for m in preferred_modes
-        ]
+        preferred_modes = [("guid" if m in ("guid_sloc", "guid") else "diff" if m in ("planned_diff", "diff") else m) for m in preferred_modes]
     fallback_order = fe_cfg.get("fallback_order") or list(DEFAULT_FALLBACK_ORDER)
     small_file_threshold = int(fe_cfg.get("small_file_threshold_lines", 180))
 
@@ -70,10 +68,7 @@ def run_task_cycle(
             max_unaddressed=int(fe_age.get("max_unaddressed", 200)),
         )
         if aging.get("dismissed_low") or aging.get("trimmed_medium"):
-            print(
-                f"🧹 Backlog aging: dismissed_low={aging.get('dismissed_low', 0)} "
-                f"trimmed_medium={aging.get('trimmed_medium', 0)}"
-            )
+            print(f"🧹 Backlog aging: dismissed_low={aging.get('dismissed_low', 0)} trimmed_medium={aging.get('trimmed_medium', 0)}")
     except Exception as e:
         print(f"   ⚠️  Backlog aging skipped: {e}")
 
@@ -408,9 +403,7 @@ PLAN: [brief explanation]"""
                                     nxt_file,
                                     nxt_message,
                                 ) in enumerate(next_items, 2):
-                                    developer_instructions += (
-                                        f"{idx}. [{nxt_priority}] {nxt_category} in `{nxt_file}` - {nxt_message[:60]}...\n"
-                                    )
+                                    developer_instructions += f"{idx}. [{nxt_priority}] {nxt_category} in `{nxt_file}` - {nxt_message[:60]}...\n"
 
                             developer_instructions += f"""
 **IMPORTANT:**

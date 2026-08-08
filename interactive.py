@@ -2,11 +2,35 @@
 
 import signal
 import sys
+import threading
 import time
 from datetime import datetime
 from typing import Optional
 
-from cli.commands import *
+from cli.commands import (
+    cmd_archives,
+    cmd_endpoint_health,
+    cmd_endpoints,
+    cmd_export_db,
+    cmd_export_specific_tables,
+    cmd_export_task,
+    cmd_fallback_stats,
+    cmd_feedback,
+    cmd_files,
+    cmd_help,
+    cmd_history,
+    cmd_init,
+    cmd_json_parse_stats,
+    cmd_list_exports,
+    cmd_reports,
+    cmd_reset_endpoint,
+    cmd_resource_status,
+    cmd_review_status,
+    cmd_show_prompt,
+    cmd_show_report,
+    cmd_status,
+    cmd_task_progress,
+)
 from core.cli_modes import CLIMode, CLIState, UnattendedConfig
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
@@ -210,9 +234,7 @@ def save_checkpoint(state: CLIState):
 
         state.update_checkpoint()
         elapsed = state.elapsed_hours()
-        print(
-            f"\n💾 Checkpoint saved: Task {state.task_counter}, {state.total_files_modified} files modified, {elapsed:.1f}h elapsed"
-        )
+        print(f"\n💾 Checkpoint saved: Task {state.task_counter}, {state.total_files_modified} files modified, {elapsed:.1f}h elapsed")
     except Exception as e:
         print(f"⚠️  Checkpoint save failed: {e}")
 
@@ -255,7 +277,7 @@ def load_checkpoint() -> Optional[CLIState]:
         return None
 
 
-def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = None):
+def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = None):  # noqa: C901
     """Run unattended mode loop"""
     global _shutdown_requested
 
@@ -424,7 +446,7 @@ def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = N
     print("=" * 60 + "\n")
 
 
-def run_semi_attended_mode():
+def run_semi_attended_mode():  # noqa: C901
     """Run semi-attended mode loop (original behavior)"""
     global _shutdown_requested
 
@@ -655,9 +677,8 @@ def run_semi_attended_mode():
                         print()
                 continue
 
-            # =============HUMAN AS HIGH-BIAS AGENT =============
-            # Check if there's an active task - if so, treat input as human feedback
-            if task_counter > 1:  # Not first command
+            # ============= HUMAN AS HIGH-BIAS AGENT =============
+            if task_counter > 1:
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
                     cursor.execute(
@@ -671,22 +692,19 @@ def run_semi_attended_mode():
                     active_task = cursor.fetchone()
 
                 if active_task:
-                    # Post as human feedback with high bias
                     print(f"\n💬 Posting as human feedback to active task {active_task[0]}...")
                     post_message(
                         from_agent="human",
                         to_agent="orchestrator",
                         content=cmd,
                         task_id=active_task[0],
-                        priority="CRITICAL",  # Human input always CRITICAL
+                        priority="CRITICAL",
                     )
                     print(f"   ✅ Posted to {active_task[0]}")
                     print("   🎯 Prioritizer will process and elevate to orchestrator\n")
                     continue
-            # ==========================================================
 
             # ============= FALLTHROUGH TO TASK EXECUTION =============
-            # No active task - start new one
             task_id = f"task_{task_counter:03d}"
             task_counter += 1
 
@@ -706,7 +724,9 @@ def run_semi_attended_mode():
 def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: Optional[UnattendedConfig] = None):
     """Main interactive loop - routes to appropriate mode"""
 
-    signal.signal(signal.SIGINT, signal_handler)
+    # Guard signal handler so thread calls in test suites don't raise ValueError
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, signal_handler)
 
     if mode == CLIMode.UNATTENDED:
         from core.config import get_config

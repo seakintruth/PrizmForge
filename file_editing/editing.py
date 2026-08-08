@@ -518,7 +518,7 @@ def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
         return {"status": "error", "message": str(e)}
 
 
-def _apply_unified_diff(original_lines, diff_lines):
+def _apply_unified_diff(original_lines, diff_lines):  # noqa: C901
     """
     Minimal unified-diff applicator.
     Returns new list of lines, or None on failure.
@@ -526,16 +526,14 @@ def _apply_unified_diff(original_lines, diff_lines):
     # Strip optional file headers
     i = 0
     while i < len(diff_lines) and (
-        diff_lines[i].startswith("---")
-        or diff_lines[i].startswith("+++")
-        or diff_lines[i].startswith("Index:")
-        or diff_lines[i].startswith("diff ")
+        diff_lines[i].startswith("---") or diff_lines[i].startswith("+++") or diff_lines[i].startswith("Index:") or diff_lines[i].startswith("diff ")
     ):
         i += 1
 
     list(original_lines)
     # Work with lines without requiring keepends consistency
-    src = [l.rstrip("\n\r") for l in original_lines]
+    # Renamed 'l' -> 'line_item' to fix E741
+    src = [line_item.rstrip("\n\r") for line_item in original_lines]
     out = []
     src_idx = 0
 
@@ -678,7 +676,7 @@ def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, A
     }
 
 
-def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:
+def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:  # noqa: C901
     with get_db_connection() as conn:
         proposal_row = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
 

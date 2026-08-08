@@ -314,9 +314,7 @@ class EndpointManager:
                 "error_count": endpoint.health.error_count,
                 "consecutive_failures": endpoint.health.consecutive_failures,
                 "last_success": (endpoint.health.last_success.isoformat() if endpoint.health.last_success else None),
-                "unavailable_until": (
-                    endpoint.health.unavailable_until.isoformat() if endpoint.health.unavailable_until else None
-                ),
+                "unavailable_until": (endpoint.health.unavailable_until.isoformat() if endpoint.health.unavailable_until else None),
                 "seconds_until_available": endpoint.health.time_until_available(),
             }
         return summary

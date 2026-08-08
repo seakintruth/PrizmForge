@@ -66,9 +66,7 @@ class TestEditValidator(unittest.TestCase):
         self.assertTrue(ok.is_valid)
         self.assertEqual(ok.detected_mode, "find_replace")
 
-        bad = validate_developer_edit_response(
-            '{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text here"}'
-        )
+        bad = validate_developer_edit_response('{"target_file_path":"a.py","summary":"x","operations":[],"rationale":"enough text here"}')
         self.assertFalse(bad.is_valid)
         self.assertEqual(bad.reason, EditFailureReason.EMPTY_OPERATIONS)
 

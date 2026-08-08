@@ -64,9 +64,7 @@ def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
             if val and "YOUR_" not in str(val).upper():
                 valid += 1
         if valid == 0 and endpoints:
-            errors.append(
-                "No valid API keys for configured endpoints (set keys or enable llm.test_mode / PRIZMFORGE_TEST_MODE=1)"
-            )
+            errors.append("No valid API keys for configured endpoints (set keys or enable llm.test_mode / PRIZMFORGE_TEST_MODE=1)")
 
     ok = len(errors) == 0
     return ok, errors

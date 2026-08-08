@@ -260,11 +260,7 @@ class ProjectReporterWorker:
             "git_commits": git_commits,
             "addressed_feedback": addressed_feedback,
             "total_files_changed": len(set(m[0] for m in modifications)),
-            "trigger": (
-                "time"
-                if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60
-                else "change"
-            ),
+            "trigger": ("time" if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60 else "change"),
         }
 
     def _build_prompt(self, data: Dict) -> str:
@@ -272,7 +268,9 @@ class ProjectReporterWorker:
         commits = "\n".join([f"- {c}" for c in data["git_commits"][:8]]) if data["git_commits"] else "No git commits recorded"
         feedback = "\n".join([f"- [{f[2]}] {f[1]}: {f[3][:80]} (by {f[0]})" for f in data["addressed_feedback"][:10]])
 
-        return f"""Generate a human-readable project report for the period {data["start_time"].strftime("%Y-%m-%d %H:%M")} to {data["end_time"].strftime("%Y-%m-%d %H:%M")}.
+        return f"""
+Generate a human-readable project report for the period
+{data["start_time"].strftime("%Y-%m-%d %H:%M")} to {data["end_time"].strftime("%Y-%m-%d %H:%M")}.
 
 **Files Modified ({data["total_files_changed"]}):**
 {mods}

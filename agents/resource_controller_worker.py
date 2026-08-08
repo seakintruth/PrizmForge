@@ -719,9 +719,7 @@ class ResourceControllerWorker:
         # Check significant changes
         level_changed = new_decision.level != curr.level
 
-        interval_changed = (
-            abs(new_decision.background_feeder_interval - curr.background_feeder_interval) > 15
-        )  # > 15 seconds difference
+        interval_changed = abs(new_decision.background_feeder_interval - curr.background_feeder_interval) > 15  # > 15 seconds difference
 
         agents_changed = set(new_decision.active_agents) != set(curr.active_agents)
 

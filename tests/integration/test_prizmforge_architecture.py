@@ -159,24 +159,22 @@ def test_sql_response_exact_matching(memory_db):
     """Phase 4: Developer attempt N links strictly to Reviewer APPROVE response N+1/N+2."""
     cursor = memory_db.cursor()
     cursor.execute("INSERT INTO tasks VALUES ('task_001', 'Test Task', 'in_progress', 'now', NULL)")
-    cursor.execute(
-        "INSERT INTO edit_proposals (id, task_id, target_file_path, status) VALUES (1, 'task_001', 'app.py', 'applied')"
-    )
+    cursor.execute("INSERT INTO edit_proposals (id, task_id, target_file_path, status) VALUES (1, 'task_001', 'app.py', 'applied')")
 
     # Developer Attempt 1 -> Rejected
+    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')")
     cursor.execute(
-        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')"
-    )
-    cursor.execute(
-        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (2, 'reviewer', 'task_001', 'p2', '{\"decision\": \"REJECT\"}')"
+        "INSERT INTO agent_responses_archive "
+        "(id, agent_name, task_id, prompt, response) "
+        "VALUES (2, 'reviewer', 'task_001', 'p2', '{\"decision\": \"REJECT\"}')"
     )
 
     # Developer Attempt 2 -> Approved
+    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (3, 'developer', 'task_001', 'p3', 'r3')")
     cursor.execute(
-        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (3, 'developer', 'task_001', 'p3', 'r3')"
-    )
-    cursor.execute(
-        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (4, 'reviewer', 'task_001', 'p4', '{\"decision\": \"APPROVE\"}')"
+        "INSERT INTO agent_responses_archive "
+        "(id, agent_name, task_id, prompt, response) "
+        "VALUES (4, 'reviewer', 'task_001', 'p4', '{\"decision\": \"APPROVE\"}')"
     )
     memory_db.commit()
 
