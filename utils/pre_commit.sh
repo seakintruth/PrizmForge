@@ -43,7 +43,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [-p|--python PATH] [--skip-tests] [--no-summary]"
+            echo "Usage: $0 [-p|--python PATH] [--no-summary]"
             exit 1
             ;;
     esac
@@ -59,7 +59,7 @@ install_or_update_hook() {
         echo -e "${BLUE}⚙️  Syncing .git/hooks/pre-commit with PYTHON_EXEC=${PYTHON_EXEC}...${NC}"
         cat << EOF > "$HOOK_FILE"
 #!/bin/bash
-# Auto-generated pre-commit hook by utils/pre_push.sh
+# Auto-generated pre-commit hook by utils/pre_commit.sh
 
 # Resolve Python Executable in priority order
 if [ -n "\$PYTHON_EXEC" ]; then
@@ -73,15 +73,15 @@ fi
 
 export PYTHON_EXEC="\$PY_BIN"
 
-# Execute repository pre-push script
-./utils/pre_push.sh
+# Execute repository pre-commit script
+./utils/pre_commit.sh
 EOF
         chmod +x "$HOOK_FILE"
         echo -e "${GREEN}✅ Pre-commit hook synced at $HOOK_FILE${NC}\n"
     fi
 }
 
-# Re-sync hook whenever pre_push.sh is run
+# Re-sync hook whenever pre_commit.sh is run
 install_or_update_hook
 
 run_check() {
@@ -110,7 +110,7 @@ run_check() {
 
 # Run checks
 echo -e "\n${BLUE}═══════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}🚀 PrizmForge Pre-Commit / Pre-Push Checks${NC}"
+echo -e "${BLUE}🚀 PrizmForge Pre-Commit Checks${NC}"
 echo -e "${BLUE}Executable: ${PYTHON_EXEC}${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════${NC}\n"
 
@@ -122,9 +122,9 @@ echo -e "${BLUE}📝 Formatting & Auto-fixing...${NC}\n"
 "$PYTHON_EXEC" -m ruff check . --unsafe-fixes --fix > /dev/null 2>&1 && echo -e "${GREEN}✅ ruff (fixes)${NC}" || echo -e "${YELLOW}⚠️  ruff (fixes)${NC}"
 "$PYTHON_EXEC" -m ruff format . > /dev/null 2>&1 && echo -e "${GREEN}✅ ruff format${NC}" || echo -e "${YELLOW}⚠️  ruff format${NC}"
 
-# If running during git commit, auto-stage formatted files
+# If running during git commit, auto-stage updated files
 if [ "$STAGE_FIXED_FILES" = true ] && [ -d ".git" ]; then
-    git update-index --again > /dev/null 2>&1 || true
+    git add -u > /dev/null 2>&1 || true
 fi
 
 # Linting checks (blocking)
@@ -144,14 +144,13 @@ else
     exit 1
 fi
 
-
-# Flake8 errors (blocking) — excludes virtual environments & build artifacts
-FLAKE8_EXCLUDES="--exclude=.venv,venv,build,dist,.git,.github,.PrizmForge,.pytest_cache,.ruff_cache,.vscode,ExampleProject,report"
+# Standardized exclusion list across all tools
+EXCLUDE_DIRS="--exclude=.git,.github,.venv,venv,build,dist,.PrizmForge,.pytest_cache,.ruff_cache,.vscode,ExampleProject,report"
 FLAKE8_LOG="$REPORT_DIR/flake8-errors.log"
 
 echo -e "${BLUE}🔄 Running: flake8 (errors)...${NC}"
 
-if ! "$PYTHON_EXEC" -m flake8 . --count $FLAKE8_EXCLUDES --select=E9,F63,F7,F82 --show-source --statistics 2>&1 | tee "$FLAKE8_LOG"; then
+if ! "$PYTHON_EXEC" -m flake8 . --count $EXCLUDE_DIRS --select=E9,F63,F7,F82 --show-source --statistics 2>&1 | tee "$FLAKE8_LOG"; then
     FAILED_CHECKS+=("flake8 (errors)")
     echo -e "${RED}❌ flake8 (errors)${NC}"
     echo -e "${YELLOW}📋 Full error report saved to: $FLAKE8_LOG${NC}"
@@ -162,7 +161,7 @@ else
 fi
 
 # Flake8 warnings (informational)
-run_check "flake8 (warnings)" "$PYTHON_EXEC -m flake8 . --count $FLAKE8_EXCLUDES --exit-zero --max-complexity=15 --max-line-length=127 --statistics"
+run_check "flake8 (warnings)" "$PYTHON_EXEC -m flake8 . --count $EXCLUDE_DIRS --exit-zero --max-complexity=15 --max-line-length=159 --statistics"
 
 # Type checking (non-blocking)
 echo -e "\n${BLUE}🏷️  Type Checking (informational)...${NC}\n"

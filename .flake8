@@ -1,0 +1,16 @@
+[flake8]
+max-line-length = 159
+max-complexity = 15
+exclude =
+    .git,
+    .github,
+    .venv,
+    venv,
+    build,
+    dist,
+    .PrizmForge,
+    .pytest_cache,
+    .ruff_cache,
+    .vscode,
+    ExampleProject,
+    report
