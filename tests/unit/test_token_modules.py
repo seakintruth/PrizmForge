@@ -4,11 +4,11 @@ tests/unit/test_token_modules.py
 Tests for token estimation and budgeting logic.
 """
 
-import pytest
-import tempfile
 import os
-from core.token_estimator import estimate_tokens, estimate_messages
+import tempfile
+
 from core.token_budget import TokenBudget
+from core.token_estimator import estimate_messages, estimate_tokens
 
 
 class TestTokenEstimator:
@@ -28,7 +28,7 @@ class TestTokenEstimator:
     def test_estimate_messages(self):
         messages = [
             {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"}
+            {"role": "assistant", "content": "Hi there!"},
         ]
         total = estimate_messages(messages)
         assert isinstance(total, int)
@@ -44,6 +44,7 @@ class TestTokenBudget:
             budget = TokenBudget(db_path=db_path, max_tokens_per_4h=1000000)
             assert budget.max_tokens == 1000000
             assert budget.get_used() == 0
+            del budget
 
     def test_token_budget_add_usage(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -51,6 +52,7 @@ class TestTokenBudget:
             budget = TokenBudget(db_path=db_path, max_tokens_per_4h=1000000)
             budget.add_usage(1500)
             assert budget.get_used() >= 1500
+            del budget
 
     def test_token_budget_can_spend(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -59,6 +61,7 @@ class TestTokenBudget:
             assert budget.can_spend(500) is True
             budget.add_usage(9000)
             assert budget.can_spend(2000) is False
+            del budget
 
     def test_token_budget_remaining(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -68,3 +71,4 @@ class TestTokenBudget:
             remaining = budget.remaining()
             assert remaining > 0
             assert remaining <= 5000
+            del budget

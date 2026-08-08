@@ -1,3 +1,12 @@
+import json
+import sqlite3
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
+
+from core.events import publish_event
+from file_editing.db import get_db_connection, log_error
+from file_editing.edit_payload import EditPayload
+
 # =============================================================================
 # PrizmForge/workflow/proposal_builder.py
 # Version: 1.7
@@ -5,21 +14,12 @@
 #          Fully aligned with current edit_proposals schema
 # =============================================================================
 
-import json
-import sqlite3
-from typing import Any, Dict, Optional, List
-from uuid import uuid4
-from datetime import datetime
-
-from file_editing.edit_payload import EditPayload
-from file_editing.db import get_db_connection, log_error
-
 
 def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> int:
     """Get existing file_id or create a new file record."""
     cursor = conn.execute(
         "SELECT file_id FROM files WHERE file_path = ? AND is_deleted = 0",
-        (target_file_path,)
+        (target_file_path,),
     )
     row = cursor.fetchone()
     if row:
@@ -28,7 +28,7 @@ def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> i
     cursor = conn.execute(
         """INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
            VALUES (?, 1, 0, 0)""",
-        (target_file_path,)
+        (target_file_path,),
     )
     return cursor.lastrowid
 
@@ -56,11 +56,7 @@ def _get_affected_guids_from_operation(op) -> List[str]:
     return []
 
 
-def _capture_hashes_for_operations(
-    conn: sqlite3.Connection,
-    file_id: int,
-    payload: EditPayload
-) -> tuple[list[str], dict]:
+def _capture_hashes_for_operations(conn: sqlite3.Connection, file_id: int, payload: EditPayload) -> tuple[list[str], dict]:
     """Capture current hashes for optimistic concurrency validation."""
     affected_guids: list[str] = []
     expected_hashes: dict = {}
@@ -72,7 +68,7 @@ def _capture_hashes_for_operations(
             for guid in guids:
                 row = conn.execute(
                     "SELECT content_hash FROM file_lines WHERE line_guid = ? AND is_deleted = 0",
-                    (guid,)
+                    (guid,),
                 ).fetchone()
                 if row:
                     expected_hashes[guid] = row[0]
@@ -84,7 +80,10 @@ def create_proposal_from_developer_output(
     developer_output: str | dict,
     proposed_by_agent_id: int,
     target_file_path: str,
-    rationale: Optional[str] = None
+    rationale: Optional[str] = None,
+    selected_mode: Optional[str] = None,
+    fallback_used: bool = False,
+    final_mode: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Creates a governed edit proposal from Developer output."""
     try:
@@ -99,7 +98,29 @@ def create_proposal_from_developer_output(
 
             proposal_id = str(uuid4())
 
-            conn.execute("""
+            # Best-effort: ensure mode metadata columns exist (safe for existing DBs)
+            for col, coltype in (
+                ("selected_mode", "TEXT"),
+                ("fallback_used", "INTEGER DEFAULT 0"),
+                ("final_mode", "TEXT"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
+                except Exception:
+                    pass  # column already exists
+
+            # Embed mode info in rationale prefix for auditability even without columns
+            base_rationale = rationale or payload.rationale or ""
+            mode_tag = ""
+            if selected_mode or final_mode:
+                mode_tag = f"[mode={final_mode or selected_mode}"
+                if fallback_used:
+                    mode_tag += f" fallback_from={selected_mode}"
+                mode_tag += "] "
+            full_rationale = mode_tag + base_rationale
+
+            conn.execute(
+                """
                 INSERT INTO edit_proposals (
                     proposal_id,
                     target_file_id,
@@ -115,65 +136,94 @@ def create_proposal_from_developer_output(
                     write_started_at,
                     write_completed_at,
                     write_start_line_guid,
-                    write_end_line_guid
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), NULL, NULL, NULL, NULL, NULL)
-            """, (
-                proposal_id,
-                file_id,
-                target_file_path,
-                payload.model_dump_json(),
-                json.dumps(affected_guids),
-                json.dumps(expected_hashes),
-                proposed_by_agent_id,
-                rationale or payload.rationale
-            ))
-
-            log_error(
-                "proposal_builder", "create_proposal", "INFO",
-                f"Proposal created: {proposal_id} for {target_file_path}",
-                proposal_id=proposal_id
+                    write_end_line_guid,
+                    selected_mode,
+                    fallback_used,
+                    final_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
+            """,
+                (
+                    proposal_id,
+                    file_id,
+                    target_file_path,
+                    payload.model_dump_json(),
+                    json.dumps(affected_guids),
+                    json.dumps(expected_hashes),
+                    proposed_by_agent_id,
+                    full_rationale,
+                    selected_mode,
+                    1 if fallback_used else 0,
+                    final_mode or selected_mode,
+                ),
             )
 
-            return {
+            log_error(
+                "proposal_builder",
+                "create_proposal",
+                "INFO",
+                f"Proposal created: {proposal_id} for {target_file_path}",
+                proposal_id=proposal_id,
+            )
+
+            result = {
                 "status": "success",
                 "proposal_id": proposal_id,
                 "target_file_path": target_file_path,
                 "affected_line_guids": affected_guids,
-                "message": "Proposal created and ready for review"
+                "selected_mode": selected_mode,
+                "fallback_used": fallback_used,
+                "final_mode": final_mode or selected_mode,
+                "message": "Proposal created and ready for review",
             }
+
+        # Publish outside the DB connection to avoid lock contention
+        publish_event(
+            "proposal.created",
+            source="proposal_builder",
+            proposal_id=result["proposal_id"],
+            payload={
+                "target_file_path": result["target_file_path"],
+                "selected_mode": result.get("selected_mode"),
+                "fallback_used": result.get("fallback_used"),
+            },
+        )
+        return result
 
     except Exception as e:
         log_error("proposal_builder", "create_proposal", "HIGH", str(e))
-        return {
-            "status": "error",
-            "message": f"Failed to create proposal: {str(e)}"
-        }
+        return {"status": "error", "message": f"Failed to create proposal: {str(e)}"}
 
 
-def update_proposal_status(
-    proposal_id: str,
-    new_status: str,
-    reviewed_by_agent_id: Optional[int] = None
-) -> bool:
+def update_proposal_status(proposal_id: str, new_status: str, reviewed_by_agent_id: Optional[int] = None) -> bool:
     """Update proposal status and set reviewed_at when a reviewer acts."""
-    allowed_statuses = {"pending", "under_review", "approved", "rejected", "applied", "needs_revalidation"}
+    allowed_statuses = {
+        "pending",
+        "under_review",
+        "approved",
+        "rejected",
+        "applied",
+        "needs_revalidation",
+    }
     if new_status not in allowed_statuses:
         return False
 
     try:
         with get_db_connection() as conn:
             if reviewed_by_agent_id:
-                conn.execute("""
-                    UPDATE edit_proposals 
-                    SET status = ?, 
-                        reviewed_by_agent_id = ?, 
+                conn.execute(
+                    """
+                    UPDATE edit_proposals
+                    SET status = ?,
+                        reviewed_by_agent_id = ?,
                         reviewed_at = datetime('now')
                     WHERE proposal_id = ?
-                """, (new_status, reviewed_by_agent_id, proposal_id))
+                """,
+                    (new_status, reviewed_by_agent_id, proposal_id),
+                )
             else:
                 conn.execute(
                     "UPDATE edit_proposals SET status = ? WHERE proposal_id = ?",
-                    (new_status, proposal_id)
+                    (new_status, proposal_id),
                 )
         return True
     except Exception as e:

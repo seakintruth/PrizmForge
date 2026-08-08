@@ -1,0 +1,60 @@
+
+# Exclude actual api_key and config files from repo, see example_ for each file
+api_key.json
+config.json
+
+# Exclude the agents.db sqlite database
+agents.db
+
+# Python
+*__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+ENV/
+.env
+report/
+
+# Project
+project/
+*.db
+*.backup.*
+.PrizmForge/
+ExampleProject/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Accidental Windows-style roots from project_directory config (e.g. "C:\git\...")
+/C:/
+/C:*/
+C:/
+C:*/
+
+# Test / coverage artifacts
+coverage.xml
+htmlcov/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Packaging
+dist/
+build/
+*.egg-info/
+
+# Logs / exports
+*.log
+exports/

@@ -1,14 +1,13 @@
 """Project Reporter Worker — generates human-readable audit reports"""
+
+import json
 import threading
 import time
-import json
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Dict, Optional
 
 from agents.base import call_agent
-from core.db import get_db_path
 from core.config import get_config
 from core.db_connection import get_db_connection
 
@@ -24,7 +23,8 @@ class ProjectReporterWorker:
         self.last_file_count: int = 0
         self.last_line_delta: int = 0
         self.config = get_config().get("reporter", {})
-        self.output_dir = Path(self.config.get("output_directory", ".PrizmForge/reports"))
+        project_dir = Path(get_config().get("project_directory", "./project"))
+        self.output_dir = project_dir / ".PrizmForge" / "reports"
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def start(self, task_id: str):
@@ -34,11 +34,7 @@ class ProjectReporterWorker:
         self.task_id = task_id
         self._load_last_state()
 
-        self.worker_thread = threading.Thread(
-            target=self._worker_loop,
-            daemon=True,
-            name="project-reporter-worker"
-        )
+        self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True, name="project-reporter-worker")
         self.worker_thread.start()
         print(f"    📊 Started Project Reporter worker (interval: {self.config.get('interval_minutes', 60)} min)")
 
@@ -52,10 +48,12 @@ class ProjectReporterWorker:
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT last_report_time, last_report_file_count, last_report_line_delta
                     FROM reporter_state WHERE id = 1
-                """)
+                """
+                )
                 row = cursor.fetchone()
                 if row:
                     if row[0]:
@@ -68,14 +66,17 @@ class ProjectReporterWorker:
     def _save_state(self):
         try:
             with get_db_connection() as conn:
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT OR REPLACE INTO reporter_state (id, last_report_time, last_report_file_count, last_report_line_delta)
                     VALUES (1, ?, ?, ?)
-                """, (
-                    self.last_report_time.isoformat() if self.last_report_time else None,
-                    self.last_file_count,
-                    self.last_line_delta
-                ))
+                """,
+                    (
+                        (self.last_report_time.isoformat() if self.last_report_time else None),
+                        self.last_file_count,
+                        self.last_line_delta,
+                    ),
+                )
                 conn.commit()
                 conn.close()
         except Exception as e:
@@ -112,16 +113,21 @@ class ProjectReporterWorker:
 
                 # Count files modified since last report
                 if self.last_report_time:
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT COUNT(DISTINCT file_path), COALESCE(SUM(ABS(LENGTH(content_after) - LENGTH(content_before))), 0)
                         FROM file_modifications
                         WHERE timestamp > ?
-                    """, (self.last_report_time.isoformat(),))
+                    """,
+                        (self.last_report_time.isoformat(),),
+                    )
                 else:
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT COUNT(DISTINCT file_path), COALESCE(SUM(ABS(LENGTH(content_after) - LENGTH(content_before))), 0)
                         FROM file_modifications
-                    """)
+                    """
+                    )
 
                 row = cursor.fetchone()
 
@@ -196,13 +202,16 @@ class ProjectReporterWorker:
             end_time = datetime.now()
 
             # File modifications
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT file_path, operation, changed_by, timestamp
                 FROM file_modifications
                 WHERE timestamp BETWEEN ? AND ?
                 ORDER BY timestamp DESC
                 LIMIT 50
-            """, (start_time.isoformat(), end_time.isoformat()))
+            """,
+                (start_time.isoformat(), end_time.isoformat()),
+            )
             modifications = cursor.fetchall()
 
             # Git commits (if available)
@@ -210,11 +219,21 @@ class ProjectReporterWorker:
             if self.config.get("include_git_commits", True):
                 try:
                     import subprocess
+
                     config = get_config()
                     project_dir = config.get("project_directory")
                     result = subprocess.run(
-                        ["git", "log", f"--since={start_time.isoformat()}", "--oneline", "-20"],
-                        cwd=project_dir, capture_output=True, text=True, timeout=10
+                        [
+                            "git",
+                            "log",
+                            f"--since={start_time.isoformat()}",
+                            "--oneline",
+                            "-20",
+                        ],
+                        cwd=project_dir,
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
                     )
                     if result.returncode == 0:
                         git_commits = result.stdout.strip().split("\n")[:10]
@@ -222,13 +241,16 @@ class ProjectReporterWorker:
                     pass
 
             # Addressed feedback
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT agent_name, file_path, priority, message, addressed_at
                 FROM agent_feedback
                 WHERE addressed = 1 AND addressed_at BETWEEN ? AND ?
                 ORDER BY addressed_at DESC
                 LIMIT 20
-            """, (start_time.isoformat(), end_time.isoformat()))
+            """,
+                (start_time.isoformat(), end_time.isoformat()),
+            )
             addressed_feedback = cursor.fetchall()
 
         return {
@@ -238,7 +260,7 @@ class ProjectReporterWorker:
             "git_commits": git_commits,
             "addressed_feedback": addressed_feedback,
             "total_files_changed": len(set(m[0] for m in modifications)),
-            "trigger": "time" if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60 else "change"
+            "trigger": ("time" if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60 else "change"),
         }
 
     def _build_prompt(self, data: Dict) -> str:
@@ -246,9 +268,11 @@ class ProjectReporterWorker:
         commits = "\n".join([f"- {c}" for c in data["git_commits"][:8]]) if data["git_commits"] else "No git commits recorded"
         feedback = "\n".join([f"- [{f[2]}] {f[1]}: {f[3][:80]} (by {f[0]})" for f in data["addressed_feedback"][:10]])
 
-        return f"""Generate a human-readable project report for the period {data['start_time'].strftime('%Y-%m-%d %H:%M')} to {data['end_time'].strftime('%Y-%m-%d %H:%M')}.
+        return f"""
+Generate a human-readable project report for the period
+{data["start_time"].strftime("%Y-%m-%d %H:%M")} to {data["end_time"].strftime("%Y-%m-%d %H:%M")}.
 
-**Files Modified ({data['total_files_changed']}):**
+**Files Modified ({data["total_files_changed"]}):**
 {mods}
 
 **Git Commits:**
@@ -257,21 +281,22 @@ class ProjectReporterWorker:
 **Addressed High-Priority Feedback:**
 {feedback}
 
-**Trigger:** {data['trigger']}
+**Trigger:** {data["trigger"]}
 
 Please produce the full Markdown report following the exact structure defined in your system prompt."""
 
     def _save_report(self, response: str, data: Dict) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         filename = f"project_report_{timestamp}.md"
-        
+
         # Get absolute path
         from core.config import get_config
+
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
         reports_dir = project_dir / ".PrizmForge" / "reports"
         reports_dir.mkdir(parents=True, exist_ok=True)
-        
+
         filepath = reports_dir / filename
 
         # Clean up old reports
@@ -294,41 +319,49 @@ Please produce the full Markdown report following the exact structure defined in
     def _record_report(self, filepath: str, data: Dict, response: str):
         try:
             with get_db_connection() as conn:
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO project_reports
                     (report_start, report_end, trigger_type, file_path, summary, stats_json, generated_at, task_id)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    data["start_time"].isoformat(),
-                    data["end_time"].isoformat(),
-                    data["trigger"],
-                    filepath,
-                    response[:200] + "..." if len(response) > 200 else response,
-                    json.dumps({
-                        "files_changed": data["total_files_changed"],
-                        "modifications_count": len(data["modifications"])
-                    }),
-                    datetime.now().isoformat(),
-                    self.task_id
-                ))
+                """,
+                    (
+                        data["start_time"].isoformat(),
+                        data["end_time"].isoformat(),
+                        data["trigger"],
+                        filepath,
+                        response[:200] + "..." if len(response) > 200 else response,
+                        json.dumps(
+                            {
+                                "files_changed": data["total_files_changed"],
+                                "modifications_count": len(data["modifications"]),
+                            }
+                        ),
+                        datetime.now().isoformat(),
+                        self.task_id,
+                    ),
+                )
         except Exception as e:
             print(f"    ⚠️  Failed to record report in DB: {e}")
 
     def _notify_orchestrator(self, report_path: str):
         try:
             from core.db_helpers import post_message
+
             post_message(
                 "project_reporter",
                 "orchestrator",
                 f"New project report generated: {report_path}",
                 self.task_id or "global",
-                "MEDIUM"
+                "MEDIUM",
             )
         except Exception:
             pass
 
+
 # Global singleton
 _reporter_worker = None
+
 
 def get_reporter_worker() -> ProjectReporterWorker:
     global _reporter_worker

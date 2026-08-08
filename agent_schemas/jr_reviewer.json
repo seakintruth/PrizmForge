@@ -1,0 +1,13 @@
+{
+  "findings": [
+    {
+      "priority": "HIGH",
+      "category": "bug",
+      "message": "Specific issue description",
+      "suggestion": "How to fix it",
+      "start_line_guid": "guid-abc-123",
+      "end_line_guid": "guid-abc-125"
+    }
+  ],
+  "summary": "Brief assessment of file quality"
+}

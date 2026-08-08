@@ -1,0 +1,64 @@
+[tool.black]
+line-length = 159
+exclude = '''
+/(
+    \.git
+  | \.github
+  | \.venv
+  | venv
+  | build
+  | dist
+  | \.PrizmForge
+  | \.pytest_cache
+  | \.ruff_cache
+  | \.vscode
+  | ExampleProject
+  | report
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 159
+skip = [
+    ".git",
+    ".github",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    ".PrizmForge",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".vscode",
+    "ExampleProject",
+    "report",
+]
+
+[tool.ruff]
+line-length = 159
+exclude = [
+    ".git",
+    ".github",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    ".PrizmForge",
+    ".pytest_cache",
+    ".ruff_cache",
+    ".vscode",
+    "ExampleProject",
+    "report",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "C90", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"agents/parallel_workers.py" = ["E402", "PLC0415"]
+"agents/resource_controller_worker.py" = ["E402", "PLC0415"]
+"agents/prioritizer_worker.py" = ["E402", "PLC0415"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15

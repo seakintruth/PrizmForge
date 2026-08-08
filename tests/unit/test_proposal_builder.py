@@ -4,8 +4,7 @@ tests/unit/test_proposal_builder.py
 High-priority tests for workflow/proposal_builder.py
 """
 
-import pytest
-from workflow.proposal_builder import _get_affected_guids_from_operation
+from workflow.proposal_builder import _get_affected_guids_from_operation, create_proposal_from_developer_output
 
 
 class TestGetAffectedGuids:
@@ -34,10 +33,12 @@ class TestProposalCreation:
 
     def test_create_proposal_function_exists(self):
         from workflow.proposal_builder import create_proposal_from_developer_output
+
         assert callable(create_proposal_from_developer_output)
 
     def test_update_proposal_status_function_exists(self):
         from workflow.proposal_builder import update_proposal_status
+
         assert callable(update_proposal_status)
 
 
@@ -75,16 +76,16 @@ class TestProposalBuilderIntegration:
                     "type": "replace_block",
                     "start_line_guid": "guid-abc-123",
                     "new_content": ["def improved_function():", "    return True"],
-                    "rationale": "Refactor for readability"
+                    "rationale": "Refactor for readability",
                 }
-            ]
+            ],
         }
 
         try:
             result = create_proposal_from_developer_output(
                 developer_output=payload,
                 proposed_by_agent_id=1,
-                target_file_path="test/example.py"
+                target_file_path="test/example.py",
             )
             # In a full environment this would return a proposal dict
             assert result is None or isinstance(result, dict)
@@ -99,4 +100,5 @@ class TestCreateProposal:
     def test_create_proposal_function_exists(self):
         # Just verify the main function is importable
         from workflow.proposal_builder import create_proposal_from_developer_output
+
         assert create_proposal_from_developer_output is not None

@@ -1,0 +1,6 @@
+# PrizmForge runtime dependencies
+# Install from Advana Nexus / SageMaker-compatible index when applicable.
+#
+# Runtime surface is intentionally minimal for hardened environments.
+
+requests>=2.31.0

@@ -1,0 +1,14 @@
+{
+  "validation_status": "PASS",
+  "issues": [
+    {
+      "priority": "HIGH",
+      "category": "other",
+      "message": "Change does not match stated intent",
+      "suggestion": "Review implementation against requirements",
+      "start_line_guid": "guid-val-001",
+      "confidence": 0.85
+    }
+  ],
+  "summary": "Validation complete"
+}

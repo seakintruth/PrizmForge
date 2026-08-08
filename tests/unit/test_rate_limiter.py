@@ -4,38 +4,37 @@ tests/unit/test_rate_limiter.py
 Unit tests for core/rate_limiter.py
 """
 
-import pytest
 import time
+
 from core.rate_limiter import RateLimiter
 
 
 class TestRateLimiter:
-    """Tests for the RateLimiter class."""
-
     def test_rate_limiter_basic(self):
         limiter = RateLimiter(max_calls_per_minute=60)
-        # Should not block on first call
         start = time.time()
         limiter.wait_if_needed()
         duration = time.time() - start
-        assert duration < 0.1  # Should be fast
+        assert duration < 0.1
+        assert len(limiter.calls) == 1
 
     def test_rate_limiter_per_endpoint(self):
         limiter = RateLimiter(max_calls_per_minute=60)
-        # Should handle endpoint-specific calls without error
         limiter.wait_if_needed("openai")
         limiter.wait_if_needed("anthropic")
-        assert "openai" in limiter.endpoint_calls or True  # flexible
+        assert "openai" in limiter.endpoint_calls
+        assert "anthropic" in limiter.endpoint_calls
+        assert len(limiter.endpoint_calls["openai"]) == 1
 
     def test_rate_limiter_multiple_calls(self):
-        limiter = RateLimiter(max_calls_per_minute=1000)  # High limit for test
+        limiter = RateLimiter(max_calls_per_minute=1000)
         for _ in range(5):
             limiter.wait_if_needed()
-        # Should complete without long delays
-        assert True
+        assert len(limiter.calls) == 5
 
     def test_rate_limiter_thread_safety(self):
         import threading
+
         limiter = RateLimiter(max_calls_per_minute=1000)
         errors = []
 
@@ -53,3 +52,9 @@ class TestRateLimiter:
             t.join()
 
         assert len(errors) == 0
+        assert len(limiter.calls) == 30
+
+    def test_set_max_calls(self):
+        limiter = RateLimiter(max_calls_per_minute=60)
+        limiter.set_max_calls(30)
+        assert limiter.max_calls == 30

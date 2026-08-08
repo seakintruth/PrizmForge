@@ -4,7 +4,6 @@ tests/unit/test_json_parser.py
 Unit tests for core/json_parser.py
 """
 
-import pytest
 from core.json_parser import parse_json_response
 
 

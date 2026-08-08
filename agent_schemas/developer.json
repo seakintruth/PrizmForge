@@ -1,0 +1,33 @@
+{
+  "target_file_path": "path/to/file.py",
+  "summary": "Brief description of all changes being made",
+  "operations": [
+    {
+      "type": "replace_block",
+      "start_line_guid": "guid-abc-123",
+      "end_line_guid": "guid-abc-125",
+      "new_content": [
+        "def improved_function(param1, param2):",
+        "    return param1 + param2"
+      ],
+      "rationale": "Refactored function for better readability"
+    },
+    {
+      "type": "insert_after",
+      "after_guid": "guid-xyz-789",
+      "new_content": [
+        "",
+        "def new_helper_function():",
+        "    return True"
+      ],
+      "rationale": "Added new helper function"
+    },
+    {
+      "type": "delete_lines",
+      "start_line_guid": "guid-old-111",
+      "end_line_guid": "guid-old-115",
+      "rationale": "Removed deprecated code block"
+    }
+  ],
+  "rationale": "Overall explanation of why these changes are needed"
+}

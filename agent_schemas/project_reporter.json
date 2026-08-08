@@ -1,0 +1,16 @@
+{
+  "_note": "This agent outputs MARKDOWN, not JSON",
+  "output_format": "markdown",
+  "structure": {
+    "sections": [
+      "# PrizmForge Project Report",
+      "## Executive Summary",
+      "## Files Modified",
+      "## Git Commits",
+      "## Agent Activity",
+      "## Addressed Feedback",
+      "## Outstanding Issues",
+      "## Metrics"
+    ]
+  }
+}

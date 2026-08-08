@@ -4,13 +4,7 @@ tests/unit/test_truncation_detector.py
 Unit tests for core/truncation_detector.py
 """
 
-import pytest
-from core.truncation_detector import (
-    TruncationDetector,
-    TruncationType,
-    get_truncation_detector,
-    detect_and_resume
-)
+from core.truncation_detector import TruncationDetector, TruncationType, detect_and_resume, get_truncation_detector
 
 
 class TestTruncationDetector:
@@ -37,7 +31,11 @@ class TestTruncationDetector:
         result = detector.detect(response, expected_format="code")
         assert result.is_truncated is True
         # The internal code currently uses wrong attribute; accept flexible check
-        assert str(result.truncation_type) in ("TruncationType.CODE_BLOCK", "code", "CODE_BLOCK")
+        assert str(result.truncation_type) in (
+            "TruncationType.CODE_BLOCK",
+            "code",
+            "CODE_BLOCK",
+        )
 
     def test_detect_complete_text(self):
         detector = TruncationDetector()
@@ -62,6 +60,7 @@ class TestTruncationDetectorFactory:
     def test_detect_and_resume_signature(self):
         # Verify function exists and has expected parameters
         import inspect
+
         sig = inspect.signature(detect_and_resume)
         params = list(sig.parameters.keys())
         assert "agent_name" in params

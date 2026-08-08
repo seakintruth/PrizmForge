@@ -5,10 +5,9 @@ Tests focused on database schema initialization and structure.
 These tests verify that init_db() creates all expected tables correctly.
 """
 
-import pytest
+import os
 import sqlite3
 import tempfile
-import os
 
 
 def test_init_db_creates_all_tables():
@@ -50,14 +49,22 @@ def test_init_db_creates_all_tables():
 
     # Core system tables we expect
     core_tables = {
-        "messages", "tasks", "token_log", "conversation_history",
-        "project_files", "agent_feedback", "project_reports"
+        "messages",
+        "tasks",
+        "token_log",
+        "conversation_history",
+        "project_files",
+        "agent_feedback",
+        "project_reports",
     }
 
     # Governed editing tables
     governed_tables = {
-        "files", "file_lines", "edit_proposals",
-        "file_documentation", "file_write_log"
+        "files",
+        "file_lines",
+        "edit_proposals",
+        "file_documentation",
+        "file_write_log",
     }
 
     missing_core = core_tables - existing_tables

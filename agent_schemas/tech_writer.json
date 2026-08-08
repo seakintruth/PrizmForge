@@ -1,0 +1,12 @@
+{
+  "documentation_issues": [
+    {
+      "priority": "LOW",
+      "category": "documentation",
+      "message": "Missing or incomplete docstring",
+      "suggestion": "Add comprehensive docstring with parameters, return type, and examples",
+      "start_line_guid": "guid-xyz-789"
+    }
+  ],
+  "summary": "Documentation review complete"
+}

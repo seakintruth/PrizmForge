@@ -539,7 +539,7 @@ python -c "from utils.testing import test_agent; test_agent('jr_reviewer')"
 
 6. **Check database:**
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 SELECT COUNT(*) FROM project_files WHERE is_binary = 0;
 # Should be > 0
 ```
@@ -621,7 +621,7 @@ files_per_agent = 1  # Instead of 3
 
 2. **Check review tracking:**
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 SELECT * FROM agent_review_tracking 
 WHERE file_path = 'app.py';
@@ -660,7 +660,7 @@ sqlite3.OperationalError: database is locked
 1. **Close other connections:**
 ```bash
 # Find processes using database
-lsof .PrizmFoundry/agents.db
+lsof .PrizmForge/agents.db
 
 # Kill if necessary
 kill <PID>
@@ -677,17 +677,17 @@ python main.py
 
 3. **Check for corruption:**
 ```bash
-sqlite3 .PrizmFoundry/agents.db "PRAGMA integrity_check;"
+sqlite3 .PrizmForge/agents.db "PRAGMA integrity_check;"
 # Should return: ok
 ```
 
 4. **Rebuild database:**
 ```bash
 # Backup first!
-cp .PrizmFoundry/agents.db .PrizmFoundry/agents.db.backup
+cp .PrizmForge/agents.db .PrizmForge/agents.db.backup
 
 # Delete and re-initialize
-rm .PrizmFoundry/agents.db
+rm .PrizmForge/agents.db
 python main.py
 👤 Human> init
 ```
@@ -699,7 +699,7 @@ python main.py
 **Symptoms:**
 - Slow queries
 - High disk usage
-- `.PrizmFoundry/agents.db` > 1GB
+- `.PrizmForge/agents.db` > 1GB
 
 **Causes:**
 - Many tasks executed
@@ -710,7 +710,7 @@ python main.py
 
 1. **Check database size:**
 ```bash
-du -h .PrizmFoundry/agents.db
+du -h .PrizmForge/agents.db
 ```
 
 2. **Export important data:**
@@ -721,7 +721,7 @@ du -h .PrizmFoundry/agents.db
 
 3. **Delete old tasks:**
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 DELETE FROM conversation_history WHERE task_id = 'old_task';
 DELETE FROM agent_feedback WHERE task_id = 'old_task';
@@ -735,10 +735,10 @@ VACUUM;  -- Reclaim space
 4. **Start fresh:**
 ```bash
 # Backup first
-cp .PrizmFoundry/agents.db .PrizmFoundry/agents.db.backup
+cp .PrizmForge/agents.db .PrizmForge/agents.db.backup
 
 # Delete
-rm .PrizmFoundry/agents.db
+rm .PrizmForge/agents.db
 
 # Re-initialize
 python main.py
@@ -747,10 +747,10 @@ python main.py
 
 ---
 
-### "Can't find .PrizmFoundry directory"
+### "Can't find .PrizmForge directory"
 
 **Symptoms:**
-- Can't see `.PrizmFoundry` in file browser
+- Can't see `.PrizmForge` in file browser
 - Database not found errors
 
 **Causes:**
@@ -777,7 +777,7 @@ ls -la
 ```bash
 # Database is in project directory
 cd <project_directory>
-ls -la .PrizmFoundry/
+ls -la .PrizmForge/
 ```
 
 3. **Verify in config:**
@@ -789,7 +789,7 @@ ls -la .PrizmFoundry/
 
 4. **Access directly:**
 ```bash
-cd /path/to/project/.PrizmFoundry
+cd /path/to/project/.PrizmForge
 ls -la
 # Should see: agents.db, agents_exports/
 ```
@@ -855,7 +855,7 @@ ls -la
 
 5. **Optimize database:**
 ```bash
-sqlite3 .PrizmFoundry/agents.db "VACUUM; ANALYZE;"
+sqlite3 .PrizmForge/agents.db "VACUUM; ANALYZE;"
 ```
 
 ---
@@ -1062,7 +1062,7 @@ python -c "from utils.testing import test_agent; test_agent('developer')"
 
 **Step 5: Check database for responses**
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 SELECT agent_name, parse_success, parse_error
 FROM agent_responses_archive
@@ -1083,7 +1083,7 @@ LIMIT 5;
 
 **Step 2: Check file content in database**
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 SELECT file_path, length(content), content_hash
 FROM project_files
@@ -1092,7 +1092,7 @@ WHERE file_path = 'myfile.py';
 
 **Step 3: Check modification history**
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 SELECT operation, changed_by, timestamp
 FROM file_modifications
@@ -1143,7 +1143,7 @@ curl -X POST https://api.our.example.domain/v1/chat/completions \
 
 **Step 5: Check database**
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 SELECT * FROM endpoint_health;
 
@@ -1253,7 +1253,7 @@ GROUP BY original_endpoint, reason;
 ### Database Inspection
 
 ```bash
-sqlite3 .PrizmFoundry/agents.db
+sqlite3 .PrizmForge/agents.db
 
 -- View all tables
 .tables

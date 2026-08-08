@@ -1,6 +1,3 @@
-# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
-
 name: Python package
 
 on:
@@ -10,31 +7,135 @@ on:
     branches: [ "main" ]
 
 jobs:
-  build:
+  format:
+    name: Format & auto-fix (black, isort, ruff) + type check
+    runs-on: ubuntu-latest
+    outputs:
+      formatted: ${{ steps.check_changes.outputs.changed }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install formatter / lint / type tools
+        run: |
+          python3 -m pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install black isort ruff mypy
+          fi
+
+      - name: Run auto-formatters and autofixers
+        run: |
+          python3 -m black .
+          python3 -m isort .
+          python3 -m ruff check . --unsafe-fixes --fix
+          python3 -m ruff format .
+
+      - name: Run ruff check
+        run: |
+          python3 -m ruff check .
+
+      - name: Run mypy (type checks, tolerate missing imports)
+        run: |
+          python3 -m mypy . --ignore-missing-imports || true
+
+      - name: Fail if repo changed (auto-format created diffs)
+        id: check_changes
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git add -A
+          git --no-pager status --porcelain
+          CHANGES="$(git --no-pager status --porcelain)"
+          if [ -n "$CHANGES" ]; then
+            echo "::error ::Repository has formatting changes. Please run 'black .', 'isort .', and 'ruff --fix .' locally and commit the changes."
+            echo "changed=true" >> $GITHUB_OUTPUT
+            exit 1
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+          fi
+
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    needs: format
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.14 for linting
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install lint tooling
+        run: |
+          python3 -m pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          else
+            pip install flake8
+          fi
+
+      - name: Lint with flake8 (gating)
+        run: |
+          EXCLUDE_DIRS="--exclude=.git,.github,.venv,venv,build,dist,.PrizmForge,.pytest_cache,.ruff_cache,.vscode,ExampleProject,report"
+          flake8 . --count $EXCLUDE_DIRS --select=E9,F63,F7,F82 --show-source --statistics
+          flake8 . --count $EXCLUDE_DIRS --exit-zero --max-complexity=15 --max-line-length=159 --statistics
+
+  test:
+    name: Test matrix
+    needs: [format, lint]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.9", "3.10", "3.11"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
 
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v3
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        python -m pip install flake8 pytest
-        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-    - name: Lint with flake8
-      run: |
-        # stop the build if there are Python syntax errors or undefined names
-        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
-        # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
-        flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
-    - name: Test with pytest
-      run: |
-        pytest
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+
+      - name: Test with pytest
+        run: |
+          pytest tests/ -m "not slow" -q

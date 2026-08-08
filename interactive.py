@@ -1,17 +1,69 @@
 """Interactive CLI loop with multiple operating modes"""
+
 import signal
 import sys
+import threading
 import time
 from datetime import datetime
-from typing import Optional 
-from cli.commands import *
-from workflow.task_runner import run_task_cycle
-from core.db_helpers import post_message
+from typing import Optional
+
+from cli.commands import (
+    cmd_archives,
+    cmd_endpoint_health,
+    cmd_endpoints,
+    cmd_export_db,
+    cmd_export_specific_tables,
+    cmd_export_task,
+    cmd_fallback_stats,
+    cmd_feedback,
+    cmd_files,
+    cmd_help,
+    cmd_history,
+    cmd_init,
+    cmd_json_parse_stats,
+    cmd_list_exports,
+    cmd_reports,
+    cmd_reset_endpoint,
+    cmd_resource_status,
+    cmd_review_status,
+    cmd_show_prompt,
+    cmd_show_report,
+    cmd_status,
+    cmd_task_progress,
+)
+from core.cli_modes import CLIMode, CLIState, UnattendedConfig
 from core.db_connection import get_db_connection
-from core.cli_modes import CLIMode, UnattendedConfig, CLIState
+from core.db_helpers import post_message
+from workflow.task_runner import run_task_cycle
 
 # Global flag for graceful shutdown
 _shutdown_requested = False
+
+
+def resolve_task_description(config: dict, task_index: int) -> str:
+    """
+    Resolves the task prompt based on user precedence:
+    1. Highest Priority: Scalar `seed_task` for the initial run (task_index == 0) if provided.
+    2. Secondary Priority: `seed_tasks` list items in order.
+    3. Fallback: Scalar `seed_task` or default prompt.
+    """
+    scalar_seed = config.get("seed_task")
+    seed_tasks = config.get("seed_tasks", [])
+
+    # Highest Priority: Use scalar seed_task on the first task run (task_index 0) if present
+    if scalar_seed and task_index == 0:
+        return scalar_seed
+
+    # Adjust list index if scalar_seed was executed on index 0
+    list_index = task_index - 1 if scalar_seed else task_index
+
+    # Secondary Priority: Process seed_tasks list items in order
+    if seed_tasks and isinstance(seed_tasks, list) and 0 <= list_index < len(seed_tasks):
+        return seed_tasks[list_index]
+
+    # Fallback
+    return scalar_seed or "Default system task description"
+
 
 def signal_handler(sig, frame):
     """Handle Ctrl+C gracefully"""
@@ -24,84 +76,120 @@ def signal_handler(sig, frame):
         print("\n❌ Force quit!")
         sys.exit(1)
 
+
 def should_continue_unattended(state: CLIState, config: UnattendedConfig) -> bool:
     """Check if unattended mode should continue"""
-    global _shutdown_requested
-    
+    _shutdown_requested
+
     if _shutdown_requested:
         return False
-    
+
     # Check time limit
     elapsed = state.elapsed_hours()
     if elapsed >= config.max_duration_hours:
         print(f"\n⏰ Unattended duration reached ({config.max_duration_hours}h)")
         return False
-    
+
+    # Seed-only runs: stop when queue empty and not auto-generating
+    if not config.auto_generate_tasks and not (config._seed_queue or []):
+        if state.total_iterations > 0:
+            print("\n✅ Seed tasks complete (auto_generate_tasks=false)")
+            return False
+
+    # Optional: stop when feedback backlog empty after at least one task
+    if getattr(config, "stop_when_backlog_empty", False) and state.total_iterations > 0:
+        try:
+            with get_db_connection() as conn:
+                n = conn.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0").fetchone()[0]
+            if n == 0:
+                print("\n✅ Feedback backlog empty — stopping unattended run")
+                return False
+        except Exception:
+            pass
+
     return True
 
-def generate_next_task(state: CLIState, config: UnattendedConfig) -> str:
-    """Generate next task based on project state"""
-    
+
+def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: Optional[dict] = None) -> str:
+    """Generate next task based on project state and precedence rules"""
+    # Priority 0: Check scalar seed_task and seed_tasks queue via precedence resolver
+    if config_dict:
+        task_prompt = resolve_task_description(config_dict, state.task_counter - 1)
+        if task_prompt and task_prompt != "Default system task description":
+            return task_prompt
+
+    if config._seed_queue:
+        return config._seed_queue.pop(0)
+    if not config.auto_generate_tasks:
+        return "Continue development based on project state and feedback"
+
     # Priority 1: Critical/High issues from background agents
     if config.prioritize_critical_issues:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute("""
+
+            cursor.execute(
+                """
                 SELECT COUNT(*), priority, category
                 FROM agent_feedback
                 WHERE addressed = 0 AND priority IN ('CRITICAL', 'HIGH')
                 GROUP BY priority, category
-                ORDER BY 
+                ORDER BY
                     CASE priority WHEN 'CRITICAL' THEN 1 ELSE 2 END,
                     COUNT(*) DESC
                 LIMIT 1
-            """)
-            
+            """
+            )
+
             feedback = cursor.fetchone()
             if feedback and feedback[0] > 0:
                 count, priority, category = feedback
                 return f"Address {count} {priority} {category} issue(s) identified by background agents"
-    
+
     # Priority 2: Recent file modifications needing review
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        
-        cursor.execute("""
+
+        cursor.execute(
+            """
             SELECT file_path, COUNT(*) as mod_count
             FROM file_modifications
             WHERE timestamp > datetime('now', '-2 hours')
             GROUP BY file_path
             ORDER BY mod_count DESC
             LIMIT 1
-        """)
-        
+        """
+        )
+
         recent = cursor.fetchone()
         if recent and recent[1] > 1:
             return f"Review and consolidate {recent[1]} recent changes to {recent[0]}"
-    
+
     # Priority 3: Files with unaddressed feedback
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        
-        cursor.execute("""
+
+        cursor.execute(
+            """
             SELECT file_path, COUNT(*) as issue_count
             FROM agent_feedback
             WHERE addressed = 0
             GROUP BY file_path
             ORDER BY issue_count DESC
             LIMIT 1
-        """)
-        
+        """
+        )
+
         issues = cursor.fetchone()
         if issues and issues[1] > 0:
             return f"Resolve {issues[1]} issue(s) in {issues[0]}"
-    
+
     # Priority 4: Unreviewed files
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        
-        cursor.execute("""
+
+        cursor.execute(
+            """
             SELECT pf.file_path
             FROM project_files pf
             WHERE pf.is_binary = 0
@@ -111,72 +199,67 @@ def generate_next_task(state: CLIState, config: UnattendedConfig) -> str:
             )
             ORDER BY pf.last_modified DESC
             LIMIT 1
-        """)
-        
+        """
+        )
+
         unreviewed = cursor.fetchone()
         if unreviewed:
             return f"Initial comprehensive review of {unreviewed[0]}"
-    
+
     # Priority 5: General code quality improvements
     return "Scan project for code quality improvements, refactoring opportunities, and technical debt"
+
 
 def save_checkpoint(state: CLIState):
     """Save checkpoint to database"""
     try:
         with get_db_connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS cli_checkpoints (
-                    id INTEGER PRIMARY KEY CHECK (id = 1),
-                    mode TEXT,
-                    start_time TEXT,
-                    task_counter INTEGER,
-                    total_files_modified INTEGER,
-                    total_iterations INTEGER,
-                    current_task_id TEXT,
-                    checkpoint_time TEXT
-                )
-            """)
-            
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT OR REPLACE INTO cli_checkpoints
-                (id, mode, start_time, task_counter, total_files_modified, 
+                (id, mode, start_time, task_counter, total_files_modified,
                  total_iterations, current_task_id, checkpoint_time)
                 VALUES (1, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                state.mode.value,
-                state.start_time.isoformat(),
-                state.task_counter,
-                state.total_files_modified,
-                state.total_iterations,
-                state.current_task_id,
-                datetime.now().isoformat()
-            ))
-        
+            """,
+                (
+                    state.mode.value,
+                    state.start_time.isoformat(),
+                    state.task_counter,
+                    state.total_files_modified,
+                    state.total_iterations,
+                    state.current_task_id,
+                    datetime.now().isoformat(),
+                ),
+            )
+
         state.update_checkpoint()
         elapsed = state.elapsed_hours()
         print(f"\n💾 Checkpoint saved: Task {state.task_counter}, {state.total_files_modified} files modified, {elapsed:.1f}h elapsed")
     except Exception as e:
         print(f"⚠️  Checkpoint save failed: {e}")
 
+
 def load_checkpoint() -> Optional[CLIState]:
     """Load checkpoint from database"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute("""
+
+            cursor.execute(
+                """
                 SELECT mode, start_time, task_counter, total_files_modified,
                        total_iterations, current_task_id, checkpoint_time
                 FROM cli_checkpoints
                 WHERE id = 1
-            """)
-            
+            """
+            )
+
             row = cursor.fetchone()
             if row:
                 mode = CLIMode(row[0])
                 start_time = datetime.fromisoformat(row[1])
                 checkpoint_time = datetime.fromisoformat(row[6]) if row[6] else None
-                
+
                 state = CLIState(
                     mode=mode,
                     start_time=start_time,
@@ -184,22 +267,29 @@ def load_checkpoint() -> Optional[CLIState]:
                     total_files_modified=row[3],
                     total_iterations=row[4],
                     current_task_id=row[5],
-                    last_checkpoint=checkpoint_time
+                    last_checkpoint=checkpoint_time,
                 )
-                
+
                 return state
-        
+
         return None
     except Exception:
         return None
 
-def run_unattended_mode(config: UnattendedConfig):
+
+def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = None):  # noqa: C901
     """Run unattended mode loop"""
     global _shutdown_requested
-    
+
+    # Load raw_config if not passed
+    if raw_config is None:
+        from core.config import get_config
+
+        raw_config = get_config()
+
     # Try to load checkpoint
     state = load_checkpoint()
-    
+
     if state and state.mode == CLIMode.UNATTENDED:
         elapsed = state.elapsed_hours()
         print("\n📂 Checkpoint found - resuming from previous session")
@@ -207,7 +297,7 @@ def run_unattended_mode(config: UnattendedConfig):
         print(f"   Tasks completed: {state.task_counter - 1}")
         print(f"   Files modified: {state.total_files_modified}")
         print(f"   Elapsed: {elapsed:.1f}h")
-        
+
         # Check if should continue
         if elapsed >= config.max_duration_hours:
             print(f"\n⏰ Previous session already completed {config.max_duration_hours}h run")
@@ -215,168 +305,182 @@ def run_unattended_mode(config: UnattendedConfig):
             state = None
     else:
         state = None
-    
+
     # Create new state if no valid checkpoint
     if state is None:
-        state = CLIState(
-            mode=CLIMode.UNATTENDED,
-            start_time=datetime.now()
-        )
-    
+        state = CLIState(mode=CLIMode.UNATTENDED, start_time=datetime.now())
+
     end_time = config.get_end_time(state.start_time)
-    
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print("🤖 UNATTENDED MODE ACTIVE")
-    print("="*60)
+    print("=" * 60)
     print(f"Duration: {config.max_duration_hours}h")
     print(f"Start: {state.start_time.strftime('%Y-%m-%d %H:%M')}")
     print(f"End: {end_time.strftime('%Y-%m-%d %H:%M')}")
     print(f"Checkpoint interval: {config.checkpoint_interval_minutes}m")
     print(f"Max iterations per task: {config.max_iterations_per_task}")
-    print(f"\nPress Ctrl+C for graceful shutdown")
-    print("="*60 + "\n")
-    
+    print("\nPress Ctrl+C for graceful shutdown")
+    print("=" * 60 + "\n")
+
     # Main unattended loop
     while should_continue_unattended(state, config):
         try:
-            # Generate task
-            if config.auto_generate_tasks:
-                task_description = generate_next_task(state, config)
-            else:
-                task_description = "Continue development based on project state and feedback"
-            
+            # Generate task using scalar-first precedence logic
+            task_description = generate_next_task(state, config, config_dict=raw_config)
+
             task_id = f"task_{state.task_counter:03d}"
             state.task_counter += 1
             state.current_task_id = task_id
-            
+
             elapsed = state.elapsed_hours()
             remaining = config.max_duration_hours - elapsed
-            
-            print(f"\n{'='*60}")
-            print(f"🎯 AUTO-GENERATED TASK: {task_id}")
+
+            print(f"\n{'=' * 60}")
+            print(f"🎯 TASK EXECUTION: {task_id}")
             print(f"   {task_description}")
             print(f"   Elapsed: {elapsed:.1f}h | Remaining: {remaining:.1f}h")
-            print(f"{'='*60}\n")
-            
+            print(f"{'=' * 60}\n")
+
             # Run task cycle
-            run_task_cycle(
-                task_id, 
-                task_description,
-                max_turns=config.max_iterations_per_task
-            )
-            
+            run_task_cycle(task_id, task_description, max_turns=config.max_iterations_per_task)
+
             state.total_iterations += 1
-            
+
             # Count files modified in this task
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT COUNT(DISTINCT file_path)
                     FROM file_modifications
                     WHERE task_id = ?
-                """, (task_id,))
+                """,
+                    (task_id,),
+                )
                 files_changed = cursor.fetchone()[0] or 0
-            
+
             state.total_files_modified += files_changed
-            
+
             if files_changed > 0:
                 print(f"\n✅ Task {task_id}: {files_changed} file(s) modified")
             else:
                 print(f"\n⚠️  Task {task_id}: No files modified")
-            
+
             # Checkpoint if needed
             if state.should_checkpoint(config.checkpoint_interval_minutes):
                 save_checkpoint(state)
-            
+
             # Brief pause between tasks (unless shutting down)
             if not _shutdown_requested and should_continue_unattended(state, config):
                 idle_minutes = config.min_idle_minutes
                 print(f"\n⏸️  Pausing {idle_minutes:.1f}m before next task...")
-                
-                # Sleep in small intervals to check shutdown flag
+
                 sleep_intervals = int(idle_minutes * 60 / 10)  # Check every 10 seconds
                 for _ in range(sleep_intervals):
                     if _shutdown_requested:
                         break
                     time.sleep(10)
-        
+
         except KeyboardInterrupt:
-            # Graceful shutdown
             if not _shutdown_requested:
                 _shutdown_requested = True
             save_checkpoint(state)
             break
-        
+
         except Exception as e:
             print(f"\n❌ Error in unattended loop: {e}")
             import traceback
+
             traceback.print_exc()
-            
-            # Save checkpoint and recover
+
             save_checkpoint(state)
-            
+
             if not _shutdown_requested:
-                print(f"\n⏸️  Recovering... pausing 2 minutes before retry")
+                print("\n⏸️  Recovering... pausing 2 minutes before retry")
                 time.sleep(120)
             else:
                 break
-    
+
     # Final summary
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("📊 UNATTENDED MODE SUMMARY")
-    print("="*60)
+    print("=" * 60)
     elapsed = state.elapsed_hours()
     print(f"Duration: {elapsed:.1f}h / {config.max_duration_hours}h")
     print(f"Tasks completed: {state.task_counter - 1}")
     print(f"Total iterations: {state.total_iterations}")
     print(f"Files modified: {state.total_files_modified}")
-    print(f"Checkpoints saved: {state.total_iterations // config.checkpoint_interval_minutes + 1}")
-    
-    if _shutdown_requested:
-        print(f"\nStatus: Gracefully shutdown by user")
-    else:
-        print(f"\nStatus: Completed full duration")
-    
-    print("="*60 + "\n")
-    
-    # Save final checkpoint
+
     save_checkpoint(state)
 
-def run_semi_attended_mode():
+    # Final summary (config-only run, no prompt)
+    print("\n" + "=" * 60)
+    print("✅ UNATTENDED RUN COMPLETE")
+    print("=" * 60)
+    print(f"   Tasks started: {state.task_counter - 1}")
+    print(f"   Iterations: {state.total_iterations}")
+    print(f"   Files modified: {state.total_files_modified}")
+    print(f"   Elapsed hours: {state.elapsed_hours():.2f}")
+    try:
+        from pathlib import Path as _P
+
+        from core.config import get_config
+
+        pd = _P(get_config().get("project_directory", "./project"))
+        out = pd / ".PrizmForge" / "reports"
+        out.mkdir(parents=True, exist_ok=True)
+        from datetime import datetime as _dt
+
+        summary_path = out / f"unattended_summary_{_dt.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        summary_path.write_text(
+            f"tasks={state.task_counter - 1}\n"
+            f"iterations={state.total_iterations}\n"
+            f"files_modified={state.total_files_modified}\n"
+            f"elapsed_hours={state.elapsed_hours():.2f}\n",
+            encoding="utf-8",
+        )
+        print(f"   Summary written: {summary_path}")
+    except Exception as _e:
+        print(f"   (summary file skipped: {_e})")
+    print("=" * 60 + "\n")
+
+
+def run_semi_attended_mode():  # noqa: C901
     """Run semi-attended mode loop (original behavior)"""
-    global _shutdown_requested
-    
-    print("\n" + "="*60)
+    _shutdown_requested
+
+    print("\n" + "=" * 60)
     print("🚀 SEMI-ATTENDED MODE")
-    print("="*60)
+    print("=" * 60)
     print("\nType 'help' for commands or describe a task to begin.")
     print("Type 'quit' to exit.")
-    print("="*60 + "\n")
-    
+    print("=" * 60 + "\n")
+
     task_counter = 1
-    
+
     while not _shutdown_requested:
         try:
             cmd = input("👤 Human> ").strip()
-            
+
             if not cmd:
                 continue
-            
+
             # ============= QUIT COMMAND =============
             if cmd.lower() in ["quit", "exit", "q"]:
                 print("\n👋 Goodbye!\n")
                 break
-            
+
             # ============= HELP COMMAND =============
             if cmd.lower() == "help":
                 cmd_help()
                 continue
-            
+
             # ============= EXPORT COMMANDS (NO API) =============
             if cmd.lower() == "export":
                 cmd_export_db()
                 continue
-            
+
             if cmd.lower().startswith("export "):
                 parts = cmd.split()
                 if len(parts) == 2:
@@ -386,31 +490,32 @@ def run_semi_attended_mode():
                 else:
                     print("Usage: export [task_id] [output_dir]")
                 continue
-            
+
             if cmd.lower() == "list_exports":
                 cmd_list_exports()
                 continue
-            
+
             if cmd.lower().startswith("export_tables "):
                 parts = cmd.split(maxsplit=2)
-                tables = parts[1].split(',')
+                tables = parts[1].split(",")
                 task_id = parts[2] if len(parts) > 2 else None
                 cmd_export_specific_tables(tables, task_id=task_id)
                 continue
-            
+
             # ============= PROJECT COMMANDS (NO API) =============
             if cmd.lower() == "init":
                 cmd_init()
                 continue
-            
+
             if cmd.lower() == "files":
                 cmd_files()
                 continue
-            
+
             if cmd.lower() == "project":
                 print("\n📂 Project information")
                 print("-" * 60)
                 from core.config import get_config
+
                 config = get_config()
                 print(f"Directory: {config.get('project_directory')}")
                 print(f"Git enabled: {config.get('git')}")
@@ -418,34 +523,42 @@ def run_semi_attended_mode():
                 print(f"CLI Mode: {config.get('cli_mode', {}).get('mode', 'semi_attended')}")
                 print()
                 continue
-            
+
             if cmd.lower() == "changes":
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT file_path, operation, changed_by, task_id, timestamp
                         FROM file_modifications
                         ORDER BY timestamp DESC
                         LIMIT 10
-                    """)
+                    """
+                    )
                     modifications = cursor.fetchall()
-                
+
                 if not modifications:
                     print("\n📝 No file modifications yet\n")
                 else:
                     print("\n📝 Recent File Modifications:")
                     print("-" * 60)
-                    for file_path, operation, changed_by, task_id, timestamp in modifications:
+                    for (
+                        file_path,
+                        operation,
+                        changed_by,
+                        task_id,
+                        timestamp,
+                    ) in modifications:
                         print(f"  {timestamp[:19]} | {operation.upper():8} | {file_path}")
                         print(f"    By: {changed_by} (Task: {task_id})")
                         print()
                 continue
-            
+
             # ============= ENDPOINT COMMANDS =============
             if cmd.lower() == "endpoints":
                 cmd_endpoints()
                 continue
-            
+
             if cmd.lower() == "health":
                 cmd_endpoint_health()
                 continue
@@ -468,61 +581,64 @@ def run_semi_attended_mode():
             if cmd.lower() == "status":
                 cmd_status()
                 continue
-            
+
             if cmd.lower() == "history":
                 cmd_history()
                 continue
-            
+
             if cmd.lower().startswith("feedback "):
                 task_id = cmd.split()[1] if len(cmd.split()) > 1 else "task_001"
                 cmd_feedback(task_id)
                 continue
-            
+
             if cmd.lower().startswith("show_prompt "):
                 parts = cmd.split()
                 task_id = parts[1] if len(parts) > 1 else "task_001"
                 agent_name = parts[2] if len(parts) > 2 else None
                 cmd_show_prompt(task_id, agent_name)
                 continue
-            
+
             if cmd.lower() == "conversation" or cmd.lower().startswith("conversation "):
                 parts = cmd.split()
                 task_id = parts[1] if len(parts) > 1 else "task_001"
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT timestamp, agent, role, content
                         FROM conversation_history
                         WHERE task_id = ?
                         ORDER BY timestamp
                         LIMIT 50
-                    """, (task_id,))
+                    """,
+                        (task_id,),
+                    )
                     results = cursor.fetchall()
-                
+
                 if not results:
                     print(f"\n📋 No conversation history for {task_id}\n")
                 else:
                     print(f"\n📜 Conversation History: {task_id}")
-                    print("="*60)
+                    print("=" * 60)
                     for timestamp, agent, role, content in results:
                         print(f"\n[{timestamp[:19]}] {agent.upper()} ({role})")
-                        print("-"*60)
+                        print("-" * 60)
                         print(content[:500])
                         if len(content) > 500:
-                            print(f"... +{len(content)-500} chars")
+                            print(f"... +{len(content) - 500} chars")
                         print()
                 continue
-            
+
             if cmd.lower() == "archives" or cmd.lower().startswith("archives "):
                 parts = cmd.split()
                 task_id = parts[1] if len(parts) > 1 else None
                 cmd_archives(task_id)
                 continue
-            
+
             if cmd.lower() == "review_status":
                 cmd_review_status()
                 continue
-            
+
             # ============= REPORTS COMMANDS =============
             if cmd.lower() == "reports":
                 cmd_reports()
@@ -542,13 +658,14 @@ def run_semi_attended_mode():
                 report_name = parts[1] if len(parts) > 1 else None
                 cmd_show_report(report_name)
                 continue
-            
+
             if cmd.lower() == "resource_status":
                 cmd_resource_status()
                 continue
-            
+
             if cmd.lower() == "git":
-                from utils.git_operations import git_status, git_log
+                from utils.git_operations import git_log, git_status
+
                 print("\n📦 Git Status:")
                 print(git_status())
                 print("\n📦 Recent Commits:")
@@ -559,66 +676,66 @@ def run_semi_attended_mode():
                         print(f"    {commit['message']}")
                         print()
                 continue
-            
-            # =============HUMAN AS HIGH-BIAS AGENT =============
-            # Check if there's an active task - if so, treat input as human feedback
-            if task_counter > 1:  # Not first command
+
+            # ============= HUMAN AS HIGH-BIAS AGENT =============
+            if task_counter > 1:
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT id FROM tasks 
-                        WHERE status = 'in_progress' 
-                        ORDER BY started_at DESC 
+                    cursor.execute(
+                        """
+                        SELECT id FROM tasks
+                        WHERE status = 'in_progress'
+                        ORDER BY started_at DESC
                         LIMIT 1
-                    """)
+                    """
+                    )
                     active_task = cursor.fetchone()
-                    
+
                 if active_task:
-                    # Post as human feedback with high bias
                     print(f"\n💬 Posting as human feedback to active task {active_task[0]}...")
                     post_message(
                         from_agent="human",
                         to_agent="orchestrator",
                         content=cmd,
                         task_id=active_task[0],
-                        priority="CRITICAL"  # Human input always CRITICAL
+                        priority="CRITICAL",
                     )
                     print(f"   ✅ Posted to {active_task[0]}")
-                    print(f"   🎯 Prioritizer will process and elevate to orchestrator\n")
+                    print("   🎯 Prioritizer will process and elevate to orchestrator\n")
                     continue
-            # ==========================================================
-            
+
             # ============= FALLTHROUGH TO TASK EXECUTION =============
-            # No active task - start new one
             task_id = f"task_{task_counter:03d}"
             task_counter += 1
-            
+
             print(f"\n🚀 Starting {task_id}...")
             run_task_cycle(task_id, cmd)
-        
+
         except KeyboardInterrupt:
             print("\n\n⚠️  Interrupted. Type 'quit' to exit.\n")
             continue
         except Exception as e:
             print(f"\n❌ Error: {e}\n")
             import traceback
+
             traceback.print_exc()
 
-def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, 
-                    unattended_config: UnattendedConfig = None):
+
+def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: Optional[UnattendedConfig] = None):
     """Main interactive loop - routes to appropriate mode"""
-    
-    # Setup signal handler for graceful shutdown
-    signal.signal(signal.SIGINT, signal_handler)
-    
+
+    # Guard signal handler so thread calls in test suites don't raise ValueError
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, signal_handler)
+
     if mode == CLIMode.UNATTENDED:
-        # Unattended mode - continuous operation
+        from core.config import get_config
+
+        raw_config = get_config()
+
         if unattended_config is None:
-            from core.config import get_config
-            config = get_config()
-            unattended_config = UnattendedConfig.from_config(config)
-        
-        run_unattended_mode(unattended_config)
+            unattended_config = UnattendedConfig.from_config(raw_config)
+
+        run_unattended_mode(unattended_config, raw_config=raw_config)
     else:
-        # Semi-attended mode - wait for human input
         run_semi_attended_mode()
