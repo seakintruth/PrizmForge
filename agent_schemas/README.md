@@ -16,6 +16,7 @@ All line references use format: `guid-xxx-123`
 
 ```python
 from core.agent_schemas import get_schema_example
+
 schema = get_schema_example("jr_reviewer")
 ```
 

@@ -77,6 +77,7 @@ class ContextManager:
         # Conservative default for unknown models
         print(f"⚠️  Unknown model '{model}', using default context limit")
         return self.default_context_limit
+
     def build_orchestrator_context(
         self,
         task_id: str,
@@ -95,16 +96,17 @@ class ContextManager:
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT COUNT(*) FROM project_files 
-                    WHERE is_binary = 0 
+                cursor.execute(
+                    """
+                    SELECT COUNT(*) FROM project_files
+                    WHERE is_binary = 0
                       AND file_path NOT LIKE '.PrizmForge/%'
                       AND file_path NOT LIKE '.git/%'
-                """)
+                """
+                )
                 row = cursor.fetchone()
                 total_project_files = row[0] if row else 0
         except Exception as e:
-
             print(f"⚠️ Failed to query project_files count: {e}")
             total_project_files = 0
 
@@ -368,13 +370,15 @@ class ContextManager:
                 feedback_items = cursor.fetchall()
 
                 # Get pending proposals
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT proposal_id, target_file_path, status, rationale
                     FROM edit_proposals
                     WHERE status IN ('pending', 'under_review', 'approved')
                     ORDER BY created_at DESC
                     LIMIT 5
-                """)
+                """
+                )
 
                 proposals = cursor.fetchall()
 

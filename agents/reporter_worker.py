@@ -48,10 +48,12 @@ class ProjectReporterWorker:
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute("""
+                cursor.execute(
+                    """
                     SELECT last_report_time, last_report_file_count, last_report_line_delta
                     FROM reporter_state WHERE id = 1
-                """)
+                """
+                )
                 row = cursor.fetchone()
                 if row:
                     if row[0]:
@@ -120,10 +122,12 @@ class ProjectReporterWorker:
                         (self.last_report_time.isoformat(),),
                     )
                 else:
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT COUNT(DISTINCT file_path), COALESCE(SUM(ABS(LENGTH(content_after) - LENGTH(content_before))), 0)
                         FROM file_modifications
-                    """)
+                    """
+                    )
 
                 row = cursor.fetchone()
 

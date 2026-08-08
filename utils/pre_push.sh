@@ -1,4 +1,5 @@
 #!/bin/bash
+
 set -e
 
 # Colors for output
@@ -13,7 +14,8 @@ REPORT_DIR="../report"
 mkdir -p "$REPORT_DIR"
 RUFF_LOG="$REPORT_DIR/ruff-check-$(date +%Y%m%d_%H%M%S).log"
 
-# Flags
+# Default configuration
+PYTHON_EXEC="python3"
 SKIP_TESTS=false
 SHOW_SUMMARY=true
 FAILED_CHECKS=()
@@ -22,6 +24,15 @@ PASSED_CHECKS=()
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -p|--python)
+            if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
+                PYTHON_EXEC="$2"
+                shift 2
+            else
+                echo -e "${RED}Error: Option $1 requires a non-empty Python path.${NC}"
+                exit 1
+            fi
+            ;;
         --skip-tests)
             SKIP_TESTS=true
             shift
@@ -32,7 +43,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         *)
             echo "Unknown option: $1"
-            echo "Usage: $0 [--skip-tests] [--no-summary]"
+            echo "Usage: $0 [-p|--python PATH] [--skip-tests] [--no-summary]"
             exit 1
             ;;
     esac
@@ -65,22 +76,23 @@ run_check() {
 # Run checks
 echo -e "\n${BLUE}═══════════════════════════════════════════════════${NC}"
 echo -e "${BLUE}🚀 PrizmForge Pre-Push Checks${NC}"
+echo -e "${BLUE}Executable: ${PYTHON_EXEC}${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════${NC}\n"
 
 # Format checks (auto-fix, non-blocking)
 echo -e "${BLUE}📝 Formatting & Auto-fixing...${NC}\n"
 
-python3 -m black . > /dev/null 2>&1 && echo -e "${GREEN}✅ black${NC}" || echo -e "${YELLOW}⚠️  black${NC}"
-python3 -m isort . > /dev/null 2>&1 && echo -e "${GREEN}✅ isort${NC}" || echo -e "${YELLOW}⚠️  isort${NC}"
-python3 -m ruff check . --unsafe-fixes --fix > /dev/null 2>&1 && echo -e "${GREEN}✅ ruff (fixes)${NC}" || echo -e "${YELLOW}⚠️  ruff (fixes)${NC}"
-python3 -m ruff format . > /dev/null 2>&1 && echo -e "${GREEN}✅ ruff format${NC}" || echo -e "${YELLOW}⚠️  ruff format${NC}"
+"$PYTHON_EXEC" -m black . > /dev/null 2>&1 && echo -e "${GREEN}✅ black${NC}" || echo -e "${YELLOW}⚠️  black${NC}"
+"$PYTHON_EXEC" -m isort . > /dev/null 2>&1 && echo -e "${GREEN}✅ isort${NC}" || echo -e "${YELLOW}⚠️  isort${NC}"
+"$PYTHON_EXEC" -m ruff check . --unsafe-fixes --fix > /dev/null 2>&1 && echo -e "${GREEN}✅ ruff (fixes)${NC}" || echo -e "${YELLOW}⚠️  ruff (fixes)${NC}"
+"$PYTHON_EXEC" -m ruff format . > /dev/null 2>&1 && echo -e "${GREEN}✅ ruff format${NC}" || echo -e "${YELLOW}⚠️  ruff format${NC}"
 
 # Linting checks (blocking)
 echo -e "\n${BLUE}🔍 Linting Checks (blocking)...${NC}\n"
 
 # Ruff check with logging on failure
 echo -e "${BLUE}🔄 Running: ruff check...${NC}"
-if python3 -m ruff check . > "$RUFF_LOG" 2>&1; then
+if "$PYTHON_EXEC" -m ruff check . > "$RUFF_LOG" 2>&1; then
     PASSED_CHECKS+=("ruff check")
     echo -e "${GREEN}✅ ruff check${NC}"
 else
@@ -92,16 +104,16 @@ else
     exit 1
 fi
 
-if ! run_check "flake8 (errors)" "flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics"; then
+if ! run_check "flake8 (errors)" "$PYTHON_EXEC -m flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics"; then
     exit 1
 fi
 
-run_check "flake8 (warnings)" "flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics"
+run_check "flake8 (warnings)" "$PYTHON_EXEC -m flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics"
 
 # Type checking (non-blocking)
 echo -e "\n${BLUE}🏷️  Type Checking (informational)...${NC}\n"
 
-run_check "mypy" "python3 -m mypy . --ignore-missing-imports" true
+run_check "mypy" "$PYTHON_EXEC -m mypy . --ignore-missing-imports" true
 
 # Tests (optional)
 if [ "$SKIP_TESTS" = true ]; then
@@ -109,7 +121,7 @@ if [ "$SKIP_TESTS" = true ]; then
 else
     echo -e "\n${BLUE}🧪 Running Tests...${NC}\n"
     
-    if ! run_check "pytest" "pytest"; then
+    if ! run_check "pytest" "$PYTHON_EXEC -m pytest"; then
         exit 1
     fi
 fi

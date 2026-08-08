@@ -5,16 +5,17 @@ Useful for debugging JSON parsing failures and seeing what the LLM actually retu
 """
 
 import argparse
-import json
 import sys
+import traceback
 from pathlib import Path
+
+from cli.commands import cmd_export_db
+from core.db import get_db_path
+from core.db_connection import get_db_connection
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-
-from core.db import get_db_path
-from core.db_connection import get_db_connection
 
 
 def list_recent_developer_responses(
@@ -42,8 +43,8 @@ def list_recent_developer_responses(
 
         where_clause = " AND ".join(query_conditions)
 
+        # 🎯 PHASE 4 INJECTION: Exact SQL Linking between Developer (N) and Reviewer (N+1 / N+2) APPROVE
         if modified_only:
-            # Match Developer response r to the immediate Reviewer response (id + 1 or + 2) that APPROVED the edit
             query = f"""
                 SELECT DISTINCT
                     r.id, r.timestamp, r.agent_name, r.task_id, r.parse_success,
@@ -55,7 +56,7 @@ def list_recent_developer_responses(
                     AND rev.agent_name = 'reviewer'
                     AND rev.response LIKE '%"decision": "APPROVE"%'
                     AND rev.response NOT LIKE '%"decision": "REJECT"%'
-                JOIN edit_proposals p ON p.status = 'applied'
+                JOIN edit_proposals p ON p.task_id = r.task_id AND p.status = 'applied'
                 WHERE {where_clause}
                 ORDER BY r.timestamp DESC
                 LIMIT ?
@@ -76,7 +77,6 @@ def list_recent_developer_responses(
         params.append(limit)
         cursor.execute(query, params)
         responses = cursor.fetchall()
-
 
     if not responses:
         file_msg = f" mentioning '{file_filter}'" if file_filter else ""
@@ -296,7 +296,9 @@ Examples:
         help="Only show responses that resulted in an applied edit / file modification",
     )
     parser.add_argument("--task", metavar="TASK_ID", help="Filter by task ID")
-    parser.add_argument("-f", "--file", metavar="FILE_PATH", help="Filter responses mentioning specific file path (e.g. app.py)")
+    parser.add_argument(
+        "-f", "--file", metavar="FILE_PATH", help="Filter responses mentioning specific file path (e.g. app.py)"
+    )
     parser.add_argument("--agent", default="developer", help="Agent name to query (default: developer)")
     parser.add_argument(
         "-n",
@@ -326,8 +328,6 @@ Examples:
 
     try:
         if args.export:
-            from cli.commands import cmd_export_db
-
             cmd_export_db(task_id=args.task)
 
         elif args.failures:
@@ -361,7 +361,6 @@ Examples:
         sys.exit(0)
     except Exception as e:
         print(f"\n❌ Error: {e}\n")
-        import traceback
 
         traceback.print_exc()
         sys.exit(1)

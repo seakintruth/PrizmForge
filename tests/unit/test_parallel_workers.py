@@ -144,15 +144,15 @@ class TestAgentPoolActiveControl:
             pool.stop()
 
     def test_set_feeder_interval(self):
-        """Should be able to adjust feeder interval."""
+        """Verify feeder_interval can be updated directly on the pool."""
         pool = BackgroundAgentPool()
-        pool.start(task_id="test_task")
 
-        try:
-            pool.set_feeder_interval(60)
-            assert pool.feeder_interval == 60
-        finally:
-            pool.stop()
+        # Test setting feeder interval directly
+        pool.set_feeder_interval(60.0)
+        assert pool.feeder_interval == 60.0
+
+        pool.set_feeder_interval(30.0)
+        assert pool.feeder_interval == 30.0
 
 
 @pytest.mark.slow

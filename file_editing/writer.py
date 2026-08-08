@@ -197,9 +197,7 @@ def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
     from workflow.proposal_builder import _get_or_create_file_id
 
     with get_db_connection() as conn:
-        proposal = conn.execute(
-            "SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)
-        ).fetchone()
+        proposal = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
 
         if not proposal:
             return {"status": "error", "message": "Proposal not found"}
@@ -244,14 +242,21 @@ def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
             if res.get("status") == "success":
                 # Refresh symbol index
                 try:
-                    from core.index_context import refresh_file_symbols
                     from core.config import get_config
+                    from core.index_context import refresh_file_symbols
+
                     pd = Path(get_config().get("project_directory", "./project")).resolve()
                     rel = str(Path(target_path).resolve().relative_to(pd)).replace("\\", "/")
                     if rel.endswith(".py"):
                         refresh_file_symbols(rel, content)
                 except Exception as _idx_err:
-                    log_error("file_editing", "index_refresh", "LOW", f"Symbol index refresh failed: {_idx_err}", proposal_id=proposal_id)
+                    log_error(
+                        "file_editing",
+                        "index_refresh",
+                        "LOW",
+                        f"Symbol index refresh failed: {_idx_err}",
+                        proposal_id=proposal_id,
+                    )
 
                 conn.execute(
                     "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
@@ -261,20 +266,25 @@ def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
                     "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'success')",
                     (proposal_id, op_file_id),
                 )
-                
+
                 # Optional git commit for this file
                 try:
                     project_root = Path(target_path).parent
                     subprocess.run(["git", "add", target_path], cwd=project_root, check=False, timeout=10)
                     subprocess.run(
                         ["git", "commit", "-m", f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"],
-                        cwd=project_root, check=False, timeout=10,
+                        cwd=project_root,
+                        check=False,
+                        timeout=10,
                     )
                 except Exception:
                     pass
             else:
                 conn.execute("UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?", (proposal_id,))
-                conn.execute("INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'error')", (proposal_id, op_file_id))
+                conn.execute(
+                    "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'error')",
+                    (proposal_id, op_file_id),
+                )
 
             write_results.append(res)
 

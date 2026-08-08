@@ -1,6 +1,5 @@
 """Token budget tracking"""
 
-import sqlite3
 from datetime import datetime, timedelta
 
 from core.db_connection import get_db_connection

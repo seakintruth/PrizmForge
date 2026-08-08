@@ -1,4 +1,5 @@
 """CLI command handlers"""
+
 import csv
 import json
 import os
@@ -19,8 +20,6 @@ from core.file_operations import (
 )
 from core.token_budget import TokenBudget
 
-# cli/commands.py - Update cmd_init() function
-
 
 def cmd_init():
     """Initialize and index project"""
@@ -28,17 +27,12 @@ def cmd_init():
     print("📂 Indexing Project")
     print(f"{'=' * 60}\n")
 
-    # ✅ ENSURE DATABASE IS INITIALIZED FIRST
     init_db()
 
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))
     project_dir.mkdir(parents=True, exist_ok=True)
 
-
-    # =========================================================================
-    # Ensure .gitignore exists and contains .PrizmForge/
-    # =========================================================================
     gitignore_path = project_dir / ".gitignore"
     gitignore_entry = ".PrizmForge/"
 
@@ -58,12 +52,9 @@ def cmd_init():
     skipped = 0
     errors = 0
 
-    # Import governed editing initializer
     from file_editing import initialize_file_lines
 
-    # Use os.walk() instead of rglob()
     for root, dirs, files in os.walk(project_dir):
-        # Remove ignored directories from dirs list (modifies in-place to prune walk)
         dirs[:] = [d for d in dirs if not should_ignore_file(d)]
 
         for filename in files:
@@ -71,7 +62,7 @@ def cmd_init():
 
             try:
                 rel_path = full_path.relative_to(project_dir)
-                rel_path_str = str(rel_path).replace("\\", "/")  # Normalize path separators
+                rel_path_str = str(rel_path).replace("\\", "/")
 
                 if should_ignore_file(rel_path_str):
                     skipped += 1
@@ -84,13 +75,10 @@ def cmd_init():
 
                 content = full_path.read_text(encoding="utf-8")
 
-                # 1. Sync to project_files (legacy context system)
                 if sync_file_to_database(rel_path_str, content):
-                    # 2. Generate summary
                     summary = generate_file_summary(rel_path_str, content)
                     save_file_summary(rel_path_str, summary)
 
-                    # 3. ✅ NEW: Initialize governed editing storage
                     result = initialize_file_lines(rel_path_str, content)
                     if result.get("status") == "success":
                         indexed += 1
@@ -111,7 +99,6 @@ def cmd_init():
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # 1. Check governed editing 'files' table
         cursor.execute("SELECT file_id, file_path FROM files WHERE is_deleted = 0")
         for file_id, fpath in cursor.fetchall():
             full_path = project_dir / fpath
@@ -121,7 +108,6 @@ def cmd_init():
                 print(f"  🗑️  Marked deleted (governed): {fpath}")
                 deleted_count += 1
 
-        # 2. Check legacy 'project_files' table
         cursor.execute("SELECT file_path FROM project_files")
         for row in cursor.fetchall():
             fpath = row[0]
@@ -141,7 +127,6 @@ def cmd_init():
         print(f"   ❌ Errors: {errors}")
     print(f"{'=' * 60}\n")
 
-    # Structural indexes: sqlite file_symbols + Markdown export (no full dump)
     try:
         from core.index_context import refresh_target_indexes
 
@@ -160,15 +145,17 @@ def cmd_files():
     """List indexed files"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT file_path, size_bytes, file_type, indexed_at
             FROM project_files
             WHERE is_binary = 0
             ORDER BY file_path
-        """)
+        """
+        )
         files = cursor.fetchall()
 
-    print(f"\\n📂 Indexed Files ({len(files)}):")
+    print(f"\n📂 Indexed Files ({len(files)}):")
     print("-" * 60)
     for path, size, ftype, indexed in files:
         print(f"  {path} ({size} bytes, {ftype})")
@@ -199,10 +186,10 @@ def cmd_history(limit: int = 10):
         tasks = cursor.fetchall()
 
     if not tasks:
-        print("\\n📋 No tasks yet\\n")
+        print("\n📋 No tasks yet\n")
         return
 
-    print("\\n📋 Recent Tasks:")
+    print("\n📋 Recent Tasks:")
     print("-" * 60)
     for task_id, desc, status, started, completed in tasks:
         icon = "✅" if status == "completed" else "🔄"
@@ -218,10 +205,10 @@ def cmd_feedback(task_id: str):
     feedback = get_unaddressed_feedback(task_id)
 
     if not feedback:
-        print(f"\\n✅ No unaddressed feedback for {task_id}\\n")
+        print(f"\n✅ No unaddressed feedback for {task_id}\n")
         return
 
-    print(f"\\n📝 Unaddressed Feedback for {task_id}:")
+    print(f"\n📝 Unaddressed Feedback for {task_id}:")
     print("-" * 60)
     for fb in feedback:
         print(f"[{fb['priority']}] {fb['agent']} - {fb['file_path']}")
@@ -238,7 +225,6 @@ def cmd_reset_endpoint(endpoint_name: Optional[str] = None):
     endpoint_mgr = get_endpoint_manager()
 
     if endpoint_name:
-        # Reset specific endpoint
         if endpoint_name in endpoint_mgr.endpoints:
             endpoint = endpoint_mgr.endpoints[endpoint_name]
             endpoint.health.mark_success()
@@ -247,7 +233,6 @@ def cmd_reset_endpoint(endpoint_name: Optional[str] = None):
             print(f"❌ Unknown endpoint: {endpoint_name}")
             print(f"   Available: {', '.join(endpoint_mgr.endpoints.keys())}")
     else:
-        # Reset all endpoints
         for name, endpoint in endpoint_mgr.endpoints.items():
             endpoint.health.mark_success()
         print("✅ Reset all endpoints to healthy status")
@@ -334,13 +319,15 @@ def cmd_show_prompt(task_id: str, agent_name: Optional[str] = None):
         print()
 
 
-def cmd_export_db(output_dir: Optional[str] = None, task_id: Optional[str] = None):
-    """Export all database tables to CSV files"""
-
-    # Set output directory
+# =========================================================================
+# 🎯 PHASE 5: COMPLETE DATABASE EXPORT SCOPE
+# =========================================================================
+def cmd_export_db(output_dir: Optional[Path] = None, task_id: Optional[str] = None):
+    """
+    Export database tables to CSV files.
+    When task_id is None, exports ALL tasks across all tables by default.
+    """
     if output_dir is None:
-        from core.config import get_config
-
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
         PrizmForge_dir = project_dir / ".PrizmForge"
@@ -353,17 +340,21 @@ def cmd_export_db(output_dir: Optional[str] = None, task_id: Optional[str] = Non
     print("=" * 60)
     print(f"Output Directory: {output_dir.absolute()}")
     if task_id:
-        print(f"Filtering by task_id: {task_id}")
+        print(f"Notice: Filtering task-specific tables by task_id: {task_id}")
+    else:
+        print("Notice: Exporting FULL database scope (all tasks)")
     print()
+
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Get all table names
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT name FROM sqlite_master
             WHERE type='table'
             ORDER BY name
-        """)
+        """
+        )
         tables = [row[0] for row in cursor.fetchall()]
 
         exported_count = 0
@@ -371,7 +362,7 @@ def cmd_export_db(output_dir: Optional[str] = None, task_id: Optional[str] = Non
 
         for table_name in tables:
             try:
-                # Build query with optional task_id filter
+                # Filter by task_id if supplied AND table has task_id column
                 if task_id and table_has_task_id(cursor, table_name):
                     query = f"SELECT * FROM {table_name} WHERE task_id = ?"
                     cursor.execute(query, (task_id,))
@@ -385,10 +376,8 @@ def cmd_export_db(output_dir: Optional[str] = None, task_id: Optional[str] = Non
                     print(f"  ⏭️  {table_name}: (empty)")
                     continue
 
-                # Get column names
                 column_names = [description[0] for description in cursor.description]
 
-                # Write to CSV
                 csv_file = output_dir / f"{table_name}.csv"
                 with open(csv_file, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
@@ -397,7 +386,10 @@ def cmd_export_db(output_dir: Optional[str] = None, task_id: Optional[str] = Non
 
                 exported_count += 1
                 total_rows += len(rows)
-                print(f"  ✅ {table_name}: {len(rows)} rows → {csv_file.name}")
+                scope_tag = (
+                    f" (filtered: {task_id})" if (task_id and table_has_task_id(cursor, table_name)) else " (all tasks)"
+                )
+                print(f"  ✅ {table_name}: {len(rows)} rows{scope_tag} → {csv_file.name}")
 
             except Exception as e:
                 print(f"  ❌ {table_name}: Error - {e}")
@@ -424,24 +416,20 @@ def table_has_task_id(cursor, table_name: str) -> bool:
         return False
 
 
-def cmd_export_task(task_id: str, output_dir: Optional[str] = None):
-    """Export all data for a specific task"""
+def cmd_export_task(task_id: str, output_dir: Optional[Path] = None):
+    """Export data for a specific task"""
     if output_dir is None:
-        from core.config import get_config
-
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
         PrizmForge_dir = project_dir / ".PrizmForge"
         PrizmForge_dir.mkdir(parents=True, exist_ok=True)
         output_dir = PrizmForge_dir / "agents_exports" / f"task_{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-    cmd_export_db(output_dir, task_id)
+    cmd_export_db(output_dir, task_id=task_id)
 
 
 def cmd_list_exports():
     """List available export directories"""
-    from core.config import get_config
-
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))
     exports_dir = project_dir / ".PrizmForge" / "agents_exports"
@@ -460,10 +448,7 @@ def cmd_list_exports():
     print("-" * 60)
 
     for export_dir in exports:
-        # Count CSV files
         csv_files = list(export_dir.glob("*.csv"))
-
-        # Get total size
         total_size = sum(f.stat().st_size for f in csv_files)
         size_mb = total_size / (1024 * 1024)
 
@@ -475,12 +460,9 @@ def cmd_list_exports():
     print()
 
 
-def cmd_export_specific_tables(tables: list, output_dir: Optional[str] = None, task_id: Optional[str] = None):
+def cmd_export_specific_tables(tables: list, output_dir: Optional[Path] = None, task_id: Optional[str] = None):
     """Export specific tables to CSV"""
-
     if output_dir is None:
-        from core.config import get_config
-
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
         PrizmForge_dir = project_dir / ".PrizmForge"
@@ -496,6 +478,7 @@ def cmd_export_specific_tables(tables: list, output_dir: Optional[str] = None, t
     if task_id:
         print(f"Task ID: {task_id}")
     print()
+
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
@@ -504,7 +487,6 @@ def cmd_export_specific_tables(tables: list, output_dir: Optional[str] = None, t
 
         for table_name in tables:
             try:
-                # Check if table exists
                 cursor.execute(
                     """
                     SELECT name FROM sqlite_master
@@ -517,7 +499,6 @@ def cmd_export_specific_tables(tables: list, output_dir: Optional[str] = None, t
                     print(f"  ⚠️  {table_name}: Table not found")
                     continue
 
-                # Build query
                 if task_id and table_has_task_id(cursor, table_name):
                     query = f"SELECT * FROM {table_name} WHERE task_id = ?"
                     cursor.execute(query, (task_id,))
@@ -531,10 +512,8 @@ def cmd_export_specific_tables(tables: list, output_dir: Optional[str] = None, t
                     print(f"  ⏭️  {table_name}: (empty)")
                     continue
 
-                # Get column names
                 column_names = [description[0] for description in cursor.description]
 
-                # Write to CSV
                 csv_file = output_dir / f"{table_name}.csv"
                 with open(csv_file, "w", newline="", encoding="utf-8") as f:
                     writer = csv.writer(f)
@@ -570,12 +549,14 @@ def cmd_archives(task_id: Optional[str] = None):
                 (task_id,),
             )
         else:
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT task_id, turn_range, summary, key_decisions, files_modified, original_message_count, archived_at
                 FROM archived_context
                 ORDER BY archived_at DESC
                 LIMIT 20
-            """)
+            """
+            )
 
         archives = cursor.fetchall()
 
@@ -641,7 +622,6 @@ def cmd_review_status():
         for agent_name in ["jr_reviewer", "jr_researcher", "tech_writer"]:
             print(f"\n🤖 {agent_name}:")
 
-            # Get review statistics
             cursor.execute(
                 """
                 SELECT
@@ -663,7 +643,6 @@ def cmd_review_status():
             print(f"   Total reviews: {total_reviews}")
             print(f"   Feedback items: {total_feedback}")
 
-            # Get recently reviewed files
             cursor.execute(
                 """
                 SELECT file_path, last_reviewed_at, feedback_count
@@ -681,8 +660,8 @@ def cmd_review_status():
                 for file_path, reviewed_at, count in recent:
                     print(f"     • {file_path} ({reviewed_at[:19]}, {count}x)")
 
-        # Files never reviewed
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT pf.file_path
             FROM project_files pf
             WHERE pf.is_binary = 0
@@ -691,7 +670,8 @@ def cmd_review_status():
                 WHERE art.file_path = pf.file_path
             )
             LIMIT 10
-        """)
+        """
+        )
 
         unreviewed = cursor.fetchall()
         if unreviewed:
@@ -732,8 +712,6 @@ def cmd_endpoints():
 
     print("\n\n👥 Agent Assignments:")
     print("=" * 60)
-
-    from core.config import get_config
 
     config = get_config()
     agent_prefs = config.get("agent_model_preferences", {})
@@ -777,8 +755,6 @@ def cmd_endpoint_health():
         print(f"   Consecutive failures: {health['consecutive_failures']}")
 
         if health["last_success"]:
-            from datetime import datetime
-
             last_success = datetime.fromisoformat(health["last_success"])
             time_since = datetime.now() - last_success
             minutes_ago = int(time_since.total_seconds() / 60)
@@ -794,7 +770,6 @@ def cmd_endpoint_health():
 
     print("\n" + "=" * 80)
 
-    # Show recommendations
     available_endpoints = endpoint_mgr.get_available_endpoints()
     if available_endpoints:
         print(f"\n✅ {len(available_endpoints)} endpoint(s) currently available:")
@@ -809,8 +784,6 @@ def cmd_endpoint_health():
 
 def cmd_reports(task_id: Optional[str] = None):
     """List generated reports"""
-    from core.config import get_config
-
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))
     reports_dir = project_dir / ".PrizmForge" / "reports"
@@ -828,8 +801,7 @@ def cmd_reports(task_id: Optional[str] = None):
     print(f"\n📊 Available Reports ({len(reports)}):")
     print("-" * 60)
 
-    for report in reports[:20]:  # Show last 20
-        # Get file stats
+    for report in reports[:20]:
         stat = report.stat()
         size_kb = stat.st_size / 1024
         modified = datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M")
@@ -844,8 +816,6 @@ def cmd_reports(task_id: Optional[str] = None):
 
 def cmd_show_report(report_name: Optional[str] = None):
     """Show a specific report or the latest"""
-    from core.config import get_config
-
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))
     reports_dir = project_dir / ".PrizmForge" / "reports"
@@ -857,7 +827,6 @@ def cmd_show_report(report_name: Optional[str] = None):
     if report_name:
         report_path = reports_dir / report_name
     else:
-        # Get latest report
         reports = sorted(reports_dir.glob("project_report_*.md"), reverse=True)
         if not reports:
             print("\n📊 No reports found\n")
@@ -887,7 +856,6 @@ def cmd_resource_status():
         print("\n⚖️  Resource Controller Status")
         print("=" * 70)
 
-        # Current decision
         decision = rc.get_current_decision()
         if decision:
             print(f"\nCurrent Mode: {decision.level}")
@@ -900,14 +868,12 @@ def cmd_resource_status():
         else:
             print("\n  No decision made yet (waiting for first check)")
 
-        # Agent statistics (learned performance)
         stats = rc.get_agent_statistics()
         if stats:
             print("\n📊 Agent Performance (Learned):")
             print(f"{'Agent':<20} {'Calls':>6} {'Feedback':>9} {'Per Call':>9} {'Tokens':>8} {'Value':>6}")
             print("-" * 70)
 
-            # Sort by value score descending
             sorted_agents = sorted(stats.items(), key=lambda x: x[1]["value_score"], reverse=True)
 
             for agent_name, agent_stats in sorted_agents:
@@ -919,7 +885,6 @@ def cmd_resource_status():
                     f"{agent_stats['value_score']:>6.2f}"
                 )
 
-        # Recent decisions
         history = rc.get_decision_history(limit=5)
         if len(history) > 1:
             print("\n📜 Recent Decisions:")
@@ -937,22 +902,24 @@ def cmd_json_parse_stats():
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Get parse failures
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT agent_name, COUNT(*) as failures
             FROM agent_responses_archive
             WHERE parse_success = 0
             GROUP BY agent_name
             ORDER BY failures DESC
-        """)
+        """
+        )
         failures = cursor.fetchall()
 
-        # Get total responses
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT agent_name, COUNT(*) as total
             FROM agent_responses_archive
             GROUP BY agent_name
-        """)
+        """
+        )
         totals = dict(cursor.fetchall())
 
     print("\n📊 JSON Parsing Statistics")
@@ -978,7 +945,6 @@ def cmd_task_progress(task_id: str):
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        # Recent file modifications
         cursor.execute(
             """
             SELECT file_path, operation, changed_by, timestamp
@@ -991,7 +957,6 @@ def cmd_task_progress(task_id: str):
         )
         mods = cursor.fetchall()
 
-        # Agent activity
         cursor.execute(
             """
             SELECT agent_name, COUNT(*) as calls
@@ -1003,7 +968,6 @@ def cmd_task_progress(task_id: str):
         )
         activity = cursor.fetchall()
 
-        # Unaddressed critical issues
         cursor.execute(
             """
             SELECT COUNT(*) FROM agent_feedback
@@ -1036,7 +1000,8 @@ def cmd_task_progress(task_id: str):
 
 def cmd_help():
     """Show help"""
-    print("""
+    print(
+        """
 ╔════════════════════════════════════════════════════════════════╗
 ║  MULTI-AGENT GEMINI SYSTEM - HELP                              ║
 ╚════════════════════════════════════════════════════════════════╝
@@ -1086,15 +1051,5 @@ def cmd_help():
   • export task_001
   • export_tables messages,agent_feedback task_001
   • list_exports
-""")
-
-
-# Append dynamic token URLs
-
-config = get_config()
-print("🌐 Where to get your tokens:")
-for ep_name, ep_config in config.get("endpoints", {}).items():
-    key_name = ep_config.get("api_key_name", ep_name)
-    key_url = ep_config.get("key_management_url", "Contact system administrator")
-    print(f"  • {key_name}: {key_url}")
-print("\n")
+"""
+    )

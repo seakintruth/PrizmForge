@@ -295,13 +295,15 @@ def get_distinct_values(table: str, column: str) -> List[str]:
                 return []
 
             # Get distinct non-null values
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT DISTINCT {column}
                 FROM {table}
                 WHERE {column} IS NOT NULL
                   AND {column} != ''
                 ORDER BY {column}
-            """)
+            """
+            )
 
             values = [row[0] for row in cursor.fetchall()]
 

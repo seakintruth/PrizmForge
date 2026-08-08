@@ -15,6 +15,7 @@ from workflow.task_runner import run_task_cycle
 # Global flag for graceful shutdown
 _shutdown_requested = False
 
+
 def resolve_task_description(config: dict, task_index: int) -> str:
     """
     Resolves the task prompt based on user precedence:
@@ -103,7 +104,8 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT COUNT(*), priority, category
                 FROM agent_feedback
                 WHERE addressed = 0 AND priority IN ('CRITICAL', 'HIGH')
@@ -112,7 +114,8 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
                     CASE priority WHEN 'CRITICAL' THEN 1 ELSE 2 END,
                     COUNT(*) DESC
                 LIMIT 1
-            """)
+            """
+            )
 
             feedback = cursor.fetchone()
             if feedback and feedback[0] > 0:
@@ -123,14 +126,16 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT file_path, COUNT(*) as mod_count
             FROM file_modifications
             WHERE timestamp > datetime('now', '-2 hours')
             GROUP BY file_path
             ORDER BY mod_count DESC
             LIMIT 1
-        """)
+        """
+        )
 
         recent = cursor.fetchone()
         if recent and recent[1] > 1:
@@ -140,14 +145,16 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT file_path, COUNT(*) as issue_count
             FROM agent_feedback
             WHERE addressed = 0
             GROUP BY file_path
             ORDER BY issue_count DESC
             LIMIT 1
-        """)
+        """
+        )
 
         issues = cursor.fetchone()
         if issues and issues[1] > 0:
@@ -157,7 +164,8 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT pf.file_path
             FROM project_files pf
             WHERE pf.is_binary = 0
@@ -167,7 +175,8 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
             )
             ORDER BY pf.last_modified DESC
             LIMIT 1
-        """)
+        """
+        )
 
         unreviewed = cursor.fetchone()
         if unreviewed:
@@ -214,12 +223,14 @@ def load_checkpoint() -> Optional[CLIState]:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT mode, start_time, task_counter, total_files_modified,
                        total_iterations, current_task_id, checkpoint_time
                 FROM cli_checkpoints
                 WHERE id = 1
-            """)
+            """
+            )
 
             row = cursor.fetchone()
             if row:
@@ -251,6 +262,7 @@ def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = N
     # Load raw_config if not passed
     if raw_config is None:
         from core.config import get_config
+
         raw_config = get_config()
 
     # Try to load checkpoint
@@ -380,7 +392,6 @@ def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = N
 
     save_checkpoint(state)
 
-
     # Final summary (config-only run, no prompt)
     print("\n" + "=" * 60)
     print("✅ UNATTENDED RUN COMPLETE")
@@ -494,12 +505,14 @@ def run_semi_attended_mode():
             if cmd.lower() == "changes":
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT file_path, operation, changed_by, task_id, timestamp
                         FROM file_modifications
                         ORDER BY timestamp DESC
                         LIMIT 10
-                    """)
+                    """
+                    )
                     modifications = cursor.fetchall()
 
                 if not modifications:
@@ -647,12 +660,14 @@ def run_semi_attended_mode():
             if task_counter > 1:  # Not first command
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute("""
+                    cursor.execute(
+                        """
                         SELECT id FROM tasks
                         WHERE status = 'in_progress'
                         ORDER BY started_at DESC
                         LIMIT 1
-                    """)
+                    """
+                    )
                     active_task = cursor.fetchone()
 
                 if active_task:
@@ -695,6 +710,7 @@ def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: O
 
     if mode == CLIMode.UNATTENDED:
         from core.config import get_config
+
         raw_config = get_config()
 
         if unattended_config is None:

@@ -11,15 +11,16 @@ Primary entry: run_developer_mutation(...)
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from agents.base import call_agent
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.edit_response_validator import validate_developer_edit_response
-from core.index_context import load_symbol_json_context
 from core.events import publish_event
 from core.file_operations import format_file_with_guids, get_file_content_from_db
+from core.index_context import load_symbol_json_context
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
 from workflow.edit_mode_selector import (
@@ -33,16 +34,67 @@ from workflow.edit_mode_selector import (
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 
 
+# =========================================================================
+# 🎯 PHASE 3: CLOSED-LOOP REVIEWER FEEDBACK EXTRACTION
+# =========================================================================
+def fetch_latest_reviewer_feedback(task_id: str, target_file: str) -> Optional[dict]:
+    """
+    Fetches the most recent unaddressed Reviewer rejection reason and suggestions
+    for a given task and target file.
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+
+            # First, check unaddressed agent_feedback table
+            cursor.execute(
+                """
+                SELECT id, feedback_text
+                FROM agent_feedback
+                WHERE task_id = ? AND file_path = ? AND agent_name = 'reviewer' AND addressed = 0
+                ORDER BY created_at DESC
+                LIMIT 1
+            """,
+                (task_id, target_file),
+            )
+
+            fb_row = cursor.fetchone()
+            if fb_row:
+                return {"feedback_id": fb_row[0], "reason": fb_row[1]}
+
+            # Fallback: Query the latest rejected edit proposal for this file and task
+            cursor.execute(
+                """
+                SELECT id, rationale
+                FROM edit_proposals
+                WHERE task_id = ? AND target_file_path = ? AND status = 'rejected'
+                ORDER BY created_at DESC
+                LIMIT 1
+            """,
+                (task_id, target_file),
+            )
+
+            prop_row = cursor.fetchone()
+            if prop_row:
+                return {"proposal_id": prop_row[0], "reason": prop_row[1] or "Proposal rejected by Reviewer"}
+
+    except Exception as e:
+        print(f"   ⚠️ Could not fetch reviewer feedback: {e}")
+
+    return None
+
+
 def _build_generation_prompt(
     *,
     instructions: str,
     edit_method: str,
     files_content: List[str],
     requested_files: List[str],
+    task_id: str,
     fallback_used: bool = False,
     previous_reason: Optional[str] = None,
 ) -> str:
-    """Build prompt for Developer LLM, injecting explicit warning on fallback."""
+    """Build prompt for Developer LLM, injecting clean fallback warnings & Reviewer feedback."""
     joined = "\n\n".join(files_content) if files_content else "No existing files."
 
     index_snip = ""
@@ -66,6 +118,22 @@ def _build_generation_prompt(
         "",
     ]
 
+    # 🎯 PHASE 3 INJECTION: Check and inject Reviewer rejections into Developer prompt
+    primary_target = requested_files[0] if requested_files else ""
+    reviewer_feedback = fetch_latest_reviewer_feedback(task_id, primary_target)
+    if reviewer_feedback:
+        reviewer_banner = (
+            "======================================================================\n"
+            "⚠️ PREVIOUS ATTEMPT REJECTED BY REVIEWER — CORRECTION REQUIRED\n"
+            "======================================================================\n"
+            f"Reviewer Feedback / Rejection Reason:\n{reviewer_feedback['reason']}\n\n"
+            "ACTION REQUIRED:\n"
+            "- Modify your code specifically to address the Reviewer's criticism.\n"
+            "- Do NOT repeat the exact same syntax, replacement characters, or edits.\n"
+            "======================================================================\n\n"
+        )
+        parts.append(reviewer_banner)
+
     # 🎯 PHASE 2 INJECTION: Explicit clean re-prompting context on mode fallback
     if fallback_used or edit_method == MODE_FULL_REPLACE:
         fallback_banner = (
@@ -83,14 +151,16 @@ def _build_generation_prompt(
             fallback_banner += f"Previous Failure Reason: {previous_reason}\n\n"
         parts.append(fallback_banner)
 
-    parts.extend([
-        "CRITICAL INSTRUCTIONS FOR FILE CREATION & MODIFICATION:",
-        '- To create a new file or completely write a file, use operation type "create_file" or "full_replace".',
-        '- "create_file" format: {"type": "create_file", "target_file_path": "app.py", "initial_content": ["line1", "line2"], "rationale": "..."}',
-        '- "full_replace" format: {"type": "full_replace", "target_file_path": "app.py", "new_content": "full source text", "rationale": "..."}',
-        "- Respond ONLY with valid JSON matching the developer schema.",
-    ])
-    
+    parts.extend(
+        [
+            "CRITICAL INSTRUCTIONS FOR FILE CREATION & MODIFICATION:",
+            '- To create a new file or completely write a file, use operation type "create_file" or "full_replace".',
+            '- "create_file" format: {"type": "create_file", "target_file_path": "app.py", "initial_content": ["line1", "line2"], "rationale": "..."}',
+            '- "full_replace" format: {"type": "full_replace", "target_file_path": "app.py", "new_content": "full source text", "rationale": "..."}',
+            "- Respond ONLY with valid JSON matching the developer schema.",
+        ]
+    )
+
     return "\n".join(parts)
 
 
@@ -206,12 +276,12 @@ def run_developer_mutation(
         modes_tried.append(edit_method)
         print(f"   🧪 Generating edit (mode={edit_method}, attempt={_attempt + 1})")
 
-        # 🎯 PHASE 2 INJECTION: Pass fallback state and last_reason into prompt builder
         gen_prompt = _build_generation_prompt(
             instructions=instructions,
             edit_method=edit_method,
             files_content=files_content,
             requested_files=requested_files,
+            task_id=task_id,
             fallback_used=fallback_used,
             previous_reason=last_reason,
         )
@@ -239,7 +309,6 @@ def run_developer_mutation(
                 continue
             break
 
-        # Validate response structure (no line limits enforced)
         validation = validate_developer_edit_response(response)
         if validation.is_valid:
             print(f"   ✅ Valid edit payload ({validation.detected_mode})")
@@ -310,7 +379,7 @@ def run_developer_mutation(
     proposal_id = prop["proposal_id"]
     print(f"   📦 Proposal created: {proposal_id}")
 
-    # Reviewer
+    # Reviewer execution
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
     reviewer_prompt = (
         f"Review this edit proposal for {target_file_path}.\n"
@@ -341,9 +410,29 @@ def run_developer_mutation(
             "MEDIUM",
         )
 
+    # 🎯 PHASE 3 INJECTION: Write rejection feedback directly to agent_feedback table
     if decision_result == "REJECT":
         print(f"   ❌ Reviewer rejected proposal: {reason}")
         update_proposal_status(proposal_id, "rejected")
+
+        try:
+            with get_db_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO agent_feedback
+                    (task_id, file_path, agent_name, feedback_text, priority, addressed, created_at)
+                    VALUES (?, ?, 'reviewer', ?, 'HIGH', 0, ?)
+                """,
+                    (
+                        task_id,
+                        target_file_path,
+                        f"Proposal {proposal_id} REJECTED: {reason}",
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+        except Exception as e:
+            print(f"   ⚠️ Failed to log reviewer rejection to feedback table: {e}")
+
         publish_event(
             "proposal.rejected",
             source="reviewer",
@@ -395,8 +484,6 @@ def run_developer_mutation(
 
     addressing_ids = decision.get("addressing_feedback_ids") or []
     if addressing_ids and mat.get("status") == "success":
-        from datetime import datetime, timezone
-
         with get_db_connection() as conn:
             for fb_id in addressing_ids:
                 conn.execute(

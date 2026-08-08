@@ -253,16 +253,10 @@ PLAN: [brief explanation]"""
                 if files_match:
                     files_str = files_match.group(1).strip()
                     if files_str.upper() not in ("NONE", "N/A", "NONE.", "N/A."):
-                        requested_files = [
-                            f.strip()
-                            for f in files_str.split(",")
-                            if f.strip().upper() not in ("NONE", "N/A")
-                        ]
+                        requested_files = [f.strip() for f in files_str.split(",") if f.strip().upper() not in ("NONE", "N/A")]
 
                 if not requested_files and files_needed:
-                    requested_files = [
-                        f for f in files_needed if f and f.upper() not in ("NONE", "N/A")
-                    ]
+                    requested_files = [f for f in files_needed if f and f.upper() not in ("NONE", "N/A")]
                     if requested_files:
                         print(f"   📋 Using orchestrator's files_needed: {', '.join(requested_files)}")
 
@@ -291,9 +285,7 @@ PLAN: [brief explanation]"""
 
                 if not requested_files:
                     requested_files = ["app.py", "README.md"]
-                    print(
-                        f"   🚀 Cold-start default: Assigning initial target files: {', '.join(requested_files)}"
-                    )
+                    print(f"   🚀 Cold-start default: Assigning initial target files: {', '.join(requested_files)}")
 
                 # Validate / Filter files:
                 valid_files = []
@@ -342,7 +334,8 @@ PLAN: [brief explanation]"""
                             cursor.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0")
                             backlog_count = cursor.fetchone()[0]
 
-                            cursor.execute("""
+                            cursor.execute(
+                                """
                                 SELECT id, priority, category, file_path, message, suggestion
                                 FROM agent_feedback
                                 WHERE addressed = 0
@@ -355,7 +348,8 @@ PLAN: [brief explanation]"""
                                     END,
                                     timestamp
                                 LIMIT 1
-                            """)
+                            """
+                            )
                             top_item = cursor.fetchone()
 
                             if not top_item:
@@ -371,7 +365,8 @@ PLAN: [brief explanation]"""
                                     suggestion,
                                 ) = top_item
 
-                                cursor.execute("""
+                                cursor.execute(
+                                    """
                                     SELECT id, priority, category, file_path, message
                                     FROM agent_feedback
                                     WHERE addressed = 0
@@ -384,7 +379,8 @@ PLAN: [brief explanation]"""
                                         END,
                                         timestamp
                                     LIMIT 4 OFFSET 1
-                                """)
+                                """
+                                )
                                 next_items = cursor.fetchall()
 
                         if top_item:
@@ -443,7 +439,6 @@ PLAN: [brief explanation]"""
                         print("   ⏸️  Yielding to background agents...")
 
                         try:
-
                             resource_controller = get_resource_controller()
                             resource_controller.temporarily_disable_throttling(duration_seconds=30)
                             print("     🔓 Resource restrictions temporarily lifted")
@@ -456,20 +451,24 @@ PLAN: [brief explanation]"""
                             with get_db_connection() as conn:
                                 cursor = conn.cursor()
 
-                                cursor.execute("""
+                                cursor.execute(
+                                    """
                                     SELECT file_path FROM project_files
                                     WHERE is_binary = 0
                                     ORDER BY last_modified DESC
                                     LIMIT 5
-                                """)
+                                """
+                                )
                                 recent_files = [row[0] for row in cursor.fetchall()]
 
-                                cursor.execute("""
+                                cursor.execute(
+                                    """
                                     SELECT file_path FROM project_files
                                     WHERE is_binary = 0
                                     ORDER BY RANDOM()
                                     LIMIT 5
-                                """)
+                                """
+                                )
                                 random_files = [row[0] for row in cursor.fetchall()]
 
                             all_files = list(set(recent_files + random_files))

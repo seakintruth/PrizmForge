@@ -368,40 +368,36 @@ class TestPerformance:
 def test_context_manager_counts_files_in_subdirectories_excluding_metadata(
     temp_db,
 ):
-  """Verify total_project_files includes subdirectories but excludes .PrizmForge/ and .git/."""
+    """Verify total_project_files includes subdirectories but excludes .PrizmForge/ and .git/."""
 
-  with get_db_connection() as conn:
-
-    test_files = [
-        ("app.py", 0),  # Root text file
-        ("assets/chart.png", 1),  # Subdirectory binary file
-        ("src/utils/helper.py", 0),  # Subdirectory text file
-        (".PrizmForge/agents.db", 1),  # Internal DB file
-        (".git/config", 0),  # Git metadata file
-    ]
-    for path, is_binary in test_files:
-      conn.execute(
-          """
+    with get_db_connection() as conn:
+        test_files = [
+            ("app.py", 0),  # Root text file
+            ("assets/chart.png", 1),  # Subdirectory binary file
+            ("src/utils/helper.py", 0),  # Subdirectory text file
+            (".PrizmForge/agents.db", 1),  # Internal DB file
+            (".git/config", 0),  # Git metadata file
+        ]
+        for path, is_binary in test_files:
+            conn.execute(
+                """
                 INSERT INTO project_files (file_path, is_binary)
                 VALUES (?, ?)
             """,
-          (path, is_binary),
-      )
+                (path, is_binary),
+            )
 
-  cm = ContextManager()
-  _, metadata = cm.build_orchestrator_context(
-      task_id="t_count",
-      user_command="Check files",
-      conversation_history=[],
-      model="gemini-3-flash-preview",
-  )
+    cm = ContextManager()
+    _, metadata = cm.build_orchestrator_context(
+        task_id="t_count",
+        user_command="Check files",
+        conversation_history=[],
+        model="gemini-3-flash-preview",
+    )
 
-  # Should count app.py and src/utils/helper.py (2 files)
-  assert metadata["total_project_files"] == 2
-
+    # Should count app.py and src/utils/helper.py (2 files)
+    assert metadata["total_project_files"] == 2
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--tb=short"])
-
-
