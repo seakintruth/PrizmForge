@@ -79,7 +79,7 @@ def signal_handler(sig, frame):
 
 def should_continue_unattended(state: CLIState, config: UnattendedConfig) -> bool:
     """Check if unattended mode should continue"""
-    global _shutdown_requested
+    _shutdown_requested
 
     if _shutdown_requested:
         return False
@@ -448,7 +448,7 @@ def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = N
 
 def run_semi_attended_mode():  # noqa: C901
     """Run semi-attended mode loop (original behavior)"""
-    global _shutdown_requested
+    _shutdown_requested
 
     print("\n" + "=" * 60)
     print("🚀 SEMI-ATTENDED MODE")
