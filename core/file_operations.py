@@ -1,14 +1,15 @@
-from typing import Dict, List, Optional, Set
-
 """File operations with database sync"""
 
+import fnmatch
 import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Set
 
+from core.config import get_config
 from core.db_connection import get_db_connection
+from core.db_helpers import post_message
 from core.token_estimator import estimate_tokens
 
 # Known binary extensions (for fast rejection)
@@ -280,7 +281,6 @@ def format_file_with_guids(file_path: str) -> str:
 
 def get_project_directory() -> Path:
     """Get the configured project directory path (always absolute)"""
-    from core.config import get_config
 
     config = get_config()
     project_dir = config.get("project_directory", "./project")
@@ -291,12 +291,9 @@ def get_project_directory() -> Path:
 
 def should_ignore_file(file_path: str) -> bool:
     """Check if file should be ignored"""
-    from core.config import get_config
 
     config = get_config()
     ignore_patterns = config.get("file_operations", {}).get("ignore_patterns", [])
-
-    import fnmatch
 
     for pattern in ignore_patterns:
         if fnmatch.fnmatch(file_path, pattern) or fnmatch.fnmatch(Path(file_path).name, pattern):
@@ -462,8 +459,6 @@ def save_file_summary(file_path: str, summary: Dict):
 def post_file_metadata_to_bus(file_path: str, operation: str, summary: Dict, task_id: str):
     """Post file metadata to message bus"""
     try:
-        from core.db_helpers import post_message
-
         metadata = {
             "file_path": file_path,
             "operation": operation,

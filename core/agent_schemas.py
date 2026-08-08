@@ -1,5 +1,3 @@
-from typing import Dict, List, Optional
-
 """
 Agent Response Schemas - Dynamically Built from Database
 The database is the single source of truth.
@@ -13,7 +11,7 @@ FALLBACK MECHANISM:
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -55,7 +53,7 @@ class AgentResponseSchema:
 
         return len(errors) == 0, errors
 
-    def build_prompt_schema(
+    def build_prompt_schema(  # noqa: C901
         self,
         priority_values: List[str],
         category_values: List[str],

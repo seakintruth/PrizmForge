@@ -4,7 +4,7 @@ tests/unit/test_proposal_builder.py
 High-priority tests for workflow/proposal_builder.py
 """
 
-from workflow.proposal_builder import _get_affected_guids_from_operation
+from workflow.proposal_builder import _get_affected_guids_from_operation, create_proposal_from_developer_output
 
 
 class TestGetAffectedGuids:

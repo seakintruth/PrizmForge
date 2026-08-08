@@ -166,7 +166,7 @@ def ensure_project_directory(config: Optional[Dict[str, Any]] = None) -> Path:
     return path
 
 
-def validate_config(config: Dict[str, Any]) -> None:
+def validate_config(config: Dict[str, Any]) -> None:  # noqa: C901
     """
     Lightweight schema validation for required settings.
     Raises ValueError with a clear message on failure.

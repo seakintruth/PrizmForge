@@ -41,11 +41,12 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
             buf = []
             if not stmt:
                 continue
-            meaningful = [l for l in stmt.splitlines() if l.strip() and not l.strip().startswith("--")]
+            # Renamed 'l' -> 'stmt_line' to resolve ruff E741 ambiguous variable name
+            meaningful = [stmt_line for stmt_line in stmt.splitlines() if stmt_line.strip() and not stmt_line.strip().startswith("--")]
             if meaningful:
                 conn.execute(stmt)
     tail = chr(10).join(buf).strip()
-    if tail and any(l.strip() and not l.strip().startswith("--") for l in tail.splitlines()):
+    if tail and any(raw_line.strip() and not raw_line.strip().startswith("--") for raw_line in tail.splitlines()):
         conn.execute(tail)
 
 

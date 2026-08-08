@@ -15,7 +15,7 @@ from core.db import init_db
 from interactive import interactive_loop
 
 
-def main():
+def main():  # noqa: C901
     """Initialize and start system"""
     print("\n" + "=" * 60)
     print("🚀 PrizmForge")

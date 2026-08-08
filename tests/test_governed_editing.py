@@ -4,17 +4,20 @@
 # =============================================================================
 
 import hashlib
+import os
 import sqlite3
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
-
+from core.db import init_db
 from file_editing.editing import apply_edit_proposal
 from workflow.proposal_builder import create_proposal_from_developer_output
+
+PROJECT_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _compute_content_hash(content: str) -> str:
@@ -28,8 +31,6 @@ def db(monkeypatch):
     Deletes existing DB at the path (if any) before initialization
     to guarantee a clean state.
     """
-    import os
-    import tempfile
 
     fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
@@ -42,8 +43,6 @@ def db(monkeypatch):
             pass
 
     monkeypatch.setenv("PRIZMFORGE_DB_PATH", db_path)
-
-    from core.db import init_db
 
     init_db()  # Use consolidated schema
 

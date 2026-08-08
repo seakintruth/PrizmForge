@@ -16,6 +16,13 @@ line-length = 159
 select = ["E", "F", "W", "C90", "I"]
 # extend-ignore = ["E203"]  # example, add exceptions here as needed
 
+[tool.ruff.lint.per-file-ignores]
+# Ignore E402 (import not at top of file) and PLC0415 (import outside top-level)
+# for background worker agents that require lazy loading to break circular imports.
+"agents/parallel_workers.py" = ["E402", "PLC0415"]
+"agents/resource_controller_worker.py" = ["E402", "PLC0415"]
+"agents/prioritizer_worker.py" = ["E402", "PLC0415"]
+
 [tool.ruff.lint.mccabe]
 # 🎯 Set maximum function complexity threshold to 15 (default is 10)
 max-complexity = 15

@@ -10,7 +10,6 @@ import time
 
 import pytest
 
-4
 from agents.resource_controller_worker import (
     AgentProfile,
     HeuristicOptimizer,

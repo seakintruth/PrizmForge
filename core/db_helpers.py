@@ -1,16 +1,14 @@
-from typing import List, Optional
-
 """Database helper functions"""
 
-from datetime import datetime
-from typing import Dict
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 
+from core.db import get_db_path as _get_db_path
 from core.db_connection import get_db_connection
 
 
 def get_db_path() -> str:
     """Get database path"""
-    from core.db import get_db_path as _get_db_path
 
     return _get_db_path()
 
@@ -251,8 +249,6 @@ def age_feedback_backlog(
     CRITICAL and HIGH items are never auto-dismissed.
     Returns counts of rows affected.
     """
-    from datetime import timedelta
-
     dismissed_low = 0
     trimmed_medium = 0
     now = datetime.now()

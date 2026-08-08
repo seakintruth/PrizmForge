@@ -1,17 +1,17 @@
-from typing import List, Tuple
-
 """Prioritizer worker - intelligent multi-phase feedback processing"""
 
 import re
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict
+from typing import Dict, List, Tuple
 
 from agents.base import call_agent
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
+from core.index_context import load_index_text, load_symbol_json_context
 from core.json_parser import parse_json_response
 
 
@@ -86,7 +86,6 @@ class PrioritizerWorker:
 
             except Exception as e:
                 print(f"    ⚠️  Prioritizer error: {e}")
-                import traceback
 
                 traceback.print_exc()
                 time.sleep(30)
@@ -336,8 +335,6 @@ class PrioritizerWorker:
         # Build prompt with message and suggestion context
         index_snip = ""
         try:
-            from core.index_context import load_index_text, load_symbol_json_context
-
             paths = [getattr(it, "file_path", None) for it in batch]
             paths = [p for p in paths if p]
             index_snip = load_symbol_json_context(

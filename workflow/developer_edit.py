@@ -206,7 +206,7 @@ def _normalize_payload(data: dict, edit_method: str, requested_files: List[str])
     return out
 
 
-def run_developer_mutation(
+def run_developer_mutation(  # noqa: C901
     *,
     task_id: str,
     instructions: str,
