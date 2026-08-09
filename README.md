@@ -25,13 +25,26 @@ flowchart TB
         direction TB
 
         MainOrch["Main Orchestrator\n(Sequential Task Loop)"]
-        Governed["Governed Edit Pipeline\n(EditPayload → Proposal → Reviewer → Materialize)"]
+        
+        subgraph Governed["Governed Edit Pipeline"]
+            direction TB
+            EditPayload["EditPayload"]
+            Proposal["Proposal"]
+            Reviewer["Reviewer\n(Safety Gate)"]
+            Materialize["Materialize"]
+            
+            EditPayload --> Proposal --> Reviewer
+            Reviewer -->|Approve| Materialize
+        end
+        
+        DeveloperAgent["Developer Agent"]
         Parallel["Parallel Background Agents\n(jr_reviewer, archivist, report builder, etc.)"]
         Resource["Resource Controller\n(Throttling & Prioritization)"]
         DB[(SQLite Database\nUnified Schema)]
 
-        MainOrch --> Governed
-        Governed --> DB
+        MainOrch -->|developer| DeveloperAgent
+        DeveloperAgent -->|EditPayload| EditPayload
+        Materialize --> DB
         Parallel --> DB
         Resource --> Parallel
         
@@ -39,9 +52,12 @@ flowchart TB
         DB --> MainOrch
     end
 
-    User["Developer / Human"] -.->|Optional: High-level goals & oversight| MainOrch
+    Human["Human"] -.->|Optional: High-level goals & oversight| MainOrch
+    Reviewer -->|Deny with Comments| DeveloperAgent
     LLM["LLM Endpoints\n(OpenAI, Gemini, etc.)"] <--> MainOrch
     LLM <--> Parallel
+    LLM <--> DeveloperAgent
+    LLM <--> Reviewer
 ```
 
 ### Agent Classes
