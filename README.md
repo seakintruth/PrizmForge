@@ -12,7 +12,7 @@ PrizmForge enables AI agents to safely modify a project repository, even a copy 
 
 PrizmForge solves the fundamental problem of **safe autonomous code modification** by enforcing a strict separation between:
 
-- **Mutation path** (sequential, governed): Developer → Proposal → Reviewer gate → Materialization
+- **Mutation path** (sequential, governed): Developer → EditPayload → Proposal → Reviewer (Approve → Materialization | Deny with Comments → Developer)
 - **Analysis path** (parallel): Background agents provide continuous feedback without mutation rights
 
 ## Architecture
@@ -25,13 +25,26 @@ flowchart TB
         direction TB
 
         MainOrch["Main Orchestrator\n(Sequential Task Loop)"]
-        Governed["Governed Edit Pipeline\n(EditPayload → Proposal → Reviewer → Materialize)"]
+        
+        subgraph Governed["Governed Edit Pipeline"]
+            direction TB
+            EditPayload["EditPayload"]
+            Proposal["Proposal"]
+            Reviewer["Reviewer\n(Safety Gate)"]
+            Materialize["Materialize"]
+            
+            EditPayload --> Proposal --> Reviewer
+            Reviewer -->|Approve| Materialize
+        end
+        
+        DeveloperAgent["Developer Agent"]
         Parallel["Parallel Background Agents\n(jr_reviewer, archivist, report builder, etc.)"]
         Resource["Resource Controller\n(Throttling & Prioritization)"]
         DB[(SQLite Database\nUnified Schema)]
 
-        MainOrch --> Governed
-        Governed --> DB
+        MainOrch -->|developer| DeveloperAgent
+        DeveloperAgent -->|EditPayload| EditPayload
+        Materialize --> DB
         Parallel --> DB
         Resource --> Parallel
         
@@ -39,9 +52,12 @@ flowchart TB
         DB --> MainOrch
     end
 
-    User["Developer / Human"] -.->|Optional: High-level goals & oversight| MainOrch
+    Human["Human"] -.->|Optional: High-level goals & oversight| MainOrch
+    Reviewer -->|Deny with Comments| DeveloperAgent
     LLM["LLM Endpoints\n(OpenAI, Gemini, etc.)"] <--> MainOrch
     LLM <--> Parallel
+    LLM <--> DeveloperAgent
+    LLM <--> Reviewer
 ```
 
 ### Agent Classes
@@ -79,12 +95,15 @@ flowchart BT
         Orchestrator["Orchestrator"]
         Developer["Developer"]
         Reviewer["Reviewer"]
+        Materialize["Materialize"]
         DBMat["DB + File Materialization"]
 
         Orchestrator --> Feedback
         Orchestrator --> Developer
         Developer --> Reviewer
-        Reviewer --> DBMat
+        Reviewer -->|Approve| Materialize
+        Reviewer -->|Deny with Comments| Developer
+        Materialize --> DBMat
         DBMat --> Files["Project Files"]
 
         Files -.->|Triggers review upon commit| Class3
@@ -111,7 +130,7 @@ PrizmForge no longer uses traditional diffs or patches. Instead, it uses a **lin
 - **EditPayload**: Structured operations (`replace_block`, `insert_after`, `delete_lines`, etc.) validated by Pydantic.
 - **Proposal**: A formal request containing the `EditPayload`, expected content hashes, and affected line GUIDs.
 - **Optimistic Concurrency**: Proposals capture content hashes at creation time. If the file changes before application, the proposal is rejected as `conflicted`.
-- **Reviewer Gate**: All proposals must be reviewed (by an agent or human) before materialization.
+- **Reviewer Gate**: All proposals must be reviewed (by an agent or human) before materialization. On denial the Reviewer returns comments that are fed directly back to the Developer Agent.
 - **Materialization**: Only approved proposals are applied via `apply_edit_proposal()`.
 
 ### Editing Flow
@@ -131,20 +150,18 @@ Proposal stored with expected_hashes + affected_line_guids
       ▼
 Reviewer Agent (or human) reviews
       │
-      ▼
-Status → approved / rejected
+      ├── APPROVE ──► apply_edit_proposal(proposal_id)
+      │                    │
+      │                    ▼
+      │               validate_proposal() → hash check
+      │                    │
+      │                    ▼
+      │               Materialize changes to file_lines table
+      │                    │
+      │                    ▼
+      │               (Optional) writer.py → disk
       │
-      ▼
-apply_edit_proposal(proposal_id)
-      │
-      ▼
-validate_proposal() → hash check
-      │
-      ▼
-Materialize changes to file_lines table
-      │
-      ▼
-(Optional) writer.py → disk
+      └── DENY with Comments ──► Developer Agent
 ```
 
 This approach provides:
@@ -152,6 +169,7 @@ This approach provides:
 - Strong protection against concurrent modification
 - Full audit trail of every proposed change
 - Clear separation of proposal creation and application
+- Direct feedback loop from Reviewer to Developer on rejection
 
 ## Key Safety Features
 
