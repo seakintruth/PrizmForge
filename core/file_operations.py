@@ -5,7 +5,7 @@ import hashlib
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from core.config import get_config
 from core.db_connection import get_db_connection
@@ -13,7 +13,7 @@ from core.db_helpers import post_message
 from core.token_estimator import estimate_tokens
 
 # Known binary extensions (for fast rejection)
-_BINARY_EXTENSIONS: Set[str] = {
+_BINARY_EXTENSIONS: set[str] = {
     # Images
     ".png",
     ".jpg",
@@ -76,7 +76,7 @@ _BINARY_EXTENSIONS: Set[str] = {
 }
 
 # Known text extensions (expanded)
-_TEXT_EXTENSIONS: Set[str] = {
+_TEXT_EXTENSIONS: set[str] = {
     # Programming Languages
     ".py",
     ".pyi",
@@ -227,7 +227,7 @@ def is_text_file(file_path: str, sample_size: int = 8192) -> bool:
 
         return True
 
-    except (OSError, IOError, PermissionError):
+    except (OSError, PermissionError):
         # If we can't read the file, be conservative
         return False
 
@@ -237,7 +237,7 @@ def compute_file_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def get_file_lines_with_guids(file_path: str) -> List[Dict[str, Any]]:
+def get_file_lines_with_guids(file_path: str) -> list[dict[str, Any]]:
     """
     Retrieve a file's lines with their stable GUIDs from the database.
     Returns a list of {"guid": str, "content": str, "sort_order": float}
@@ -342,7 +342,7 @@ def sync_file_to_database(file_path: str, content: str) -> bool:
         return False
 
 
-def get_file_content_from_db(file_path: str) -> Optional[str]:
+def get_file_content_from_db(file_path: str) -> str | None:
     """Reconstruct plain file content from database."""
     lines = get_file_lines_with_guids(file_path)
     if not lines:
@@ -367,7 +367,7 @@ def format_file_for_agent(file_path: str, include_guids: bool = True) -> str:
         return f"```python {file_path}\n" + "\n".join(plain_lines) + "\n```"
 
 
-def generate_file_summary(file_path: str, content: str) -> Dict:
+def generate_file_summary(file_path: str, content: str) -> dict:
     """
     Generate file summary
     COMPUTE TOKEN ESTIMATE FOR SUMMARY HERE
@@ -420,7 +420,7 @@ def generate_file_summary(file_path: str, content: str) -> Dict:
     return summary
 
 
-def save_file_summary(file_path: str, summary: Dict):
+def save_file_summary(file_path: str, summary: dict):
     """
     Save file summary to database
     COMPUTE TOKEN ESTIMATE FOR SUMMARY TEXT HERE
@@ -456,7 +456,7 @@ def save_file_summary(file_path: str, summary: Dict):
         print(f"  ⚠️  Failed to save summary: {e}")
 
 
-def post_file_metadata_to_bus(file_path: str, operation: str, summary: Dict, task_id: str):
+def post_file_metadata_to_bus(file_path: str, operation: str, summary: dict, task_id: str):
     """Post file metadata to message bus"""
     try:
         metadata = {
@@ -488,5 +488,5 @@ def post_file_metadata_to_bus(file_path: str, operation: str, summary: Dict, tas
         # Also post to orchestrator
         msg = f"📁 {operation.upper()}: {file_path}\n{summary.get('purpose', '')}\n{summary.get('line_count', 0)} lines"
         post_message("file_manager", "orchestrator", msg, task_id, "MEDIUM")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    ⚠️  Exception handled in file_operations.py: {e}")

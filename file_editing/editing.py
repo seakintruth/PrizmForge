@@ -1,7 +1,7 @@
 import hashlib
 import json
 import sqlite3
-from typing import Any, Dict, Optional
+from typing import Any
 from uuid import uuid4
 
 from core.content_safety import validate_source_content
@@ -19,13 +19,13 @@ from .db import get_db_connection, log_error
 # =============================================================================
 # Configuration
 # =============================================================================
-INITIAL_GAP = 1024.0
+initial_gap = 1024.0
 MIN_GAP_THRESHOLD = 0.001
 RENUMBER_GAP = 1024.0
 
 
 def _compute_hash(content: str) -> str:
-    return hashlib.md5(content.encode()).hexdigest()
+    return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
 
 def _validate_guid_exists(conn: sqlite3.Connection, file_id: int, line_guid: str) -> bool:
@@ -77,7 +77,7 @@ def _validate_operation_guids(conn: sqlite3.Connection, file_id: int, op) -> boo
     return False
 
 
-def get_insert_sort_order(conn: sqlite3.Connection, file_id: int, after_guid: Optional[str] = None) -> float:
+def get_insert_sort_order(conn: sqlite3.Connection, file_id: int, after_guid: str | None = None) -> float:
     try:
         if after_guid is None:
             min_row = conn.execute(
@@ -85,8 +85,8 @@ def get_insert_sort_order(conn: sqlite3.Connection, file_id: int, after_guid: Op
                 (file_id,),
             ).fetchone()
             if min_row and min_row[0] is not None:
-                return min_row[0] - (INITIAL_GAP / 2)
-            return INITIAL_GAP / 2
+                return min_row[0] - (initial_gap / 2)
+            return initial_gap / 2
 
         row = conn.execute(
             "SELECT sort_order FROM file_lines WHERE line_guid = ? AND is_deleted = 0",
@@ -107,13 +107,13 @@ def get_insert_sort_order(conn: sqlite3.Connection, file_id: int, after_guid: Op
                     renumber_sort_orders(conn, file_id)
                     return get_insert_sort_order(conn, file_id, after_guid)
                 return current + (gap / 2)
-            return current + INITIAL_GAP
+            return current + initial_gap
 
         max_row = conn.execute(
             "SELECT MAX(sort_order) FROM file_lines WHERE file_id = ? AND is_deleted = 0",
             (file_id,),
         ).fetchone()
-        return (max_row[0] or 0.0) + INITIAL_GAP
+        return (max_row[0] or 0.0) + initial_gap
 
     except Exception as e:
         log_error("file_editing", "get_insert_sort_order", "HIGH", str(e), file_id=file_id)
@@ -188,7 +188,7 @@ def validate_proposal(conn, proposal: dict) -> bool:
 # =============================================================================
 
 
-def apply_replace_block(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+def apply_replace_block(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
     """
     Replace a range of lines.
     Returns detailed information about the operation.
@@ -262,7 +262,7 @@ def apply_replace_block(conn: sqlite3.Connection, file_id: int, op) -> Dict[str,
     }
 
 
-def apply_insert_after(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+def apply_insert_after(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
     """Insert new lines after a specific GUID."""
     after_guid = getattr(op, "after_guid", None)
     new_contents = getattr(op, "new_content", [])
@@ -287,7 +287,7 @@ def apply_insert_after(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
     return {"status": "success", "lines_inserted": len(new_contents)}
 
 
-def apply_delete_lines(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+def apply_delete_lines(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
     """
     Delete a range of lines using start_line_guid and optional end_line_guid.
     """
@@ -357,7 +357,7 @@ def apply_update_documentation(conn: sqlite3.Connection, file_id: int, op):
     )
 
 
-def apply_find_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+def apply_find_replace(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
     """
     Apply a find/replace operation to the entire file content.
 
@@ -428,7 +428,7 @@ def apply_find_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
         return {"status": "error", "message": str(e)}
 
 
-def apply_full_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+def apply_full_replace(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
     """
     Replace the entire file content. Used for small files and as a reliable fallback.
     Reconstructs line storage from the provided new_content.
@@ -465,7 +465,7 @@ def apply_full_replace(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, 
     }
 
 
-def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
     """
     Apply a unified diff to file content.
     Uses a simple line-oriented algorithm suitable for LLM-generated patches.
@@ -558,7 +558,7 @@ def _apply_unified_diff(original_lines, diff_lines):  # noqa: C901
             continue
 
         if raw.startswith(" "):
-            # Context line – must match
+            # Context line - must match
             expected = raw[1:]
             if src_idx >= len(src) or src[src_idx] != expected:
                 # Try to resync: search forward a little
@@ -576,7 +576,7 @@ def _apply_unified_diff(original_lines, diff_lines):  # noqa: C901
             src_idx += 1
             i += 1
         elif raw.startswith("-"):
-            # Deletion – skip source line
+            # Deletion - skip source line
             expected = raw[1:]
             if src_idx < len(src) and src[src_idx] == expected:
                 src_idx += 1
@@ -605,7 +605,7 @@ def _apply_unified_diff(original_lines, diff_lines):  # noqa: C901
     return out
 
 
-def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, Any]:
+def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
     """
     Create a new file in the governed store from a create_file operation.
 
@@ -676,7 +676,7 @@ def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> Dict[str, A
     }
 
 
-def apply_edit_proposal(proposal_id: str) -> Dict[str, Any]:  # noqa: C901
+def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     with get_db_connection() as conn:
         proposal_row = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
 

@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 _config_cache = None
 _prompts_cache = None
@@ -67,7 +67,7 @@ def find_config_file(filename: str) -> Path:
     return Path.cwd() / filename
 
 
-def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
+def load_config(config_path: str | None = None) -> dict[str, Any]:
     """Load configuration from JSON file"""
     if config_path is None:
         config_file = find_config_file("config.json")
@@ -83,7 +83,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             f"\nPlease create config.json in the root directory."
         )
 
-    with open(config_file, "r", encoding="utf-8") as f:
+    with open(config_file, encoding="utf-8") as f:
         config = json.load(f)
 
     # Normalize project_directory path
@@ -95,7 +95,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
     api_key_file = config_dir / "api_key.json"
 
     try:
-        with open(api_key_file, "r", encoding="utf-8") as f:
+        with open(api_key_file, encoding="utf-8") as f:
             api_data = json.load(f)
 
             # Load ALL keys from api_key.json into config
@@ -106,13 +106,13 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
             # Also set "api_key" for backward compatibility
             # (use first key found as default)
             if "api_key" not in config and api_data:
-                config["api_key"] = list(api_data.values())[0]
+                config["api_key"] = next(iter(api_data.values()))
 
     except FileNotFoundError:
         # Try alternate location
         alt_api_key = find_config_file("api_key.json")
         if alt_api_key.exists():
-            with open(alt_api_key, "r", encoding="utf-8") as f:
+            with open(alt_api_key, encoding="utf-8") as f:
                 api_data = json.load(f)
 
                 # Load ALL keys
@@ -121,7 +121,7 @@ def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
 
                 # Set default "api_key"
                 if "api_key" not in config and api_data:
-                    config["api_key"] = list(api_data.values())[0]
+                    config["api_key"] = next(iter(api_data.values()))
         else:
             config["api_key"] = ""
 
@@ -144,7 +144,7 @@ def get_repo_root() -> Path:
         return Path.cwd().resolve()
 
 
-def ensure_project_directory(config: Optional[Dict[str, Any]] = None) -> Path:
+def ensure_project_directory(config: dict[str, Any] | None = None) -> Path:
     """
     Resolve project_directory, ensure it exists (create if missing),
     and require it stays under repo root.
@@ -160,13 +160,13 @@ def ensure_project_directory(config: Optional[Dict[str, Any]] = None) -> Path:
         path = path.resolve()
     try:
         path.relative_to(repo)
-    except ValueError:
-        raise ValueError(f"project_directory must stay under repo root: {path} is outside {repo}")
+    except ValueError as e:
+        raise ValueError(f"project_directory must stay under repo root: {path} is outside {repo}") from e
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def validate_config(config: Dict[str, Any]) -> None:  # noqa: C901
+def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
     """
     Lightweight schema validation for required settings.
     Raises ValueError with a clear message on failure.
@@ -187,8 +187,9 @@ def validate_config(config: Dict[str, Any]) -> None:  # noqa: C901
                 path = path.resolve()
             try:
                 path.relative_to(repo)
-            except ValueError:
-                errors.append(f"project_directory {path} escapes repo root {repo}")
+            except ValueError as e:
+                raise ValueError(f"project_directory must stay under repo root: {path} is outside {repo}") from e
+
         except Exception as e:
             errors.append(f"project_directory could not be validated: {e}")
 
@@ -244,7 +245,7 @@ def validate_config(config: Dict[str, Any]) -> None:  # noqa: C901
         raise ValueError("config.json validation failed:\n  - " + "\n  - ".join(errors))
 
 
-def load_agent_prompts() -> Dict[str, Any]:
+def load_agent_prompts() -> dict[str, Any]:
     """Load agent prompts from same directory as config"""
     prompts_file = find_config_file("agent_prompts.json")
 
@@ -256,13 +257,13 @@ def load_agent_prompts() -> Dict[str, Any]:
             f"\nPlease ensure agent_prompts.json is in the same directory as config.json"
         )
 
-    with open(prompts_file, "r", encoding="utf-8") as f:
+    with open(prompts_file, encoding="utf-8") as f:
         prompts = json.load(f)
 
     return prompts
 
 
-def get_config() -> Dict[str, Any]:
+def get_config() -> dict[str, Any]:
     """Get cached configuration"""
     global _config_cache
     if _config_cache is None:
@@ -270,7 +271,7 @@ def get_config() -> Dict[str, Any]:
     return _config_cache
 
 
-def get_agent_prompts() -> Dict[str, Any]:
+def get_agent_prompts() -> dict[str, Any]:
     """Get cached agent prompts"""
     global _prompts_cache
     if _prompts_cache is None:

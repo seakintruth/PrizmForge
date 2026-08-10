@@ -9,7 +9,6 @@ import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional
 
 from agents.archivist_worker import get_archivist_worker
 from agents.base import call_agent
@@ -31,9 +30,9 @@ class FileChangeEvent:
     event_id: str
     file_path: str
     operation: str
-    content: Optional[str]
-    content_hash: Optional[str]
-    metadata: Optional[Dict]
+    content: str | None
+    content_hash: str | None
+    metadata: dict | None
     task_id: str
     timestamp: str
     priority: int = 5  # 1=highest, 10=lowest
@@ -175,7 +174,7 @@ class BackgroundAgentPool:
         Sets running=False first so worker loops exit, then joins threads and
         drains the queue. Support workers are stopped after analysis workers.
         """
-        from agents.resource_controller_worker import get_resource_controller  # noqa: E402, PLC0415
+        from agents.resource_controller_worker import get_resource_controller
 
         with self._state_lock:
             if not self.running and not self.workers and self.feeder_thread is None:
@@ -197,7 +196,7 @@ class BackgroundAgentPool:
 
     def _start_support_workers(self, task_id: str):
         """Start archivist, prioritizer, reporter, resource controller"""
-        from agents.resource_controller_worker import get_resource_controller  # noqa: E402, PLC0415
+        from agents.resource_controller_worker import get_resource_controller
 
         get_archivist_worker().start(task_id)
         get_prioritizer_worker().start(task_id)
@@ -210,8 +209,7 @@ class BackgroundAgentPool:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT
                     pf.file_path, pf.content, pf.content_hash, pf.last_modified,
                     pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
@@ -219,8 +217,7 @@ class BackgroundAgentPool:
                 LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
                 WHERE pf.is_binary = 0
                 ORDER BY pf.last_modified DESC
-            """
-            )
+            """)
 
             all_files = cursor.fetchall()
             conn.close()
@@ -232,7 +229,7 @@ class BackgroundAgentPool:
             queued_count = 0
 
             # Queue all files for each agent
-            for agent_name in self.modification_agents + self.random_review_agents:
+            for _agent_name in self.modification_agents + self.random_review_agents:
                 for file_data in all_files:
                     event = self._create_file_event(file_data, "initial_review", priority=3)
                     self.event_queue.put(event)
@@ -335,16 +332,14 @@ class BackgroundAgentPool:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT
                     pf.file_path, pf.content, pf.content_hash, pf.last_modified,
                     pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
                 FROM project_files pf
                 LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
                 WHERE pf.is_binary = 0
-            """
-            )
+            """)
 
             all_files = cursor.fetchall()
             conn.close()
@@ -407,7 +402,7 @@ class BackgroundAgentPool:
             priority=priority,
         )
 
-    def queue_file_change(self, file_path: str, operation: str, content: Optional[str]):
+    def queue_file_change(self, file_path: str, operation: str, content: str | None):
         """Queue a file change for immediate processing - only to modification_agents"""
         try:
             content_hash = compute_file_hash(content) if content else None
@@ -605,7 +600,7 @@ class BackgroundAgentPool:
                 "parallel_workers",
                 "process_file",
                 "HIGH",
-                f"{agent_name} exception: {str(e)}",
+                f"{agent_name} exception: {e!s}",
                 task_id=event.task_id,
                 file_path=event.file_path,
             )
@@ -636,13 +631,13 @@ class BackgroundAgentPool:
             for field_name in array_field_names:
                 if field_name in data and isinstance(data[field_name], list):
                     items = data[field_name]
-                    print(f"    ℹ️  {agent_name}: Found items in '{field_name}' field")
+                    print(f"    [i]  {agent_name}: Found items in '{field_name}' field")
                     break
 
             if items is None or len(items) == 0:
                 if any(key in data for key in ["priority", "message", "issue", "finding"]):
                     items = [data]
-                    print(f"    ℹ️  {agent_name}: Treating entire response as single item")
+                    print(f"    [i]  {agent_name}: Treating entire response as single item")
                 else:
                     print(f"    ⚠️  {agent_name}: No actionable items found in response")
                     return
@@ -701,7 +696,7 @@ class BackgroundAgentPool:
             if saved_count > 0:
                 print(f"    ✅ {agent_name} posted {saved_count} feedback item(s)")
             else:
-                print(f"    ℹ️  {agent_name}: Response parsed but no valid items extracted")
+                print(f"    [i]  {agent_name}: Response parsed but no valid items extracted")
 
         except Exception as e:
             print(f"    ⚠️  {agent_name}: Error processing response: {e}")
@@ -738,7 +733,7 @@ class BackgroundAgentPool:
             self.feeder_interval = interval
         print(f"    🎛️  Feeder interval adjusted to {interval}s")
 
-    def set_active_agents(self, active_agents: List[str]):
+    def set_active_agents(self, active_agents: list[str]):
         """
         Enable/disable specific FEEDBACK agents (called by resource controller)
 
@@ -746,13 +741,13 @@ class BackgroundAgentPool:
         Support workers (prioritizer, archivist, reporter, resource_controller)
         are NEVER disabled - they always run.
         """
-        SUPPORT_WORKERS = {
+        support_workers = {
             "prioritizer",
             "archivist",
             "project_reporter",
             "resource_controller",
         }
-        feedback_agents_only = [a for a in active_agents if a not in SUPPORT_WORKERS]
+        feedback_agents_only = [a for a in active_agents if a not in support_workers]
 
         with self._state_lock:
             if not feedback_agents_only:
@@ -780,13 +775,13 @@ class BackgroundAgentPool:
             return
         try:
             try:
-                from agents.resource_controller_worker import get_resource_controller  # noqa: E402, PLC0415
+                from agents.resource_controller_worker import get_resource_controller
 
                 rc = get_resource_controller()
                 rc.temporarily_disable_throttling(duration_seconds=45)
                 print("    🔓 Resource restrictions temporarily lifted for this cycle")
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"    ⚠️  Exception handled in parallel_workers.py: {e}")
 
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()

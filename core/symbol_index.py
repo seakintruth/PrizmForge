@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import ast
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
 
 from core.db_connection import get_db_connection
 
@@ -29,9 +30,9 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def parse_python_symbols(source: str, module_path: str) -> List[Symbol]:
+def parse_python_symbols(source: str, module_path: str) -> list[Symbol]:
     """Extract top-level classes, functions, and methods from Python source."""
-    symbols: List[Symbol] = []
+    symbols: list[Symbol] = []
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -92,10 +93,10 @@ def delete_file_symbols(file_path: str) -> None:
 
 
 def rebuild_project_symbols(
-    project_directory: Optional[str] = None,
+    project_directory: str | None = None,
     *,
-    max_files: Optional[int] = None,
-) -> Dict[str, Any]:
+    max_files: int | None = None,
+) -> dict[str, Any]:
     """Walk project_directory and rebuild file_symbols for text Python files."""
     from core.config import get_config
     from core.file_operations import is_text_file, should_ignore_file
@@ -163,14 +164,14 @@ def rebuild_project_symbols(
 
 def fetch_symbol_rows(
     *,
-    file_paths: Optional[Sequence[str]] = None,
-    kinds: Optional[Sequence[str]] = None,
-    path_prefix: Optional[str] = None,
+    file_paths: Sequence[str] | None = None,
+    kinds: Sequence[str] | None = None,
+    path_prefix: str | None = None,
     limit: int = 100,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Query file_symbols with optional filters."""
     clauses = []
-    params: List[Any] = []
+    params: list[Any] = []
     if file_paths:
         placeholders = ",".join("?" * len(file_paths))
         clauses.append(f"file_path IN ({placeholders})")
@@ -216,7 +217,7 @@ def fetch_symbol_rows(
     return out
 
 
-def format_symbol_json(rows: List[Dict[str, Any]], *, max_rows: int = 80) -> str:
+def format_symbol_json(rows: list[dict[str, Any]], *, max_rows: int = 80) -> str:
     """Compact JSON array for agent prompts."""
     import json
 
@@ -225,7 +226,7 @@ def format_symbol_json(rows: List[Dict[str, Any]], *, max_rows: int = 80) -> str
 
 
 def format_symbol_context_block(
-    rows: List[Dict[str, Any]],
+    rows: list[dict[str, Any]],
     *,
     max_rows: int = 80,
     label: str = "Structural symbols (JSON)",

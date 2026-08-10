@@ -1,6 +1,6 @@
 import json
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import uuid4
 
 from core.events import publish_event
@@ -33,7 +33,7 @@ def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> i
     return cursor.lastrowid
 
 
-def _get_affected_guids_from_operation(op) -> List[str]:
+def _get_affected_guids_from_operation(op) -> list[str]:
     """
     Extract line GUIDs that should be validated for optimistic concurrency.
     """
@@ -80,11 +80,11 @@ def create_proposal_from_developer_output(
     developer_output: str | dict,
     proposed_by_agent_id: int,
     target_file_path: str,
-    rationale: Optional[str] = None,
-    selected_mode: Optional[str] = None,
+    rationale: str | None = None,
+    selected_mode: str | None = None,
     fallback_used: bool = False,
-    final_mode: Optional[str] = None,
-) -> Dict[str, Any]:
+    final_mode: str | None = None,
+) -> dict[str, Any]:
     """Creates a governed edit proposal from Developer output."""
     try:
         if isinstance(developer_output, str):
@@ -106,8 +106,8 @@ def create_proposal_from_developer_output(
             ):
                 try:
                     conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
-                except Exception:
-                    pass  # column already exists
+                except Exception as e:
+                    print(f"   [i] Column {col} already exists or skipped: {e}")
 
             # Embed mode info in rationale prefix for auditability even without columns
             base_rationale = rationale or payload.rationale or ""
@@ -191,10 +191,10 @@ def create_proposal_from_developer_output(
 
     except Exception as e:
         log_error("proposal_builder", "create_proposal", "HIGH", str(e))
-        return {"status": "error", "message": f"Failed to create proposal: {str(e)}"}
+        return {"status": "error", "message": f"Failed to create proposal: {e!s}"}
 
 
-def update_proposal_status(proposal_id: str, new_status: str, reviewed_by_agent_id: Optional[int] = None) -> bool:
+def update_proposal_status(proposal_id: str, new_status: str, reviewed_by_agent_id: int | None = None) -> bool:
     """Update proposal status and set reviewed_at when a reviewer acts."""
     allowed_statuses = {
         "pending",

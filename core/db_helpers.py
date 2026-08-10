@@ -1,7 +1,6 @@
 """Database helper functions"""
 
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
 
 from core.db import get_db_path as _get_db_path
 from core.db_connection import get_db_connection
@@ -38,7 +37,7 @@ def post_message(
         )
 
 
-def get_unread_messages(agent: str, task_id: Optional[str] = None, min_priority: str = "LOW") -> List[Dict]:
+def get_unread_messages(agent: str, task_id: str | None = None, min_priority: str = "LOW") -> list[dict]:
     """Get unread messages for agent"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -92,7 +91,7 @@ def get_unread_messages(agent: str, task_id: Optional[str] = None, min_priority:
     return messages
 
 
-def mark_messages_read(message_ids: List[int]):
+def mark_messages_read(message_ids: list[int]):
     """Mark messages as read"""
     if not message_ids:
         return
@@ -106,8 +105,8 @@ def save_conversation(
     agent: str,
     role: str,
     content: str,
-    raw_response: Optional[str] = None,
-    parsed_decision: Optional[str] = None,
+    raw_response: str | None = None,
+    parsed_decision: str | None = None,
 ):
     """Save conversation to history"""
     with get_db_connection() as conn:
@@ -159,7 +158,7 @@ def save_agent_feedback(
     priority: str,
     category: str,
     message: str,
-    suggestion: Optional[str],
+    suggestion: str | None,
     task_id: str,
     file_event_id: str,
 ):
@@ -186,7 +185,7 @@ def save_agent_feedback(
         )
 
 
-def get_unaddressed_feedback(task_id: str, min_priority: str = "LOW") -> List[Dict]:
+def get_unaddressed_feedback(task_id: str, min_priority: str = "LOW") -> list[dict]:
     """Get unaddressed feedback for task"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -226,7 +225,7 @@ def get_unaddressed_feedback(task_id: str, min_priority: str = "LOW") -> List[Di
     return feedback
 
 
-def mark_feedback_addressed(feedback_ids: List[int], addressed_by: str):
+def mark_feedback_addressed(feedback_ids: list[int], addressed_by: str):
     """Mark feedback as addressed"""
     if not feedback_ids:
         return
@@ -234,7 +233,7 @@ def mark_feedback_addressed(feedback_ids: List[int], addressed_by: str):
         placeholders = ",".join("?" * len(feedback_ids))
         conn.execute(
             f"UPDATE agent_feedback SET addressed = 1, addressed_by = ?, addressed_at = ? WHERE id IN ({placeholders})",
-            [addressed_by, datetime.now().isoformat()] + feedback_ids,
+            [addressed_by, datetime.now().isoformat(), *feedback_ids],
         )
 
 
@@ -299,7 +298,7 @@ def age_feedback_backlog(
                         addressed_at = ?
                     WHERE id IN ({placeholders})
                     """,
-                    [now.isoformat()] + ids,
+                    [now.isoformat(), *ids],
                 )
                 trimmed_medium = len(ids)
 

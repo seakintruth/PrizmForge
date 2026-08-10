@@ -1,7 +1,6 @@
 """Track fallback statistics"""
 
 from datetime import datetime
-from typing import Dict
 
 from core.db_connection import get_db_connection
 
@@ -36,7 +35,7 @@ def log_fallback(
         print(f"⚠️  Failed to log fallback: {e}")
 
 
-def get_fallback_stats() -> Dict:
+def get_fallback_stats() -> dict:
     """Get fallback statistics"""
     try:
         with get_db_connection() as conn:
@@ -47,36 +46,30 @@ def get_fallback_stats() -> Dict:
             total_fallbacks = cursor.fetchone()[0]
 
             # Fallbacks by reason
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT reason, COUNT(*)
                 FROM endpoint_fallbacks
                 GROUP BY reason
                 ORDER BY COUNT(*) DESC
-            """
-            )
+            """)
             by_reason = dict(cursor.fetchall())
 
             # Most affected endpoints
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT original_endpoint, COUNT(*)
                 FROM endpoint_fallbacks
                 GROUP BY original_endpoint
                 ORDER BY COUNT(*) DESC
-            """
-            )
+            """)
             by_endpoint = dict(cursor.fetchall())
 
             # Recent fallbacks
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT timestamp, agent_name, original_endpoint, fallback_endpoint, reason
                 FROM endpoint_fallbacks
                 ORDER BY timestamp DESC
                 LIMIT 10
-            """
-            )
+            """)
             recent = cursor.fetchall()
 
         return {

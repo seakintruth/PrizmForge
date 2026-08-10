@@ -1,12 +1,11 @@
 """Explicit file retrieval - bypass context limits"""
 
 from pathlib import Path
-from typing import Optional
 
 from core.file_operations import get_file_content_from_db
 
 
-def get_file_explicit(file_path: str) -> Optional[str]:
+def get_file_explicit(file_path: str) -> str | None:
     """
     Retrieve file content directly, bypassing context limits
 

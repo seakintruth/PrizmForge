@@ -96,7 +96,7 @@ def list_recent_developer_responses(
     print(f"{'=' * 80}\n")
 
     for row in responses:
-        resp_id, timestamp, agent, task, parse_ok, prompt_len, resp_len, mod_file = row
+        resp_id, timestamp, _agent, task, parse_ok, prompt_len, resp_len, mod_file = row
         status = "✅ Parsed" if parse_ok else "❌ Parse Failed"
         if mod_file:
             status += f" (File Modified: {mod_file})"
@@ -241,7 +241,7 @@ def show_failed_parses(task_id=None, limit=10, file_filter=None):
     print(f"{'=' * 80}\n")
 
     for row in failures:
-        resp_id, timestamp, agent, task, error, prompt_len, resp_len = row
+        resp_id, timestamp, agent, task, error, _prompt_len, resp_len = row
 
         print(f"ID: {resp_id} | {timestamp}")
         print(f"   Agent: {agent} | Task: {task}")

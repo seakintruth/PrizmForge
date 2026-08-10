@@ -5,7 +5,6 @@ import sys
 import threading
 import time
 from datetime import datetime
-from typing import Optional
 
 from cli.commands import (
     cmd_archives,
@@ -79,7 +78,6 @@ def signal_handler(sig, frame):
 
 def should_continue_unattended(state: CLIState, config: UnattendedConfig) -> bool:
     """Check if unattended mode should continue"""
-    _shutdown_requested
 
     if _shutdown_requested:
         return False
@@ -104,13 +102,13 @@ def should_continue_unattended(state: CLIState, config: UnattendedConfig) -> boo
             if n == 0:
                 print("\n✅ Feedback backlog empty — stopping unattended run")
                 return False
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Unattended backlog check failed: {e}")
 
     return True
 
 
-def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: Optional[dict] = None) -> str:
+def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: dict | None = None) -> str:
     """Generate next task based on project state and precedence rules"""
     # Priority 0: Check scalar seed_task and seed_tasks queue via precedence resolver
     if config_dict:
@@ -128,8 +126,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT COUNT(*), priority, category
                 FROM agent_feedback
                 WHERE addressed = 0 AND priority IN ('CRITICAL', 'HIGH')
@@ -138,8 +135,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
                     CASE priority WHEN 'CRITICAL' THEN 1 ELSE 2 END,
                     COUNT(*) DESC
                 LIMIT 1
-            """
-            )
+            """)
 
             feedback = cursor.fetchone()
             if feedback and feedback[0] > 0:
@@ -150,16 +146,14 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT file_path, COUNT(*) as mod_count
             FROM file_modifications
             WHERE timestamp > datetime('now', '-2 hours')
             GROUP BY file_path
             ORDER BY mod_count DESC
             LIMIT 1
-        """
-        )
+        """)
 
         recent = cursor.fetchone()
         if recent and recent[1] > 1:
@@ -169,16 +163,14 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT file_path, COUNT(*) as issue_count
             FROM agent_feedback
             WHERE addressed = 0
             GROUP BY file_path
             ORDER BY issue_count DESC
             LIMIT 1
-        """
-        )
+        """)
 
         issues = cursor.fetchone()
         if issues and issues[1] > 0:
@@ -188,8 +180,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT pf.file_path
             FROM project_files pf
             WHERE pf.is_binary = 0
@@ -199,8 +190,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: O
             )
             ORDER BY pf.last_modified DESC
             LIMIT 1
-        """
-        )
+        """)
 
         unreviewed = cursor.fetchone()
         if unreviewed:
@@ -239,20 +229,18 @@ def save_checkpoint(state: CLIState):
         print(f"⚠️  Checkpoint save failed: {e}")
 
 
-def load_checkpoint() -> Optional[CLIState]:
+def load_checkpoint() -> CLIState | None:
     """Load checkpoint from database"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT mode, start_time, task_counter, total_files_modified,
                        total_iterations, current_task_id, checkpoint_time
                 FROM cli_checkpoints
                 WHERE id = 1
-            """
-            )
+            """)
 
             row = cursor.fetchone()
             if row:
@@ -277,10 +265,9 @@ def load_checkpoint() -> Optional[CLIState]:
         return None
 
 
-def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = None):  # noqa: C901
-    """Run unattended mode loop"""
+def run_unattended_mode(config: UnattendedConfig, raw_config: dict | None = None):  # noqa: C901
     global _shutdown_requested
-
+    """Run unattended mode loop"""
     # Load raw_config if not passed
     if raw_config is None:
         from core.config import get_config
@@ -423,11 +410,12 @@ def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = N
     print(f"   Files modified: {state.total_files_modified}")
     print(f"   Elapsed hours: {state.elapsed_hours():.2f}")
     try:
-        from pathlib import Path as _P
+        from pathlib import Path
 
         from core.config import get_config
 
-        pd = _P(get_config().get("project_directory", "./project"))
+        pd = Path(get_config().get("project_directory", "./project"))
+
         out = pd / ".PrizmForge" / "reports"
         out.mkdir(parents=True, exist_ok=True)
         from datetime import datetime as _dt
@@ -448,8 +436,6 @@ def run_unattended_mode(config: UnattendedConfig, raw_config: Optional[dict] = N
 
 def run_semi_attended_mode():  # noqa: C901
     """Run semi-attended mode loop (original behavior)"""
-    _shutdown_requested
-
     print("\n" + "=" * 60)
     print("🚀 SEMI-ATTENDED MODE")
     print("=" * 60)
@@ -527,14 +513,12 @@ def run_semi_attended_mode():  # noqa: C901
             if cmd.lower() == "changes":
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute(
-                        """
+                    cursor.execute("""
                         SELECT file_path, operation, changed_by, task_id, timestamp
                         FROM file_modifications
                         ORDER BY timestamp DESC
                         LIMIT 10
-                    """
-                    )
+                    """)
                     modifications = cursor.fetchall()
 
                 if not modifications:
@@ -681,14 +665,12 @@ def run_semi_attended_mode():  # noqa: C901
             if task_counter > 1:
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute(
-                        """
+                    cursor.execute("""
                         SELECT id FROM tasks
                         WHERE status = 'in_progress'
                         ORDER BY started_at DESC
                         LIMIT 1
-                    """
-                    )
+                    """)
                     active_task = cursor.fetchone()
 
                 if active_task:
@@ -721,7 +703,7 @@ def run_semi_attended_mode():  # noqa: C901
             traceback.print_exc()
 
 
-def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: Optional[UnattendedConfig] = None):
+def interactive_loop(mode: CLIMode = CLIMode.SEMI_ATTENDED, unattended_config: UnattendedConfig | None = None):
     """Main interactive loop - routes to appropriate mode"""
 
     # Guard signal handler so thread calls in test suites don't raise ValueError

@@ -214,13 +214,7 @@ class TestDiffWorkflow:
 
 class TestModeSelectionWorkflow:
     def test_tshirt_and_fallback_chain(self):
-        from workflow.edit_mode_selector import (
-            MODE_FIND_REPLACE,
-            MODE_FULL_REPLACE,
-            MODE_GUID,
-            next_fallback_mode,
-            select_edit_mode,
-        )
+        from workflow.edit_mode_selector import MODE_FIND_REPLACE, MODE_FULL_REPLACE, MODE_GUID, next_fallback_mode, select_edit_mode
 
         small = select_edit_mode(40, "rewrite the helper")
         assert small.selected_mode == MODE_FULL_REPLACE

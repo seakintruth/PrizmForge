@@ -11,7 +11,7 @@ FALLBACK MECHANISM:
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -19,15 +19,15 @@ class AgentResponseSchema:
     """Defines expected response structure for an agent"""
 
     agent_name: str
-    db_table: Optional[str]
-    required_fields: List[str]
-    optional_fields: List[str]
-    array_field: Optional[str]
-    item_fields: Optional[List[str]]  # Field names in array items
+    db_table: str | None
+    required_fields: list[str]
+    optional_fields: list[str]
+    array_field: str | None
+    item_fields: list[str] | None  # Field names in array items
     output_format: str = "json"
     is_fallback: bool = False  # True if using fallback schema
 
-    def validate(self, response: Dict[str, Any]) -> tuple[bool, List[str]]:
+    def validate(self, response: dict[str, Any]) -> tuple[bool, list[str]]:
         """Validate response against schema"""
         errors = []
 
@@ -55,9 +55,9 @@ class AgentResponseSchema:
 
     def build_prompt_schema(  # noqa: C901
         self,
-        priority_values: List[str],
-        category_values: List[str],
-        db_columns: Optional[Dict[str, str]] = None,
+        priority_values: list[str],
+        category_values: list[str],
+        db_columns: dict[str, str] | None = None,
     ) -> str:
         """
         Generate JSON schema dynamically from current database state
@@ -274,7 +274,7 @@ def _create_fallback_schema(agent_name: str) -> AgentResponseSchema:
 # ============= DYNAMIC VALUE DISCOVERY =============
 
 
-def get_distinct_values(table: str, column: str) -> List[str]:
+def get_distinct_values(table: str, column: str) -> list[str]:
     """
     Query database for distinct values in a column
     Returns actual values currently in use
@@ -293,15 +293,13 @@ def get_distinct_values(table: str, column: str) -> List[str]:
                 return []
 
             # Get distinct non-null values
-            cursor.execute(
-                f"""
+            cursor.execute(f"""
                 SELECT DISTINCT {column}
                 FROM {table}
                 WHERE {column} IS NOT NULL
                   AND {column} != ''
                 ORDER BY {column}
-            """
-            )
+            """)
 
             values = [row[0] for row in cursor.fetchall()]
 
@@ -322,8 +320,8 @@ def get_schema_example(agent_name: str) -> str:
                 example = json.load(f)
             # Pretty print with proper indentation
             return json.dumps(example, indent=2)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in agent_schemas.py: {e}")
 
     # Fallback to default schema
     return """{
@@ -339,7 +337,7 @@ def get_schema_example(agent_name: str) -> str:
 }"""
 
 
-def get_priority_values() -> List[str]:
+def get_priority_values() -> list[str]:
     """Get actual priority values from database"""
     values = get_distinct_values("agent_feedback", "priority")
 
@@ -350,7 +348,7 @@ def get_priority_values() -> List[str]:
     return values
 
 
-def get_category_values() -> List[str]:
+def get_category_values() -> list[str]:
     """Get actual category values from database"""
     values = get_distinct_values("agent_feedback", "category")
 
@@ -370,7 +368,7 @@ def get_category_values() -> List[str]:
     return values
 
 
-def get_operation_types() -> List[str]:
+def get_operation_types() -> list[str]:
     """Get actual file operation types from database"""
     values = get_distinct_values("file_modifications", "operation")
 
@@ -383,7 +381,7 @@ def get_operation_types() -> List[str]:
 # ============= HELPER FUNCTIONS =============
 
 
-def get_schema(agent_name: str) -> Optional[AgentResponseSchema]:
+def get_schema(agent_name: str) -> AgentResponseSchema | None:
     """
     Get schema for an agent
 
@@ -399,7 +397,7 @@ def get_schema(agent_name: str) -> Optional[AgentResponseSchema]:
     fallback_patterns = ["_reviewer", "_analyzer", "_auditor", "_checker", "_validator"]
 
     if any(agent_name.endswith(pattern) for pattern in fallback_patterns) or agent_name.startswith("jr_"):
-        print(f"    ℹ️  {agent_name}: Using fallback schema (jr_reviewer template)")
+        print(f"    [i]  {agent_name}: Using fallback schema (jr_reviewer template)")
         return _create_fallback_schema(agent_name)
 
     # Unknown agent type, no schema
@@ -422,7 +420,7 @@ def get_prompt_schema_text(agent_name: str) -> str:
     return schema.build_prompt_schema(priority_values, category_values)
 
 
-def validate_agent_response(agent_name: str, response: Dict[str, Any]) -> tuple[bool, List[str]]:
+def validate_agent_response(agent_name: str, response: dict[str, Any]) -> tuple[bool, list[str]]:
     """Validate agent response against schema"""
     schema = get_schema(agent_name)
     if not schema:
@@ -430,12 +428,12 @@ def validate_agent_response(agent_name: str, response: Dict[str, Any]) -> tuple[
     return schema.validate(response)
 
 
-def list_agents() -> List[str]:
+def list_agents() -> list[str]:
     """Get list of all explicitly defined agents"""
     return sorted(AGENT_SCHEMAS.keys())
 
 
-def get_agents_by_table(table_name: str) -> List[str]:
+def get_agents_by_table(table_name: str) -> list[str]:
     """Get agents that write to a specific table"""
     return [agent_name for agent_name, schema in AGENT_SCHEMAS.items() if schema.db_table == table_name]
 
@@ -446,7 +444,7 @@ def is_using_fallback(agent_name: str) -> bool:
     return schema.is_fallback if schema else False
 
 
-def get_schema_statistics() -> Dict[str, Any]:
+def get_schema_statistics() -> dict[str, Any]:
     """Get statistics about current schema state"""
     return {
         "total_agents": len(AGENT_SCHEMAS),

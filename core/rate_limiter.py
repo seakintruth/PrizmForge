@@ -2,7 +2,6 @@
 
 import time
 from collections import deque
-from typing import Dict, Optional
 
 
 class RateLimiter:
@@ -12,9 +11,9 @@ class RateLimiter:
         self.max_calls = max_calls_per_minute
         self.calls = deque()
         # ✅ NEW: Per-endpoint tracking
-        self.endpoint_calls: Dict[str, deque] = {}
+        self.endpoint_calls: dict[str, deque] = {}
 
-    def wait_if_needed(self, endpoint_name: Optional[str] = None):
+    def wait_if_needed(self, endpoint_name: str | None = None):
         """Wait if rate limit would be exceeded"""
         now = time.time()
 

@@ -6,7 +6,7 @@ Extracted so production rules can be unit-tested without a full task cycle.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any
 
 
 def count_unaddressed_feedback(conn, task_id: str) -> int:
@@ -20,7 +20,7 @@ def count_unaddressed_feedback(conn, task_id: str) -> int:
     return int(row[0] if row else 0)
 
 
-def fetch_top_feedback(conn, task_id: str) -> Optional[Tuple]:
+def fetch_top_feedback(conn, task_id: str) -> tuple | None:
     return conn.execute(
         """
         SELECT id, priority, category, file_path, message, suggestion
@@ -42,11 +42,11 @@ def fetch_top_feedback(conn, task_id: str) -> Optional[Tuple]:
 
 def apply_backlog_overrides(
     task_id: str,
-    decision: Optional[Dict[str, Any]],
+    decision: dict[str, Any] | None,
     conn,
     *,
     force_threshold: int = 50,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     Apply unattended backlog routing rules.
 

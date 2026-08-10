@@ -3,7 +3,6 @@
 import json
 import re
 import time
-from typing import Optional
 
 from agents.base import call_agent
 from agents.orchestrator import call_orchestrator
@@ -11,14 +10,10 @@ from agents.parallel_workers import get_agent_pool
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import age_feedback_backlog, complete_task, create_task, post_message
-from core.file_operations import (
-    get_file_content_from_db,
-)
+from core.file_operations import get_file_content_from_db
 from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
 from workflow.developer_edit import run_developer_mutation
-from workflow.edit_mode_selector import (
-    DEFAULT_FALLBACK_ORDER,
-)
+from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER
 
 # Governed editing imports
 
@@ -27,7 +22,7 @@ def run_task_cycle(  # noqa: C901
     task_id: str,
     user_command: str,
     max_turns: int = 20,
-    time_box_minutes: Optional[int] = None,
+    time_box_minutes: int | None = None,
 ):
     """Run complete task cycle with orchestration"""
     config = get_config()
@@ -93,7 +88,7 @@ def run_task_cycle(  # noqa: C901
     }
 
     try:
-        MAX_ORCHESTRATOR_RETRIES = 3
+        max_orchestrator_retries = 3
 
         while current_turn < max_turns:
             current_turn += 1
@@ -110,10 +105,10 @@ def run_task_cycle(  # noqa: C901
             print(f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m")
             print(f"{'=' * 60}\n")
 
-            while orchestrator_attempts < MAX_ORCHESTRATOR_RETRIES and not decision:
+            while orchestrator_attempts < max_orchestrator_retries and not decision:
                 orchestrator_attempts += 1
                 if orchestrator_attempts > 1:
-                    print(f"   🔄 Orchestrator retry {orchestrator_attempts}/{MAX_ORCHESTRATOR_RETRIES}...")
+                    print(f"   🔄 Orchestrator retry {orchestrator_attempts}/{max_orchestrator_retries}...")
 
                 decision = call_orchestrator(
                     task_id,
@@ -147,7 +142,7 @@ def run_task_cycle(  # noqa: C901
                 except Exception as e:
                     print(f"   ⚠️  Backlog check failed: {e}")
 
-                if not decision and orchestrator_attempts < MAX_ORCHESTRATOR_RETRIES:
+                if not decision and orchestrator_attempts < max_orchestrator_retries:
                     post_message(
                         "system",
                         "orchestrator",
@@ -313,7 +308,7 @@ PLAN: [brief explanation]"""
                 if mut.get("status") not in ("success", "rejected"):
                     print(f"   ⚠️  Developer mutation status: {mut.get('status')} {mut.get('message', '')}")
 
-            # BACKGROUND AGENTS – Yield control
+            # BACKGROUND AGENTS - Yield control
             # =====================================================
             elif next_agent == "background":
                 try:
@@ -329,8 +324,7 @@ PLAN: [brief explanation]"""
                             cursor.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0")
                             backlog_count = cursor.fetchone()[0]
 
-                            cursor.execute(
-                                """
+                            cursor.execute("""
                                 SELECT id, priority, category, file_path, message, suggestion
                                 FROM agent_feedback
                                 WHERE addressed = 0
@@ -343,12 +337,11 @@ PLAN: [brief explanation]"""
                                     END,
                                     timestamp
                                 LIMIT 1
-                            """
-                            )
+                            """)
                             top_item = cursor.fetchone()
 
                             if not top_item:
-                                print("   ℹ️  Backlog cleared! Marking complete.")
+                                print("   [i]  Backlog cleared! Marking complete.")
                                 next_agent = "complete"
                             else:
                                 (
@@ -360,8 +353,7 @@ PLAN: [brief explanation]"""
                                     suggestion,
                                 ) = top_item
 
-                                cursor.execute(
-                                    """
+                                cursor.execute("""
                                     SELECT id, priority, category, file_path, message
                                     FROM agent_feedback
                                     WHERE addressed = 0
@@ -374,8 +366,7 @@ PLAN: [brief explanation]"""
                                         END,
                                         timestamp
                                     LIMIT 4 OFFSET 1
-                                """
-                                )
+                                """)
                                 next_items = cursor.fetchall()
 
                         if top_item:
@@ -397,7 +388,7 @@ PLAN: [brief explanation]"""
                             if next_items:
                                 developer_instructions += "\n**Context - Next items in queue:**\n"
                                 for idx, (
-                                    nxt_id,
+                                    _nxt_id,
                                     nxt_priority,
                                     nxt_category,
                                     nxt_file,
@@ -435,8 +426,8 @@ PLAN: [brief explanation]"""
                             resource_controller = get_resource_controller()
                             resource_controller.temporarily_disable_throttling(duration_seconds=30)
                             print("     🔓 Resource restrictions temporarily lifted")
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"    ⚠️  Exception handled in task_runner.py: {e}")
 
                         try:
                             agent_pool = get_agent_pool()
@@ -444,24 +435,20 @@ PLAN: [brief explanation]"""
                             with get_db_connection() as conn:
                                 cursor = conn.cursor()
 
-                                cursor.execute(
-                                    """
+                                cursor.execute("""
                                     SELECT file_path FROM project_files
                                     WHERE is_binary = 0
                                     ORDER BY last_modified DESC
                                     LIMIT 5
-                                """
-                                )
+                                """)
                                 recent_files = [row[0] for row in cursor.fetchall()]
 
-                                cursor.execute(
-                                    """
+                                cursor.execute("""
                                     SELECT file_path FROM project_files
                                     WHERE is_binary = 0
                                     ORDER BY RANDOM()
                                     LIMIT 5
-                                """
-                                )
+                                """)
                                 random_files = [row[0] for row in cursor.fetchall()]
 
                             all_files = list(set(recent_files + random_files))

@@ -55,14 +55,14 @@ class TestEndpointsCommands:
     def test_cmd_endpoint_health(self, capsys, mock_minimal_config):
         try:
             cli_commands.cmd_endpoint_health()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in test_cli_commands.py: {e}")
 
     def test_cmd_fallback_stats(self, capsys, temp_db):
         try:
             cli_commands.cmd_fallback_stats()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in test_cli_commands.py: {e}")
 
 
 class TestInitCommand:
@@ -97,14 +97,14 @@ class TestExportAndReports:
     def test_cmd_reports(self, capsys, temp_db):
         try:
             cli_commands.cmd_reports()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in test_cli_commands.py: {e}")
 
     def test_cmd_json_parse_stats(self, capsys, temp_db):
         try:
             cli_commands.cmd_json_parse_stats()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in test_cli_commands.py: {e}")
 
 
 class TestTaskRunnerMockedFromCLILayer:

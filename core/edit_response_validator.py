@@ -1,5 +1,5 @@
 """
-Edit response validator – early detection of failed developer outputs.
+Edit response validator - early detection of failed developer outputs.
 
 Used by the task runner to decide whether a developer response contains a
 usable edit (any supported mode) or should be treated as an edit failure
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class EditFailureReason(Enum):
@@ -30,17 +30,17 @@ class EditValidationResult:
     """Result of validating a developer edit response."""
 
     is_valid: bool
-    reason: Optional[EditFailureReason] = None
+    reason: EditFailureReason | None = None
     message: str = ""
-    data: Optional[Dict[str, Any]] = None
-    detected_mode: Optional[str] = None  # "guid" | "find_replace" | "full_replace" | "diff" | None
+    data: dict[str, Any] | None = None
+    detected_mode: str | None = None  # "guid" | "find_replace" | "full_replace" | "diff" | None
 
     @property
     def should_fallback(self) -> bool:
         return not self.is_valid
 
 
-def _extract_json_object(text: str) -> Optional[str]:
+def _extract_json_object(text: str) -> str | None:
     """Best-effort extraction of a top-level JSON object from LLM output."""
     if not text or not text.strip():
         return None
@@ -214,7 +214,7 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
         return EditValidationResult(
             is_valid=False,
             reason=EditFailureReason.EMPTY_OPERATIONS,
-            message="'operations' list is empty – no edits proposed",
+            message="'operations' list is empty - no edits proposed",
             data=data,
             detected_mode="guid",
         )

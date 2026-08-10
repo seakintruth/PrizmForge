@@ -29,8 +29,7 @@ def memory_db():
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    cursor.executescript(
-        """
+    cursor.executescript("""
         CREATE TABLE tasks (
             id TEXT PRIMARY KEY,
             description TEXT,
@@ -71,8 +70,7 @@ def memory_db():
             addressed_at TEXT,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         );
-    """
-    )
+    """)
     conn.commit()
     yield conn
     conn.close()
@@ -125,12 +123,10 @@ def test_build_generation_prompt_fallback_injection():
 def test_closed_loop_reviewer_feedback(memory_db):
     """Phase 3: Unaddressed Reviewer feedback is extracted and injected into Developer prompt."""
     cursor = memory_db.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         INSERT INTO agent_feedback (task_id, file_path, agent_name, feedback_text, addressed)
         VALUES ('task_001', 'main.py', 'reviewer', 'Proposal 42 REJECTED: Syntax error on line 10', 0)
-    """
-    )
+    """)
     memory_db.commit()
 
     with patch("workflow.developer_edit.get_db_connection", return_value=memory_db):

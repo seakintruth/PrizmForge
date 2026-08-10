@@ -5,7 +5,6 @@ Base agent
 
 import re
 import time
-from typing import Dict, List, Optional, Tuple
 
 import requests
 
@@ -47,14 +46,14 @@ def estimate_tokens(text: str) -> int:
 
 
 def call_endpoint(  # noqa: C901
-    messages: List[Dict],
-    max_tokens: Optional[int] = None,
-    temperature: Optional[float] = None,
-    model: Optional[str] = None,
+    messages: list[dict],
+    max_tokens: int | None = None,
+    temperature: float | None = None,
+    model: str | None = None,
     retry_count: int = 3,
     task_id: str = "unknown",
     agent_name: str = "unknown",
-) -> Tuple[Optional[str], int]:
+) -> tuple[str | None, int]:
     """Call API endpoint with automatic fallback on failure"""
     config = get_config()
     token_budget = get_token_budget()
@@ -190,8 +189,8 @@ def call_endpoint(  # noqa: C901
                 resp_json = resp.json()
                 if "error" in resp_json and isinstance(resp_json["error"], dict):
                     error_data = resp_json["error"]
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"    ⚠️  Response body was not valid JSON: {e}")
 
             # ============= HANDLE 401 / UNAUTHORIZED (KEY LOCKED) =============
             if resp.status_code == 401 or error_data.get("type") == "unauthorized":
@@ -223,8 +222,8 @@ def call_endpoint(  # noqa: C901
                             retry_json = resp.json()
                             if "error" in retry_json and isinstance(retry_json["error"], dict):
                                 retry_error_data = retry_json["error"]
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            print(f"    ⚠️  Response body was not valid JSON during retry: {e}")
 
                         # Check if the retry succeeded
                         if resp.status_code == 200 and retry_error_data.get("type") != "unauthorized":
@@ -530,38 +529,6 @@ def call_endpoint(  # noqa: C901
 
             return None, 0
 
-        except Exception as e:
-            print(f"❌ Unexpected error ({endpoint.name}): {e}")
-            import traceback
-
-            traceback.print_exc()
-
-            endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
-
-            fallback = endpoint_mgr.get_fallback_model(endpoint)
-            if fallback:
-                fallback_model, fallback_endpoint = fallback
-                # Log the fallback
-                log_fallback(
-                    original_endpoint=endpoint.name,
-                    fallback_endpoint=fallback_endpoint.name,
-                    reason=endpoint.health.status.value,
-                    task_id=task_id,  # You'll need to pass this through
-                    agent_name=agent_name,  # You'll need to pass this through
-                )
-                print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
-                return call_endpoint(
-                    messages,
-                    max_tokens,
-                    temperature,
-                    fallback_model,
-                    retry_count,
-                    task_id,
-                    agent_name,
-                )
-
-            return None, 0
-
     # All retries exhausted
     print(f"❌ All retries exhausted for {endpoint.name}")
     endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
@@ -595,11 +562,11 @@ def call_agent(  # noqa: C901
     agent_name: str,
     prompt: str,
     task_id: str,
-    context: Optional[List[Dict]] = None,
-    model_override: Optional[str] = None,
+    context: list[dict] | None = None,
+    model_override: str | None = None,
     auto_resume: bool = True,
     max_resume_attempts: int = 1,
-) -> Optional[str]:
+) -> str | None:
     """Call agent with schema injection"""
     from core.agent_schemas import get_schema_example
 
@@ -629,8 +596,8 @@ def call_agent(  # noqa: C901
         if test_mode_enabled(config):
             print(f"  🧪 test_mode: mock LLM response for {agent_name}")
             return mock_call_agent(agent_name, prompt, task_id, config)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  ⚠️  LLM test mode check skipped: {e}")
 
     endpoint_mgr = get_endpoint_manager()
 
@@ -644,8 +611,8 @@ def call_agent(  # noqa: C901
             if rc_override:
                 model_override = rc_override
                 print(f"  🎛️  Resource controller: using {rc_override} for {agent_name}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"  ⚠️  Resource controller model override check failed: {e}")
     # ====================================================================
 
     # Load agent prompts
@@ -663,9 +630,9 @@ def call_agent(  # noqa: C901
     system_prompt = prompts[agent_name]["system_prompt"]
 
     # ✅ FIX: Only inject schemas for JSON-outputting agents
-    TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
+    text_output_agents = {"project_reporter", "reviewer", "archivist"}
 
-    if agent_name not in TEXT_OUTPUT_AGENTS:
+    if agent_name not in text_output_agents:
         schema_example = get_schema_example(agent_name)
 
         system_prompt += f"""
@@ -753,8 +720,8 @@ If you cannot analyze the file, return:
 
         rc = get_resource_controller()
         rc.update_agent_performance(agent_name, tokens, duration, feedback_count)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  ⚠️  Resource controller performance update failed: {e}")
     # =====================================================
 
     # ✅ TRUNCATION DETECTION AND AUTO-RESUME

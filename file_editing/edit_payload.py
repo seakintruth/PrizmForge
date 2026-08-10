@@ -1,14 +1,14 @@
 # file_editing/edit_payload.py
 import json
 from dataclasses import asdict, dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Literal
 
 
 # ✅ ADDED kw_only=True to all dataclasses to fix inheritance ordering issues
 @dataclass(kw_only=True)
 class BaseOperation:
     type: str
-    target_file_path: Optional[str] = None
+    target_file_path: str | None = None
     rationale: str = "Change as specified"
 
     def __post_init__(self):
@@ -27,8 +27,8 @@ class BaseOperation:
 @dataclass(kw_only=True)
 class ReplaceBlock(BaseOperation):
     start_line_guid: str
-    end_line_guid: Optional[str] = None
-    new_content: List[str] = field(default_factory=list)
+    end_line_guid: str | None = None
+    new_content: list[str] = field(default_factory=list)
     type: Literal["replace_block"] = "replace_block"
 
     def __post_init__(self):
@@ -42,8 +42,8 @@ class ReplaceBlock(BaseOperation):
 
 @dataclass(kw_only=True)
 class InsertAfter(BaseOperation):
-    after_guid: Optional[str] = None
-    new_content: List[str] = field(default_factory=list)
+    after_guid: str | None = None
+    new_content: list[str] = field(default_factory=list)
     type: Literal["insert_after"] = "insert_after"
 
     def __post_init__(self):
@@ -57,7 +57,7 @@ class InsertAfter(BaseOperation):
 @dataclass(kw_only=True)
 class DeleteLines(BaseOperation):
     start_line_guid: str
-    end_line_guid: Optional[str] = None
+    end_line_guid: str | None = None
     type: Literal["delete_lines"] = "delete_lines"
 
 
@@ -75,7 +75,7 @@ class UpdateDocumentation(BaseOperation):
 @dataclass(kw_only=True)
 class CreateFile(BaseOperation):
     target_file_path: str
-    initial_content: List[str] = field(default_factory=list)
+    initial_content: list[str] = field(default_factory=list)
     type: Literal["create_file"] = "create_file"
 
     def __post_init__(self):
@@ -91,7 +91,7 @@ class FindReplace(BaseOperation):
     find: str
     replace: str
     regex: bool = False
-    count: Optional[int] = None  # None = replace all
+    count: int | None = None  # None = replace all
     type: Literal["find_replace"] = "find_replace"
 
     def __post_init__(self):
@@ -138,23 +138,14 @@ class ApplyDiff(BaseOperation):
             raise ValueError("diff must be a non-empty string")
 
 
-Operation = Union[
-    ReplaceBlock,
-    InsertAfter,
-    DeleteLines,
-    UpdateDocumentation,
-    CreateFile,
-    FindReplace,
-    FullReplace,
-    ApplyDiff,
-]
+Operation = ReplaceBlock | InsertAfter | DeleteLines | UpdateDocumentation | CreateFile | FindReplace | FullReplace | ApplyDiff
 
 
 @dataclass(kw_only=True)
 class EditPayload:
     target_file_path: str
     summary: str
-    operations: List[Operation]
+    operations: list[Operation]
     rationale: str
 
     def __post_init__(self):
@@ -175,7 +166,7 @@ class EditPayload:
         try:
             data = json.loads(json_str)
         except json.JSONDecodeError as e:
-            raise ValueError(f"Invalid JSON string: {e}")
+            raise ValueError(f"Invalid JSON string: {e}") from e
 
         if not isinstance(data, dict):
             raise ValueError("JSON must resolve to an object/dictionary at the root level")
@@ -183,7 +174,7 @@ class EditPayload:
         return cls.model_validate(data)
 
     @classmethod
-    def model_validate(cls, data: Dict[str, Any]) -> "EditPayload":  # noqa: C901
+    def model_validate(cls, data: dict[str, Any]) -> "EditPayload":  # noqa: C901
         ops = []
         for i, op_data in enumerate(data.get("operations", [])):
             if not isinstance(op_data, dict):
@@ -239,7 +230,7 @@ class EditPayload:
                     raise ValueError(f"Unknown operation type: '{op_type}'")
 
             except TypeError as e:
-                raise ValueError(f"Validation failed for operation '{op_type}' at index {i}: Missing required fields. ({e})")
+                raise ValueError(f"Validation failed for operation '{op_type}' at index {i}: Missing required fields. ({e})") from e
 
         try:
             return cls(
@@ -249,7 +240,7 @@ class EditPayload:
                 rationale=data.get("rationale"),
             )
         except TypeError as e:
-            raise ValueError(f"Validation failed for EditPayload: Missing required top-level fields. ({e})")
+            raise ValueError(f"Validation failed for EditPayload: Missing required top-level fields. ({e})") from e
 
     def model_dump_json(self) -> str:
         return json.dumps(asdict(self))

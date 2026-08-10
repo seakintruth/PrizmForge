@@ -48,8 +48,8 @@ class TokenBudget:
                     "INSERT INTO token_log (timestamp, tokens_used) VALUES (?, ?)",
                     (timestamp, tokens),
                 )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in token_budget.py: {e}")
 
     def get_used(self) -> int:
         """Get tokens used in last 4 hours"""

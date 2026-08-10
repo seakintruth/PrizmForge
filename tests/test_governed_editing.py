@@ -21,7 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _compute_content_hash(content: str) -> str:
-    return hashlib.md5(content.encode()).hexdigest()
+    return hashlib.md5(content.encode(usedforsecurity=False)).hexdigest()
 
 
 @pytest.fixture(scope="function")

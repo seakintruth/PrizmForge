@@ -8,7 +8,7 @@ via the events/write log path, and can restore by proposal_id.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any
 
 from core.db_connection import get_db_connection
 from core.events import publish_event
@@ -17,19 +17,17 @@ from file_editing.writer import initialize_file_lines, write_file_to_disk
 
 
 def ensure_snapshot_table(conn) -> None:
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS proposal_snapshots (
             proposal_id TEXT PRIMARY KEY,
             file_path TEXT NOT NULL,
             content_before TEXT,
             created_at TEXT
         )
-        """
-    )
+        """)
 
 
-def snapshot_before_apply(proposal_id: str) -> Dict[str, Any]:
+def snapshot_before_apply(proposal_id: str) -> dict[str, Any]:
     """Capture current file content for an approved proposal before materialize."""
     with get_db_connection() as conn:
         ensure_snapshot_table(conn)
@@ -51,7 +49,7 @@ def snapshot_before_apply(proposal_id: str) -> Dict[str, Any]:
         return {"status": "success", "file_path": path, "bytes": len(content or "")}
 
 
-def undo_proposal(proposal_id: str, *, write_disk: bool = True) -> Dict[str, Any]:
+def undo_proposal(proposal_id: str, *, write_disk: bool = True) -> dict[str, Any]:
     """
     Restore content from snapshot taken before apply.
     Explicit proposal_id required (no silent global revert).

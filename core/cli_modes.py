@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Optional
 
 
 class CLIMode(Enum):
@@ -25,12 +24,12 @@ class UnattendedConfig:
     auto_generate_tasks: bool = True
     prioritize_critical_issues: bool = True
     auto_init_on_start: bool = True
-    seed_task: Optional[str] = None
-    seed_tasks: Optional[list] = None
+    seed_task: str | None = None
+    seed_tasks: list | None = None
     stop_when_backlog_empty: bool = False
     exit_on_preflight_failure: bool = True
     # runtime queue (not from config file persistence)
-    _seed_queue: Optional[list] = None
+    _seed_queue: list | None = None
 
     @classmethod
     def from_config(cls, config: dict) -> "UnattendedConfig":
@@ -62,7 +61,7 @@ class UnattendedConfig:
             _seed_queue=queue,
         )
 
-    def get_end_time(self, start_time: Optional[datetime] = None) -> datetime:
+    def get_end_time(self, start_time: datetime | None = None) -> datetime:
         """Get end time for unattended run"""
         if start_time is None:
             start_time = datetime.now()
@@ -78,8 +77,8 @@ class CLIState:
     task_counter: int = 1
     total_files_modified: int = 0
     total_iterations: int = 0
-    current_task_id: Optional[str] = None
-    last_checkpoint: Optional[datetime] = None
+    current_task_id: str | None = None
+    last_checkpoint: datetime | None = None
 
     def should_checkpoint(self, interval_minutes: int) -> bool:
         """Check if we should save checkpoint"""

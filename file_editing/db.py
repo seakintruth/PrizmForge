@@ -9,7 +9,6 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, List, Optional
 
 
 def get_db_path() -> str:
@@ -37,8 +36,8 @@ def get_db_connection():
     try:
         conn.execute("PRAGMA journal_mode=OFF")
         conn.execute("PRAGMA synchronous=OFF")
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    ⚠️  Exception handled in db.py: {e}")
     try:
         yield conn
         try:
@@ -49,14 +48,14 @@ def get_db_connection():
     except Exception:
         try:
             conn.rollback()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in db.py: {e}")
         raise
     finally:
         try:
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in db.py: {e}")
 
 
 def log_error(
@@ -64,12 +63,12 @@ def log_error(
     category: str,
     severity: str,
     message: str,
-    details: Optional[str] = None,
-    task_id: Optional[str] = None,
-    proposal_id: Optional[str] = None,
-    file_path: Optional[str] = None,
-    line_guid: Optional[str] = None,
-    stack_trace: Optional[str] = None,
+    details: str | None = None,
+    task_id: str | None = None,
+    proposal_id: str | None = None,
+    file_path: str | None = None,
+    line_guid: str | None = None,
+    stack_trace: str | None = None,
 ):
     """Centralized error logging to stdout + errors table."""
     print(f"[{severity}] {component}.{category}: {message}")
@@ -104,7 +103,7 @@ def log_error(
         print(f"CRITICAL: Failed to log error to DB: {e}")
 
 
-def initialize_database(db_path: Optional[str] = None):
+def initialize_database(db_path: str | None = None):
     """
     Deprecated. Schema initialization is now handled by core.db.init_db().
     This function is kept for backward compatibility only.
@@ -132,7 +131,7 @@ def reconstruct_file_content(conn: sqlite3.Connection, file_id: int) -> str:
     return "\n".join(lines)
 
 
-def capture_current_hashes(conn: sqlite3.Connection, file_id: int, line_guids: List[str]) -> Dict[str, str]:
+def capture_current_hashes(conn: sqlite3.Connection, file_id: int, line_guids: list[str]) -> dict[str, str]:
     """Return {line_guid: content_hash} for the given guids."""
     if not line_guids:
         return {}

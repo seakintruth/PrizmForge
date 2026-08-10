@@ -5,7 +5,6 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, Optional
 
 from agents.base import call_agent
 from core.config import get_config
@@ -17,9 +16,9 @@ class ProjectReporterWorker:
 
     def __init__(self):
         self.running = False
-        self.worker_thread: Optional[threading.Thread] = None
-        self.task_id: Optional[str] = None
-        self.last_report_time: Optional[datetime] = None
+        self.worker_thread: threading.Thread | None = None
+        self.task_id: str | None = None
+        self.last_report_time: datetime | None = None
         self.last_file_count: int = 0
         self.last_line_delta: int = 0
         self.config = get_config().get("reporter", {})
@@ -48,20 +47,18 @@ class ProjectReporterWorker:
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT last_report_time, last_report_file_count, last_report_line_delta
                     FROM reporter_state WHERE id = 1
-                """
-                )
+                """)
                 row = cursor.fetchone()
                 if row:
                     if row[0]:
                         self.last_report_time = datetime.fromisoformat(row[0])
                     self.last_file_count = row[1] or 0
                     self.last_line_delta = row[2] or 0
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in reporter_worker.py: {e}")
 
     def _save_state(self):
         try:
@@ -122,12 +119,10 @@ class ProjectReporterWorker:
                         (self.last_report_time.isoformat(),),
                     )
                 else:
-                    cursor.execute(
-                        """
+                    cursor.execute("""
                         SELECT COUNT(DISTINCT file_path), COALESCE(SUM(ABS(LENGTH(content_after) - LENGTH(content_before))), 0)
                         FROM file_modifications
-                    """
-                    )
+                    """)
 
                 row = cursor.fetchone()
 
@@ -194,7 +189,7 @@ class ProjectReporterWorker:
         except Exception as e:
             print(f"    ❌ Failed to generate report: {e}")
 
-    def _gather_report_data(self) -> Dict:
+    def _gather_report_data(self) -> dict:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
@@ -237,8 +232,8 @@ class ProjectReporterWorker:
                     )
                     if result.returncode == 0:
                         git_commits = result.stdout.strip().split("\n")[:10]
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"    ⚠️  Exception handled in reporter_worker.py: {e}")
 
             # Addressed feedback
             cursor.execute(
@@ -263,7 +258,7 @@ class ProjectReporterWorker:
             "trigger": ("time" if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60 else "change"),
         }
 
-    def _build_prompt(self, data: Dict) -> str:
+    def _build_prompt(self, data: dict) -> str:
         mods = "\n".join([f"- {m[0]} ({m[1]}) by {m[2]} at {m[3][:16]}" for m in data["modifications"][:15]])
         commits = "\n".join([f"- {c}" for c in data["git_commits"][:8]]) if data["git_commits"] else "No git commits recorded"
         feedback = "\n".join([f"- [{f[2]}] {f[1]}: {f[3][:80]} (by {f[0]})" for f in data["addressed_feedback"][:10]])
@@ -285,7 +280,7 @@ Generate a human-readable project report for the period
 
 Please produce the full Markdown report following the exact structure defined in your system prompt."""
 
-    def _save_report(self, response: str, data: Dict) -> str:
+    def _save_report(self, response: str, data: dict) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         filename = f"project_report_{timestamp}.md"
 
@@ -313,10 +308,10 @@ Please produce the full Markdown report following the exact structure defined in
             reports = sorted(reports_dir.glob("project_report_*.md"), reverse=True)
             for old_report in reports[max_keep:]:
                 old_report.unlink()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in reporter_worker.py: {e}")
 
-    def _record_report(self, filepath: str, data: Dict, response: str):
+    def _record_report(self, filepath: str, data: dict, response: str):
         try:
             with get_db_connection() as conn:
                 conn.execute(
@@ -355,8 +350,8 @@ Please produce the full Markdown report following the exact structure defined in
                 self.task_id or "global",
                 "MEDIUM",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in reporter_worker.py: {e}")
 
 
 # Global singleton

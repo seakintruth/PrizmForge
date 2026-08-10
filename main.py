@@ -117,7 +117,7 @@ def main():  # noqa: C901
         print("\nPlease edit api_key.json with actual API keys:")
         print("  Example api_key.json:")
         print("  {")
-        for endpoint_name, endpoint_config in endpoints_config.items():
+        for endpoint_config in endpoints_config.values():
             api_key_name = endpoint_config.get("api_key_name", "api_key")
             print(f'    "{api_key_name}": "your-actual-key-here",')
         print("  }")

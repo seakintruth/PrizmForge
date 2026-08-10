@@ -5,9 +5,10 @@ Handles: markdown wrapping, truncation, malformed responses
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 
 class ParseStatus(Enum):
@@ -25,9 +26,9 @@ class ParseResult:
     """Result of JSON parsing attempt"""
 
     status: ParseStatus
-    data: Optional[Dict[str, Any]]
-    error: Optional[str]
-    raw_json: Optional[str]
+    data: dict[str, Any] | None
+    error: str | None
+    raw_json: str | None
     confidence: float  # 0.0 to 1.0
 
     @property
@@ -61,7 +62,7 @@ class JSONParser:
             self._extract_raw,
         ]
 
-    def parse(self, response: str, expected_keys: Optional[list] = None, strict: bool = False) -> ParseResult:
+    def parse(self, response: str, expected_keys: list | None = None, strict: bool = False) -> ParseResult:
         """
         Parse JSON from LLM response with multiple strategies
 
@@ -115,12 +116,12 @@ class JSONParser:
             confidence=0.0,
         )
 
-    def _extract_markdown_json(self, response: str) -> Optional[str]:
+    def _extract_markdown_json(self, response: str) -> str | None:
         """Extract from ```json block"""
         match = re.search(r"```json\s*\n(.*?)```", response, re.DOTALL | re.IGNORECASE)
         return match.group(1).strip() if match else None
 
-    def _extract_markdown_any(self, response: str) -> Optional[str]:
+    def _extract_markdown_any(self, response: str) -> str | None:
         """Extract from any ``` block"""
         match = re.search(r"```\s*\n(.*?)```", response, re.DOTALL)
         if match:
@@ -130,7 +131,7 @@ class JSONParser:
                 return content
         return None
 
-    def _extract_brace_bounded(self, response: str) -> Optional[str]:
+    def _extract_brace_bounded(self, response: str) -> str | None:
         """Extract from first { to last }"""
         if "{" not in response or "}" not in response:
             return None
@@ -143,7 +144,7 @@ class JSONParser:
 
         return None
 
-    def _extract_first_json_object(self, response: str) -> Optional[str]:
+    def _extract_first_json_object(self, response: str) -> str | None:
         """Extract first complete JSON object using brace matching"""
         if "{" not in response:
             return None
@@ -184,7 +185,7 @@ class JSONParser:
         # Incomplete object found
         return response[start:]
 
-    def _extract_raw(self, response: str) -> Optional[str]:
+    def _extract_raw(self, response: str) -> str | None:
         """Try response as-is (last resort)"""
         stripped = response.strip()
 
@@ -202,7 +203,7 @@ class JSONParser:
 
         return None
 
-    def _try_parse(self, json_str: str, expected_keys: Optional[list], strict: bool) -> ParseResult:
+    def _try_parse(self, json_str: str, expected_keys: list | None, strict: bool) -> ParseResult:
         """Attempt to parse JSON string"""
         try:
             data = json.loads(json_str)
@@ -324,11 +325,11 @@ def get_json_parser() -> JSONParser:
 
 def parse_json_response(
     response: str,
-    expected_keys: Optional[list] = None,
+    expected_keys: list | None = None,
     strict: bool = False,
     agent_name: str = "unknown",
-    auto_resume: Optional[Callable] = None,
-) -> Optional[Dict[str, Any]]:
+    auto_resume: Callable | None = None,
+) -> dict[str, Any] | None:
     """
     Convenience function for parsing JSON responses
 

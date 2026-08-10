@@ -173,7 +173,7 @@ class TestEditPayloadContracts:
     def test_unknown_type_rejected(self):
         from file_editing.edit_payload import EditPayload
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             EditPayload.model_validate(
                 {
                     "target_file_path": "c.py",
@@ -484,7 +484,7 @@ class TestApplyContracts:
 
         from file_editing.edit_payload import EditPayload
 
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             EditPayload.model_validate(
                 {
                     "target_file_path": "x.py",

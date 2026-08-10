@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from core.db_connection import get_db_connection
 
@@ -18,16 +18,15 @@ def publish_event(
     event_type: str,
     *,
     source: str = "system",
-    task_id: Optional[str] = None,
-    proposal_id: Optional[str] = None,
-    payload: Optional[Dict[str, Any]] = None,
-) -> Optional[int]:
+    task_id: str | None = None,
+    proposal_id: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> int | None:
     """Append one event row. Returns event id or None on failure."""
     try:
         with get_db_connection() as conn:
             # Ensure table exists on older DBs
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT,
@@ -37,8 +36,7 @@ def publish_event(
                     payload_json TEXT,
                     proposal_id TEXT
                 )
-                """
-            )
+                """)
             cur = conn.execute(
                 """
                 INSERT INTO events (task_id, ts, type, source, payload_json, proposal_id)
@@ -60,13 +58,12 @@ def publish_event(
 
 
 def list_events(
-    task_id: Optional[str] = None,
-    event_type: Optional[str] = None,
+    task_id: str | None = None,
+    event_type: str | None = None,
     limit: int = 100,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     with get_db_connection() as conn:
-        conn.execute(
-            """
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT,
@@ -76,8 +73,7 @@ def list_events(
                 payload_json TEXT,
                 proposal_id TEXT
             )
-            """
-        )
+            """)
         q = "SELECT id, task_id, ts, type, source, payload_json, proposal_id FROM events WHERE 1=1"
         params: list = []
         if task_id:
