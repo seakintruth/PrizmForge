@@ -22,7 +22,6 @@ import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
 
 from agents.base import get_rate_limiter
 from agents.parallel_workers import get_agent_pool
@@ -81,9 +80,9 @@ class ThrottleDecision:
 
     level: str  # CRITICAL, AGGRESSIVE, MODERATE, NORMAL
     background_feeder_interval: int  # seconds between random file feeds
-    active_agents: List[str]  # Which background agents to run
+    active_agents: list[str]  # Which background agents to run
     rate_limit_per_minute: int  # Override global rate limit
-    model_downgrades: Dict[str, str]  # agent_name -> faster_model
+    model_downgrades: dict[str, str]  # agent_name -> faster_model
     reasoning: str  # Human-readable explanation
 
     def to_dict(self) -> dict:
@@ -120,12 +119,12 @@ class HeuristicOptimizer:
             "normal": 1.0,  # >= 50% budget
         }
 
-    def _get_priority_categories(self) -> List[str]:
+    def _get_priority_categories(self) -> list[str]:
         """Get human-defined priority categories from config"""
         goals = self.rc_config.get("project_goals", {})
         return goals.get("priority_focus", ["security", "performance"])
 
-    def _load_agent_profiles(self) -> Dict[str, AgentProfile]:
+    def _load_agent_profiles(self) -> dict[str, AgentProfile]:
         """Load agent profiles from database or initialize defaults"""
         try:
             with get_db_connection() as conn:
@@ -140,8 +139,8 @@ class HeuristicOptimizer:
                 try:
                     data = json.loads(profile_json)
                     profiles[agent_name] = AgentProfile.from_dict(data)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"    ⚠️  Exception handled in resource_controller_worker.py: {e}")
 
             # Fill in defaults for missing agents
             defaults = self._get_default_profiles()
@@ -155,7 +154,7 @@ class HeuristicOptimizer:
             print(f"    ⚠️  Failed to load agent profiles: {e}")
             return self._get_default_profiles()
 
-    def _get_default_profiles(self) -> Dict[str, AgentProfile]:
+    def _get_default_profiles(self) -> dict[str, AgentProfile]:
         """Default agent resource profiles (initial estimates)"""
         return {
             "jr_reviewer": AgentProfile(
@@ -244,7 +243,7 @@ class HeuristicOptimizer:
         else:
             return self._throttle_normal(state)
 
-    def _check_feedback_backlog(self, state: ResourceState) -> Optional[ThrottleDecision]:
+    def _check_feedback_backlog(self, state: ResourceState) -> ThrottleDecision | None:
         """
         Check if feedback backlog is too high
 
@@ -346,7 +345,7 @@ class HeuristicOptimizer:
 
         # Keep top 1 background agent + prioritizer
         active_background = [ranked_agents[0]] if ranked_agents else []
-        active_agents = ["prioritizer"] + active_background
+        active_agents = ["prioritizer", *active_background]
 
         return ThrottleDecision(
             level="AGGRESSIVE",
@@ -378,7 +377,7 @@ class HeuristicOptimizer:
 
         # Keep top 2 background agents + prioritizer
         active_background = ranked_agents[:2] if len(ranked_agents) >= 2 else ranked_agents
-        active_agents = ["prioritizer"] + active_background
+        active_agents = ["prioritizer", *active_background]
 
         # Add archivist if budget allows
         if state.budget_percentage > 0.3 and "archivist" not in active_agents:
@@ -428,7 +427,7 @@ class HeuristicOptimizer:
             ),
         )
 
-    def _rank_agents_by_value(self, exclude: Optional[List[str]] = None) -> List[str]:
+    def _rank_agents_by_value(self, exclude: list[str] | None = None) -> list[str]:
         """
         Rank agents by current value score
 
@@ -554,15 +553,15 @@ class ResourceControllerWorker:
 
     def __init__(self):
         self.running = False
-        self.worker_thread: Optional[threading.Thread] = None
-        self.task_id: Optional[str] = None
+        self.worker_thread: threading.Thread | None = None
+        self.task_id: str | None = None
         self.config = get_config()
         self.rc_config = self.config.get("resource_controller", {})
         self.token_budget = TokenBudget(get_db_path(), self.rc_config.get("max_tokens_per_day", 50_000_000))
         self.optimizer = HeuristicOptimizer()
-        self.current_decision: Optional[ThrottleDecision] = None
-        self.decision_history: List[ThrottleDecision] = []
-        self.throttling_disabled_until: Optional[datetime] = None
+        self.current_decision: ThrottleDecision | None = None
+        self.decision_history: list[ThrottleDecision] = []
+        self.throttling_disabled_until: datetime | None = None
 
     def start(self, task_id: str):
         """Start resource controller worker"""
@@ -781,7 +780,7 @@ class ResourceControllerWorker:
         # 5. Log decision to database for analysis
         self._log_decision(decision, state)
 
-    def _store_model_overrides(self, downgrades: Dict[str, str]):
+    def _store_model_overrides(self, downgrades: dict[str, str]):
         """Store model override preferences for agents to check"""
         try:
             with get_db_connection() as conn:
@@ -819,7 +818,7 @@ class ResourceControllerWorker:
             "NORMAL": "✅",
         }
 
-        emoji = emoji_map.get(decision.level, "ℹ️")
+        emoji = emoji_map.get(decision.level, "[i]")
 
         message = f"""{emoji} Resource Controller [{decision.level}]
 
@@ -885,11 +884,11 @@ Recommendation: {self._get_recommendation(decision)}"""
         except Exception as e:
             print(f"    ⚠️  Failed to log decision: {e}")
 
-    def get_current_decision(self) -> Optional[ThrottleDecision]:
+    def get_current_decision(self) -> ThrottleDecision | None:
         """Get current throttle decision (for status commands)"""
         return self.current_decision
 
-    def get_decision_history(self, limit: int = 10) -> List[ThrottleDecision]:
+    def get_decision_history(self, limit: int = 10) -> list[ThrottleDecision]:
         """Get recent decision history"""
         return self.decision_history[-limit:] if self.decision_history else []
 
@@ -908,7 +907,7 @@ Recommendation: {self._get_recommendation(decision)}"""
         """
         self.optimizer.update_agent_performance(agent_name, tokens_used, duration, feedback_generated)
 
-    def get_model_override(self, agent_name: str) -> Optional[str]:
+    def get_model_override(self, agent_name: str) -> str | None:
         """
         Get model override for an agent (if any)
 
@@ -935,7 +934,7 @@ Recommendation: {self._get_recommendation(decision)}"""
         except Exception:
             return None
 
-    def get_agent_statistics(self) -> Dict:
+    def get_agent_statistics(self) -> dict:
         """
         Get learned agent statistics for visibility
 

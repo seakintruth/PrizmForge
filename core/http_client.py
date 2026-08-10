@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 import ssl
-from typing import Any, Dict, Optional
+from typing import Any
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -19,7 +19,7 @@ from urllib import request as urllib_request
 class HttpResponse:
     """Small response object compatible with the bits agents.base uses."""
 
-    def __init__(self, status_code: int, body: bytes, headers: Optional[Dict[str, str]] = None):
+    def __init__(self, status_code: int, body: bytes, headers: dict[str, str] | None = None):
         self.status_code = status_code
         self._body = body or b""
         self.headers = headers or {}
@@ -40,10 +40,10 @@ class HttpError(Exception):
 def _post_with_requests(
     url: str,
     *,
-    headers: Optional[Dict[str, str]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
+    headers: dict[str, str] | None = None,
+    json_body: dict[str, Any] | None = None,
     timeout: float = 120,
-    proxies: Optional[Dict[str, str]] = None,
+    proxies: dict[str, str] | None = None,
 ) -> HttpResponse:
     import requests
 
@@ -60,10 +60,10 @@ def _post_with_requests(
 def _post_with_urllib(
     url: str,
     *,
-    headers: Optional[Dict[str, str]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
+    headers: dict[str, str] | None = None,
+    json_body: dict[str, Any] | None = None,
     timeout: float = 120,
-    proxies: Optional[Dict[str, str]] = None,
+    proxies: dict[str, str] | None = None,
 ) -> HttpResponse:
     data = None
     hdrs = dict(headers or {})
@@ -71,7 +71,8 @@ def _post_with_urllib(
         data = json.dumps(json_body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
 
-    req = urllib_request.Request(url, data=data, headers=hdrs, method="POST")
+    # suppress the urllib scheme warning ->
+    req = urllib_request.Request(url, data=data, headers=hdrs, method="POST")  # noqa: S310
 
     # Basic proxy support (HTTP_PROXY style) if provided
     handlers = []
@@ -96,10 +97,10 @@ def _post_with_urllib(
 def post_json(
     url: str,
     *,
-    headers: Optional[Dict[str, str]] = None,
-    json_body: Optional[Dict[str, Any]] = None,
+    headers: dict[str, str] | None = None,
+    json_body: dict[str, Any] | None = None,
     timeout: float = 120,
-    proxies: Optional[Dict[str, str]] = None,
+    proxies: dict[str, str] | None = None,
     prefer_requests: bool = True,
 ) -> HttpResponse:
     """

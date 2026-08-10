@@ -6,7 +6,6 @@ import time
 import traceback
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Tuple
 
 from agents.base import call_agent
 from core.db_connection import get_db_connection
@@ -90,12 +89,12 @@ class PrioritizerWorker:
                 traceback.print_exc()
                 time.sleep(30)
 
-    def _filter_low_quality_feedback(self, items: List[FeedbackItem]) -> Tuple[List[FeedbackItem], int]:
+    def _filter_low_quality_feedback(self, items: list[FeedbackItem]) -> tuple[list[FeedbackItem], int]:
         """
         Filter out and auto-dismiss low-quality feedback.
         Returns (valid_items, dismissed_count)
         """
-        LOW_QUALITY_PATTERNS = [
+        low_quality_patterns = [
             # Placeholder text
             r"^issue here$",
             r"^fix here$",
@@ -123,7 +122,7 @@ class PrioritizerWorker:
             reason = None
 
             # Pattern matching
-            for pattern in LOW_QUALITY_PATTERNS:
+            for pattern in low_quality_patterns:
                 if re.match(pattern, message_lower, re.IGNORECASE):
                     is_low_quality = True
                     reason = f"Generic placeholder: '{item.message[:30]}'"
@@ -230,7 +229,7 @@ class PrioritizerWorker:
         # Phase 5: Post to orchestrator
         self._post_results(final_ranked)
 
-    def _get_all_feedback(self) -> List[FeedbackItem]:
+    def _get_all_feedback(self) -> list[FeedbackItem]:
         """Get ALL unaddressed feedback (no limit)"""
         try:
             with get_db_connection() as conn:
@@ -312,7 +311,7 @@ class PrioritizerWorker:
             print(f"    ❌ Error getting feedback: {e}")
             return []
 
-    def _categorize_feedback(self, items: List[FeedbackItem]) -> List[FeedbackItem]:
+    def _categorize_feedback(self, items: list[FeedbackItem]) -> list[FeedbackItem]:
         """Phase 1: Categorize uncategorized items in batches of 30"""
         uncategorized = [item for item in items if item.category == "uncategorized"]
 
@@ -330,7 +329,7 @@ class PrioritizerWorker:
         print("    ✓ Phase 1: Complete")
         return items
 
-    def _categorize_batch(self, batch: List[FeedbackItem]):
+    def _categorize_batch(self, batch: list[FeedbackItem]):
         """Categorize a batch of items"""
         # Build prompt with message and suggestion context
         index_snip = ""
@@ -348,8 +347,8 @@ class PrioritizerWorker:
                     index_snip = "Known source paths (Markdown fallback):\n" + raw + "\n\n"
             elif not index_snip.endswith("\n"):
                 index_snip += "\n"
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in prioritizer_worker.py: {e}")
         prompt = f"{index_snip}Categorize these {len(batch)} feedback items:\n\n"
 
         for idx, item in enumerate(batch, 1):
@@ -400,7 +399,7 @@ Respond with JSON ONLY:
         except Exception as e:
             print(f"    ⚠️  Categorization batch error: {e}")
 
-    def _update_categories(self, categorized: List[Dict]):
+    def _update_categories(self, categorized: list[dict]):
         """Update categories in database"""
         try:
             with get_db_connection() as conn:
@@ -416,7 +415,7 @@ Respond with JSON ONLY:
         except Exception as e:
             print(f"    ⚠️  Error updating categories: {e}")
 
-    def _score_within_categories(self, items: List[FeedbackItem]) -> Dict[str, List[FeedbackItem]]:
+    def _score_within_categories(self, items: list[FeedbackItem]) -> dict[str, list[FeedbackItem]]:
         """Phase 2: Score items within each category"""
         print("    → Phase 2: Scoring within categories")
 
@@ -434,7 +433,7 @@ Respond with JSON ONLY:
         print(f"    ✓ Phase 2: Scored {len(by_category)} categories")
         return by_category
 
-    def _score_category(self, category: str, items: List[FeedbackItem]):
+    def _score_category(self, category: str, items: list[FeedbackItem]):
         """Score items within a category"""
         # Build scoring request
         prompt = f"Score these {len(items)} {category} items (0-100):\n\n"
@@ -480,7 +479,7 @@ Respond with JSON ONLY:
         except Exception as e:
             print(f"    ⚠️  Category scoring error: {e}")
 
-    def _cross_category_ranking(self, by_category: Dict[str, List[FeedbackItem]]) -> List[FeedbackItem]:
+    def _cross_category_ranking(self, by_category: dict[str, list[FeedbackItem]]) -> list[FeedbackItem]:
         """Phase 3: Cross-category prioritization"""
         print("    → Phase 3: Cross-category ranking")
 
@@ -552,7 +551,7 @@ Respond with JSON ONLY:
         # Fallback: return top 8 by score
         return sorted(all_items, key=lambda x: x.score, reverse=True)[:8]
 
-    def _post_results(self, ranked: List[FeedbackItem]):
+    def _post_results(self, ranked: list[FeedbackItem]):
         """Phase 4: Post to orchestrator"""
         if not ranked:
             return
@@ -579,7 +578,7 @@ Respond with JSON ONLY:
 
         print("    ✓ Phase 4: Posted to orchestrator")
 
-    def _mark_items_processed(self, items: List[FeedbackItem]):
+    def _mark_items_processed(self, items: list[FeedbackItem]):
         """Mark items as READ (not addressed - that happens when developer fixes them)"""
         try:
             with get_db_connection() as conn:

@@ -17,13 +17,13 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 # Per-process queues copied from config lists (pop from front)
-_queues: Dict[str, List[str]] = {}
+_queues: dict[str, list[str]] = {}
 
 
-def test_mode_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+def test_mode_enabled(config: dict[str, Any] | None = None) -> bool:
     env = os.environ.get("PRIZMFORGE_TEST_MODE", "").strip().lower()
     if env in ("1", "true", "yes", "on"):
         return True
@@ -88,7 +88,7 @@ def mock_call_agent(
     agent_name: str,
     prompt: str,
     task_id: str,
-    config: Optional[Dict[str, Any]] = None,
+    config: dict[str, Any] | None = None,
 ) -> str:
     if config is None:
         try:

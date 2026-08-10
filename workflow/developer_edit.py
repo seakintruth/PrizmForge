@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from agents.base import call_agent
 from core.db_connection import get_db_connection
@@ -23,21 +23,14 @@ from core.file_operations import format_file_with_guids, get_file_content_from_d
 from core.index_context import load_symbol_json_context
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
-from workflow.edit_mode_selector import (
-    DEFAULT_FALLBACK_ORDER,
-    MODE_DIFF,
-    MODE_FULL_REPLACE,
-    MODE_GUID,
-    next_fallback_mode,
-    select_edit_mode,
-)
+from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER, MODE_DIFF, MODE_FULL_REPLACE, MODE_GUID, next_fallback_mode, select_edit_mode
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 
 
 # =========================================================================
 # 🎯 PHASE 3: CLOSED-LOOP REVIEWER FEEDBACK EXTRACTION
 # =========================================================================
-def fetch_latest_reviewer_feedback(task_id: str, target_file: str) -> Optional[dict]:
+def fetch_latest_reviewer_feedback(task_id: str, target_file: str) -> dict | None:
     """
     Fetches the most recent unaddressed Reviewer rejection reason and suggestions
     for a given task and target file.
@@ -88,11 +81,11 @@ def _build_generation_prompt(
     *,
     instructions: str,
     edit_method: str,
-    files_content: List[str],
-    requested_files: List[str],
+    files_content: list[str],
+    requested_files: list[str],
     task_id: str,
     fallback_used: bool = False,
-    previous_reason: Optional[str] = None,
+    previous_reason: str | None = None,
 ) -> str:
     """Build prompt for Developer LLM, injecting clean fallback warnings & Reviewer feedback."""
     joined = "\n\n".join(files_content) if files_content else "No existing files."
@@ -104,8 +97,8 @@ def _build_generation_prompt(
             max_rows=50,
             label="Symbols for target files",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    ⚠️  Exception handled in developer_edit.py: {e}")
 
     parts = [
         instructions,
@@ -164,7 +157,7 @@ def _build_generation_prompt(
     return "\n".join(parts)
 
 
-def _normalize_payload(data: dict, edit_method: str, requested_files: List[str]) -> dict:
+def _normalize_payload(data: dict, edit_method: str, requested_files: list[str]) -> dict:
     """Normalize top-level full_replace / diff shapes into operations form."""
     out = dict(data)
     if not out.get("target_file_path") and requested_files:
@@ -211,16 +204,16 @@ def run_developer_mutation(  # noqa: C901
     task_id: str,
     instructions: str,
     user_command: str,
-    requested_files: List[str],
-    conversation_context: Optional[list],
-    model_choice: Optional[str],
-    preferred_modes: Optional[List[str]],
-    fallback_order: Optional[List[str]],
+    requested_files: list[str],
+    conversation_context: list | None,
+    model_choice: str | None,
+    preferred_modes: list[str] | None,
+    fallback_order: list[str] | None,
     small_file_threshold: int,
-    progress: Dict[str, Any],
-    decision: Dict[str, Any],
+    progress: dict[str, Any],
+    decision: dict[str, Any],
     current_turn: int,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Execute mode selection through materialize for one developer turn.
     Updates progress counters in-place.
@@ -247,7 +240,7 @@ def run_developer_mutation(  # noqa: C901
     print(f"   🎯 Selected edit mode: {edit_method} ({mode_decision.reason})")
 
     print("   📝 Phase 2: Loading files...")
-    files_content: List[str] = []
+    files_content: list[str] = []
     for fpath in requested_files:
         try:
             if edit_method == MODE_GUID:
@@ -265,7 +258,7 @@ def run_developer_mutation(  # noqa: C901
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
         return {"status": "error", "message": "no file content"}
 
-    modes_tried: List[str] = []
+    modes_tried: list[str] = []
     response = None
     validation = None
     fallback_used = False
@@ -389,7 +382,7 @@ def run_developer_mutation(  # noqa: C901
     reviewer_response = call_agent("reviewer", reviewer_prompt, task_id)
     decision_result = "APPROVE"
     reason = ""
-    suggestions: List[str] = []
+    suggestions: list[str] = []
     if reviewer_response:
         try:
             decision_data = json.loads(reviewer_response)

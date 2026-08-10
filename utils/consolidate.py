@@ -56,7 +56,6 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
 IGNORED_DIRS = {
     "report",  # generated reviews/indexes; do not re-index
@@ -117,8 +116,8 @@ class PySymbol:
 class FileIndex:
     path: str
     kind: str
-    symbols: List[PySymbol] = field(default_factory=list)
-    sections: List[Tuple[int, str, str]] = field(default_factory=list)
+    symbols: list[PySymbol] = field(default_factory=list)
+    sections: list[tuple[int, str, str]] = field(default_factory=list)
 
 
 def _should_skip_dir(name: str) -> bool:
@@ -152,8 +151,8 @@ def classify_path(rel: str) -> str:
     return "other"
 
 
-def parse_python_symbols(source: str, module_path: str) -> List[PySymbol]:
-    symbols: List[PySymbol] = []
+def parse_python_symbols(source: str, module_path: str) -> list[PySymbol]:
+    symbols: list[PySymbol] = []
     try:
         tree = ast.parse(source)
     except SyntaxError:
@@ -188,8 +187,8 @@ def parse_python_symbols(source: str, module_path: str) -> List[PySymbol]:
 _MD_HEADER = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
-def parse_markdown_sections(source: str) -> List[Tuple[int, str, str]]:
-    sections: List[Tuple[int, str, str]] = []
+def parse_markdown_sections(source: str) -> list[tuple[int, str, str]]:
+    sections: list[tuple[int, str, str]] = []
     for i, line in enumerate(source.splitlines(), start=1):
         m = _MD_HEADER.match(line.strip())
         if m:
@@ -197,8 +196,8 @@ def parse_markdown_sections(source: str) -> List[Tuple[int, str, str]]:
     return sections
 
 
-def collect_indexes(root_dir: str) -> Dict[str, List[FileIndex]]:
-    buckets: Dict[str, List[FileIndex]] = {
+def collect_indexes(root_dir: str) -> dict[str, list[FileIndex]]:
+    buckets: dict[str, list[FileIndex]] = {
         "production": [],
         "test": [],
         "markdown": [],
@@ -243,7 +242,7 @@ def collect_indexes(root_dir: str) -> Dict[str, List[FileIndex]]:
     return buckets
 
 
-def _write_production_index(out, files: List[FileIndex]) -> None:
+def _write_production_index(out, files: list[FileIndex]) -> None:
     out.write("## Index: Production code\n\n")
     out.write("Modules, classes, and top-level functions/methods under agents/, cli/, core/, file_editing/, workflow/, utils/, and root entrypoints.\n\n")
     for entry in files:
@@ -260,7 +259,7 @@ def _write_production_index(out, files: List[FileIndex]) -> None:
         out.write("\n")
 
 
-def _write_test_index(out, files: List[FileIndex]) -> None:
+def _write_test_index(out, files: list[FileIndex]) -> None:
     out.write("## Index: Test suite\n\n")
     out.write("Test modules and discovered test callables / helpers.\n\n")
     for entry in files:
@@ -283,7 +282,7 @@ def _write_test_index(out, files: List[FileIndex]) -> None:
             out.write("_No symbols parsed._\n\n")
 
 
-def _write_markdown_index(out, files: List[FileIndex]) -> None:
+def _write_markdown_index(out, files: list[FileIndex]) -> None:
     out.write("## Index: Markdown documentation\n\n")
     out.write("Doc files and heading sections (`#` … `######`).\n\n")
     for entry in files:
@@ -413,7 +412,7 @@ def consolidate_project(  # noqa: C901
     out_abs = os.path.abspath(output_filename)
     report_dir = os.path.dirname(out_abs) or "."
     # Guard: refuse absolute root paths like /report (sandbox __file__ pitfall)
-    if report_dir in ("/", "\\") or report_dir.rstrip("/\\") in ("", "report") and out_abs.startswith("/report"):
+    if report_dir in ("/", "\\") or (report_dir.rstrip("/\\") in ("", "report") and out_abs.startswith("/report")):
         report_dir = os.path.join(os.path.abspath(os.getcwd()), "report")
         out_abs = os.path.join(report_dir, os.path.basename(output_filename))
         output_filename = out_abs
@@ -483,7 +482,7 @@ def consolidate_project(  # noqa: C901
                 outfile.write(f"### File: `{relative_path}`\n\n")
                 outfile.write(f"```{lang}\n")
                 try:
-                    with open(file_path, "r", encoding="utf-8") as infile:
+                    with open(file_path, encoding="utf-8") as infile:
                         outfile.write(infile.read())
                 except Exception as e:
                     outfile.write(f"[Error reading file: {e}]")
@@ -504,7 +503,7 @@ def _generation_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def discover_project_root(start: Optional[str | None] = None) -> str:
+def discover_project_root(start: str | None = None) -> str:
     """
     Find PrizmForge root (directory containing config.json).
 
@@ -595,7 +594,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     root = args.root
-    if args.target or root is None and args.indexes_only:
+    if args.target or (root is None and args.indexes_only):
         try:
             from core.config import get_config
 

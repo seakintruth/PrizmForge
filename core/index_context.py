@@ -11,15 +11,15 @@ Refresh: rebuild symbols (+ optional Markdown export) after init / materialize.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Dict, Optional, Sequence
 
 DEFAULT_MAX_CHARS = 24_000
 _last_refresh_mono: float = 0.0
 _MIN_REFRESH_INTERVAL_SEC = 2.0
 
 
-def indexes_dir(project_directory: Optional[str] = None) -> Path:
+def indexes_dir(project_directory: str | None = None) -> Path:
     if project_directory is None:
         from core.config import get_config
 
@@ -30,7 +30,7 @@ def indexes_dir(project_directory: Optional[str] = None) -> Path:
 def load_index_text(
     *,
     which: str = "combined",
-    project_directory: Optional[str] = None,
+    project_directory: str | None = None,
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> str:
     """Load Markdown index export (fallback / human view)."""
@@ -56,9 +56,9 @@ def load_index_text(
 
 def load_symbol_json_context(
     *,
-    file_paths: Optional[Sequence[str]] = None,
+    file_paths: Sequence[str] | None = None,
     max_rows: int = 80,
-    path_prefix: Optional[str] = None,
+    path_prefix: str | None = None,
     label: str = "Structural symbols (JSON)",
 ) -> str:
     """Primary agent context: JSON table from sqlite file_symbols."""
@@ -76,10 +76,10 @@ def load_symbol_json_context(
 
 def build_index_context_block(
     *,
-    project_directory: Optional[str] = None,
+    project_directory: str | None = None,
     max_chars: int = 8_000,
     max_rows: int = 80,
-    file_paths: Optional[Sequence[str]] = None,
+    file_paths: Sequence[str] | None = None,
     label: str = "Target repository structural index",
 ) -> str:
     """
@@ -105,7 +105,7 @@ def build_index_context_block(
     return f"**{label}** (Markdown fallback):\n\n{body}\n"
 
 
-def index_paths_summary(project_directory: Optional[str] = None) -> Dict[str, str]:
+def index_paths_summary(project_directory: str | None = None) -> dict[str, str]:
     base = indexes_dir(project_directory)
     out = {}
     for name in ("INDEX.md", "index_production.md", "index_tests.md", "index_docs.md"):
@@ -117,7 +117,7 @@ def index_paths_summary(project_directory: Optional[str] = None) -> Dict[str, st
 
 def refresh_target_indexes(
     *,
-    project_directory: Optional[str] = None,
+    project_directory: str | None = None,
     full_dump: bool = False,
     force: bool = False,
     symbols_only: bool = False,

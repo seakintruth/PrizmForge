@@ -10,13 +10,7 @@ import time
 
 import pytest
 
-from agents.resource_controller_worker import (
-    AgentProfile,
-    HeuristicOptimizer,
-    ResourceControllerWorker,
-    ResourceState,
-    ThrottleDecision,
-)
+from agents.resource_controller_worker import AgentProfile, HeuristicOptimizer, ResourceControllerWorker, ResourceState, ThrottleDecision
 
 
 class TestAgentProfile:

@@ -22,7 +22,7 @@ Config (optional ``content_safety`` section in config.json)::
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any, Dict, FrozenSet, Optional, Set, Tuple, Union
+from typing import Any
 
 # Default path suffixes refused by extension check (binary containers only).
 # Override via content_safety.blocked_extensions in config.json.
@@ -75,8 +75,8 @@ def _normalize_ext(ext: str) -> str:
 
 
 def get_content_safety_settings(
-    config: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Read content_safety flags; safe defaults if config missing."""
     if config is None:
         try:
@@ -93,7 +93,7 @@ def get_content_safety_settings(
 
     if "blocked_extensions" in cs:
         raw = cs.get("blocked_extensions")
-        blocked: Set[str] = set()
+        blocked: set[str] = set()
         if isinstance(raw, (list, tuple)):
             for item in raw:
                 ne = _normalize_ext(item)
@@ -109,7 +109,7 @@ def get_content_safety_settings(
     }
 
 
-def _as_bytes_sample(content: Union[str, bytes, list], max_bytes: int = 8192) -> bytes:
+def _as_bytes_sample(content: str | bytes | list, max_bytes: int = 8192) -> bytes:
     if content is None:
         return b""
     if isinstance(content, bytes):
@@ -121,7 +121,7 @@ def _as_bytes_sample(content: Union[str, bytes, list], max_bytes: int = 8192) ->
     return text.encode("utf-8", errors="surrogateescape")[:max_bytes]
 
 
-def looks_like_binary(content: Union[str, bytes, list]) -> Tuple[bool, str]:
+def looks_like_binary(content: str | bytes | list) -> tuple[bool, str]:
     """Heuristic binary detection. Returns (is_binary, reason)."""
     sample = _as_bytes_sample(content)
     if not sample:
@@ -148,9 +148,9 @@ def looks_like_binary(content: Union[str, bytes, list]) -> Tuple[bool, str]:
 
 
 def path_has_blocked_extension(
-    file_path: Optional[str],
-    blocked: FrozenSet[str] | Set[str],
-) -> Tuple[bool, str]:
+    file_path: str | None,
+    blocked: frozenset[str] | set[str],
+) -> tuple[bool, str]:
     """True if path uses an extension in the blocked list."""
     if not file_path or not blocked:
         return False, ""
@@ -165,11 +165,11 @@ def path_has_blocked_extension(
 
 
 def validate_source_content(
-    content: Union[str, bytes, list, None],
+    content: str | bytes | list | None,
     *,
-    file_path: Optional[str] = None,
-    config: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    file_path: str | None = None,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     Fail-closed for binary payloads (defaults).
 

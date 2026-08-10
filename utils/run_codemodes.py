@@ -18,8 +18,8 @@ Usage:
 import argparse
 import re
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Set
 
 try:
     import libcst as cst
@@ -90,7 +90,8 @@ def run_fix_callable(root: Path) -> int:
         src = read_text(p)
         try:
             mod = cst.parse_module(src)
-        except Exception:
+        except Exception as e:
+            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
             continue
         fixer = CallableFixer()
         new_mod = mod.visit(fixer)
@@ -111,7 +112,7 @@ TYPING_NAMES = {"Optional", "List", "Dict", "Tuple", "Callable", "Any", "Sequenc
 
 class TypingUsageCollector(cst.CSTVisitor):
     def __init__(self) -> None:
-        self.used: Set[str] = set()
+        self.used: set[str] = set()
 
     def visit_Name(self, node: cst.Name) -> None:
         if node.value in TYPING_NAMES:
@@ -124,7 +125,8 @@ def run_add_typing_imports(root: Path) -> int:
         src = read_text(p)
         try:
             mod = cst.parse_module(src)
-        except Exception:
+        except Exception as e:
+            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
             continue
         collector = TypingUsageCollector()
         mod.visit(collector)
@@ -175,7 +177,8 @@ def run_optionalize_defaults(root: Path) -> int:
             continue
         try:
             mod = cst.parse_module(src)
-        except Exception:
+        except Exception as e:
+            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
             continue
         fixer = OptionalizeParams()
         new_mod = mod.visit(fixer)
@@ -219,7 +222,8 @@ def run_add_any_annotations(root: Path) -> int:
         src = read_text(p)
         try:
             mod = cst.parse_module(src)
-        except Exception:
+        except Exception as e:
+            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
             continue
         fixer = AddAnyAnn()
         new_mod = mod.visit(fixer)

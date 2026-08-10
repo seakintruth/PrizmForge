@@ -5,19 +5,12 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from core.config import get_config
 from core.db import get_db_path, init_db
 from core.db_connection import get_db_connection
 from core.db_helpers import get_unaddressed_feedback
-from core.file_operations import (
-    generate_file_summary,
-    is_text_file,
-    save_file_summary,
-    should_ignore_file,
-    sync_file_to_database,
-)
+from core.file_operations import generate_file_summary, is_text_file, save_file_summary, should_ignore_file, sync_file_to_database
 from core.token_budget import TokenBudget
 
 
@@ -157,7 +150,7 @@ def cmd_files():
 
     print(f"\n📂 Indexed Files ({len(files)}):")
     print("-" * 60)
-    for path, size, ftype, indexed in files:
+    for path, size, ftype, _indexed in files:
         print(f"  {path} ({size} bytes, {ftype})")
     print()
 
@@ -218,7 +211,7 @@ def cmd_feedback(task_id: str):
         print()
 
 
-def cmd_reset_endpoint(endpoint_name: Optional[str] = None):
+def cmd_reset_endpoint(endpoint_name: str | None = None):
     """Reset endpoint health status"""
     from core.endpoint_manager import get_endpoint_manager
 
@@ -233,7 +226,7 @@ def cmd_reset_endpoint(endpoint_name: Optional[str] = None):
             print(f"❌ Unknown endpoint: {endpoint_name}")
             print(f"   Available: {', '.join(endpoint_mgr.endpoints.keys())}")
     else:
-        for name, endpoint in endpoint_mgr.endpoints.items():
+        for _name, endpoint in endpoint_mgr.endpoints.items():
             endpoint.health.mark_success()
         print("✅ Reset all endpoints to healthy status")
 
@@ -268,7 +261,7 @@ def cmd_fallback_stats():
     print()
 
 
-def cmd_show_prompt(task_id: str, agent_name: Optional[str] = None):
+def cmd_show_prompt(task_id: str, agent_name: str | None = None):
     """Show prompts sent to agents"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -322,7 +315,7 @@ def cmd_show_prompt(task_id: str, agent_name: Optional[str] = None):
 # =========================================================================
 # 🎯 PHASE 5: COMPLETE DATABASE EXPORT SCOPE
 # =========================================================================
-def cmd_export_db(output_dir: Optional[Path] = None, task_id: Optional[str] = None):
+def cmd_export_db(output_dir: Path | None = None, task_id: str | None = None):
     """
     Export database tables to CSV files.
     When task_id is None, exports ALL tasks across all tables by default.
@@ -330,9 +323,9 @@ def cmd_export_db(output_dir: Optional[Path] = None, task_id: Optional[str] = No
     if output_dir is None:
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
-        PrizmForge_dir = project_dir / ".PrizmForge"
-        PrizmForge_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = PrizmForge_dir / "agents_exports" / datetime.now().strftime("%Y%m%d_%H%M%S")
+        prizmforge_dir = project_dir / ".PrizmForge"
+        prizmforge_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = prizmforge_dir / "agents_exports" / datetime.now().strftime("%Y%m%d_%H%M%S")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -414,14 +407,14 @@ def table_has_task_id(cursor, table_name: str) -> bool:
         return False
 
 
-def cmd_export_task(task_id: str, output_dir: Optional[Path] = None):
+def cmd_export_task(task_id: str, output_dir: Path | None = None):
     """Export data for a specific task"""
     if output_dir is None:
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
-        PrizmForge_dir = project_dir / ".PrizmForge"
-        PrizmForge_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = PrizmForge_dir / "agents_exports" / f"task_{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        prizmforge_dir = project_dir / ".PrizmForge"
+        prizmforge_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = prizmforge_dir / "agents_exports" / f"task_{task_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     cmd_export_db(output_dir, task_id=task_id)
 
@@ -458,14 +451,14 @@ def cmd_list_exports():
     print()
 
 
-def cmd_export_specific_tables(tables: list, output_dir: Optional[Path] = None, task_id: Optional[str] = None):
+def cmd_export_specific_tables(tables: list, output_dir: Path | None = None, task_id: str | None = None):
     """Export specific tables to CSV"""
     if output_dir is None:
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
-        PrizmForge_dir = project_dir / ".PrizmForge"
-        PrizmForge_dir.mkdir(parents=True, exist_ok=True)
-        output_dir = PrizmForge_dir / "agents_exports" / f"custom_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        prizmforge_dir = project_dir / ".PrizmForge"
+        prizmforge_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = prizmforge_dir / "agents_exports" / f"custom_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -531,7 +524,7 @@ def cmd_export_specific_tables(tables: list, output_dir: Optional[Path] = None, 
     print()
 
 
-def cmd_archives(task_id: Optional[str] = None):
+def cmd_archives(task_id: str | None = None):
     """Show archived context summaries"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
@@ -596,15 +589,15 @@ def cmd_archives(task_id: Optional[str] = None):
             decisions = json.loads(key_decisions)
             if decisions:
                 print(f"   Key decisions: {', '.join(decisions[:3])}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in commands.py: {e}")
 
         try:
             files = json.loads(files_modified)
             if files:
                 print(f"   Files: {', '.join(files[:5])}")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in commands.py: {e}")
 
     print()
 
@@ -780,7 +773,7 @@ def cmd_endpoint_health():
     print()
 
 
-def cmd_reports(task_id: Optional[str] = None):
+def cmd_reports(task_id: str | None = None):
     """List generated reports"""
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))
@@ -812,7 +805,7 @@ def cmd_reports(task_id: Optional[str] = None):
     print()
 
 
-def cmd_show_report(report_name: Optional[str] = None):
+def cmd_show_report(report_name: str | None = None):
     """Show a specific report or the latest"""
     config = get_config()
     project_dir = Path(config.get("project_directory", "./project"))

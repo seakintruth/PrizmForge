@@ -5,15 +5,15 @@ Unattended preflight checks (config-only runs).
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 
-def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
+def preflight_unattended(config: dict[str, Any]) -> tuple[bool, list[str]]:
     """
     Returns (ok, errors).
     Does not prompt. Test mode skips API key requirements.
     """
-    errors: List[str] = []
+    errors: list[str] = []
     from core.cli_modes import CLIMode, get_cli_mode_from_config
     from core.llm_test_mode import test_mode_enabled
 
@@ -44,7 +44,7 @@ def preflight_unattended(config: Dict[str, Any]) -> Tuple[bool, List[str]]:
     if not test_mode_enabled(config):
         endpoints = config.get("endpoints") or {}
         valid = 0
-        for name, ep in endpoints.items():
+        for _name, ep in endpoints.items():
             if not isinstance(ep, dict):
                 continue
             key_name = ep.get("api_key_name", "api_key")

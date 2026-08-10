@@ -7,7 +7,7 @@ import json
 import threading
 import time
 from datetime import datetime, timedelta
-from typing import Dict, List
+from typing import Any
 
 from agents.base import call_agent
 from core.db_connection import get_db_connection
@@ -80,7 +80,7 @@ class ArchivistWorker:
                 print(f"    ⚠️  Archivist error: {e}")
                 time.sleep(60)
 
-    def _archive_old_messages(self):
+    def _archive_old_messages(self) -> None:
         """
         Archive old READ messages from the message bus ONLY
         Does NOT touch file_metadata_bus or file-related tables
@@ -131,14 +131,14 @@ class ArchivistWorker:
                 response = call_agent("archivist", summary_prompt, self.current_task_id)
 
                 if response:
-                    # Save archive
-                    self._save_message_archive(self.current_task_id, messages, response)
+                    # Save archive using active transaction connection
+                    self._save_message_archive(self.current_task_id, messages, response, conn=conn)
 
-                    # Delete archived messages from bus
+                    # Delete archived messages from bus in same transaction
                     message_ids = [msg["id"] for msg in messages]
                     placeholders = ",".join("?" * len(message_ids))
                     cursor.execute(
-                        f"DELETE FROM messages WHERE id IN ({placeholders})",
+                        f"DELETE FROM messages WHERE id IN ({placeholders})",  # noqa: S608
                         message_ids,
                     )
 
@@ -330,7 +330,7 @@ class ArchivistWorker:
                 restoration = "📚 **Restored Conversation Context from Archives:**\n\n"
                 restoration += "*(Note: File contents are always available in database)*\n\n"
 
-                for archive_id, summary, key_decisions, turn_range in archives:
+                for _archive_id, summary, key_decisions, turn_range in archives:
                     restoration += f"**Period: {turn_range}**\n"
                     restoration += f"Summary: {summary}\n"
 
@@ -338,8 +338,8 @@ class ArchivistWorker:
                         decisions = json.loads(key_decisions)
                         if decisions:
                             restoration += f"Key Decisions: {', '.join(decisions[:3])}\n"
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"    ⚠️  Failed to parse archived key decisions: {e}")
 
                     restoration += "\n"
 
@@ -351,7 +351,7 @@ class ArchivistWorker:
         except Exception as e:
             print(f"    ❌ Restore error: {e}")
 
-    def _build_message_archive_prompt(self, messages: List[Dict]) -> str:
+    def _build_message_archive_prompt(self, messages: list[dict]) -> str:
         """Build prompt for archiving MESSAGE BUS content"""
         prompt = "Archive and summarize these agent messages from the message bus:\n\n"
         prompt += "*(These are inter-agent communications, NOT file contents)*\n\n"
@@ -365,7 +365,7 @@ class ArchivistWorker:
 
         return prompt
 
-    def _build_conversation_archive_prompt(self, conversations: List[Dict]) -> str:
+    def _build_conversation_archive_prompt(self, conversations: list[dict]) -> str:
         """Build prompt for archiving CONVERSATION HISTORY"""
         prompt = "Archive and summarize this conversation history:\n\n"
         prompt += "*(These are agent responses, NOT file contents)*\n\n"
@@ -379,8 +379,14 @@ class ArchivistWorker:
 
         return prompt
 
-    def _save_message_archive(self, task_id: str, messages: List[Dict], archivist_response: str):
-        """Save message bus archive to database"""
+    def _save_message_archive(
+        self,
+        task_id: str,
+        messages: list[dict],
+        archivist_response: str,
+        conn: Any = None,
+    ) -> None:
+        """Save message bus archive to database using an existing or new connection."""
         try:
             # Parse archivist response
             if "```json" in archivist_response:
@@ -397,34 +403,38 @@ class ArchivistWorker:
             key_decisions = json.dumps(data.get("key_decisions", []))
             files_modified = "[]"  # Not tracking files in message archive
 
-        except Exception:
+        except Exception as e:
             summary = "Archived messages (parse failed)"
             key_decisions = "[]"
             files_modified = "[]"
+            print(f"    ⚠️  Failed to parse archivist response: {e}")
 
         # Get time range
         timestamps = [msg["timestamp"] for msg in messages]
-        turn_range = f"{timestamps[0][:19]} to {timestamps[-1][:19]}"
+        turn_range = f"{timestamps[0][:19]} to {timestamps[-1][:19]}" if timestamps else "N/A"
 
-        with get_db_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO archived_context
-                (task_id, turn_range, summary, key_decisions, files_modified, archived_at, original_message_count)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    task_id,
-                    turn_range,
-                    summary,
-                    key_decisions,
-                    files_modified,
-                    datetime.now().isoformat(),
-                    len(messages),
-                ),
-            )
+        query = """
+            INSERT INTO archived_context
+            (task_id, turn_range, summary, key_decisions, files_modified, archived_at, original_message_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """
+        params = (
+            task_id,
+            turn_range,
+            summary,
+            key_decisions,
+            files_modified,
+            datetime.now().isoformat(),
+            len(messages),
+        )
 
-    def _save_conversation_archive(self, task_id: str, conversations: List[Dict], archivist_response: str):
+        if conn is not None:
+            conn.execute(query, params)
+        else:
+            with get_db_connection() as db_conn:
+                db_conn.execute(query, params)
+
+    def _save_conversation_archive(self, task_id: str, conversations: list[dict], archivist_response: str):
         """Save conversation history archive to database"""
         # Same as message archive but marks it as conversation type
         self._save_message_archive(task_id, conversations, archivist_response)

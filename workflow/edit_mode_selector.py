@@ -8,8 +8,8 @@ when the primary mode fails validation.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import List, Optional, Sequence
 
 # Canonical mode names used across the system
 MODE_GUID = "guid"
@@ -20,7 +20,7 @@ MODE_FULL_REPLACE = "full_replace"
 ALL_MODES = (MODE_GUID, MODE_DIFF, MODE_FIND_REPLACE, MODE_FULL_REPLACE)
 
 # Default ordered fallback chain (highest fidelity → most reliable under LLM constraints)
-DEFAULT_FALLBACK_ORDER: List[str] = [
+DEFAULT_FALLBACK_ORDER: list[str] = [
     MODE_GUID,
     MODE_DIFF,
     MODE_FIND_REPLACE,
@@ -34,12 +34,12 @@ class ModeDecision:
 
     selected_mode: str
     reason: str
-    fallback_chain: List[str]
-    file_lines: Optional[int] = None
-    change_hint: Optional[str] = None  # "small" | "medium" | "large" | None
+    fallback_chain: list[str]
+    file_lines: int | None = None
+    change_hint: str | None = None  # "small" | "medium" | "large" | None
 
 
-def _estimate_change_size(instructions: str = "", files_needed: Optional[Sequence[str]] = None) -> str:
+def _estimate_change_size(instructions: str = "", files_needed: Sequence[str] | None = None) -> str:
     """
     Very lightweight heuristic for change complexity.
     Returns 'small' | 'medium' | 'large'.
@@ -82,11 +82,11 @@ def _estimate_change_size(instructions: str = "", files_needed: Optional[Sequenc
 
 
 def select_edit_mode(
-    file_line_count: Optional[int] = None,
+    file_line_count: int | None = None,
     instructions: str = "",
-    files_needed: Optional[Sequence[str]] = None,
-    preferred_modes: Optional[Sequence[str]] = None,
-    fallback_order: Optional[Sequence[str]] = None,
+    files_needed: Sequence[str] | None = None,
+    preferred_modes: Sequence[str] | None = None,
+    fallback_order: Sequence[str] | None = None,
     small_file_threshold_lines: int = 180,
 ) -> ModeDecision:
     """
@@ -172,9 +172,9 @@ def select_edit_mode(
 
 def next_fallback_mode(
     current_mode: str,
-    fallback_chain: Optional[Sequence[str]] = None,
-    already_tried: Optional[Sequence[str]] = None,
-) -> Optional[str]:
+    fallback_chain: Sequence[str] | None = None,
+    already_tried: Sequence[str] | None = None,
+) -> str | None:
     """
     Return the next mode to try after a failure of current_mode.
     Returns None when the chain is exhausted.
@@ -192,7 +192,7 @@ def next_fallback_mode(
 def build_developer_edit_prompt(
     mode: str,
     understanding: str,
-    files_content: List[str],
+    files_content: list[str],
 ) -> str:
     """
     Build the JSON-generation prompt for a given edit mode.

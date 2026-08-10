@@ -53,12 +53,34 @@ exclude = [
 ]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "C90", "I"]
+select = ["E", "W", "F", "B", "I", "N", "UP", "S", "A", "C90", "RUF"]
+ignore = ["S101", "S105"] # Allow assert in tests, ignore hardcoded mock passwords
 
 [tool.ruff.lint.per-file-ignores]
+# Test suite ignores
+"tests/*" = ["S101", "S106", "S110", "S324"]
+
+# Agent worker ignores
 "agents/parallel_workers.py" = ["E402", "PLC0415"]
 "agents/resource_controller_worker.py" = ["E402", "PLC0415"]
 "agents/prioritizer_worker.py" = ["E402", "PLC0415"]
+"agents/reporter_worker.py" = ["S603", "S607"]
+
+# File editing & CLI
+"file_editing/writer.py" = ["S603", "S607"]
+
+# Database helpers & queries (parameterized string query false-positives)
+"core/db_helpers.py" = ["S608"]
+"core/symbol_index.py" = ["S608"]
+"core/agent_schemas.py" = ["S608"]
+"cli/commands.py" = ["S608"]
+"file_editing/db.py" = ["S608"]
+
+# Utility scripts
+"utils/git_operations.py" = ["S603", "S607"]
+"utils/export_project_zip.py" = ["S603", "S607"]
+"utils/query_developer_responses.py" = ["S608"]
+"utils/run_codemodes.py" = ["N802", "S112"]
 
 [tool.ruff.lint.mccabe]
 max-complexity = 15

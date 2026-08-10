@@ -8,8 +8,9 @@ No dependency on `responses` or `pytest-mock`.
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 # Modules that do `from agents.base import call_agent` must be listed here.
@@ -27,7 +28,7 @@ def register_call_agent_patch_target(dotted_path: str) -> None:
     """Register a new import site that binds call_agent locally."""
     global CALL_AGENT_PATCH_TARGETS
     if dotted_path not in CALL_AGENT_PATCH_TARGETS:
-        CALL_AGENT_PATCH_TARGETS = tuple(list(CALL_AGENT_PATCH_TARGETS) + [dotted_path])
+        CALL_AGENT_PATCH_TARGETS = tuple([*list(CALL_AGENT_PATCH_TARGETS), dotted_path])
 
 
 # ---------------------------------------------------------------------------
@@ -39,8 +40,8 @@ def make_chat_completion_payload(
     response_text: str,
     model: str = "mock-model",
     finish_reason: str = "stop",
-    usage: Optional[Dict[str, int]] = None,
-) -> Dict[str, Any]:
+    usage: dict[str, int] | None = None,
+) -> dict[str, Any]:
     """Build an OpenAI-compatible chat.completion JSON body."""
     if usage is None:
         usage = {
@@ -110,9 +111,9 @@ def mock_openai_chat_completion(
 class LLMCallRecord:
     agent_name: str
     prompt: str
-    task_id: Optional[str] = None
-    model: Optional[str] = None
-    response: Optional[str] = None
+    task_id: str | None = None
+    model: str | None = None
+    response: str | None = None
 
 
 @dataclass
@@ -132,24 +133,24 @@ class MockLLM:
     """
 
     default_response: str = '{"status": "ok"}'
-    _queues: Dict[str, List[str]] = field(default_factory=dict)
-    _defaults: Dict[str, str] = field(default_factory=dict)
-    calls: List[LLMCallRecord] = field(default_factory=list)
+    _queues: dict[str, list[str]] = field(default_factory=dict)
+    _defaults: dict[str, str] = field(default_factory=dict)
+    calls: list[LLMCallRecord] = field(default_factory=list)
 
-    def set_response(self, agent_name: str, text: str) -> "MockLLM":
+    def set_response(self, agent_name: str, text: str) -> MockLLM:
         """Set a single (or next) response for an agent."""
         self._queues[agent_name] = [text]
         self._defaults[agent_name] = text
         return self
 
-    def set_responses(self, agent_name: str, texts: Sequence[str]) -> "MockLLM":
+    def set_responses(self, agent_name: str, texts: Sequence[str]) -> MockLLM:
         """Queue sequential responses for an agent (popped FIFO)."""
         self._queues[agent_name] = list(texts)
         if texts:
             self._defaults[agent_name] = texts[-1]
         return self
 
-    def set_default(self, text: str) -> "MockLLM":
+    def set_default(self, text: str) -> MockLLM:
         self.default_response = text
         return self
 
@@ -168,9 +169,9 @@ class MockLLM:
         self,
         agent_name: str,
         prompt: str,
-        task_id: Optional[str] = None,
+        task_id: str | None = None,
         context: Any = None,
-        model_override: Optional[str] = None,
+        model_override: str | None = None,
         **kwargs,
     ) -> str:
         """Drop-in replacement for agents.base.call_agent."""
@@ -188,10 +189,10 @@ class MockLLM:
 
     def endpoint_handler(
         self,
-        messages: List[Dict],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        model: Optional[str] = None,
+        messages: list[dict],
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        model: str | None = None,
         **kwargs,
     ):
         """
@@ -255,7 +256,7 @@ class MockLLM:
 
         return _cm()
 
-    def calls_for(self, agent_name: str) -> List[LLMCallRecord]:
+    def calls_for(self, agent_name: str) -> list[LLMCallRecord]:
         return [c for c in self.calls if c.agent_name == agent_name]
 
     def reset(self) -> None:

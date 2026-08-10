@@ -4,9 +4,9 @@ Detects incomplete LLM responses and requests continuation
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable, Optional, Tuple
 
 
 class TruncationType(Enum):
@@ -26,8 +26,8 @@ class TruncationResult:
     is_truncated: bool
     truncation_type: TruncationType
     confidence: float  # 0.0 to 1.0
-    partial_content: Optional[str]
-    resume_hint: Optional[str]  # What to ask LLM to continue
+    partial_content: str | None
+    resume_hint: str | None  # What to ask LLM to continue
 
     @property
     def should_resume(self) -> bool:
@@ -302,7 +302,7 @@ class TruncationDetector:
 
         return TruncationResult(False, TruncationType.NONE, 0.0, None, None)
 
-    def _extract_json(self, response: str) -> Optional[str]:
+    def _extract_json(self, response: str) -> str | None:
         """Extract JSON portion from response"""
         if "```json" in response:
             match = re.search(r"```json\s*\n(.*?)(?:```|$)", response, re.DOTALL)
@@ -348,8 +348,8 @@ def detect_and_resume(
     agent_name: str,
     original_prompt: str,
     expected_format: str = "auto",
-    call_agent_fn: Optional[Callable] = None,
-) -> Tuple[str, bool]:
+    call_agent_fn: Callable | None = None,
+) -> tuple[str, bool]:
     """
     Convenience function: detect truncation and auto-resume
 

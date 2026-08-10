@@ -59,7 +59,6 @@ import sys
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 SKIP_DIR_NAMES = {
     "__pycache__",
@@ -91,7 +90,7 @@ SKIP_FILE_NAMES = {
 }
 
 
-def discover_project_root(start: Optional[Path | None] = None) -> Path:
+def discover_project_root(start: Path | None = None) -> Path:
     """Directory containing config.json (walk up from start or this file)."""
     candidates: list[Path] = []
     if start is not None:
@@ -188,7 +187,7 @@ def export_zip(
     }
 
 
-def main(argv: Optional[list[str] | None] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Consolidate and export PrizmForge to zip (includes report/)")
     parser.add_argument(
         "--root",

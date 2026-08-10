@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from core.db_connection import get_db_connection
 
@@ -25,7 +25,7 @@ class EndpointStatus(Enum):
 class EndpointConfig:
     """Configuration for a specific endpoint"""
 
-    def __init__(self, name: str, config: Dict[str, Any]):
+    def __init__(self, name: str, config: dict[str, Any]):
         self.name = name
         self.base_url = config.get("base_url")
         self.api_key_name = config.get("api_key_name", "api_key")
@@ -39,7 +39,7 @@ class EndpointConfig:
         # Health tracking with persistence
         self.health = EndpointHealth(endpoint_name=name)
 
-    def extract_response(self, data: Dict) -> str:
+    def extract_response(self, data: dict) -> str:
         """Extract response text using configured path"""
         result = data
         for key in self.response_path:
@@ -53,7 +53,7 @@ class EndpointConfig:
 class EndpointHealth:
     """Track health status of an endpoint"""
 
-    def __init__(self, endpoint_name: Optional[str] = None):
+    def __init__(self, endpoint_name: str | None = None):
         self.endpoint_name = endpoint_name
         self.status = EndpointStatus.HEALTHY
         self.last_error = None
@@ -143,7 +143,7 @@ class EndpointHealth:
         self.unavailable_until = None
         self._save_to_db()
 
-    def mark_failure(self, status: EndpointStatus, cooldown_minutes: Optional[int] = None):
+    def mark_failure(self, status: EndpointStatus, cooldown_minutes: int | None = None):
         """Mark failed call with configurable cooldown period"""
         self.status = status
         self.last_error = datetime.now()
@@ -168,7 +168,7 @@ class EndpointHealth:
 class EndpointManager:
     """Manage multiple API endpoints"""
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: dict[str, Any]):
         self.config = config
         self.endpoints = {}
         self.models = {}
@@ -193,7 +193,7 @@ class EndpointManager:
 
         self.default_endpoint = self.endpoints.get(config.get("default_endpoint", "gemini"))
 
-    def get_endpoint_for_model(self, model_name: Optional[str] = None) -> EndpointConfig:
+    def get_endpoint_for_model(self, model_name: str | None = None) -> EndpointConfig:
         """Get endpoint configuration for a given model"""
         if not model_name:
             return self.default_endpoint
@@ -205,7 +205,7 @@ class EndpointManager:
 
         return model_info["endpoint"]
 
-    def get_model_config(self, model_name: str) -> Dict[str, Any]:
+    def get_model_config(self, model_name: str) -> dict[str, Any]:
         """Get configuration for a model"""
         model_info = self.models.get(model_name, {})
         return model_info.get("config", {})
@@ -227,11 +227,11 @@ class EndpointManager:
     def build_payload(
         self,
         endpoint: EndpointConfig,
-        model_name: Optional[str],
-        messages: List[Dict],
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-    ) -> Dict[str, Any]:
+        model_name: str | None,
+        messages: list[dict],
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> dict[str, Any]:
         """Build request payload for specific endpoint"""
 
         model_config = self.get_model_config(model_name) if model_name else {}
@@ -267,7 +267,7 @@ class EndpointManager:
 
         return None
 
-    def get_fallback_model(self, endpoint: EndpointConfig) -> Optional[Tuple[str, EndpointConfig]]:
+    def get_fallback_model(self, endpoint: EndpointConfig) -> tuple[str, EndpointConfig] | None:
         """Get fallback model and endpoint"""
         fallback_settings = self.config.get("fallback_settings", {})
 
@@ -293,7 +293,7 @@ class EndpointManager:
 
         return None
 
-    def get_available_endpoints(self) -> List[EndpointConfig]:
+    def get_available_endpoints(self) -> list[EndpointConfig]:
         """Get list of currently available endpoints"""
         available = []
         for endpoint in self.endpoints.values():
@@ -304,7 +304,7 @@ class EndpointManager:
         available.sort(key=lambda ep: ep.priority)
         return available
 
-    def get_health_summary(self) -> Dict[str, Dict]:
+    def get_health_summary(self) -> dict[str, dict]:
         """Get health summary for all endpoints"""
         summary = {}
         for name, endpoint in self.endpoints.items():

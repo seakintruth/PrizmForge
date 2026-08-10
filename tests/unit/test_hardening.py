@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _hash(content: str) -> str:
-    return hashlib.md5(content.encode()).hexdigest()
+    return hashlib.md5(content.encode(usedforsecurity=False)).hexdigest()
 
 
 # ---------------------------------------------------------------------------

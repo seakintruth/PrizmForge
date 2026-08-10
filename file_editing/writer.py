@@ -4,7 +4,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 from uuid import uuid4
 
 from core.content_safety import validate_source_content
@@ -20,10 +20,10 @@ from .editing import apply_edit_proposal
 
 
 def _compute_hash(content: str) -> str:
-    return hashlib.md5(content.encode()).hexdigest()
+    return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
 
-def initialize_file_lines(file_path: str, content: str) -> Dict[str, Any]:
+def initialize_file_lines(file_path: str, content: str) -> dict[str, Any]:
     """
     Initialize a file in the governed editing system with line-level GUIDs.
 
@@ -52,11 +52,11 @@ def initialize_file_lines(file_path: str, content: str) -> Dict[str, Any]:
 
             # 2. Split content into lines and create line records
             lines = content.split("\n")
-            INITIAL_GAP = 1024.0
+            initial_gap = 1024.0
 
             for i, line_content in enumerate(lines):
                 line_guid = str(uuid4())
-                sort_order = (i + 1) * INITIAL_GAP
+                sort_order = (i + 1) * initial_gap
                 content_hash = _compute_hash(line_content)
 
                 conn.execute(
@@ -88,12 +88,12 @@ def _resolve_contained_path(file_path: str, project_dir: Path) -> Path:
     resolved = candidate.resolve()
     try:
         resolved.relative_to(root)
-    except ValueError:
-        raise ValueError(f"Path escapes project directory: {file_path!r} → {resolved} (root={root})")
+    except ValueError as e:
+        raise ValueError(f"Path escapes project directory: {file_path!r} → {resolved} (root={root})") from e
     return resolved
 
 
-def write_file_to_disk(file_path: str, content: str, proposal_id: Optional[str] = None) -> Dict[str, Any]:
+def write_file_to_disk(file_path: str, content: str, proposal_id: str | None = None) -> dict[str, Any]:
     """Atomic write using temp file + os.replace(), with project-root containment."""
     try:
         from core.config import get_config
@@ -133,7 +133,7 @@ def write_file_to_disk(file_path: str, content: str, proposal_id: Optional[str] 
         return {"status": "error", "message": str(e)}
 
 
-def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: List[str]):
+def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: list[str]):
     """After successful write, mark overlapping pending proposals as needs_revalidation."""
     if not affected_guids:
         return
@@ -188,7 +188,7 @@ def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: L
         )
 
 
-def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
+def materialize_proposal(proposal_id: str) -> dict[str, Any]:
     """
     Apply proposal (if needed), write ALL modified files in the proposal to disk,
     invalidate overlapping proposals, and perform git commit if enabled.
@@ -214,8 +214,8 @@ def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
                         "UPDATE edit_proposals SET status = ? WHERE proposal_id = ? AND status = 'approved'",
                         (terminal, proposal_id),
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"    ⚠️  Exception handled in writer.py: {e}")
                 return apply_result
 
         # Collect ALL target file paths touched by this proposal
@@ -277,8 +277,8 @@ def materialize_proposal(proposal_id: str) -> Dict[str, Any]:
                         check=False,
                         timeout=10,
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"    ⚠️  Exception handled in writer.py: {e}")
             else:
                 conn.execute("UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?", (proposal_id,))
                 conn.execute(

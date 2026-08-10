@@ -7,7 +7,6 @@ Much faster - no recalculation at query time
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
 
 from core.config import get_config
 from core.db_connection import get_db_connection
@@ -21,7 +20,7 @@ class FileContext:
     file_path: str
     estimated_tokens: int  # Read from database
     priority_score: float
-    metadata: Dict
+    metadata: dict
 
 
 class ContextManager:
@@ -82,9 +81,9 @@ class ContextManager:
         self,
         task_id: str,
         user_command: str,
-        conversation_history: List[Dict],
-        model: Optional[str] = None,
-    ) -> Tuple[str, Dict]:
+        conversation_history: list[dict],
+        model: str | None = None,
+    ) -> tuple[str, dict]:
         """
         Build context for orchestrator using pre-computed token counts.
         FAST - just reads from database, no recalculation.
@@ -133,8 +132,8 @@ class ContextManager:
             if index_block and "not available" not in index_block:
                 index_tokens = len(index_block) // 4
                 base_context += index_block + "\n"
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in context_manager.py: {e}")
 
         tokens_used = base_tokens + history_tokens + priority_tokens + index_tokens
 
@@ -209,7 +208,7 @@ class ContextManager:
 
         return final_context, metadata
 
-    def _get_prioritized_files_fast(self, task_id: str, limit: int = 100) -> List[FileContext]:
+    def _get_prioritized_files_fast(self, task_id: str, limit: int = 100) -> list[FileContext]:
         """
         Get prioritized files with PRE-COMPUTED token estimates
         FAST - just one query with sorting
@@ -257,7 +256,7 @@ class ContextManager:
                     purpose,
                     line_count,
                     issue_count,
-                    last_issue,
+                    _last_issue,
                 ) = row
 
                 # Calculate priority score
@@ -299,8 +298,8 @@ class ContextManager:
                 score += 30
             elif age_hours < 168:
                 score += 10
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in context_manager.py: {e}")
 
         # Has issues (+30 per issue, max 60)
         score += min(issue_count * 30, 60)
@@ -339,7 +338,7 @@ class ContextManager:
 
         return summary
 
-    def _get_prioritized_suggestions(self, task_id: str) -> Optional[str]:
+    def _get_prioritized_suggestions(self, task_id: str) -> str | None:
         """
         Get prioritized suggestions from agent_feedback and proposals
         Shows ALL unaddressed items in priority order
@@ -401,7 +400,7 @@ class ContextManager:
                     # Show top 10 items
                     for i, (
                         fid,
-                        agent,
+                        _agent,
                         fpath,
                         priority,
                         category,

@@ -39,7 +39,7 @@ def _has_usable_key() -> bool:
             return False
         return True
 
-    for name, ep in endpoints.items():
+    for _name, ep in endpoints.items():
         key_name = ep.get("api_key_name", "api_key")
         val = cfg.get(key_name) or ""
         if val and "YOUR_" not in val.upper():

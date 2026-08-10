@@ -26,9 +26,9 @@ def get_db_path() -> str:
         except Exception:
             base = Path.cwd()
         project_dir = (base / project_dir).resolve()
-    PrizmForge_dir = project_dir / ".PrizmForge"
-    PrizmForge_dir.mkdir(parents=True, exist_ok=True)
-    return str(PrizmForge_dir / "agents.db")
+    prizmforge_dir = project_dir / ".PrizmForge"
+    prizmforge_dir.mkdir(parents=True, exist_ok=True)
+    return str(prizmforge_dir / "agents.db")
 
 
 def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
@@ -62,8 +62,8 @@ def init_db():
             cursor.execute("PRAGMA journal_mode=OFF;")
             cursor.execute("PRAGMA synchronous=OFF;")
             cursor.execute("PRAGMA temp_store=MEMORY;")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in db.py: {e}")
         # foreign_keys after schema apply (some mounts fail mid-DDL with FKs on)
 
         _schema_sql = """
@@ -521,8 +521,8 @@ def init_db():
         _apply_schema(conn, _schema_sql)
         try:
             cursor.execute("PRAGMA foreign_keys = ON;")
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in db.py: {e}")
         conn.commit()
 
         # Verify critical tables exist

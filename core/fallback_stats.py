@@ -1,7 +1,6 @@
 """Track fallback statistics"""
 
 from datetime import datetime
-from typing import Dict
 
 from core.db_connection import get_db_connection
 
@@ -36,7 +35,7 @@ def log_fallback(
         print(f"⚠️  Failed to log fallback: {e}")
 
 
-def get_fallback_stats() -> Dict:
+def get_fallback_stats() -> dict:
     """Get fallback statistics"""
     try:
         with get_db_connection() as conn:

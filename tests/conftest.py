@@ -134,8 +134,8 @@ def mock_openai_chat(monkeypatch):
         import requests as _requests
 
         monkeypatch.setattr(_requests, "post", _fake_post)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"    ⚠️  Exception handled in conftest.py: {e}")
 
     def _configure(response_text: str = "Mocked response", status_code: int = 200):
         state["response_text"] = response_text

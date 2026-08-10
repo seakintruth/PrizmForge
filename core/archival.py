@@ -1,7 +1,6 @@
 """Context archival helpers"""
 
 from datetime import datetime
-from typing import Optional
 
 from core.db_connection import get_db_connection
 
@@ -12,7 +11,7 @@ def archive_raw_response(
     prompt: str,
     response: str,
     parse_success: bool,
-    parse_error: Optional[str] = None,
+    parse_error: str | None = None,
 ):
     """Archive raw agent response for debugging"""
     try:
