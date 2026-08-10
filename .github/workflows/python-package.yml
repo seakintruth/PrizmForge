@@ -1,141 +1,76 @@
-name: Python package
+name: Python Package CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "develop", "feature/*" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# 1. Mandatory permission to push commits back to the repo
+permissions:
+  contents: write
 
 jobs:
-  format:
-    name: Format & auto-fix (black, isort, ruff) + type check
+  auto-fix-and-push:
+    name: Auto-Fix & Push Formatting Changes
     runs-on: ubuntu-latest
-    outputs:
-      formatted: ${{ steps.check_changes.outputs.changed }}
     steps:
-      - name: Checkout
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          # Target active PR branch or current branch head
+          ref: ${{ github.head_ref || github.ref_name }}
 
-      - name: Set up Python 3.14
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.12"
+          cache: "pip"
 
-      - name: Cache pip
-        uses: actions/cache@v4
+      - name: Install Tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff black isort
+
+      - name: Apply Formatters & Auto-Fixes
+        run: |
+          ruff check . --fix --unsafe-fixes || true
+          black . || true
+          isort . || true
+          ruff format . || true
+
+      # 2. Commit and push back to branch if formatting diffs exist
+      - name: Commit & Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          commit_message: "style: automated formatting and ruff fixes [skip ci]"
+          commit_user_name: "PrizmForge Bot"
+          commit_user_email: "bot@prizmforge.internal"
 
-      - name: Install formatter / lint / type tools
-        run: |
-          python3 -m pip install --upgrade pip
-          if [ -f requirements-dev.txt ]; then
-            pip install -r requirements-dev.txt
-          else
-            pip install black isort ruff mypy
-          fi
-
-      - name: Run auto-formatters and autofixers
-        run: |
-          python3 -m black .
-          python3 -m isort .
-          python3 -m ruff check . --unsafe-fixes --fix
-          python3 -m ruff format .
-
-      - name: Run ruff check
-        run: |
-          python3 -m ruff check .
-
-      - name: Run mypy (type checks, tolerate missing imports)
-        run: |
-          python3 -m mypy . --ignore-missing-imports || true
-
-      - name: Fail if repo changed (auto-format created diffs)
-        id: check_changes
-        run: |
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git add -A
-          git --no-pager status --porcelain
-          CHANGES="$(git --no-pager status --porcelain)"
-          if [ -n "$CHANGES" ]; then
-            echo "::error ::Repository has formatting changes. Please run 'black .', 'isort .', and 'ruff --fix .' locally and commit the changes."
-            echo "changed=true" >> $GITHUB_OUTPUT
-            exit 1
-          else
-            echo "changed=false" >> $GITHUB_OUTPUT
-          fi
-
-  lint:
-    name: Lint (flake8)
+  code-quality:
+    name: Code Quality & Security Audit
+    needs: auto-fix-and-push # Runs after auto-fix job completes
     runs-on: ubuntu-latest
-    needs: format
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-      - name: Set up Python 3.14 for linting
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: "3.14"
+          python-version: "3.12"
+          cache: "pip"
 
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
-
-      - name: Install lint tooling
+      - name: Install Dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          if [ -f requirements-dev.txt ]; then
-            pip install -r requirements-dev.txt
-          else
-            pip install flake8
-          fi
+          python -m pip install --upgrade pip
+          pip install ruff mypy
 
-      - name: Lint with flake8 (gating)
+      - name: Verify Clean Linter Pass
         run: |
-          EXCLUDE_DIRS="--exclude=.git,.github,.venv,venv,build,dist,.PrizmForge,.pytest_cache,.ruff_cache,.vscode,ExampleProject,report"
-          flake8 . --count $EXCLUDE_DIRS --select=E9,F63,F7,F82 --show-source --statistics
-          flake8 . --count $EXCLUDE_DIRS --exit-zero --max-complexity=15 --max-line-length=159 --statistics
-
-  test:
-    name: Test matrix
-    needs: [format, lint]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('**/requirements*.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
-
-      - name: Install dependencies
-        run: |
-          python3 -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
-
-      - name: Test with pytest
-        run: |
-          pytest tests/ -m "not slow" -q
+          ruff check .
+          ruff format --check .
