@@ -257,12 +257,10 @@ class HeuristicOptimizer:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT COUNT(*) FROM agent_feedback
                     WHERE addressed = 0
-                """
-                )
+                """)
 
                 unaddressed_count = cursor.fetchone()[0]
 

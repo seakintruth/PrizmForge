@@ -138,14 +138,12 @@ def cmd_files():
     """List indexed files"""
     with get_db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT file_path, size_bytes, file_type, indexed_at
             FROM project_files
             WHERE is_binary = 0
             ORDER BY file_path
-        """
-        )
+        """)
         files = cursor.fetchall()
 
     print(f"\n📂 Indexed Files ({len(files)}):")
@@ -341,13 +339,11 @@ def cmd_export_db(output_dir: Path | None = None, task_id: str | None = None):
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT name FROM sqlite_master
             WHERE type='table'
             ORDER BY name
-        """
-        )
+        """)
         tables = [row[0] for row in cursor.fetchall()]
 
         exported_count = 0
@@ -540,14 +536,12 @@ def cmd_archives(task_id: str | None = None):
                 (task_id,),
             )
         else:
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT task_id, turn_range, summary, key_decisions, files_modified, original_message_count, archived_at
                 FROM archived_context
                 ORDER BY archived_at DESC
                 LIMIT 20
-            """
-            )
+            """)
 
         archives = cursor.fetchall()
 
@@ -651,8 +645,7 @@ def cmd_review_status():
                 for file_path, reviewed_at, count in recent:
                     print(f"     • {file_path} ({reviewed_at[:19]}, {count}x)")
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT pf.file_path
             FROM project_files pf
             WHERE pf.is_binary = 0
@@ -661,8 +654,7 @@ def cmd_review_status():
                 WHERE art.file_path = pf.file_path
             )
             LIMIT 10
-        """
-        )
+        """)
 
         unreviewed = cursor.fetchall()
         if unreviewed:
@@ -893,24 +885,20 @@ def cmd_json_parse_stats():
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT agent_name, COUNT(*) as failures
             FROM agent_responses_archive
             WHERE parse_success = 0
             GROUP BY agent_name
             ORDER BY failures DESC
-        """
-        )
+        """)
         failures = cursor.fetchall()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT agent_name, COUNT(*) as total
             FROM agent_responses_archive
             GROUP BY agent_name
-        """
-        )
+        """)
         totals = dict(cursor.fetchall())
 
     print("\n📊 JSON Parsing Statistics")
@@ -991,8 +979,7 @@ def cmd_task_progress(task_id: str):
 
 def cmd_help():
     """Show help"""
-    print(
-        """
+    print("""
 ╔════════════════════════════════════════════════════════════════╗
 ║  MULTI-AGENT GEMINI SYSTEM - HELP                              ║
 ╚════════════════════════════════════════════════════════════════╝
@@ -1042,5 +1029,4 @@ def cmd_help():
   • export task_001
   • export_tables messages,agent_feedback task_001
   • list_exports
-"""
-    )
+""")

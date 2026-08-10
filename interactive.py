@@ -126,8 +126,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: d
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT COUNT(*), priority, category
                 FROM agent_feedback
                 WHERE addressed = 0 AND priority IN ('CRITICAL', 'HIGH')
@@ -136,8 +135,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: d
                     CASE priority WHEN 'CRITICAL' THEN 1 ELSE 2 END,
                     COUNT(*) DESC
                 LIMIT 1
-            """
-            )
+            """)
 
             feedback = cursor.fetchone()
             if feedback and feedback[0] > 0:
@@ -148,16 +146,14 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: d
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT file_path, COUNT(*) as mod_count
             FROM file_modifications
             WHERE timestamp > datetime('now', '-2 hours')
             GROUP BY file_path
             ORDER BY mod_count DESC
             LIMIT 1
-        """
-        )
+        """)
 
         recent = cursor.fetchone()
         if recent and recent[1] > 1:
@@ -167,16 +163,14 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: d
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT file_path, COUNT(*) as issue_count
             FROM agent_feedback
             WHERE addressed = 0
             GROUP BY file_path
             ORDER BY issue_count DESC
             LIMIT 1
-        """
-        )
+        """)
 
         issues = cursor.fetchone()
         if issues and issues[1] > 0:
@@ -186,8 +180,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: d
     with get_db_connection() as conn:
         cursor = conn.cursor()
 
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT pf.file_path
             FROM project_files pf
             WHERE pf.is_binary = 0
@@ -197,8 +190,7 @@ def generate_next_task(state: CLIState, config: UnattendedConfig, config_dict: d
             )
             ORDER BY pf.last_modified DESC
             LIMIT 1
-        """
-        )
+        """)
 
         unreviewed = cursor.fetchone()
         if unreviewed:
@@ -243,14 +235,12 @@ def load_checkpoint() -> CLIState | None:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT mode, start_time, task_counter, total_files_modified,
                        total_iterations, current_task_id, checkpoint_time
                 FROM cli_checkpoints
                 WHERE id = 1
-            """
-            )
+            """)
 
             row = cursor.fetchone()
             if row:
@@ -523,14 +513,12 @@ def run_semi_attended_mode():  # noqa: C901
             if cmd.lower() == "changes":
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute(
-                        """
+                    cursor.execute("""
                         SELECT file_path, operation, changed_by, task_id, timestamp
                         FROM file_modifications
                         ORDER BY timestamp DESC
                         LIMIT 10
-                    """
-                    )
+                    """)
                     modifications = cursor.fetchall()
 
                 if not modifications:
@@ -677,14 +665,12 @@ def run_semi_attended_mode():  # noqa: C901
             if task_counter > 1:
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    cursor.execute(
-                        """
+                    cursor.execute("""
                         SELECT id FROM tasks
                         WHERE status = 'in_progress'
                         ORDER BY started_at DESC
                         LIMIT 1
-                    """
-                    )
+                    """)
                     active_task = cursor.fetchone()
 
                 if active_task:

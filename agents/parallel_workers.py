@@ -209,8 +209,7 @@ class BackgroundAgentPool:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT
                     pf.file_path, pf.content, pf.content_hash, pf.last_modified,
                     pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
@@ -218,8 +217,7 @@ class BackgroundAgentPool:
                 LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
                 WHERE pf.is_binary = 0
                 ORDER BY pf.last_modified DESC
-            """
-            )
+            """)
 
             all_files = cursor.fetchall()
             conn.close()
@@ -334,16 +332,14 @@ class BackgroundAgentPool:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
-            cursor.execute(
-                """
+            cursor.execute("""
                 SELECT
                     pf.file_path, pf.content, pf.content_hash, pf.last_modified,
                     pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
                 FROM project_files pf
                 LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
                 WHERE pf.is_binary = 0
-            """
-            )
+            """)
 
             all_files = cursor.fetchall()
             conn.close()

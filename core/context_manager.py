@@ -95,14 +95,12 @@ class ContextManager:
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT COUNT(*) FROM project_files
                     WHERE is_binary = 0
                       AND file_path NOT LIKE '.PrizmForge/%'
                       AND file_path NOT LIKE '.git/%'
-                """
-                )
+                """)
                 row = cursor.fetchone()
                 total_project_files = row[0] if row else 0
         except Exception as e:
@@ -369,15 +367,13 @@ class ContextManager:
                 feedback_items = cursor.fetchall()
 
                 # Get pending proposals
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT proposal_id, target_file_path, status, rationale
                     FROM edit_proposals
                     WHERE status IN ('pending', 'under_review', 'approved')
                     ORDER BY created_at DESC
                     LIMIT 5
-                """
-                )
+                """)
 
                 proposals = cursor.fetchall()
 

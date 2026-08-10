@@ -17,16 +17,14 @@ from file_editing.writer import initialize_file_lines, write_file_to_disk
 
 
 def ensure_snapshot_table(conn) -> None:
-    conn.execute(
-        """
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS proposal_snapshots (
             proposal_id TEXT PRIMARY KEY,
             file_path TEXT NOT NULL,
             content_before TEXT,
             created_at TEXT
         )
-        """
-    )
+        """)
 
 
 def snapshot_before_apply(proposal_id: str) -> dict[str, Any]:
