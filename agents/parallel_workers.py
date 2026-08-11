@@ -631,13 +631,13 @@ class BackgroundAgentPool:
             for field_name in array_field_names:
                 if field_name in data and isinstance(data[field_name], list):
                     items = data[field_name]
-                    print(f"    [i]  {agent_name}: Found items in '{field_name}' field")
+                    print(f"    ℹ️  {agent_name}: Found items in '{field_name}' field")
                     break
 
             if items is None or len(items) == 0:
                 if any(key in data for key in ["priority", "message", "issue", "finding"]):
                     items = [data]
-                    print(f"    [i]  {agent_name}: Treating entire response as single item")
+                    print(f"    ℹ️  {agent_name}: Treating entire response as single item")
                 else:
                     print(f"    ⚠️  {agent_name}: No actionable items found in response")
                     return
@@ -696,7 +696,7 @@ class BackgroundAgentPool:
             if saved_count > 0:
                 print(f"    ✅ {agent_name} posted {saved_count} feedback item(s)")
             else:
-                print(f"    [i]  {agent_name}: Response parsed but no valid items extracted")
+                print(f"    ℹ️  {agent_name}: Response parsed but no valid items extracted")
 
         except Exception as e:
             print(f"    ⚠️  {agent_name}: Error processing response: {e}")

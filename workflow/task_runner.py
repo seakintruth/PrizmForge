@@ -341,7 +341,7 @@ PLAN: [brief explanation]"""
                             top_item = cursor.fetchone()
 
                             if not top_item:
-                                print("   [i]  Backlog cleared! Marking complete.")
+                                print("   ℹ️  Backlog cleared! Marking complete.")
                                 next_agent = "complete"
                             else:
                                 (

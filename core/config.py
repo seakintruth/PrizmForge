@@ -99,12 +99,10 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
             api_data = json.load(f)
 
             # Load ALL keys from api_key.json into config
-            # This supports multiple endpoints with different keys
             for key_name, key_value in api_data.items():
                 config[key_name] = key_value
 
-            # Also set "api_key" for backward compatibility
-            # (use first key found as default)
+            # Set default "api_key" if not present
             if "api_key" not in config and api_data:
                 config["api_key"] = next(iter(api_data.values()))
 
@@ -115,11 +113,9 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
             with open(alt_api_key, encoding="utf-8") as f:
                 api_data = json.load(f)
 
-                # Load ALL keys
                 for key_name, key_value in api_data.items():
                     config[key_name] = key_value
 
-                # Set default "api_key"
                 if "api_key" not in config and api_data:
                     config["api_key"] = next(iter(api_data.values()))
         else:
@@ -146,8 +142,8 @@ def get_repo_root() -> Path:
 
 def ensure_project_directory(config: dict[str, Any] | None = None) -> Path:
     """
-    Resolve project_directory, ensure it exists (create if missing),
-    and require it stays under repo root.
+    Resolve project_directory and ensure it exists (creates directory if missing).
+    Allows target project_directory to be anywhere on disk (including outside the PrizmForge repository).
     """
     if config is None:
         config = get_config()
@@ -158,10 +154,7 @@ def ensure_project_directory(config: dict[str, Any] | None = None) -> Path:
         path = (repo / path).resolve()
     else:
         path = path.resolve()
-    try:
-        path.relative_to(repo)
-    except ValueError as e:
-        raise ValueError(f"project_directory must stay under repo root: {path} is outside {repo}") from e
+
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -173,7 +166,7 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
     """
     errors = []
 
-    # project_directory is required for path containment and must stay under repo root
+    # project_directory is required for path containment and file operations
     pd = config.get("project_directory")
     if not pd or not isinstance(pd, str):
         errors.append("project_directory is required and must be a non-empty string")
@@ -185,11 +178,8 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
                 path = (repo / path).resolve()
             else:
                 path = path.resolve()
-            try:
-                path.relative_to(repo)
-            except ValueError as e:
-                raise ValueError(f"project_directory must stay under repo root: {path} is outside {repo}") from e
 
+            path.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             errors.append(f"project_directory could not be validated: {e}")
 
@@ -254,6 +244,7 @@ def load_agent_prompts() -> dict[str, Any]:
             f"agent_prompts.json not found. Searched:\n"
             f"  - {Path.cwd() / 'agent_prompts.json'}\n"
             f"  - {Path.cwd().parent / 'agent_prompts.json'}\n"
+            f"  - {Path(__file__).parent.parent / 'agent_prompts.json'}\n"
             f"\nPlease ensure agent_prompts.json is in the same directory as config.json"
         )
 

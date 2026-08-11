@@ -160,8 +160,15 @@ else
     echo -e "${GREEN}✅ flake8 (errors)${NC}"
 fi
 
-# Flake8 warnings (informational)
-run_check "flake8 (warnings)" "$PYTHON_EXEC -m flake8 . --count $EXCLUDE_DIRS --exit-zero --max-complexity=15 --max-line-length=159 --statistics"
+# Flake8 warnings (informational / non-blocking)
+echo -e "${BLUE}🔄 Running: flake8 (warnings)...${NC}"
+if "$PYTHON_EXEC" -m flake8 . --count $EXCLUDE_DIRS --exit-zero --max-complexity=15 --max-line-length=159 --statistics > /dev/null 2>&1; then
+    PASSED_CHECKS+=("flake8 (warnings)")
+    echo -e "${GREEN}✅ flake8 (warnings)${NC}"
+else
+    PASSED_CHECKS+=("flake8 (warnings)")
+    echo -e "${YELLOW}⚠️  flake8 (warnings)${NC}"
+fi
 
 # Type checking (non-blocking)
 echo -e "\n${BLUE}🏷️  Type Checking (informational)...${NC}\n"

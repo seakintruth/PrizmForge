@@ -85,6 +85,19 @@ IGNORED_FILES = {
     "index_docs.md",
 }
 
+# Basename patterns that should never be indexed or dumped
+IGNORED_BASENAME_PATTERNS = (
+    "api_key",
+    "secret",
+    "credentials",
+    "password",
+    "token",
+    ".env",
+    "id_rsa",
+    "id_ed25519",
+    "private_key",
+)
+
 PRODUCTION_TOP = {
     "agents",
     "cli",
@@ -196,6 +209,13 @@ def parse_markdown_sections(source: str) -> list[tuple[int, str, str]]:
     return sections
 
 
+def _is_ignored_file(name: str) -> bool:
+    if name in IGNORED_FILES:
+        return True
+    lower = name.lower()
+    return any(pat in lower for pat in IGNORED_BASENAME_PATTERNS)
+
+
 def collect_indexes(root_dir: str) -> dict[str, list[FileIndex]]:
     buckets: dict[str, list[FileIndex]] = {
         "production": [],
@@ -208,7 +228,7 @@ def collect_indexes(root_dir: str) -> dict[str, list[FileIndex]]:
     for dirpath, dirnames, filenames in os.walk(root_dir):
         dirnames[:] = [d for d in dirnames if not _should_skip_dir(d)]
         for name in filenames:
-            if name in IGNORED_FILES:
+            if _is_ignored_file(name):
                 continue
             path = Path(dirpath) / name
             rel = str(path.relative_to(root)).replace("\\", "/")
@@ -407,7 +427,7 @@ def consolidate_project(  # noqa: C901
 ) -> None:
     valid_extensions = (".py", ".json", ".sh", ".md")
     output_basename = os.path.basename(output_filename)
-    ignored_files = set(IGNORED_FILES) | {output_basename}
+    set(IGNORED_FILES) | {output_basename}
 
     out_abs = os.path.abspath(output_filename)
     report_dir = os.path.dirname(out_abs) or "."
@@ -461,8 +481,9 @@ def consolidate_project(  # noqa: C901
         for root, dirs, files in os.walk(root_dir):
             dirs[:] = [d for d in dirs if not _should_skip_dir(d)]
             for file in sorted(files):
-                if not file.endswith(valid_extensions) or file in ignored_files:
+                if not file.endswith(valid_extensions) or _is_ignored_file(file) or file == output_basename:
                     continue
+
                 file_path = os.path.join(root, file)
                 relative_path = os.path.relpath(file_path, root_dir).replace("\\", "/")
                 if relative_path.endswith("report/project_review.md"):
