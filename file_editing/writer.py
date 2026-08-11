@@ -188,10 +188,11 @@ def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: l
         )
 
 
-def materialize_proposal(proposal_id: str) -> dict[str, Any]:
+def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     """
     Apply proposal (if needed), write ALL modified files in the proposal to disk,
-    invalidate overlapping proposals, and perform git commit if enabled.
+    record the change in file_modifications, invalidate overlapping proposals,
+    and perform git commit if enabled.
     """
     from file_editing.edit_payload import EditPayload
     from workflow.proposal_builder import _get_or_create_file_id
@@ -202,7 +203,35 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:
         if not proposal:
             return {"status": "error", "message": "Proposal not found"}
 
-        # Apply in DB if not already applied
+        # ------------------------------------------------------------------
+        # 1. Capture BEFORE state for every file that will be touched
+        # ------------------------------------------------------------------
+        affected_paths: set[str] = set()
+        if proposal["target_file_path"]:
+            affected_paths.add(proposal["target_file_path"])
+
+        try:
+            payload = EditPayload.model_validate_json(proposal["edit_payload"])
+            for op in payload.operations:
+                op_path = getattr(op, "target_file_path", None)
+                if op_path:
+                    affected_paths.add(op_path)
+        except Exception as e:
+            log_error("file_editing", "materialize", "MEDIUM", f"Payload parse warning: {e}", proposal_id=proposal_id)
+
+        before_state: dict[str, dict] = {}
+        for path in affected_paths:
+            fid = _get_or_create_file_id(conn, path)
+            content = reconstruct_file_content(conn, fid) or ""
+            before_state[path] = {
+                "file_id": fid,
+                "content": content,
+                "hash": _compute_hash(content),
+            }
+
+        # ------------------------------------------------------------------
+        # 2. Apply the proposal in the database if not already applied
+        # ------------------------------------------------------------------
         if proposal["status"] != "applied":
             apply_result = apply_edit_proposal(proposal_id)
             if apply_result.get("status") != "success":
@@ -218,29 +247,22 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:
                     print(f"    ⚠️  Exception handled in writer.py: {e}")
                 return apply_result
 
-        # Collect ALL target file paths touched by this proposal
-        affected_paths = set()
-        if proposal["target_file_path"]:
-            affected_paths.add(proposal["target_file_path"])
-
-        try:
-            payload = EditPayload.model_validate_json(proposal["edit_payload"])
-            for op in payload.operations:
-                op_path = getattr(op, "target_file_path", None)
-                if op_path:
-                    affected_paths.add(op_path)
-        except Exception as e:
-            log_error("file_editing", "materialize", "MEDIUM", f"Payload parse warning: {e}", proposal_id=proposal_id)
-
-        # Materialize each affected file to disk
+        # ------------------------------------------------------------------
+        # 3. Materialize each affected file to disk + record audit row
+        # ------------------------------------------------------------------
         write_results = []
+        task_id = proposal["task_id"] if "task_id" in proposal.keys() else None
+
         for target_path in affected_paths:
-            op_file_id = _get_or_create_file_id(conn, target_path)
-            content = reconstruct_file_content(conn, op_file_id)
-            res = write_file_to_disk(target_path, content, proposal_id)
+            op_file_id = before_state[target_path]["file_id"]
+            content_after = reconstruct_file_content(conn, op_file_id) or ""
+            hash_after = _compute_hash(content_after)
+
+            res = write_file_to_disk(target_path, content_after, proposal_id)
+            write_results.append(res)
 
             if res.get("status") == "success":
-                # Refresh symbol index
+                # Refresh symbol index (existing logic)
                 try:
                     from core.config import get_config
                     from core.index_context import refresh_file_symbols
@@ -248,7 +270,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:
                     pd = Path(get_config().get("project_directory", "./project")).resolve()
                     rel = str(Path(target_path).resolve().relative_to(pd)).replace("\\", "/")
                     if rel.endswith(".py"):
-                        refresh_file_symbols(rel, content)
+                        refresh_file_symbols(rel, content_after)
                 except Exception as _idx_err:
                     log_error(
                         "file_editing",
@@ -258,6 +280,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:
                         proposal_id=proposal_id,
                     )
 
+                # Update files table
                 conn.execute(
                     "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
                     (op_file_id,),
@@ -267,28 +290,58 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:
                     (proposal_id, op_file_id),
                 )
 
-                # Optional git commit for this file
+                # ----------------------------------------------------------
+                # NEW: Record the change in file_modifications
+                # ----------------------------------------------------------
+                try:
+                    conn.execute(
+                        """
+                        INSERT INTO file_modifications
+                            (file_path, operation, content_before, content_after,
+                             content_hash_before, content_hash_after,
+                             changed_by, task_id, timestamp)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                        """,
+                        (
+                            target_path,
+                            "materialize",
+                            before_state[target_path]["content"],
+                            content_after,
+                            before_state[target_path]["hash"],
+                            hash_after,
+                            "developer",
+                            task_id,
+                        ),
+                    )
+                except Exception as e:
+                    log_error(
+                        "file_editing",
+                        "file_modifications",
+                        "MEDIUM",
+                        f"Failed to record modification: {e}",
+                        proposal_id=proposal_id,
+                    )
+
+                # Optional git commit (existing logic)
                 try:
                     project_root = Path(target_path).parent
                     subprocess.run(["git", "add", target_path], cwd=project_root, check=False, timeout=10)
                     subprocess.run(
-                        ["git", "commit", "-m", f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"],
-                        cwd=project_root,
-                        check=False,
-                        timeout=10,
+                        ["git", "commit", "-m", f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"], cwd=project_root, check=False, timeout=10
                     )
                 except Exception as e:
                     print(f"    ⚠️  Exception handled in writer.py: {e}")
             else:
-                conn.execute("UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?", (proposal_id,))
+                conn.execute(
+                    "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
+                    (proposal_id,),
+                )
                 conn.execute(
                     "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'error')",
                     (proposal_id, op_file_id),
                 )
 
-            write_results.append(res)
-
-        # Invalidate overlapping proposals
+        # Invalidate overlapping proposals (existing logic)
         affected_guids_json = proposal["affected_line_guids"]
         affected = json.loads(affected_guids_json) if affected_guids_json else []
         invalidate_other_proposals(conn, proposal_id, affected)
