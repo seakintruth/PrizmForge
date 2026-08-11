@@ -399,14 +399,57 @@ def run_developer_mutation(  # noqa: C901
     proposal_id = prop["proposal_id"]
     print(f"   📦 Proposal created: {proposal_id}")
 
+    # ---------------------------------------------------------------------------
     # Reviewer execution
+    # ---------------------------------------------------------------------------
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
-    reviewer_prompt = (
-        f"Review this edit proposal for {target_file_path}.\n"
-        f"Payload:\n{json.dumps(data, indent=2)[:4000]}\n\n"
-        'Respond with JSON: {"decision":"APPROVE"|"REJECT","reason":"...","suggestions":[]}'
-    )
+
+    # Build a rich context for the reviewer
+    original_content = get_file_content_from_db(target_file_path) or ""
+    # For full_replace / find_replace / etc. we can also reconstruct what the
+    # payload would produce, but the safest immediate improvement is to show
+    # the original file + the full EditPayload.
+
+    final_mode = data.get("_final_mode") or edit_method or validation.detected_mode or "unknown"
+
+    reviewer_prompt = f"""You are the safety gate for a governed code-editing system.
+
+    **File under review:** `{target_file_path}`
+    **Final edit mode used:** `{final_mode}`
+    **Fallback used:** {fallback_used}
+
+    --------------------------------------------------
+    ORIGINAL FILE CONTENT (before any change)
+    --------------------------------------------------
+    ```python
+    {original_content}
+    ```
+
+    --------------------------------------------------
+    PROPOSED EDIT PAYLOAD
+    --------------------------------------------------
+    {json.dumps(data, indent=2)[:6000]}
+
+    --------------------------------------------------
+    INSTRUCTIONS
+    --------------------------------------------------
+    Decide whether this change is safe and correct to apply.
+
+    Respond with ONLY valid JSON in this exact shape:
+    {{
+    "decision": "APPROVE" | "REJECT",
+    "reason": "concise explanation",
+    "suggestions": ["optional", "list", "of", "improvements"]
+    }}
+
+    Rules:
+    - REJECT if the change appears truncated, removes large amounts of existing code without clear justification, or introduces obvious errors.
+    - REJECT if the payload does not match the declared edit mode.
+    - APPROVE only when the change is coherent and the resulting file would still be valid.
+    """
+
     reviewer_response = call_agent("reviewer", reviewer_prompt, task_id)
+
     decision_result = "APPROVE"
     reason = ""
     suggestions: list[str] = []
