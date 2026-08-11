@@ -107,7 +107,7 @@ def create_proposal_from_developer_output(
                 try:
                     conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
                 except Exception as e:
-                    print(f"   [i] Column {col} already exists or skipped: {e}")
+                    print(f"   ℹ️ Column {col} already exists or skipped: {e}")
 
             # Embed mode info in rationale prefix for auditability even without columns
             base_rationale = rationale or payload.rationale or ""

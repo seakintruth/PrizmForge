@@ -397,7 +397,7 @@ def get_schema(agent_name: str) -> AgentResponseSchema | None:
     fallback_patterns = ["_reviewer", "_analyzer", "_auditor", "_checker", "_validator"]
 
     if any(agent_name.endswith(pattern) for pattern in fallback_patterns) or agent_name.startswith("jr_"):
-        print(f"    [i]  {agent_name}: Using fallback schema (jr_reviewer template)")
+        print(f"    ℹ️  {agent_name}: Using fallback schema (jr_reviewer template)")
         return _create_fallback_schema(agent_name)
 
     # Unknown agent type, no schema

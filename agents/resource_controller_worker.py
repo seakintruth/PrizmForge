@@ -816,7 +816,7 @@ class ResourceControllerWorker:
             "NORMAL": "✅",
         }
 
-        emoji = emoji_map.get(decision.level, "[i]")
+        emoji = emoji_map.get(decision.level, "ℹ️")
 
         message = f"""{emoji} Resource Controller [{decision.level}]
 
