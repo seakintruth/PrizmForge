@@ -257,6 +257,8 @@ def run_developer_mutation(  # noqa: C901
         print("   ❌ No files loaded successfully")
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
         return {"status": "error", "message": "no file content"}
+    # In run_developer_mutation(), replace the generation + fallback section
+    # with the following logic.
 
     modes_tried: list[str] = []
     response = None
@@ -265,12 +267,38 @@ def run_developer_mutation(  # noqa: C901
     last_reason = None
     max_mode_attempts = len(mode_decision.fallback_chain) or 4
 
+    # Keep a clean base context. We will deliberately not pass the full
+    # conversation history on fallback attempts.
+    base_context = conversation_context or []
+
     for _attempt in range(max_mode_attempts):
         modes_tried.append(edit_method)
         print(f"   🧪 Generating edit (mode={edit_method}, attempt={_attempt + 1})")
 
+        # ------------------------------------------------------------------
+        # FORCE CLEAN RE-QUERY WHEN MODE CHANGES
+        # ------------------------------------------------------------------
+        if fallback_used:
+            # Build a completely self-contained prompt that does not rely on
+            # previous (failed) attempts.
+            clean_instructions = (
+                f"**NEW ATTEMPT - PREVIOUS EDIT MODE FAILED**\n\n"
+                f"Previous mode(s) tried: {', '.join(modes_tried[:-1])}\n"
+                f"Failure reason: {last_reason or 'validation failed'}\n\n"
+                f"You must now produce a valid edit using **only** the mode: `{edit_method}`.\n"
+                f"Do not refer to any previous JSON you may have generated.\n"
+                f"Start fresh.\n\n"
+                f"Original task instructions:\n{instructions}"
+            )
+            # Pass minimal context so the model is not contaminated by the
+            # previous failed response.
+            current_context = []
+        else:
+            clean_instructions = instructions
+            current_context = base_context
+
         gen_prompt = _build_generation_prompt(
-            instructions=instructions,
+            instructions=clean_instructions,
             edit_method=edit_method,
             files_content=files_content,
             requested_files=requested_files,
@@ -284,7 +312,7 @@ def run_developer_mutation(  # noqa: C901
             "developer",
             gen_prompt,
             task_id,
-            conversation_context,
+            current_context,  # ← clean context on fallback
             model_choice,
         )
 
@@ -336,7 +364,6 @@ def run_developer_mutation(  # noqa: C901
             "HIGH",
         )
         break
-
     if not validation or not validation.is_valid:
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
         return {"status": "error", "message": "no valid edit payload"}
@@ -372,14 +399,57 @@ def run_developer_mutation(  # noqa: C901
     proposal_id = prop["proposal_id"]
     print(f"   📦 Proposal created: {proposal_id}")
 
+    # ---------------------------------------------------------------------------
     # Reviewer execution
+    # ---------------------------------------------------------------------------
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
-    reviewer_prompt = (
-        f"Review this edit proposal for {target_file_path}.\n"
-        f"Payload:\n{json.dumps(data, indent=2)[:4000]}\n\n"
-        'Respond with JSON: {"decision":"APPROVE"|"REJECT","reason":"...","suggestions":[]}'
-    )
+
+    # Build a rich context for the reviewer
+    original_content = get_file_content_from_db(target_file_path) or ""
+    # For full_replace / find_replace / etc. we can also reconstruct what the
+    # payload would produce, but the safest immediate improvement is to show
+    # the original file + the full EditPayload.
+
+    final_mode = data.get("_final_mode") or edit_method or validation.detected_mode or "unknown"
+
+    reviewer_prompt = f"""You are the safety gate for a governed code-editing system.
+
+    **File under review:** `{target_file_path}`
+    **Final edit mode used:** `{final_mode}`
+    **Fallback used:** {fallback_used}
+
+    --------------------------------------------------
+    ORIGINAL FILE CONTENT (before any change)
+    --------------------------------------------------
+    ```python
+    {original_content}
+    ```
+
+    --------------------------------------------------
+    PROPOSED EDIT PAYLOAD
+    --------------------------------------------------
+    {json.dumps(data, indent=2)[:6000]}
+
+    --------------------------------------------------
+    INSTRUCTIONS
+    --------------------------------------------------
+    Decide whether this change is safe and correct to apply.
+
+    Respond with ONLY valid JSON in this exact shape:
+    {{
+    "decision": "APPROVE" | "REJECT",
+    "reason": "concise explanation",
+    "suggestions": ["optional", "list", "of", "improvements"]
+    }}
+
+    Rules:
+    - REJECT if the change appears truncated, removes large amounts of existing code without clear justification, or introduces obvious errors.
+    - REJECT if the payload does not match the declared edit mode.
+    - APPROVE only when the change is coherent and the resulting file would still be valid.
+    """
+
     reviewer_response = call_agent("reviewer", reviewer_prompt, task_id)
+
     decision_result = "APPROVE"
     reason = ""
     suggestions: list[str] = []
