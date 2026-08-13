@@ -1,6 +1,6 @@
 # file_editing/edit_payload.py
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 
@@ -174,7 +174,7 @@ class EditPayload:
         return cls.model_validate(data)
 
     @classmethod
-    def model_validate(cls, data: dict[str, Any]) -> "EditPayload":  # noqa: C901
+    def model_validate(cls, data: dict[str, Any]) -> "EditPayload":
         ops = []
         for i, op_data in enumerate(data.get("operations", [])):
             if not isinstance(op_data, dict):
@@ -210,24 +210,24 @@ class EditPayload:
                         op_kwargs["rationale"] = "Apply change"
 
                 # Now create the operation object
-                if op_type == "replace_block":
-                    ops.append(ReplaceBlock(**{k: v for k, v in op_kwargs.items() if k in ReplaceBlock.__annotations__}))
-                elif op_type == "insert_after":
-                    ops.append(InsertAfter(**{k: v for k, v in op_kwargs.items() if k in InsertAfter.__annotations__}))
-                elif op_type == "delete_lines":
-                    ops.append(DeleteLines(**{k: v for k, v in op_kwargs.items() if k in DeleteLines.__annotations__}))
-                elif op_type == "update_documentation":
-                    ops.append(UpdateDocumentation(**{k: v for k, v in op_kwargs.items() if k in UpdateDocumentation.__annotations__}))
-                elif op_type == "create_file":
-                    ops.append(CreateFile(**{k: v for k, v in op_kwargs.items() if k in CreateFile.__annotations__}))
-                elif op_type == "find_replace":
-                    ops.append(FindReplace(**{k: v for k, v in op_kwargs.items() if k in FindReplace.__annotations__}))
-                elif op_type == "full_replace":
-                    ops.append(FullReplace(**{k: v for k, v in op_kwargs.items() if k in FullReplace.__annotations__}))
-                elif op_type == "apply_diff":
-                    ops.append(ApplyDiff(**{k: v for k, v in op_kwargs.items() if k in ApplyDiff.__annotations__}))
-                else:
+                # Fix for Feedback #403: Use fields(cls) to include inherited fields like rationale and target_file_path
+                op_cls_map = {
+                    "replace_block": ReplaceBlock,
+                    "insert_after": InsertAfter,
+                    "delete_lines": DeleteLines,
+                    "update_documentation": UpdateDocumentation,
+                    "create_file": CreateFile,
+                    "find_replace": FindReplace,
+                    "full_replace": FullReplace,
+                    "apply_diff": ApplyDiff,
+                }
+
+                if op_type not in op_cls_map:
                     raise ValueError(f"Unknown operation type: '{op_type}'")
+
+                target_cls = op_cls_map[op_type]
+                valid_fields = {f.name for f in fields(target_cls)}
+                ops.append(target_cls(**{k: v for k, v in op_kwargs.items() if k in valid_fields}))
 
             except TypeError as e:
                 raise ValueError(f"Validation failed for operation '{op_type}' at index {i}: Missing required fields. ({e})") from e

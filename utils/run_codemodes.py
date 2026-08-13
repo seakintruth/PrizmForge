@@ -61,6 +61,51 @@ def read_text(path: Path) -> str:
         return path.read_text()
 
 
+def insert_import(code: str, import_line: str) -> str:
+    lines = code.splitlines(keepends=True)
+    idx = 0
+    while idx < len(lines) and (lines[idx].startswith("#!") or lines[idx].startswith("# -*-") or "coding:" in lines[idx]):
+        idx += 1
+    in_docstring = None
+    while idx < len(lines):
+        line = lines[idx].strip()
+        if not line or line.startswith("#"):
+            idx += 1
+            continue
+        if in_docstring:
+            if in_docstring in line:
+                in_docstring = None
+            idx += 1
+            continue
+        if (
+            line.startswith('"""')
+            or line.startswith("'''")
+            or line.startswith('r"""')
+            or line.startswith("r'''")
+            or line.startswith('u"""')
+            or line.startswith("u'''")
+        ):
+            q_idx = min((line.find(q) for q in ('"""', "'''") if q in line), default=-1)
+            if q_idx != -1:
+                quote_type = line[q_idx : q_idx + 3]
+                rest = line[q_idx + 3 :]
+                if quote_type in rest:
+                    idx += 1
+                    continue
+                else:
+                    in_docstring = quote_type
+                    idx += 1
+                    continue
+        if line.startswith("from __future__ import"):
+            idx += 1
+            continue
+        break
+    if not import_line.endswith("\n"):
+        import_line += "\n"
+    lines.insert(idx, import_line)
+    return "".join(lines)
+
+
 # === Codemod 1: Replace builtin 'callable' type -> typing.Callable ===
 class CallableFixer(cst.CSTTransformer):
     def __init__(self) -> None:
@@ -91,14 +136,14 @@ def run_fix_callable(root: Path) -> int:
         try:
             mod = cst.parse_module(src)
         except Exception as e:
-            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
+            print(f"    ⚠️  Skipping on error in {Path(__file__).name}: {e}")
             continue
         fixer = CallableFixer()
         new_mod = mod.visit(fixer)
         code = new_mod.code
         if fixer.needs_callable_import:
             if "from typing import Callable" not in code and "import typing" not in code:
-                code = "from typing import Callable\n\n" + code
+                code = insert_import(code, "from typing import Callable")
         if code != src:
             p.write_text(code, encoding="utf8")
             print("fix_callable: updated", p)
@@ -126,7 +171,7 @@ def run_add_typing_imports(root: Path) -> int:
         try:
             mod = cst.parse_module(src)
         except Exception as e:
-            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
+            print(f"    ⚠️  Skipping on error in {Path(__file__).name}: {e}")
             continue
         collector = TypingUsageCollector()
         mod.visit(collector)
@@ -135,8 +180,8 @@ def run_add_typing_imports(root: Path) -> int:
             continue
         missing = {n for n in used if f"from typing import {n}" not in src and "import typing" not in src}
         if missing:
-            import_line = f"from typing import {', '.join(sorted(missing))}\n\n"
-            new = import_line + src
+            import_line = f"from typing import {', '.join(sorted(missing))}"
+            new = insert_import(src, import_line)
             p.write_text(new, encoding="utf8")
             print("add_typing_imports: inserted", missing, "into", p)
             changed += 1
@@ -178,14 +223,14 @@ def run_optionalize_defaults(root: Path) -> int:
         try:
             mod = cst.parse_module(src)
         except Exception as e:
-            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
+            print(f"    ⚠️  Skipping on error in {Path(__file__).name}: {e}")
             continue
         fixer = OptionalizeParams()
         new_mod = mod.visit(fixer)
         code = new_mod.code
         if fixer.add_optional:
             if "from typing import Optional" not in code and "import typing" not in code:
-                code = "from typing import Optional\n\n" + code
+                code = insert_import(code, "from typing import Optional")
         if code != src:
             p.write_text(code, encoding="utf8")
             print("optionalize_defaults: updated", p)
@@ -197,8 +242,9 @@ def run_optionalize_defaults(root: Path) -> int:
 
 # === Codemod 4: Add Any annotations to simple untyped assignments ===
 class AddAnyAnn(cst.CSTTransformer):
-    def __init__(self) -> None:
+    def __init__(self, target_names: Iterable[str] | None = None) -> None:
         self.add_any = False
+        self.target_names = set(target_names) if target_names is not None else None
 
     def leave_Assign(self, original: cst.Assign, updated: cst.Assign):
         # Only transform simple single-target Name assignments that are not annotated
@@ -207,30 +253,44 @@ class AddAnyAnn(cst.CSTTransformer):
         tgt = updated.targets[0].target
         if m.matches(tgt, m.Name()) and not isinstance(updated, cst.AnnAssign):
             name = tgt.value
+            if self.target_names is not None and name not in self.target_names:
+                return updated
             self.add_any = True
             ann = cst.AnnAssign(target=cst.Name(name), annotation=cst.Annotation(cst.Name("Any")), value=updated.value, simple=1)
             return ann
         return updated
 
 
-def run_add_any_annotations(root: Path) -> int:
+def run_add_any_annotations(
+    root: Path,
+    target_names: Iterable[str] | None = None,
+    target_files: Iterable[str] | None = None,
+) -> int:
     changed = 0
+    if target_names is None and target_files is None:
+        print("add_any_annotations: skipped (no target constraints specified)")
+        return 0
+    target_files_set = {str(f) for f in target_files} if target_files is not None else None
+    target_names_set = set(target_names) if target_names is not None else None
     for p in iter_py_files(root):
         # avoid tests by default
         if any(part == "tests" for part in p.parts):
             continue
+        if target_files_set is not None:
+            if p.name not in target_files_set and str(p) not in target_files_set and str(p.relative_to(root)) not in target_files_set:
+                continue
         src = read_text(p)
         try:
             mod = cst.parse_module(src)
         except Exception as e:
-            print(f"    ⚠️  Skipping on error in run_codemodes.py: {e}")
+            print(f"    ⚠️  Skipping on error in {Path(__file__).name}: {e}")
             continue
-        fixer = AddAnyAnn()
+        fixer = AddAnyAnn(target_names=target_names_set)
         new_mod = mod.visit(fixer)
         code = new_mod.code
         if fixer.add_any:
             if "from typing import Any" not in code and "import typing" not in code:
-                code = "from typing import Any\n\n" + code
+                code = insert_import(code, "from typing import Any")
         if code != src:
             p.write_text(code, encoding="utf8")
             print("add_any_annotations: updated", p)

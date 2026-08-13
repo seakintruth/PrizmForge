@@ -75,9 +75,7 @@ def _estimate_change_size(instructions: str = "", files_needed: Sequence[str] | 
     if any(s in text for s in large_signals) or n_files >= 3:
         return "large"
     if any(s in text for s in small_signals) or n_files <= 1:
-        # Default lean toward small when signals are mixed or absent
-        if any(s in text for s in small_signals):
-            return "small"
+        return "small"
     return "medium"
 
 
@@ -308,7 +306,7 @@ START YOUR JSON OUTPUT NOW:"""
 
         schema_file = Path(__file__).parent.parent / "agent_schemas" / "developer.json"
         if schema_file.exists():
-            with open(schema_file) as f:
+            with open(schema_file, encoding="utf-8") as f:
                 schema = json_lib.dumps(json_lib.load(f), indent=2)
     except Exception:
         schema = '{"target_file_path": "...", "summary": "...", "operations": [], "rationale": "..."}'

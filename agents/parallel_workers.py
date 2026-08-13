@@ -133,7 +133,7 @@ class BackgroundAgentPool:
                 mod_flag = "on_mod" if config.get("on_modification") else ""
                 random_flag = "random" if config.get("random_review") else ""
                 flags = f"[{mod_flag}+{random_flag}]" if mod_flag and random_flag else f"[{mod_flag or random_flag}]"
-                print(f"    🤖 Started {agent_name} worker {flags}")
+                print(f"    🚀 Started {agent_name} worker {flags}")
 
             # Start support workers outside the critical section is fine once
             # running=True is visible; they have their own lifecycle.
@@ -235,7 +235,7 @@ class BackgroundAgentPool:
                     self.event_queue.put(event)
                     queued_count += 1
 
-            print(f"    🔍 Queued {queued_count} files for initial peer review")
+            print(f"    📋 Queued {queued_count} files for initial peer review")
 
         except Exception as e:
             print(f"    ⚠️  Error queuing files for initial review: {e}")
@@ -285,7 +285,7 @@ class BackgroundAgentPool:
             conn.close()
 
             if queued_count > 0:
-                print(f"    🔥 Queued {queued_count} modified file(s) for {len(self.modification_agents)} agent(s)")
+                print(f"    📝 Queued {queued_count} modified file(s) for {len(self.modification_agents)} agent(s)")
 
         except Exception as e:
             print(f"    ⚠️  Error queuing modified files: {e}")
@@ -460,7 +460,7 @@ class BackgroundAgentPool:
                 if agent_name in self.recently_queued:
                     self.recently_queued[agent_name].add(file_path)
 
-        print(f"    📤 Queued {file_path} for {len(self.modification_agents)} modification agent(s)")
+        print(f"    ⚡ Queued {file_path} for {len(self.modification_agents)} modification agent(s)")
 
     def _worker_loop(self, agent_name: str):
         """Main worker loop for a FEEDBACK agent"""
@@ -731,7 +731,7 @@ class BackgroundAgentPool:
         """Dynamically adjust feeder interval (called by resource controller)."""
         with self._state_lock:
             self.feeder_interval = interval
-        print(f"    🎛️  Feeder interval adjusted to {interval}s")
+        print(f"    ⚙️  Feeder interval adjusted to {interval}s")
 
     def set_active_agents(self, active_agents: list[str]):
         """
@@ -751,7 +751,7 @@ class BackgroundAgentPool:
 
         with self._state_lock:
             if not feedback_agents_only:
-                print("    🛑 PAUSING all background feedback agents (backlog too high)")
+                print("    ⏸️ PAUSING all background feedback agents (backlog too high)")
                 print("    ✅ Support workers (prioritizer, archivist, etc.) still active")
                 self.active_agents_filter = set()  # Empty = no feedback agents
                 return
@@ -759,9 +759,9 @@ class BackgroundAgentPool:
             all_feedback_agents = set(self.modification_agents + self.random_review_agents)
             for agent_name in all_feedback_agents:
                 if agent_name not in feedback_agents_only:
-                    print(f"    🔇 Disabled {agent_name} (backlog management)")
+                    print(f"    ⏸️ Disabled {agent_name} (backlog management)")
             for agent_name in feedback_agents_only:
-                print(f"    🔊 Re-enabled {agent_name}")
+                print(f"    ▶️ Re-enabled {agent_name}")
 
             self.active_agents_filter = set(feedback_agents_only)
 
@@ -779,7 +779,7 @@ class BackgroundAgentPool:
 
                 rc = get_resource_controller()
                 rc.temporarily_disable_throttling(duration_seconds=45)
-                print("    🔓 Resource restrictions temporarily lifted for this cycle")
+                print("    ⚡ Resource restrictions temporarily lifted for this cycle")
             except Exception as e:
                 print(f"    ⚠️  Exception handled in parallel_workers.py: {e}")
 
@@ -788,10 +788,13 @@ class BackgroundAgentPool:
 
             cursor.execute(
                 """
-                SELECT file_path, content, content_hash, last_modified, size_bytes, file_type
-                FROM project_files
-                WHERE is_binary = 0
-                ORDER BY last_modified DESC
+                SELECT
+                    pf.file_path, pf.content, pf.content_hash, pf.last_modified,
+                    pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
+                FROM project_files pf
+                LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
+                WHERE pf.is_binary = 0
+                ORDER BY pf.last_modified DESC
                 LIMIT ?
             """,
                 (file_limit // 2 + 1,),
@@ -800,9 +803,12 @@ class BackgroundAgentPool:
 
             cursor.execute(
                 """
-                SELECT file_path, content, content_hash, last_modified, size_bytes, file_type
-                FROM project_files
-                WHERE is_binary = 0
+                SELECT
+                    pf.file_path, pf.content, pf.content_hash, pf.last_modified,
+                    pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
+                FROM project_files pf
+                LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
+                WHERE pf.is_binary = 0
                 ORDER BY RANDOM()
                 LIMIT ?
             """,
@@ -818,26 +824,12 @@ class BackgroundAgentPool:
 
             queued_count = 0
             for file_data in all_files:
-                event = FileChangeEvent(
-                    event_id=str(uuid.uuid4()),
-                    file_path=file_data[0],
-                    operation="forced_review",
-                    content=file_data[1],
-                    content_hash=file_data[2],
-                    metadata={
-                        "last_modified": file_data[3],
-                        "size_bytes": file_data[4],
-                        "file_type": file_data[5],
-                    },
-                    task_id=self.task_id,
-                    timestamp=datetime.now().isoformat(),
-                    priority=2,
-                )
+                event = self._create_file_event(file_data, "forced_review", priority=2)
                 self.event_queue.put(event)
                 queued_count += 1
 
             print(f"    ✅ Queued {queued_count} files for forced review by background agents")
-            print("    📤 Background agents will now analyze and post suggestions to the message bus")
+            print("    💬 Background agents will now analyze and post suggestions to the message bus")
         except Exception as e:
             print(f"    ❌ Error during forced review cycle: {e}")
 

@@ -159,7 +159,7 @@ class ContextManager:
         excluded_files = []
         remaining_budget = available_for_files
 
-        file_section = "**📁 Project Files:**\n\n"
+        file_section = "**📂 Project Files:**\n\n"
 
         for fc in file_contexts:
             if fc.estimated_tokens <= remaining_budget:
@@ -218,8 +218,7 @@ class ContextManager:
                 cursor = conn.cursor()
 
                 # Single query - reads pre-computed tokens
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT
                         pf.file_path,
                         pf.estimated_tokens,
@@ -235,11 +234,7 @@ class ContextManager:
                         AND af.addressed = 0
                     WHERE pf.is_binary = 0 AND pf.estimated_tokens > 0
                     GROUP BY pf.file_path
-                    ORDER BY pf.last_modified DESC
-                    LIMIT ?
-                """,
-                    (limit,),
-                )  # ✅ ADDED LIMIT
+                """)
 
                 rows = cursor.fetchall()
 
@@ -276,7 +271,7 @@ class ContextManager:
             # Sort by priority descending
             file_contexts.sort(key=lambda fc: fc.priority_score, reverse=True)
 
-            return file_contexts
+            return file_contexts[:limit]
 
         except Exception as e:
             print(f"⚠️  Error loading files: {e}")
@@ -381,7 +376,7 @@ class ContextManager:
                 if not feedback_items and not proposals:
                     return None
 
-                message = "📋 **ACTIONABLE ITEMS (Priority Order):**\n\n"
+                message = "🚀 **ACTIONABLE ITEMS (Priority Order):**\n\n"
 
                 if feedback_items:
                     # Count by priority
@@ -391,7 +386,7 @@ class ContextManager:
                         priority_counts[priority] = priority_counts.get(priority, 0) + 1
 
                     summary = ", ".join([f"{count} {priority}" for priority, count in sorted(priority_counts.items())])
-                    message += f"**🔴 Unaddressed Feedback: {len(feedback_items)} items ({summary})**\n\n"
+                    message += f"**📌 Unaddressed Feedback: {len(feedback_items)} items ({summary})**\n\n"
 
                     # Show top 10 items
                     for i, (
@@ -413,7 +408,7 @@ class ContextManager:
                     message += "\n"
 
                 if proposals:
-                    message += f"**📄 Pending Proposals ({len(proposals)}):**\n"
+                    message += f"**📋 Pending Proposals ({len(proposals)}):**\n"
                     for prop_id, fpath, status, rationale in proposals:
                         message += f"• {prop_id[:8]}... → `{fpath}` ({status})\n"
                         if rationale:

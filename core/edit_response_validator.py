@@ -117,22 +117,6 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
             message="Root JSON value is not an object or array of operations",
         )
 
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        return EditValidationResult(
-            is_valid=False,
-            reason=EditFailureReason.INVALID_JSON,
-            message=f"JSON parse error: {e}",
-        )
-
-    if not isinstance(data, dict):
-        return EditValidationResult(
-            is_valid=False,
-            reason=EditFailureReason.UNKNOWN_STRUCTURE,
-            message="Root JSON value is not an object",
-        )
-
     # --- Detect mode and validate minimum usable content ---
 
     # Full-file replacement

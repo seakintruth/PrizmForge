@@ -14,7 +14,6 @@ from core.db_helpers import save_conversation
 from core.endpoint_manager import EndpointConfig, EndpointStatus, get_endpoint_manager
 from core.fallback_stats import log_fallback
 from core.http_client import post_json
-from core.json_parser import parse_json_response
 from core.rate_limiter import RateLimiter
 from core.token_budget import TokenBudget
 from file_editing.db import log_error
@@ -22,9 +21,6 @@ from file_editing.db import log_error
 # Initialize
 _rate_limiter = None
 _token_budget = None
-
-# Agents that are allowed to return free-form text / markdown
-TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
 
 
 def get_rate_limiter(endpoint: EndpointConfig) -> RateLimiter:
@@ -89,8 +85,8 @@ def call_endpoint(  # noqa: C901
                 original_endpoint=endpoint.name,
                 fallback_endpoint=fallback_endpoint.name,
                 reason=endpoint.health.status.value,
-                task_id=task_id,
-                agent_name=agent_name,
+                task_id=task_id,  # You'll need to pass this through
+                agent_name=agent_name,  # You'll need to pass this through
             )
 
             print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
@@ -125,8 +121,8 @@ def call_endpoint(  # noqa: C901
                 original_endpoint=endpoint.name,
                 fallback_endpoint=fallback_endpoint.name,
                 reason=endpoint.health.status.value,
-                task_id=task_id,
-                agent_name=agent_name,
+                task_id=task_id,  # You'll need to pass this through
+                agent_name=agent_name,  # You'll need to pass this through
             )
             print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
             return call_endpoint(
@@ -156,8 +152,8 @@ def call_endpoint(  # noqa: C901
                 original_endpoint=endpoint.name,
                 fallback_endpoint=fallback_endpoint.name,
                 reason=endpoint.health.status.value,
-                task_id=task_id,
-                agent_name=agent_name,
+                task_id=task_id,  # You'll need to pass this through
+                agent_name=agent_name,  # You'll need to pass this through
             )
 
             print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
@@ -289,8 +285,8 @@ def call_endpoint(  # noqa: C901
                             original_endpoint=endpoint.name,
                             fallback_endpoint=fallback_endpoint.name,
                             reason=endpoint.health.status.value,
-                            task_id=task_id,
-                            agent_name=agent_name,
+                            task_id=task_id,  # You'll need to pass this through
+                            agent_name=agent_name,  # You'll need to pass this through
                         )
                         print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
                         return call_endpoint(
@@ -325,8 +321,8 @@ def call_endpoint(  # noqa: C901
                         original_endpoint=endpoint.name,
                         fallback_endpoint=fallback_endpoint.name,
                         reason=endpoint.health.status.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
+                        task_id=task_id,  # You'll need to pass this through
+                        agent_name=agent_name,  # You'll need to pass this through
                     )
                     print(f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(
@@ -359,8 +355,8 @@ def call_endpoint(  # noqa: C901
                             original_endpoint=endpoint.name,
                             fallback_endpoint=fallback_endpoint.name,
                             reason=endpoint.health.status.value,
-                            task_id=task_id,
-                            agent_name=agent_name,
+                            task_id=task_id,  # You'll need to pass this through
+                            agent_name=agent_name,  # You'll need to pass this through
                         )
                         print(f"→ Server unreachable. Falling back to {fallback_endpoint.name}/{fallback_model}")
                         return call_endpoint(
@@ -398,8 +394,8 @@ def call_endpoint(  # noqa: C901
                         original_endpoint=endpoint.name,
                         fallback_endpoint=fallback_endpoint.name,
                         reason=endpoint.health.status.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
+                        task_id=task_id,  # You'll need to pass this through
+                        agent_name=agent_name,  # You'll need to pass this through
                     )
                     print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
                     return call_endpoint(
@@ -545,8 +541,8 @@ def call_endpoint(  # noqa: C901
             original_endpoint=endpoint.name,
             fallback_endpoint=fallback_endpoint.name,
             reason=endpoint.health.status.value,
-            task_id=task_id,
-            agent_name=agent_name,
+            task_id=task_id,  # You'll need to pass this through
+            agent_name=agent_name,  # You'll need to pass this through
         )
         print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
         return call_endpoint(
@@ -570,10 +566,25 @@ def call_agent(  # noqa: C901
     model_override: str | None = None,
     auto_resume: bool = True,
     max_resume_attempts: int = 1,
-    _is_repair_attempt: bool = False,
 ) -> str | None:
-    """Call agent with schema injection and controlled JSON repair."""
+    """Call agent with schema injection"""
     from core.agent_schemas import get_schema_example
+
+    """
+    Call an agent with automatic truncation detection and resume
+
+    Args:
+        agent_name: Name of agent to call
+        prompt: User prompt
+        task_id: Current task ID
+        context: Conversation context
+        model_override: Override model selection
+        auto_resume: Automatically detect and resume truncated responses
+        max_resume_attempts: How many times to retry resume (default 1)
+
+    Returns:
+        Agent response (possibly merged if truncation occurred)
+    """
     from core.archival import archive_raw_response
 
     config = get_config()
@@ -618,8 +629,10 @@ def call_agent(  # noqa: C901
 
     system_prompt = prompts[agent_name]["system_prompt"]
 
-    # Only inject schemas for JSON-outputting agents
-    if agent_name not in TEXT_OUTPUT_AGENTS:
+    # ✅ FIX: Only inject schemas for JSON-outputting agents
+    text_output_agents = {"project_reporter", "reviewer", "archivist"}
+
+    if agent_name not in text_output_agents:
         schema_example = get_schema_example(agent_name)
 
         system_prompt += f"""
@@ -676,7 +689,7 @@ If you cannot analyze the file, return:
         # Only archive successful connections
         archive_raw_response(task_id, agent_name, prompt, response, True, None)
     else:
-        # Log the network/API failure to the central errors table
+        # ✅ Log the network/API failure to the central errors table
         try:
             log_error(
                 component="agents.base",
@@ -708,49 +721,6 @@ If you cannot analyze the file, return:
     except Exception as e:
         print(f"  ⚠️  Resource controller performance update failed: {e}")
     # =====================================================
-
-    # ------------------------------------------------------------------
-    # CONTROLLED ONE-SHOT JSON REPAIR
-    # ------------------------------------------------------------------
-    # Only for strict JSON agents, only when the response is non-empty
-    # but fails to parse, and only once (guarded by _is_repair_attempt).
-    if not _is_repair_attempt and agent_name not in TEXT_OUTPUT_AGENTS and response and response.strip():
-        probe = parse_json_response(
-            response,
-            strict=False,
-            agent_name=agent_name,
-        )
-        if probe is None:
-            print(f"  🔧 {agent_name}: response failed JSON parse — attempting one-shot repair")
-            repair_prompt = (
-                "Your previous response was not valid JSON.\n\n"
-                "Convert the decision or information you already produced into a single "
-                "valid JSON object. Reply with ONLY the JSON object.\n"
-                "- First character must be {\n"
-                "- Last character must be }\n"
-                "- No markdown fences, no commentary, no headings, no explanation.\n"
-            )
-            repair_context = (context or []) + [{"role": "assistant", "content": response[:4000]}]
-            repaired = call_agent(
-                agent_name,
-                repair_prompt,
-                task_id,
-                context=repair_context,
-                model_override=model_override,
-                auto_resume=False,
-                max_resume_attempts=0,
-                _is_repair_attempt=True,
-            )
-            if repaired and repaired.strip():
-                # Prefer the repaired version if it now parses; otherwise keep original
-                repaired_probe = parse_json_response(repaired, strict=False, agent_name=agent_name)
-                if repaired_probe is not None:
-                    print(f"  ✅ {agent_name}: JSON repair succeeded")
-                    response = repaired
-                else:
-                    print(f"  ⚠️  {agent_name}: repair attempt also failed to produce valid JSON — keeping original")
-            else:
-                print(f"  ⚠️  {agent_name}: repair call returned empty — keeping original")
 
     # ✅ TRUNCATION DETECTION AND AUTO-RESUME
     if auto_resume and max_resume_attempts > 0:

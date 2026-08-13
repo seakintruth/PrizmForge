@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-class TruncationType(Enum):
+class TruncationType(str, Enum):
     """Type of truncation detected"""
 
     NONE = "none"
@@ -116,7 +116,12 @@ class TruncationDetector:
             last_quote = json_str.rfind('"')
             cutoff = max(last_comma, last_quote)
 
-            partial = json_str[: cutoff + 1] if cutoff > 0 else json_str
+            # Fix for feedback #521: explicitly handle case where no comma/quote found
+            # to avoid empty partial content via json_str[:0] when cutoff is -1
+            if cutoff != -1:
+                partial = json_str[: cutoff + 1]
+            else:
+                partial = json_str
 
             return TruncationResult(
                 is_truncated=True,
@@ -398,3 +403,4 @@ IMPORTANT: Start exactly where you left off. Don't repeat what you already wrote
     else:
         print(f"    ❌ {agent_name}: Resume failed")
         return response, False
+"

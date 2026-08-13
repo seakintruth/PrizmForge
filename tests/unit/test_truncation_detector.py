@@ -8,7 +8,7 @@ from core.truncation_detector import TruncationDetector, TruncationType, detect_
 
 
 class TestTruncationDetector:
-    """Tests for truncation detection logic."""
+    """Tests for truncation detection logic (Feedback #582)."""
 
     def test_detect_complete_json(self):
         detector = TruncationDetector()
@@ -47,7 +47,8 @@ class TestTruncationDetector:
         detector = TruncationDetector()
         response = "The function should return the sum of the two numbers and also handle"
         result = detector.detect(response)
-        assert result.is_truncated is True or result.confidence > 0.6
+        assert result.is_truncated is True
+        assert result.confidence > 0.6
 
 
 class TestTruncationDetectorFactory:

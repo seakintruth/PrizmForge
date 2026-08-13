@@ -98,17 +98,6 @@ def create_proposal_from_developer_output(
 
             proposal_id = str(uuid4())
 
-            # Best-effort: ensure mode metadata columns exist (safe for existing DBs)
-            for col, coltype in (
-                ("selected_mode", "TEXT"),
-                ("fallback_used", "INTEGER DEFAULT 0"),
-                ("final_mode", "TEXT"),
-            ):
-                try:
-                    conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
-                except Exception as e:
-                    print(f"   ℹ️ Column {col} already exists or skipped: {e}")
-
             # Embed mode info in rationale prefix for auditability even without columns
             base_rationale = rationale or payload.rationale or ""
             mode_tag = ""

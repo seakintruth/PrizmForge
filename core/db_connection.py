@@ -92,10 +92,10 @@ def _commit_with_retry(conn: sqlite3.Connection, retries: int = 5):
             conn.commit()
             return  # Success
 
-        except sqlite3.OperationalError as e:
+        except (sqlite3.OperationalError, DatabaseRetryError) as e:
             error_msg = str(e).lower()
 
-            if "locked" in error_msg or "busy" in error_msg:
+            if "locked" in error_msg or "busy" in error_msg or isinstance(e, DatabaseRetryError):
                 if attempt < retries - 1:
                     # Exponential backoff with jitter
                     delay = min(0.1 * (2**attempt), 2.0)
@@ -158,10 +158,10 @@ def execute_with_retry(query: str, params: tuple = (), retries: int = 5, fetch_m
                 # Don't commit here - context manager handles it
                 return result
 
-        except sqlite3.OperationalError as e:
+        except (sqlite3.OperationalError, DatabaseRetryError) as e:
             error_msg = str(e).lower()
 
-            if "locked" in error_msg or "busy" in error_msg:
+            if "locked" in error_msg or "busy" in error_msg or isinstance(e, DatabaseRetryError):
                 if attempt < retries - 1:
                     delay = min(0.1 * (2**attempt), 2.0)
                     time.sleep(delay)

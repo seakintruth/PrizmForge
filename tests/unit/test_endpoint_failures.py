@@ -16,6 +16,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _resp(status: int, body: dict):
+    from core.http_client import HttpError
+
     m = MagicMock()
     m.status_code = status
     raw = json.dumps(body).encode()
@@ -23,7 +25,12 @@ def _resp(status: int, body: dict):
     m.text = raw.decode()
     m.headers = {"Content-Type": "application/json"}
     m.json.return_value = body
-    m.raise_for_status = MagicMock()
+
+    def raise_for_status():
+        if status < 200 or status >= 300:
+            raise HttpError(f"HTTP {status}")
+
+    m.raise_for_status = raise_for_status
     return m
 
 

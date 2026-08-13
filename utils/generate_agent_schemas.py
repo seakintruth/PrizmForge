@@ -5,6 +5,10 @@ from pathlib import Path
 # Schema output directory
 SCHEMA_DIR = Path(__file__).parent.parent / "agent_schemas"
 
+# Model configuration constants
+DEFAULT_ORCHESTRATOR_MODEL = "gemini-3.1-pro-preview"
+DEFAULT_FLASH_MODEL = "gemini-3-flash-preview"
+
 # =============================================================================
 # Background Agent Schemas (Feedback with GUIDs)
 # =============================================================================
@@ -111,7 +115,7 @@ CORE_AGENT_SCHEMAS = {
             "reasoning": "Why this decision was made and what the current priorities are",
             "files_needed": ["path/to/file1.py", "path/to/file2.py"],
             "addressing_feedback_ids": [123, 456],
-            "model": "gemini-3.1-pro-preview",
+            "model": DEFAULT_ORCHESTRATOR_MODEL,
         },
     },
     "reviewer": {
@@ -235,7 +239,7 @@ SUPPORT_WORKER_SCHEMAS = {
                 "background_feeder_interval": 90,
                 "active_agents": ["jr_reviewer", "jr_researcher", "prioritizer"],
                 "rate_limit_per_minute": 60,
-                "model_downgrades": {"tech_writer": "gemini-3-flash-preview"},
+                "model_downgrades": {"tech_writer": DEFAULT_FLASH_MODEL},
                 "reasoning": "Budget at 40%, reducing activity to conserve tokens",
             },
         },
@@ -304,13 +308,12 @@ def generate_all_schemas():
     background_count = len(BACKGROUND_AGENT_SCHEMAS)
     core_count = len(CORE_AGENT_SCHEMAS)
     support_count = len(SUPPORT_WORKER_SCHEMAS)
-    total_count = background_count + core_count + support_count + 1  # +1 for metadata
+    total_count = background_count + core_count + support_count
 
     print(f"\nGenerated {total_count} schema files in: {SCHEMA_DIR}")
     print(f"  - Background agents: {background_count}")
     print(f"  - Core agents: {core_count}")
     print(f"  - Support workers: {support_count}")
-    print("  - Metadata: 1")
     print("\nNext steps:")
     print("  1. Review generated schemas in agent_schemas/")
     print("  2. Update agents/base.py to load these schemas")

@@ -34,8 +34,7 @@ def get_db_connection():
     conn = sqlite3.connect(get_db_path(), timeout=60.0)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=OFF")
-        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA journal_mode=WAL")
     except Exception as e:
         print(f"    ⚠️  Exception handled in db.py: {e}")
     try:

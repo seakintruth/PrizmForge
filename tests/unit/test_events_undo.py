@@ -68,6 +68,54 @@ def test_undo_restores_content(temp_db):
         assert "a = 1" in reconstruct_file_content(conn, fid)
 
 
+def test_undo_multiline_replacement(temp_db):
+    from file_editing.db import get_db_connection, reconstruct_file_content
+    from file_editing.editing import apply_edit_proposal
+    from file_editing.undo import snapshot_before_apply, undo_proposal
+    from file_editing.writer import initialize_file_lines
+    from workflow.proposal_builder import create_proposal_from_developer_output
+
+    initial_text = "def foo():\n    x = 1\n    y = 2\n    return x + y\n"
+    initialize_file_lines("undo/multiline.py", initial_text)
+    prop = create_proposal_from_developer_output(
+        {
+            "target_file_path": "undo/multiline.py",
+            "summary": "multiline replace",
+            "rationale": "Test multi-line replacement undo operation",
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "    x = 1\n    y = 2",
+                    "replace": "    x = 10\n    y = 20\n    z = 30",
+                    "rationale": "replace multiple lines",
+                }
+            ],
+        },
+        1,
+        "undo/multiline.py",
+    )
+    assert prop["status"] == "success"
+    pid = prop["proposal_id"]
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?",
+            (pid,),
+        )
+    snapshot_before_apply(pid)
+    assert apply_edit_proposal(pid)["status"] == "success"
+    with get_db_connection() as conn:
+        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/multiline.py",)).fetchone()[0]
+        content_after = reconstruct_file_content(conn, fid)
+        assert "x = 10" in content_after
+        assert "z = 30" in content_after
+
+    und = undo_proposal(pid, write_disk=False)
+    assert und["status"] == "success"
+    with get_db_connection() as conn:
+        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/multiline.py",)).fetchone()[0]
+        assert reconstruct_file_content(conn, fid) == initial_text
+
+
 def test_undo_without_snapshot_errors(temp_db):
     from file_editing.undo import undo_proposal
 

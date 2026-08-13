@@ -50,11 +50,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 # =========================================================================
-# 🛠️ AUTO-INSTALL / RE-SYNC PRE-COMMIT HOOK
+# ⚙️ AUTO-INSTALL / RE-SYNC PRE-COMMIT HOOK
 # =========================================================================
 HOOK_FILE=".git/hooks/pre-commit"
 
 install_or_update_hook() {
+    if [ "${SKIP_HOOK_SYNC:-0}" = "1" ]; then
+        return 0
+    fi
+    export SKIP_HOOK_SYNC=1
     if [ -d ".git/hooks" ]; then
         echo -e "${BLUE}⚙️  Syncing .git/hooks/pre-commit with PYTHON_EXEC=${PYTHON_EXEC}...${NC}"
         cat << EOF > "$HOOK_FILE"
@@ -68,10 +72,11 @@ elif [ -n "\$VIRTUAL_ENV" ]; then
     PY_BIN="\$VIRTUAL_ENV/Scripts/python.exe"
     [ ! -f "\$PY_BIN" ] && PY_BIN="\$VIRTUAL_ENV/bin/python"
 else
-    PY_BIN="${PYTHON_EXEC}"
+    PY_BIN="\${PYTHON_EXEC}"
 fi
 
 export PYTHON_EXEC="\$PY_BIN"
+export SKIP_HOOK_SYNC=1
 
 # Execute repository pre-commit script
 ./utils/pre_commit.sh
@@ -89,7 +94,7 @@ run_check() {
     local command=$2
     local allow_failure=${3:-false}
     
-    echo -e "${BLUE}🔄 Running: ${check_name}...${NC}"
+    echo -e "${BLUE} Running: ${check_name}...${NC}"
     
     if eval "$command" > /dev/null 2>&1; then
         PASSED_CHECKS+=("$check_name")
@@ -110,12 +115,12 @@ run_check() {
 
 # Run checks
 echo -e "\n${BLUE}═══════════════════════════════════════════════════${NC}"
-echo -e "${BLUE}🚀 PrizmForge Pre-Commit Checks${NC}"
+echo -e "${BLUE}⚙️ PrizmForge Pre-Commit Checks${NC}"
 echo -e "${BLUE}Executable: ${PYTHON_EXEC}${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════${NC}\n"
 
 # Format checks (auto-fix, non-blocking)
-echo -e "${BLUE}📝 Formatting & Auto-fixing...${NC}\n"
+echo -e "${BLUE}️ Formatting & Auto-fixing...${NC}\n"
 
 "$PYTHON_EXEC" -m black . > /dev/null 2>&1 && echo -e "${GREEN}✅ black${NC}" || echo -e "${YELLOW}⚠️  black${NC}"
 "$PYTHON_EXEC" -m isort . > /dev/null 2>&1 && echo -e "${GREEN}✅ isort${NC}" || echo -e "${YELLOW}⚠️  isort${NC}"
@@ -128,40 +133,38 @@ if [ "$STAGE_FIXED_FILES" = true ] && [ -d ".git" ]; then
 fi
 
 # Linting checks (blocking)
-echo -e "\n${BLUE}🔍 Linting Checks (blocking)...${NC}\n"
+echo -e "\n${BLUE} Linting Checks (blocking)...${NC}\n"
 
 # Ruff check with logging on failure
-echo -e "${BLUE}🔄 Running: ruff check...${NC}"
+echo -e "${BLUE} Running: ruff check...${NC}"
 if "$PYTHON_EXEC" -m ruff check . > "$RUFF_LOG" 2>&1; then
     PASSED_CHECKS+=("ruff check")
     echo -e "${GREEN}✅ ruff check${NC}"
 else
     FAILED_CHECKS+=("ruff check")
     echo -e "${RED}❌ ruff check${NC}"
-    echo -e "${YELLOW}📋 Full report: $RUFF_LOG${NC}"
+    echo -e "${YELLOW} Full report: $RUFF_LOG${NC}"
     echo -e "${YELLOW}Preview:${NC}"
     head -50 "$RUFF_LOG"
-    exit 1
 fi
 
 # Standardized exclusion list across all tools
 EXCLUDE_DIRS="--exclude=.git,.github,.venv,venv,build,dist,.PrizmForge,.pytest_cache,.ruff_cache,.vscode,ExampleProject,report"
 FLAKE8_LOG="$REPORT_DIR/flake8-errors.log"
 
-echo -e "${BLUE}🔄 Running: flake8 (errors)...${NC}"
+echo -e "${BLUE} Running: flake8 (errors)...${NC}"
 
 if ! "$PYTHON_EXEC" -m flake8 . --count $EXCLUDE_DIRS --select=E9,F63,F7,F82 --show-source --statistics 2>&1 | tee "$FLAKE8_LOG"; then
     FAILED_CHECKS+=("flake8 (errors)")
     echo -e "${RED}❌ flake8 (errors)${NC}"
-    echo -e "${YELLOW}📋 Full error report saved to: $FLAKE8_LOG${NC}"
-    exit 1
+    echo -e "${YELLOW} Full error report saved to: $FLAKE8_LOG${NC}"
 else
     PASSED_CHECKS+=("flake8 (errors)")
     echo -e "${GREEN}✅ flake8 (errors)${NC}"
 fi
 
 # Flake8 warnings (informational / non-blocking)
-echo -e "${BLUE}🔄 Running: flake8 (warnings)...${NC}"
+echo -e "${BLUE} Running: flake8 (warnings)...${NC}"
 if "$PYTHON_EXEC" -m flake8 . --count $EXCLUDE_DIRS --exit-zero --max-complexity=15 --max-line-length=159 --statistics > /dev/null 2>&1; then
     PASSED_CHECKS+=("flake8 (warnings)")
     echo -e "${GREEN}✅ flake8 (warnings)${NC}"
@@ -171,7 +174,7 @@ else
 fi
 
 # Type checking (non-blocking)
-echo -e "\n${BLUE}🏷️  Type Checking (informational)...${NC}\n"
+echo -e "\n${BLUE}️  Type Checking (informational)...${NC}\n"
 
 run_check "mypy" "$PYTHON_EXEC -m mypy . --ignore-missing-imports" true
 
@@ -179,7 +182,7 @@ run_check "mypy" "$PYTHON_EXEC -m mypy . --ignore-missing-imports" true
 if [ "$SHOW_SUMMARY" = true ]; then
     echo -e "\n${BLUE}═══════════════════════════════════════════════════${NC}"
     
-    if [ ${#FAILED_CHECKS[@]} -eq 0 ]; then
+    if [ ${#FAILED_CHECKS[@]:-0} -eq 0 ]; then
         echo -e "${GREEN}✅ All checks passed!${NC}"
         echo -e "\nPassed checks (${#PASSED_CHECKS[@]}):"
         for check in "${PASSED_CHECKS[@]}"; do
@@ -187,13 +190,17 @@ if [ "$SHOW_SUMMARY" = true ]; then
         done
     else
         echo -e "${RED}❌ Some checks failed!${NC}"
-        echo -e "\nFailed checks (${#FAILED_CHECKS[@]}):"
+        echo -e "\nFailed checks (${#FAILED_CHECKS[@]}):";
         for check in "${FAILED_CHECKS[@]}"; do
             echo -e "  ${RED}✗${NC} $check"
         done
-        echo -e "\n${YELLOW}📋 Report logs in: $REPORT_DIR/${NC}"
+        echo -e "\n${YELLOW} Report logs in: $REPORT_DIR/${NC}"
         exit 1
     fi
     
     echo -e "${BLUE}═══════════════════════════════════════════════════${NC}\n"
+fi
+
+if [ ${#FAILED_CHECKS[@]:-0} -ne 0 ]; then
+    exit 1
 fi

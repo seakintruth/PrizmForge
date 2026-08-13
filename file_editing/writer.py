@@ -14,13 +14,13 @@ from .editing import apply_edit_proposal
 
 # =============================================================================
 # PrizmForge/file_editing/writer.py
-# Version: 1.5 - Path normalization against configured project_directory
+# Version: 1.4 - Critical column name fixes + improved invalidation + init files
 # Purpose: FileWriterAgent - Materializes proposals to disk + git + invalidation
 # =============================================================================
 
 
 def _compute_hash(content: str) -> str:
-    return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def initialize_file_lines(file_path: str, content: str) -> dict[str, Any]:
@@ -31,42 +31,43 @@ def initialize_file_lines(file_path: str, content: str) -> dict[str, Any]:
     """
     try:
         with get_db_connection() as conn:
-            # 1. Get or create file record
-            cursor = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,))
-            row = cursor.fetchone()
+            with conn:
+                # 1. Get or create file record
+                cursor = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,))
+                row = cursor.fetchone()
 
-            if row:
-                file_id = row["file_id"] if hasattr(row, "keys") else row[0]
-                # Delete existing lines (we're re-initializing)
-                conn.execute("DELETE FROM file_lines WHERE file_id = ?", (file_id,))
-            else:
-                # Create new file record
-                cursor = conn.execute(
-                    """
-                    INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
-                    VALUES (?, 1, 0, 1)
-                """,
-                    (file_path,),
-                )
-                file_id = cursor.lastrowid
+                if row:
+                    file_id = row["file_id"] if hasattr(row, "keys") else row[0]
+                    # Delete existing lines (we're re-initializing)
+                    conn.execute("DELETE FROM file_lines WHERE file_id = ?", (file_id,))
+                else:
+                    # Create new file record
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
+                        VALUES (?, 1, 0, 1)
+                    """,
+                        (file_path,),
+                    )
+                    file_id = cursor.lastrowid
 
-            # 2. Split content into lines and create line records
-            lines = content.split("\n")
-            initial_gap = 1024.0
+                # 2. Split content into lines and create line records
+                lines = content.split("\n")
+                initial_gap = 1024.0
 
-            for i, line_content in enumerate(lines):
-                line_guid = str(uuid4())
-                sort_order = (i + 1) * initial_gap
-                content_hash = _compute_hash(line_content)
+                for i, line_content in enumerate(lines):
+                    line_guid = str(uuid4())
+                    sort_order = (i + 1) * initial_gap
+                    content_hash = _compute_hash(line_content)
 
-                conn.execute(
-                    """
-                    INSERT INTO file_lines
-                    (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
-                    VALUES (?, ?, ?, ?, ?, 1, 0)
-                """,
-                    (line_guid, file_id, sort_order, line_content, content_hash),
-                )
+                    conn.execute(
+                        """
+                        INSERT INTO file_lines
+                        (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
+                        VALUES (?, ?, ?, ?, ?, 1, 0)
+                    """,
+                        (line_guid, file_id, sort_order, line_content, content_hash),
+                    )
 
             return {"status": "success", "file_id": file_id, "line_count": len(lines)}
 
@@ -176,7 +177,7 @@ def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: l
                 invalidated_count += 1
 
         if invalidated_count > 0:
-            print(f"🔄 Invalidated {invalidated_count} overlapping proposal(s) after {current_proposal_id[:8]}")
+            print(f" Invalidated {invalidated_count} overlapping proposal(s) after {current_proposal_id[:8]}")
 
     except Exception as e:
         log_error(
@@ -194,7 +195,6 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     record the change in file_modifications, invalidate overlapping proposals,
     and perform git commit if enabled.
     """
-    from core.config import get_config
     from file_editing.edit_payload import EditPayload
     from workflow.proposal_builder import _get_or_create_file_id
 
@@ -203,9 +203,6 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
 
         if not proposal:
             return {"status": "error", "message": "Proposal not found"}
-
-        # Single source of truth for the project root
-        project_dir = Path(get_config().get("project_directory", "./project")).resolve()
 
         # ------------------------------------------------------------------
         # 1. Capture BEFORE state for every file that will be touched
@@ -236,8 +233,9 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         # ------------------------------------------------------------------
         # 2. Apply the proposal in the database if not already applied
         # ------------------------------------------------------------------
+        # Pass active connection `conn` to reuse transaction and avoid database lock (Feedback #622)
         if proposal["status"] != "applied":
-            apply_result = apply_edit_proposal(proposal_id)
+            apply_result = apply_edit_proposal(proposal_id, conn=conn)
             if apply_result.get("status") != "success":
                 terminal = apply_result.get("status") or "error"
                 if terminal not in ("conflicted", "error", "failed"):
@@ -258,7 +256,14 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         task_id = proposal["task_id"] if "task_id" in proposal.keys() else None
 
         for target_path in affected_paths:
-            op_file_id = before_state[target_path]["file_id"]
+            # Fix for Feedback #396: Use .get() to prevent KeyError if before_state is incomplete
+            state = before_state.get(target_path, {})
+            op_file_id = state.get("file_id")
+
+            # If state is missing, ensure we have a file_id to proceed
+            if op_file_id is None:
+                op_file_id = _get_or_create_file_id(conn, target_path)
+
             content_after = reconstruct_file_content(conn, op_file_id) or ""
             hash_after = _compute_hash(content_after)
 
@@ -266,40 +271,23 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             write_results.append(res)
 
             if res.get("status") == "success":
-                # ----------------------------------------------------------
-                # Normalize path against the configured project_directory.
-                # Prefer the absolute path returned by write_file_to_disk
-                # when available; otherwise force containment ourselves.
-                # ----------------------------------------------------------
-                written_path = res.get("file_path") or target_path
+                # Refresh symbol index (existing logic)
                 try:
-                    resolved_path = _resolve_contained_path(written_path, project_dir)
-                    rel_path = str(resolved_path.relative_to(project_dir)).replace("\\", "/")
-                except ValueError as path_err:
+                    from core.config import get_config
+                    from core.index_context import refresh_file_symbols
+
+                    pd = Path(get_config().get("project_directory", "./project")).resolve()
+                    rel = str(Path(target_path).resolve().relative_to(pd)).replace("\\", "/")
+                    if rel.endswith(".py"):
+                        refresh_file_symbols(rel, content_after)
+                except Exception as _idx_err:
                     log_error(
                         "file_editing",
-                        "path_normalize",
-                        "MEDIUM",
-                        f"Could not normalize path inside project_directory: {path_err}",
+                        "index_refresh",
+                        "LOW",
+                        f"Symbol index refresh failed: {_idx_err}",
                         proposal_id=proposal_id,
                     )
-                    resolved_path = None
-                    rel_path = None
-
-                # Refresh symbol index (only when we have a clean relative path)
-                if rel_path and rel_path.endswith(".py"):
-                    try:
-                        from core.index_context import refresh_file_symbols
-
-                        refresh_file_symbols(rel_path, content_after)
-                    except Exception as _idx_err:
-                        log_error(
-                            "file_editing",
-                            "index_refresh",
-                            "LOW",
-                            f"Symbol index refresh failed: {_idx_err}",
-                            proposal_id=proposal_id,
-                        )
 
                 # Update files table
                 conn.execute(
@@ -312,7 +300,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                 )
 
                 # ----------------------------------------------------------
-                # Record the change in file_modifications
+                # NEW: Record the change in file_modifications
                 # ----------------------------------------------------------
                 try:
                     conn.execute(
@@ -326,9 +314,9 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                         (
                             target_path,
                             "materialize",
-                            before_state[target_path]["content"],
+                            state.get("content", ""),
                             content_after,
-                            before_state[target_path]["hash"],
+                            state.get("hash", ""),
                             hash_after,
                             "developer",
                             task_id,
@@ -343,30 +331,41 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                         proposal_id=proposal_id,
                     )
 
-                # ----------------------------------------------------------
-                # Git add + commit using the configured project root
-                # ----------------------------------------------------------
-                if resolved_path is not None and rel_path is not None:
-                    try:
-                        subprocess.run(
-                            ["git", "add", "--", rel_path],
-                            cwd=str(project_dir),
-                            check=False,
-                            timeout=10,
-                        )
-                        subprocess.run(
-                            [
-                                "git",
-                                "commit",
-                                "-m",
-                                f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
-                            ],
-                            cwd=str(project_dir),
-                            check=False,
-                            timeout=10,
-                        )
-                    except Exception as e:
-                        print(f"    ⚠️  Exception handled in writer.py (git): {e}")
+                # Optional git commit with safety checks and validation (Feedback #56)
+                try:
+                    import shutil
+
+                    target_p = Path(target_path).resolve()
+                    if shutil.which("git") and target_p.exists():
+                        project_root = target_p.parent
+                        if project_root.exists():
+                            check_repo = subprocess.run(
+                                ["git", "rev-parse", "--is-inside-work-tree"],
+                                cwd=project_root,
+                                capture_output=True,
+                                text=True,
+                                timeout=5,
+                            )
+                            if check_repo.returncode == 0 and check_repo.stdout.strip() == "true":
+                                subprocess.run(
+                                    ["git", "add", "--", str(target_p)],
+                                    cwd=project_root,
+                                    check=False,
+                                    timeout=10,
+                                    capture_output=True,
+                                )
+                                commit_msg = f"[PrizmForge] Agent edit via proposal {str(proposal_id)[:8]}"
+                                subprocess.run(
+                                    ["git", "commit", "-m", commit_msg, "--", str(target_p)],
+                                    cwd=project_root,
+                                    check=False,
+                                    timeout=10,
+                                    capture_output=True,
+                                )
+                except (subprocess.SubprocessError, OSError) as e:
+                    log_error("file_editing", "git_commit", "LOW", f"Git operation failed safely: {e}", proposal_id=proposal_id)
+                except Exception as e:
+                    print(f"    ⚠️  Exception handled in writer.py: {e}")
             else:
                 conn.execute(
                     "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",

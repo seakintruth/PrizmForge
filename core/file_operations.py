@@ -191,43 +191,39 @@ def is_text_file(file_path: str, sample_size: int = 8192) -> bool:
         file_path: Path to the file.
         sample_size: Number of bytes to read for content inspection.
 
-    Returns:
-        True if the file is likely text, False otherwise.
-    """
-    path = Path(file_path)
-    suffix = path.suffix.lower()
-
-    # === Fast path: Known binary extensions ===
-    if suffix in _BINARY_EXTENSIONS:
-        return False
-
-    # === Fast path: Known text extensions ===
-    if suffix in _TEXT_EXTENSIONS:
-        return True
-
-    # === Fallback: Content inspection for unknown extensions ===
     try:
+        path = Path(file_path)
+        suffix = path.suffix.lower()
+
+        # === Fast path: Known binary extensions ===
+        if suffix in _BINARY_EXTENSIONS:
+            return False
+
+        # === Fast path: Known text extensions ===
+        if suffix in _TEXT_EXTENSIONS:
+            return True
+
+        # === Fallback: Content inspection for unknown extensions ===
         # Handle files with no extension or unknown extensions
+        # path.exists() and path.is_file() can fail on certain special OS files or permissions
         if not path.exists() or not path.is_file():
             return False
 
         with open(file_path, "rb") as f:
             sample = f.read(sample_size)
 
-        # Heuristic: Presence of null byte strongly indicates binary
-        if b"\x00" in sample:
-            return False
-
-        # Optional: Check ratio of printable characters (more expensive)
-        # This helps catch some edge cases
-        if len(sample) > 0:
-            printable = sum(1 for b in sample if 32 <= b < 127 or b in (9, 10, 13))
-            if printable / len(sample) < 0.7:
+            # Heuristic: Presence of null byte strongly indicates binary
+            if b"\x00" in sample:
                 return False
 
-        return True
+            # Optional: Check ratio of printable characters (more expensive)
+            if len(sample) > 0:
+                printable = sum(1 for b in sample if 32 <= b < 127 or b in (9, 10, 13))
+                if printable / len(sample) < 0.7:
+                    return False
 
-    except (OSError, PermissionError):
+        return True
+    except (OSError, PermissionError, ValueError):
         # If we can't read the file, be conservative
         return False
 
