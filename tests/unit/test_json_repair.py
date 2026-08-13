@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-
 VALID_ORCH_JSON = json.dumps(
     {
         "feedback_summary": "ok",

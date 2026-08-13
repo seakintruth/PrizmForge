@@ -714,12 +714,7 @@ If you cannot analyze the file, return:
     # ------------------------------------------------------------------
     # Only for strict JSON agents, only when the response is non-empty
     # but fails to parse, and only once (guarded by _is_repair_attempt).
-    if (
-        not _is_repair_attempt
-        and agent_name not in TEXT_OUTPUT_AGENTS
-        and response
-        and response.strip()
-    ):
+    if not _is_repair_attempt and agent_name not in TEXT_OUTPUT_AGENTS and response and response.strip():
         probe = parse_json_response(
             response,
             strict=False,
@@ -735,9 +730,7 @@ If you cannot analyze the file, return:
                 "- Last character must be }\n"
                 "- No markdown fences, no commentary, no headings, no explanation.\n"
             )
-            repair_context = (context or []) + [
-                {"role": "assistant", "content": response[:4000]}
-            ]
+            repair_context = (context or []) + [{"role": "assistant", "content": response[:4000]}]
             repaired = call_agent(
                 agent_name,
                 repair_prompt,
@@ -750,9 +743,7 @@ If you cannot analyze the file, return:
             )
             if repaired and repaired.strip():
                 # Prefer the repaired version if it now parses; otherwise keep original
-                repaired_probe = parse_json_response(
-                    repaired, strict=False, agent_name=agent_name
-                )
+                repaired_probe = parse_json_response(repaired, strict=False, agent_name=agent_name)
                 if repaired_probe is not None:
                     print(f"  ✅ {agent_name}: JSON repair succeeded")
                     response = repaired
