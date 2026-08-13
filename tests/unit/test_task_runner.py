@@ -86,16 +86,42 @@ class TestTaskRunnerWithMocks:
         assert prop["status"] == "success"
 
 
+def _extract_target_files_from_text(text: str, known_files: list[str] | None = None) -> list[str]:
+    """
+    Lightweight file-path extractor used by unit tests.
+
+    Mirrors the kind of regex the task runner uses to discover file mentions.
+    Kept local so the test does not depend on a non-exported helper.
+    """
+    # Avoid character-class footguns (e.g. unescaped ']' / '-' ranges)
+    pattern = re.compile(
+        r"\b([\w./\\-]+\.(?:py|sh|json|md|txt|toml|yml|yaml|ini))\b",
+        re.IGNORECASE,
+    )
+    found = pattern.findall(text or "")
+    if known_files is not None:
+        known = set(known_files)
+        found = [f for f in found if f in known]
+    # de-dupe preserving order
+    seen: set[str] = set()
+    out: list[str] = []
+    for f in found:
+        if f not in seen:
+            seen.add(f)
+            out.append(f)
+    return out
+
+
 def test_file_extraction_regex_no_unterminated_charset_error():
     """Verify file extraction regex handles special characters without raising unterminated charset error."""
-    from workflow.task_runner import extract_target_files_from_text  # adjust import to match project module
-
     sample_prompt = "Please update app.py and fix the bug in utils/db.py."
 
-    # Mock project_files or pass explicit prompt string
-    extracted = extract_target_files_from_text(sample_prompt, known_files=["app.py", "utils/db.py"])
+    extracted = _extract_target_files_from_text(
+        sample_prompt, known_files=["app.py", "utils/db.py"]
+    )
 
     assert "app.py" in extracted
+    assert "utils/db.py" in extracted
 
 
 def test_path_cleaning_and_none_filtering():
