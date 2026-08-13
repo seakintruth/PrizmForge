@@ -1,6 +1,6 @@
 # =============================================================================
 # tests/test_governed_editing.py
-# Version: 2.2 - Updated payloads to match current EditPayload v1.3
+# Version: 2.3 - Fix usedforsecurity keyword placement (Python 3.12)
 # =============================================================================
 
 import hashlib
@@ -21,7 +21,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _compute_content_hash(content: str) -> str:
-    return hashlib.md5(content.encode(usedforsecurity=False)).hexdigest()
+    return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
 
 @pytest.fixture(scope="function")
