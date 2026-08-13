@@ -8,7 +8,6 @@ against the configured project_directory (file_editing/writer.py).
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -147,8 +146,10 @@ class TestMaterializePathNormalizationLogic:
 
     def test_git_add_args_use_relative_path_and_project_cwd(self, project_env):
         """
-        Simulate the git block in materialize_proposal: cwd must be project_dir
-        and the pathspec must be relative.
+        Assert the argv/cwd shape materialize_proposal uses for git add/commit.
+
+        Builds the same argument lists the production code constructs; does not
+        invoke subprocess (avoids Bandit S603/S607 on partial executable paths).
         """
         from file_editing.writer import _resolve_contained_path, write_file_to_disk
 
@@ -159,24 +160,18 @@ class TestMaterializePathNormalizationLogic:
         resolved = _resolve_contained_path(res["file_path"], proj)
         rel = str(resolved.relative_to(proj)).replace("\\", "/")
 
-        git_calls = []
+        # Mirror the production argv construction in file_editing/writer.py
+        add_cmd = ["git", "add", "--", rel]
+        commit_cmd = [
+            "git",
+            "commit",
+            "-m",
+            "[PrizmForge] Agent edit via proposal deadbeef",
+        ]
+        git_cwd = str(proj)
 
-        def fake_run(cmd, **kwargs):
-            git_calls.append({"cmd": list(cmd), "cwd": kwargs.get("cwd")})
-            return MagicMock(returncode=0)
-
-        with patch("subprocess.run", side_effect=fake_run):
-            import subprocess
-
-            subprocess.run(["git", "add", "--", rel], cwd=str(proj), check=False, timeout=10)
-            subprocess.run(
-                ["git", "commit", "-m", "[PrizmForge] Agent edit via proposal deadbeef"],
-                cwd=str(proj),
-                check=False,
-                timeout=10,
-            )
-
-        assert git_calls[0]["cmd"] == ["git", "add", "--", "workflow/task_runner.py"]
-        assert Path(git_calls[0]["cwd"]).resolve() == proj
-        assert git_calls[1]["cmd"][0:2] == ["git", "commit"]
-        assert Path(git_calls[1]["cwd"]).resolve() == proj
+        assert add_cmd == ["git", "add", "--", "workflow/task_runner.py"]
+        assert not Path(rel).is_absolute()
+        assert Path(git_cwd).resolve() == proj
+        assert commit_cmd[0:2] == ["git", "commit"]
+        assert "--" in add_cmd  # pathspec separator used by production code

@@ -7,6 +7,7 @@ Unit tests for the controlled one-shot JSON repair path in agents.base.call_agen
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -29,7 +30,7 @@ I recommend calling the developer next.
 
 
 @pytest.fixture
-def stub_agent_deps(monkeypatch):
+def stub_agent_deps(monkeypatch, tmp_path):
     """Minimal stubs so call_agent can run without network or real config."""
     prompts = {
         "orchestrator": {"system_prompt": "You are the orchestrator. Respond with JSON only."},
@@ -61,11 +62,14 @@ def stub_agent_deps(monkeypatch):
         raising=False,
     )
 
-    # Minimal config
+    # Minimal config — use pytest tmp_path (no hard-coded /tmp; satisfies Bandit S108)
     from core import config as config_mod
 
+    project_dir = str(tmp_path / "test_project")
+    Path(project_dir).mkdir(parents=True, exist_ok=True)
+
     cfg = {
-        "project_directory": "/tmp/test_project",
+        "project_directory": project_dir,
         "default_model": "mock-model",
         "agent_model_preferences": {
             "orchestrator": "mock-model",
