@@ -14,7 +14,7 @@ from .editing import apply_edit_proposal
 
 # =============================================================================
 # PrizmForge/file_editing/writer.py
-# Version: 1.4 - Critical column name fixes + improved invalidation + init files
+# Version: 1.5 - Path normalization against configured project_directory
 # Purpose: FileWriterAgent - Materializes proposals to disk + git + invalidation
 # =============================================================================
 
@@ -194,6 +194,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     record the change in file_modifications, invalidate overlapping proposals,
     and perform git commit if enabled.
     """
+    from core.config import get_config
     from file_editing.edit_payload import EditPayload
     from workflow.proposal_builder import _get_or_create_file_id
 
@@ -202,6 +203,9 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
 
         if not proposal:
             return {"status": "error", "message": "Proposal not found"}
+
+        # Single source of truth for the project root
+        project_dir = Path(get_config().get("project_directory", "./project")).resolve()
 
         # ------------------------------------------------------------------
         # 1. Capture BEFORE state for every file that will be touched
@@ -262,23 +266,40 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             write_results.append(res)
 
             if res.get("status") == "success":
-                # Refresh symbol index (existing logic)
+                # ----------------------------------------------------------
+                # Normalize path against the configured project_directory.
+                # Prefer the absolute path returned by write_file_to_disk
+                # when available; otherwise force containment ourselves.
+                # ----------------------------------------------------------
+                written_path = res.get("file_path") or target_path
                 try:
-                    from core.config import get_config
-                    from core.index_context import refresh_file_symbols
-
-                    pd = Path(get_config().get("project_directory", "./project")).resolve()
-                    rel = str(Path(target_path).resolve().relative_to(pd)).replace("\\", "/")
-                    if rel.endswith(".py"):
-                        refresh_file_symbols(rel, content_after)
-                except Exception as _idx_err:
+                    resolved_path = _resolve_contained_path(written_path, project_dir)
+                    rel_path = str(resolved_path.relative_to(project_dir)).replace("\\", "/")
+                except ValueError as path_err:
                     log_error(
                         "file_editing",
-                        "index_refresh",
-                        "LOW",
-                        f"Symbol index refresh failed: {_idx_err}",
+                        "path_normalize",
+                        "MEDIUM",
+                        f"Could not normalize path inside project_directory: {path_err}",
                         proposal_id=proposal_id,
                     )
+                    resolved_path = None
+                    rel_path = None
+
+                # Refresh symbol index (only when we have a clean relative path)
+                if rel_path and rel_path.endswith(".py"):
+                    try:
+                        from core.index_context import refresh_file_symbols
+
+                        refresh_file_symbols(rel_path, content_after)
+                    except Exception as _idx_err:
+                        log_error(
+                            "file_editing",
+                            "index_refresh",
+                            "LOW",
+                            f"Symbol index refresh failed: {_idx_err}",
+                            proposal_id=proposal_id,
+                        )
 
                 # Update files table
                 conn.execute(
@@ -291,7 +312,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                 )
 
                 # ----------------------------------------------------------
-                # NEW: Record the change in file_modifications
+                # Record the change in file_modifications
                 # ----------------------------------------------------------
                 try:
                     conn.execute(
@@ -322,15 +343,30 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                         proposal_id=proposal_id,
                     )
 
-                # Optional git commit (existing logic)
-                try:
-                    project_root = Path(target_path).parent
-                    subprocess.run(["git", "add", target_path], cwd=project_root, check=False, timeout=10)
-                    subprocess.run(
-                        ["git", "commit", "-m", f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"], cwd=project_root, check=False, timeout=10
-                    )
-                except Exception as e:
-                    print(f"    ⚠️  Exception handled in writer.py: {e}")
+                # ----------------------------------------------------------
+                # Git add + commit using the configured project root
+                # ----------------------------------------------------------
+                if resolved_path is not None and rel_path is not None:
+                    try:
+                        subprocess.run(
+                            ["git", "add", "--", rel_path],
+                            cwd=str(project_dir),
+                            check=False,
+                            timeout=10,
+                        )
+                        subprocess.run(
+                            [
+                                "git",
+                                "commit",
+                                "-m",
+                                f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
+                            ],
+                            cwd=str(project_dir),
+                            check=False,
+                            timeout=10,
+                        )
+                    except Exception as e:
+                        print(f"    ⚠️  Exception handled in writer.py (git): {e}")
             else:
                 conn.execute(
                     "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
