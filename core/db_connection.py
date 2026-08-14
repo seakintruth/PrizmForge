@@ -44,10 +44,7 @@ def _backoff_sleep(attempt: int, deadline: float, *, cap: float = 2.0) -> bool:
     jitter = min(delay * 0.1, max(0.0, remaining - delay))
     sleep_for = delay + jitter
     if sleep_for > 0:
-        print(
-            f"    ⏳ DB lock: retry {attempt + 1}, "
-            f"sleep {sleep_for:.2f}s, budget left {max(0.0, remaining - sleep_for):.2f}s"
-        )
+        print(f"    ⏳ DB lock: retry {attempt + 1}, sleep {sleep_for:.2f}s, budget left {max(0.0, remaining - sleep_for):.2f}s")
         time.sleep(sleep_for)
     return (deadline - time.monotonic()) > 0
 
@@ -154,9 +151,7 @@ def _commit_with_retry(
             if not _backoff_sleep(attempt, deadline):
                 break
 
-    raise DatabaseRetryError(
-        f"Commit failed after {retries} attempts or {max_retry_seconds:.1f}s budget: {last_error}"
-    ) from last_error
+    raise DatabaseRetryError(f"Commit failed after {retries} attempts or {max_retry_seconds:.1f}s budget: {last_error}") from last_error
 
 
 def _checkpoint_with_retry(
@@ -226,6 +221,4 @@ def execute_with_retry(
             if not _backoff_sleep(attempt, deadline):
                 break
 
-    raise DatabaseRetryError(
-        f"Query failed after {retries} attempts or {max_retry_seconds:.1f}s budget: {last_error}"
-    ) from last_error
+    raise DatabaseRetryError(f"Query failed after {retries} attempts or {max_retry_seconds:.1f}s budget: {last_error}") from last_error
