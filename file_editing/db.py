@@ -1,6 +1,6 @@
 # =============================================================================
 # PrizmForge/file_editing/db.py
-# Version: 1.3 - Consolidated database path with core.db
+# Version: 1.4 - WAL journal mode for concurrent agent access
 # Purpose: Database connection, error logging, and reconstruction helpers
 # =============================================================================
 
@@ -34,8 +34,7 @@ def get_db_connection():
     conn = sqlite3.connect(get_db_path(), timeout=60.0)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=OFF")
-        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA journal_mode=WAL")
     except Exception as e:
         print(f"    ⚠️  Exception handled in db.py: {e}")
     try:
