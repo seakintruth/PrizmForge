@@ -34,42 +34,58 @@ def fetch_latest_reviewer_feedback(task_id: str, target_file: str) -> dict | Non
     """
     Fetches the most recent unaddressed Reviewer rejection reason and suggestions
     for a given task and target file.
+
+    Schema (core/db.py agent_feedback):
+      message, suggestion, timestamp — NOT feedback_text / created_at
+    Schema (edit_proposals):
+      proposal_id PK — no task_id column
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            # First, check unaddressed agent_feedback table
+            # agent_feedback: message + optional suggestion; order by timestamp then id
             cursor.execute(
                 """
-                SELECT id, feedback_text
+                SELECT id, message, suggestion
                 FROM agent_feedback
-                WHERE task_id = ? AND file_path = ? AND agent_name = 'reviewer' AND addressed = 0
-                ORDER BY created_at DESC
+                WHERE task_id = ?
+                  AND file_path = ?
+                  AND agent_name = 'reviewer'
+                  AND addressed = 0
+                ORDER BY COALESCE(timestamp, '') DESC, id DESC
                 LIMIT 1
-            """,
+                """,
                 (task_id, target_file),
             )
 
             fb_row = cursor.fetchone()
             if fb_row:
-                return {"feedback_id": fb_row[0], "reason": fb_row[1]}
+                msg = (fb_row[1] or "").strip()
+                sug = (fb_row[2] or "").strip()
+                reason = msg
+                if sug:
+                    reason = f"{msg}\nSuggestion: {sug}" if msg else sug
+                return {"feedback_id": fb_row[0], "reason": reason or "Reviewer rejection (no detail)"}
 
-            # Fallback: Query the latest rejected edit proposal for this file and task
+            # Fallback: latest rejected proposal for this file (no task_id on edit_proposals)
             cursor.execute(
                 """
-                SELECT id, rationale
+                SELECT proposal_id, rationale
                 FROM edit_proposals
-                WHERE task_id = ? AND target_file_path = ? AND status = 'rejected'
-                ORDER BY created_at DESC
+                WHERE target_file_path = ? AND status = 'rejected'
+                ORDER BY COALESCE(created_at, '') DESC
                 LIMIT 1
-            """,
-                (task_id, target_file),
+                """,
+                (target_file,),
             )
 
             prop_row = cursor.fetchone()
             if prop_row:
-                return {"proposal_id": prop_row[0], "reason": prop_row[1] or "Proposal rejected by Reviewer"}
+                return {
+                    "proposal_id": prop_row[0],
+                    "reason": prop_row[1] or "Proposal rejected by Reviewer",
+                }
 
     except Exception as e:
         print(f"   ⚠️ Could not fetch reviewer feedback: {e}")
@@ -473,7 +489,7 @@ def run_developer_mutation(  # noqa: C901
             "MEDIUM",
         )
 
-    # 🎯 PHASE 3 INJECTION: Write rejection feedback directly to agent_feedback table
+    # 🎯 PHASE 3 INJECTION: Write rejection feedback using real schema columns
     if decision_result == "REJECT":
         print(f"   ❌ Reviewer rejected proposal: {reason}")
         update_proposal_status(proposal_id, "rejected")
@@ -483,13 +499,15 @@ def run_developer_mutation(  # noqa: C901
                 conn.execute(
                     """
                     INSERT INTO agent_feedback
-                    (task_id, file_path, agent_name, feedback_text, priority, addressed, created_at)
-                    VALUES (?, ?, 'reviewer', ?, 'HIGH', 0, ?)
-                """,
+                    (task_id, file_path, agent_name, message, suggestion,
+                     priority, category, addressed, timestamp)
+                    VALUES (?, ?, 'reviewer', ?, ?, 'HIGH', 'review_rejection', 0, ?)
+                    """,
                     (
                         task_id,
                         target_file_path,
                         f"Proposal {proposal_id} REJECTED: {reason}",
+                        "; ".join(suggestions) if suggestions else None,
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )
