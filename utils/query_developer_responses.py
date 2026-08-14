@@ -15,13 +15,15 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+# Project root must be on sys.path before package imports.
+# Required when invoking this file directly (not only via `python -m utils...`).
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from cli.commands import cmd_export_db
 from core.db import get_db_path
 from core.db_connection import get_db_connection
-
-# Add project root to path
-PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT))
 
 
 # ---------------------------------------------------------------------------
@@ -64,8 +66,8 @@ def list_recent_developer_responses(
                 FROM agent_responses_archive r
                 JOIN agent_responses_archive rev ON (rev.id = r.id + 1 OR rev.id = r.id + 2)
                     AND rev.agent_name = 'reviewer'
-                    AND rev.response LIKE '%"decision": "APPROVE"%'
-                    AND rev.response NOT LIKE '%"decision": "REJECT"%'
+                    AND rev.response LIKE '%\"decision\": \"APPROVE\"%'
+                    AND rev.response NOT LIKE '%\"decision\": \"REJECT\"%'
                 JOIN edit_proposals p ON p.task_id = r.task_id AND p.status = 'applied'
                 WHERE {where_clause}
                 ORDER BY r.timestamp DESC
