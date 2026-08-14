@@ -1,13 +1,19 @@
-import logging
+"""LLM response parsing facade over the canonical JSON parser types."""
 
-# Import the canonical ParseResult used across the repo
-from core.json_parser import ParseResult
+from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any
+
+from core.json_parser import ParseResult, ParseStatus
 
 logger = logging.getLogger(__name__)
 
 
 class ResponseParser:
-    """Single source of truth for LLM response parsing"""
+    """Strategy-based extraction of JSON from free-form LLM responses."""
 
     def __init__(self, expected_format: str = "json"):
         self.expected_format = expected_format
@@ -18,19 +24,98 @@ class ResponseParser:
         ]
 
     def parse(self, response: str) -> ParseResult:
+        if not response or not str(response).strip():
+            return ParseResult(
+                status=ParseStatus.EMPTY,
+                data=None,
+                error="Empty response",
+                raw_json=None,
+                confidence=0.0,
+            )
+
+        last_error: str | None = None
         for strategy in self.strategies:
             try:
                 extracted = strategy(response)
-                if extracted:
-                    return self._validate_and_parse(extracted)
+                if not extracted:
+                    continue
+                result = self._validate_and_parse(extracted)
+                if result.success:
+                    return result
+                last_error = result.error
             except Exception as e:
-                logger.debug(f"Strategy {strategy.__name__} failed: {e}")
+                last_error = str(e)
+                logger.debug("Strategy %s failed: %s", strategy.__name__, e)
                 continue
 
         return ParseResult(
-            status=ParseResult.__dataclass_fields__ and None,
-            error="All strategies failed",
+            status=ParseStatus.MALFORMED,
             data=None,
-            raw_json=None,
+            error=last_error or "All strategies failed",
+            raw_json=(response[:500] if response else None),
             confidence=0.0,
-        )  # placeholder if needed
+        )
+
+    def _extract_markdown_json(self, response: str) -> str | None:
+        """Extract JSON inside ```json ... ``` fences."""
+        match = re.search(r"```json\s*(.*?)\s*```", response, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+        return None
+
+    def _extract_code_block(self, response: str) -> str | None:
+        """Extract content inside generic ``` ... ``` fences when it looks like JSON."""
+        match = re.search(r"```\s*(.*?)\s*```", response, re.DOTALL)
+        if not match:
+            return None
+        content = match.group(1).strip()
+        # Drop optional language tag on first line
+        if "\n" in content:
+            first, rest = content.split("\n", 1)
+            if first.isalpha() and first.lower() != "json":
+                content = rest.strip()
+        if content.startswith("{") or content.startswith("["):
+            return content
+        return None
+
+    def _extract_raw_json(self, response: str) -> str | None:
+        """Best-effort brace/bracket slice from free text."""
+        if not response:
+            return None
+        text = response.strip()
+        start_brace = text.find("{")
+        end_brace = text.rfind("}")
+        start_bracket = text.find("[")
+        end_bracket = text.rfind("]")
+
+        candidates: list[tuple[int, str]] = []
+        if start_brace != -1 and end_brace > start_brace:
+            candidates.append((start_brace, text[start_brace : end_brace + 1]))
+        if start_bracket != -1 and end_bracket > start_bracket:
+            candidates.append((start_bracket, text[start_bracket : end_bracket + 1]))
+
+        if not candidates:
+            return text if text[:1] in "{[" else None
+
+        # Prefer the earliest starting structure
+        candidates.sort(key=lambda c: c[0])
+        return candidates[0][1]
+
+    def _validate_and_parse(self, extracted: str) -> ParseResult:
+        try:
+            data: Any = json.loads(extracted)
+            return ParseResult(
+                status=ParseStatus.SUCCESS,
+                data=data if isinstance(data, dict) else {"_value": data},
+                error=None,
+                raw_json=extracted,
+                confidence=1.0,
+            )
+        except json.JSONDecodeError as e:
+            return ParseResult(
+                status=ParseStatus.MALFORMED,
+                data=None,
+                error=f"JSON decode error: {e.msg} at position {e.pos}",
+                raw_json=extracted,
+                confidence=0.0,
+            )
