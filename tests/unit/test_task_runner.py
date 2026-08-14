@@ -116,9 +116,7 @@ def test_file_extraction_regex_no_unterminated_charset_error():
     """Verify file extraction regex handles special characters without raising unterminated charset error."""
     sample_prompt = "Please update app.py and fix the bug in utils/db.py."
 
-    extracted = _extract_target_files_from_text(
-        sample_prompt, known_files=["app.py", "utils/db.py"]
-    )
+    extracted = _extract_target_files_from_text(sample_prompt, known_files=["app.py", "utils/db.py"])
 
     assert "app.py" in extracted
     assert "utils/db.py" in extracted
