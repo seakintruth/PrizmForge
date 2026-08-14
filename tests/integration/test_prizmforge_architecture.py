@@ -39,8 +39,7 @@ def memory_db():
         );
 
         CREATE TABLE edit_proposals (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT,
+            proposal_id TEXT PRIMARY KEY,
             target_file_path TEXT,
             rationale TEXT,
             status TEXT,
@@ -63,12 +62,14 @@ def memory_db():
             task_id TEXT,
             file_path TEXT,
             agent_name TEXT,
-            feedback_text TEXT,
+            message TEXT,
+            suggestion TEXT,
             priority TEXT DEFAULT 'HIGH',
+            category TEXT,
             addressed INTEGER DEFAULT 0,
             addressed_by TEXT,
             addressed_at TEXT,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            timestamp TEXT
         );
     """)
     conn.commit()
@@ -123,13 +124,23 @@ def test_build_generation_prompt_fallback_injection():
 def test_closed_loop_reviewer_feedback(memory_db):
     """Phase 3: Unaddressed Reviewer feedback is extracted and injected into Developer prompt."""
     cursor = memory_db.cursor()
-    cursor.execute("""
-        INSERT INTO agent_feedback (task_id, file_path, agent_name, feedback_text, addressed)
-        VALUES ('task_001', 'main.py', 'reviewer', 'Proposal 42 REJECTED: Syntax error on line 10', 0)
-    """)
+    cursor.execute(
+        """
+        INSERT INTO agent_feedback (task_id, file_path, agent_name, message, addressed, timestamp)
+        VALUES ('task_001', 'main.py', 'reviewer', 'Proposal 42 REJECTED: Syntax error on line 10', 0, '2026-01-01T00:00:00')
+        """
+    )
     memory_db.commit()
 
-    with patch("workflow.developer_edit.get_db_connection", return_value=memory_db):
+    # get_db_connection is a context manager — yield the in-memory conn
+    class _CM:
+        def __enter__(self):
+            return memory_db
+
+        def __exit__(self, *args):
+            return False
+
+    with patch("workflow.developer_edit.get_db_connection", return_value=_CM()):
         from workflow.developer_edit import _build_generation_prompt
 
         prompt = _build_generation_prompt(
@@ -146,19 +157,21 @@ def test_closed_loop_reviewer_feedback(memory_db):
 # =========================================================================
 # PHASE 4: EXACT SQL RESPONSE LINKING
 # =========================================================================
-# =========================================================================
-# PHASE 4: EXACT SQL RESPONSE LINKING
-# =========================================================================
 
 
 def test_sql_response_exact_matching(memory_db):
     """Phase 4: Developer attempt N links strictly to Reviewer APPROVE response N+1/N+2."""
     cursor = memory_db.cursor()
     cursor.execute("INSERT INTO tasks VALUES ('task_001', 'Test Task', 'in_progress', 'now', NULL)")
-    cursor.execute("INSERT INTO edit_proposals (id, task_id, target_file_path, status) VALUES (1, 'task_001', 'app.py', 'applied')")
+    # Minimal columns for query_developer_responses joins; schema here is test-local
+    cursor.execute(
+        "INSERT INTO edit_proposals (proposal_id, target_file_path, status) VALUES ('p1', 'app.py', 'applied')"
+    )
 
     # Developer Attempt 1 -> Rejected
-    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')")
+    cursor.execute(
+        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')"
+    )
     cursor.execute(
         "INSERT INTO agent_responses_archive "
         "(id, agent_name, task_id, prompt, response) "
@@ -166,7 +179,9 @@ def test_sql_response_exact_matching(memory_db):
     )
 
     # Developer Attempt 2 -> Approved
-    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (3, 'developer', 'task_001', 'p3', 'r3')")
+    cursor.execute(
+        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (3, 'developer', 'task_001', 'p3', 'r3')"
+    )
     cursor.execute(
         "INSERT INTO agent_responses_archive "
         "(id, agent_name, task_id, prompt, response) "
@@ -174,8 +189,14 @@ def test_sql_response_exact_matching(memory_db):
     )
     memory_db.commit()
 
-    # Updated: Target 'utils.query_developer_responses'
-    with patch("utils.query_developer_responses.get_db_connection", return_value=memory_db):
+    class _CM:
+        def __enter__(self):
+            return memory_db
+
+        def __exit__(self, *args):
+            return False
+
+    with patch("utils.query_developer_responses.get_db_connection", return_value=_CM()):
         from utils.query_developer_responses import list_recent_developer_responses
 
         ids = list_recent_developer_responses(task_id="task_001", modified_only=True)
@@ -194,7 +215,14 @@ def test_export_db_full_scope(memory_db, tmp_path):
     cursor.execute("INSERT INTO tasks VALUES ('task_002', 'T2', 'completed', 'now', 'now')")
     memory_db.commit()
 
-    with patch("cli.commands.get_db_connection", return_value=memory_db):
+    class _CM:
+        def __enter__(self):
+            return memory_db
+
+        def __exit__(self, *args):
+            return False
+
+    with patch("cli.commands.get_db_connection", return_value=_CM()):
         from cli.commands import cmd_export_db
 
         export_dir = tmp_path / "exports"
