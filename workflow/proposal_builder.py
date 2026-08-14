@@ -9,9 +9,9 @@ from file_editing.edit_payload import EditPayload
 
 # =============================================================================
 # PrizmForge/workflow/proposal_builder.py
-# Version: 1.7
+# Version: 1.8
 # Purpose: Bridge between Developer agent output and governed edit proposals
-#          Fully aligned with current edit_proposals schema
+#          Fully aligned with current edit_proposals schema (includes task_id)
 # =============================================================================
 
 
@@ -84,6 +84,7 @@ def create_proposal_from_developer_output(
     selected_mode: str | None = None,
     fallback_used: bool = False,
     final_mode: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
     """Creates a governed edit proposal from Developer output."""
     try:
@@ -98,11 +99,12 @@ def create_proposal_from_developer_output(
 
             proposal_id = str(uuid4())
 
-            # Best-effort: ensure mode metadata columns exist (safe for existing DBs)
+            # Best-effort: ensure metadata columns exist (safe for existing DBs)
             for col, coltype in (
                 ("selected_mode", "TEXT"),
                 ("fallback_used", "INTEGER DEFAULT 0"),
                 ("final_mode", "TEXT"),
+                ("task_id", "TEXT"),
             ):
                 try:
                     conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
@@ -139,8 +141,9 @@ def create_proposal_from_developer_output(
                     write_end_line_guid,
                     selected_mode,
                     fallback_used,
-                    final_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), NULL, NULL, NULL, NULL, NULL, ?, ?, ?)
+                    final_mode,
+                    task_id
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, datetime('now'), NULL, NULL, NULL, NULL, NULL, ?, ?, ?, ?)
             """,
                 (
                     proposal_id,
@@ -154,6 +157,7 @@ def create_proposal_from_developer_output(
                     selected_mode,
                     1 if fallback_used else 0,
                     final_mode or selected_mode,
+                    task_id,
                 ),
             )
 
@@ -173,6 +177,7 @@ def create_proposal_from_developer_output(
                 "selected_mode": selected_mode,
                 "fallback_used": fallback_used,
                 "final_mode": final_mode or selected_mode,
+                "task_id": task_id,
                 "message": "Proposal created and ready for review",
             }
 
@@ -180,11 +185,13 @@ def create_proposal_from_developer_output(
         publish_event(
             "proposal.created",
             source="proposal_builder",
+            task_id=task_id,
             proposal_id=result["proposal_id"],
             payload={
                 "target_file_path": result["target_file_path"],
                 "selected_mode": result.get("selected_mode"),
                 "fallback_used": result.get("fallback_used"),
+                "task_id": task_id,
             },
         )
         return result
