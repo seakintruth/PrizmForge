@@ -43,7 +43,9 @@ class EndpointConfig:
         """Extract response text using configured path"""
         result = data
         for key in self.response_path:
-            if isinstance(key, int):
+            if isinstance(result, list) and isinstance(key, int):
+                result = result[key]
+            elif isinstance(result, dict):
                 result = result[key]
             else:
                 result = result[key]

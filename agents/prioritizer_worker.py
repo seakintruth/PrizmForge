@@ -18,7 +18,7 @@ from core.json_parser import parse_json_response
 class FeedbackItem:
     """Feedback item with metadata"""
 
-    id: int
+    id: str
     from_agent: str
     file_path: str
     priority: str
@@ -26,6 +26,8 @@ class FeedbackItem:
     message: str
     suggestion: str
     timestamp: str
+    raw_id: int = 0
+    item_type: str = "feedback"
     bias_multiplier: float = 1.0
     score: float = 0.0
 
@@ -154,18 +156,28 @@ class PrioritizerWorker:
             try:
                 with get_db_connection() as conn:
                     for item, reason in dismissed_items:
-                        conn.execute(
-                            """
-                            UPDATE agent_feedback
-                            SET addressed = 1,
-                                addressed_by = 'prioritizer_quality_filter',
-                                addressed_at = ?
-                            WHERE id = ?
-                        """,
-                            (datetime.now().isoformat(), item.id),
-                        )
+                        if item.item_type == "feedback":
+                            conn.execute(
+                                """
+                                UPDATE agent_feedback
+                                SET addressed = 1,
+                                    addressed_by = 'prioritizer_quality_filter',
+                                    addressed_at = ?
+                                WHERE id = ?
+                            """,
+                                (datetime.now().isoformat(), item.raw_id),
+                            )
+                        elif item.item_type == "message":
+                            conn.execute(
+                                """
+                                UPDATE messages
+                                SET read = 1
+                                WHERE id = ?
+                            """,
+                                (item.raw_id,),
+                            )
 
-                        print(f"    🗑️  Dismissed feedback #{item.id}: {reason}")
+                        print(f"    🗑️  Dismissed {item.item_type} #{item.id}: {reason}")
             except Exception as e:
                 print(f"    ⚠️  Failed to dismiss low-quality feedback: {e}")
 
@@ -207,7 +219,7 @@ class PrioritizerWorker:
         valid_feedback, dismissed_count = self._filter_low_quality_feedback(all_feedback)
 
         if dismissed_count > 0:
-            print(f"    🗑️  Phase 1: Dismissed {dismissed_count} low-quality items")  # ✅ Changed from Phase 0 to Phase 1
+            print(f"    🗑️  Phase 1: Dismissed {dismissed_count} low-quality items")
             print(f"    📊 Remaining: {len(valid_feedback)} valid items")
 
         if not valid_feedback:
@@ -218,7 +230,7 @@ class PrioritizerWorker:
         categorized = self._categorize_feedback(valid_feedback)
 
         if not categorized:
-            print("    ✓ Phase 2: All items categorized")  # ✅ Changed to match phase number
+            print("    ✓ Phase 2: All items categorized")
 
         # Phase 3: Score within categories
         scored_by_category = self._score_within_categories(categorized)
@@ -269,14 +281,15 @@ class PrioritizerWorker:
 
             items = []
 
-            # Convert feedback
+            # Convert feedback — namespace id as fb_N to avoid collisions with messages
             for row in feedback_rows:
-                # Determine bias based on agent
                 bias = 5.0 if row[1] == "human" else 1.0
 
                 items.append(
                     FeedbackItem(
-                        id=row[0],
+                        id=f"fb_{row[0]}",
+                        raw_id=row[0],
+                        item_type="feedback",
                         from_agent=row[1],
                         file_path=row[2],
                         priority=row[3] or "MEDIUM",
@@ -288,12 +301,14 @@ class PrioritizerWorker:
                     )
                 )
 
-            # Convert messages
+            # Convert messages — namespace id as msg_N
             for row in message_rows:
                 bias = 5.0 if row[1] == "human" else 1.0
                 items.append(
                     FeedbackItem(
-                        id=row[0],
+                        id=f"msg_{row[0]}",
+                        raw_id=row[0],
+                        item_type="message",
                         from_agent=row[1],
                         file_path="<message>",
                         priority=row[3] or "MEDIUM",
@@ -367,8 +382,8 @@ Categories: security, bug, performance, maintainability, documentation, architec
 Respond with JSON ONLY:
 {
   "categorized": [
-    {"id": 1, "category": "security"},
-    {"id": 2, "category": "bug"}
+    {"id": "fb_1", "category": "security"},
+    {"id": "fb_2", "category": "bug"}
   ]
 }
 """
@@ -384,9 +399,6 @@ Respond with JSON ONLY:
             if not response:
                 return
 
-            # Parse and update categories in database
-            # Use centralized parser
-
             data = parse_json_response(
                 response,
                 expected_keys=["categorized"],
@@ -400,17 +412,24 @@ Respond with JSON ONLY:
             print(f"    ⚠️  Categorization batch error: {e}")
 
     def _update_categories(self, categorized: list[dict]):
-        """Update categories in database"""
+        """Update categories in database (feedback rows only)."""
         try:
             with get_db_connection() as conn:
                 for item in categorized:
+                    item_id_str = str(item["id"])
+                    if item_id_str.startswith("msg_"):
+                        continue
+                    if item_id_str.startswith("fb_"):
+                        raw_id = int(item_id_str.replace("fb_", "", 1))
+                    else:
+                        raw_id = int(item["id"])
                     conn.execute(
                         """
                         UPDATE agent_feedback
                         SET category = ?
                         WHERE id = ?
                     """,
-                        (item["category"], item["id"]),
+                        (item["category"], raw_id),
                     )
         except Exception as e:
             print(f"    ⚠️  Error updating categories: {e}")
@@ -451,8 +470,8 @@ Consider:
 Respond with JSON ONLY:
 {
   "scored": [
-    {"id": 1, "score": 85},
-    {"id": 2, "score": 60}
+    {"id": "fb_1", "score": 85},
+    {"id": "fb_2", "score": 60}
   ]
 }
 """
@@ -470,11 +489,12 @@ Respond with JSON ONLY:
             data = parse_json_response(response, expected_keys=["scored"], agent_name="prioritizer/categorize")
 
             if data and "scored" in data:
-                # Apply scores to items
-                score_map = {s["id"]: s["score"] for s in data["scored"]}
+                score_map = {str(s["id"]): s["score"] for s in data["scored"]}
                 for item in items:
                     if item.id in score_map:
                         item.score = score_map[item.id]
+                    elif str(item.raw_id) in score_map:
+                        item.score = score_map[str(item.raw_id)]
 
         except Exception as e:
             print(f"    ⚠️  Category scoring error: {e}")
@@ -505,7 +525,7 @@ Respond with JSON ONLY:
 {
   "top_suggestions": [
     {
-      "id": 123,
+      "id": "fb_123",
       "final_score": 150,
       "rank": 1,
       "action_for_orchestrator": "Fix critical security issue in X"
@@ -532,13 +552,13 @@ Respond with JSON ONLY:
             )
 
             if data and "top_suggestions" in data:
-                # Map back to original items
                 id_map = {item.id: item for item in all_items}
+                raw_id_map = {str(item.raw_id): item for item in all_items}
                 ranked = []
                 for suggestion in data["top_suggestions"][:8]:
-                    item_id = suggestion["id"]
-                    if item_id in id_map:
-                        item = id_map[item_id]
+                    item_id = str(suggestion["id"])
+                    item = id_map.get(item_id) or raw_id_map.get(item_id)
+                    if item:
                         item.score = suggestion.get("final_score", item.score)
                         ranked.append(item)
 
@@ -583,12 +603,12 @@ Respond with JSON ONLY:
         try:
             with get_db_connection() as conn:
                 for item in items:
-                    if item.file_path == "<message>":
-                        conn.execute("UPDATE messages SET read = 1 WHERE id = ?", (item.id,))
+                    if item.item_type == "message" or item.file_path == "<message>":
+                        conn.execute("UPDATE messages SET read = 1 WHERE id = ?", (item.raw_id,))
                     else:
-                        # ✅ GOOD: Only mark messages as read, feedback stays unaddressed
-                        # Feedback is marked addressed ONLY when developer actually fixes it
-                        pass  # Don't touch agent_feedback.addressed
+                        # Only mark messages as read; feedback stays unaddressed
+                        # until the developer actually fixes it
+                        pass
         except Exception as e:
             print(f"    ⚠️  Error marking processed: {e}")
 
