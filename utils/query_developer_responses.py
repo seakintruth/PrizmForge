@@ -65,8 +65,8 @@ def list_recent_developer_responses(
                 FROM agent_responses_archive r
                 JOIN agent_responses_archive rev ON (rev.id = r.id + 1 OR rev.id = r.id + 2)
                     AND rev.agent_name = 'reviewer'
-                    AND rev.response LIKE '%\"decision\": \"APPROVE\"%'
-                    AND rev.response NOT LIKE '%\"decision\": \"REJECT\"%'
+                    AND rev.response LIKE '%"decision": "APPROVE"%'
+                    AND rev.response NOT LIKE '%"decision": "REJECT"%'
                 JOIN edit_proposals p ON p.task_id = r.task_id AND p.status = 'applied'
                 WHERE {where_clause}
                 ORDER BY r.timestamp DESC
