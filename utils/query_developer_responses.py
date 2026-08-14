@@ -25,7 +25,6 @@ from cli.commands import cmd_export_db
 from core.db import get_db_path
 from core.db_connection import get_db_connection
 
-
 # ---------------------------------------------------------------------------
 # Original helper functions (kept intact)
 # ---------------------------------------------------------------------------
