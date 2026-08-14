@@ -37,7 +37,7 @@ class TestCommitRetryTerminal:
         conn = MagicMock()
         conn.commit.side_effect = sqlite3.OperationalError("database is locked")
 
-        with pytest.raises(DatabaseRetryError, match="budget|attempts"):
+        with pytest.raises(DatabaseRetryError, match=r"budget|attempts"):
             _commit_with_retry(conn, retries=4, max_retry_seconds=0.15)
 
         # Must not loop unbounded — a few attempts only within the short budget
