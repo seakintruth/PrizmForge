@@ -124,12 +124,10 @@ def test_build_generation_prompt_fallback_injection():
 def test_closed_loop_reviewer_feedback(memory_db):
     """Phase 3: Unaddressed Reviewer feedback is extracted and injected into Developer prompt."""
     cursor = memory_db.cursor()
-    cursor.execute(
-        """
+    cursor.execute("""
         INSERT INTO agent_feedback (task_id, file_path, agent_name, message, addressed, timestamp)
         VALUES ('task_001', 'main.py', 'reviewer', 'Proposal 42 REJECTED: Syntax error on line 10', 0, '2026-01-01T00:00:00')
-        """
-    )
+        """)
     memory_db.commit()
 
     # get_db_connection is a context manager — yield the in-memory conn
@@ -164,14 +162,10 @@ def test_sql_response_exact_matching(memory_db):
     cursor = memory_db.cursor()
     cursor.execute("INSERT INTO tasks VALUES ('task_001', 'Test Task', 'in_progress', 'now', NULL)")
     # Minimal columns for query_developer_responses joins; schema here is test-local
-    cursor.execute(
-        "INSERT INTO edit_proposals (proposal_id, target_file_path, status) VALUES ('p1', 'app.py', 'applied')"
-    )
+    cursor.execute("INSERT INTO edit_proposals (proposal_id, target_file_path, status) VALUES ('p1', 'app.py', 'applied')")
 
     # Developer Attempt 1 -> Rejected
-    cursor.execute(
-        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')"
-    )
+    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')")
     cursor.execute(
         "INSERT INTO agent_responses_archive "
         "(id, agent_name, task_id, prompt, response) "
@@ -179,9 +173,7 @@ def test_sql_response_exact_matching(memory_db):
     )
 
     # Developer Attempt 2 -> Approved
-    cursor.execute(
-        "INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (3, 'developer', 'task_001', 'p3', 'r3')"
-    )
+    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (3, 'developer', 'task_001', 'p3', 'r3')")
     cursor.execute(
         "INSERT INTO agent_responses_archive "
         "(id, agent_name, task_id, prompt, response) "
