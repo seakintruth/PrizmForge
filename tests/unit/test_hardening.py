@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 
 def _hash(content: str) -> str:
-    return hashlib.md5(content.encode(usedforsecurity=False)).hexdigest()
+    return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -310,14 +310,20 @@ class TestRepoRootContainment:
         assert path.exists()
         assert path.resolve().relative_to(fake_repo.resolve())
 
-    def test_ensure_project_directory_rejects_escape(self, tmp_path, monkeypatch):
-        import pytest
-
+    def test_ensure_project_directory_allows_outside_repo(self, tmp_path, monkeypatch):
+        """
+        ensure_project_directory intentionally permits project_directory outside
+        the PrizmForge repo (e.g. a sibling PrizmForge_Experimental checkout).
+        Containment against the *configured* project root is enforced later by
+        write_file_to_disk / _resolve_contained_path.
+        """
         from core import config as config_mod
 
         fake_repo = tmp_path / "repo"
         fake_repo.mkdir()
-        outside = tmp_path / "outside"
+        outside = tmp_path / "outside_project"
         monkeypatch.setattr(config_mod, "get_repo_root", lambda: fake_repo.resolve())
-        with pytest.raises(ValueError, match="repo root"):
-            config_mod.ensure_project_directory({"project_directory": str(outside)})
+
+        path = config_mod.ensure_project_directory({"project_directory": str(outside)})
+        assert path.exists()
+        assert path.resolve() == outside.resolve()
