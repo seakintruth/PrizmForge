@@ -14,6 +14,10 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Full task-cycle mocks accumulate DB/agent state; OOM on ~constrained CI/sandboxes.
+# Keep on --full / --only-slow; exclude from --normal.
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def cycle_env(temp_db, tmp_path, monkeypatch):
