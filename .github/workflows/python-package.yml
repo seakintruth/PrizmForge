@@ -2,7 +2,7 @@ name: Python Package CI
 
 on:
   push:
-    branches: [ "main", "develop", "feature/*" ]
+    branches: [ "main", "develop", "feature/**", "fix/**", "ci/**" ]
   pull_request:
     branches: [ "main", "develop" ]
 
@@ -10,7 +10,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 1. Mandatory permission to push commits back to the repo
 permissions:
   contents: write
 
@@ -22,7 +21,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          # Target active PR branch or current branch head
           ref: ${{ github.head_ref || github.ref_name }}
 
       - name: Set up Python 3.12
@@ -43,7 +41,6 @@ jobs:
           isort . || true
           ruff format . || true
 
-      # 2. Commit and push back to branch if formatting diffs exist
       - name: Commit & Push Changes
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
@@ -53,7 +50,7 @@ jobs:
 
   code-quality:
     name: Code Quality & Security Audit
-    needs: auto-fix-and-push # Runs after auto-fix job completes
+    needs: auto-fix-and-push
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -74,3 +71,44 @@ jobs:
         run: |
           ruff check .
           ruff format --check .
+
+  test-normal:
+    name: Normal Test Suite
+    needs: code-quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Provide config.json for tests
+        run: |
+          if [ ! -f config.json ]; then
+            cp example_config.json config.json
+          fi
+
+      - name: Run normal tests (exclude @slow)
+        run: |
+          chmod +x utils/run_tests.sh
+          # GHA runners are ~7GB RAM; 4 workers is a safe default
+          ./utils/run_tests.sh --normal -j 4 --timeout 30
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-normal-reports
+          path: .PrizmForge/reports/
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,0 +1,57 @@
+# PrizmForge GitLab CI — mirrors GitHub Actions lint + normal test gate.
+# Heavy/full suites (worker lifecycle, governed apply) stay local until
+# background-worker teardown is reliable under pytest-timeout.
+
+stages:
+  - lint
+  - test
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PYTEST_ADDOPTS: ""
+
+cache:
+  key: "${CI_COMMIT_REF_SLUG}"
+  paths:
+    - .cache/pip
+
+.python_setup: &
+  image: python:3.12-bookworm
+  before_script:
+    - python -m pip install --upgrade pip
+    - pip install -r requirements-dev.txt
+    - |
+      if [ ! -f config.json ]; then
+        cp example_config.json config.json
+      fi
+
+lint:ruff:
+  <<: *python_setup
+  stage: lint
+  script:
+    - pip install ruff
+    - ruff check .
+    - ruff format --check .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/
+
+test:normal:
+  <<: *python_setup
+  stage: test
+  needs: ["lint:ruff"]
+  timeout: 20 minutes
+  script:
+    - chmod +x utils/run_tests.sh
+    # Shared runners vary; 2 workers keeps memory safe
+    - ./utils/run_tests.sh --normal -j 2 --timeout 30
+  artifacts:
+    when: always
+    paths:
+      - .PrizmForge/reports/
+    expire_in: 14 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/
