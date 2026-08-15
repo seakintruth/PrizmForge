@@ -100,18 +100,21 @@ def test_resolve_task_description_scalar_precedence():
 
 
 def test_build_generation_prompt_fallback_injection():
-    """Phase 2: Failed mode attempt injects correction banner into next prompt."""
-    from workflow.edit_mode_selector import build_generation_prompt
+    """Phase 2: Injects FULL_REPLACE warning banner when fallback_used=True."""
+    from workflow.developer_edit import _build_generation_prompt
 
-    prompt = build_generation_prompt(
-        file_path="app.py",
-        file_content="print('hello')\n",
-        instruction="rename hello",
-        mode="find_replace",
-        previous_failure_reason="Syntax error on line 10",
+    prompt = _build_generation_prompt(
+        instructions="Refactor auth loop",
+        edit_method="full_replace",
+        files_content=["def auth(): pass"],
+        requested_files=["auth.py"],
+        task_id="task_001",
+        fallback_used=True,
+        previous_reason="GUID parsing error",
     )
-    assert "PREVIOUS ATTEMPT REJECTED BY REVIEWER — CORRECTION REQUIRED" in prompt
-    assert "Syntax error on line 10" in prompt
+
+    assert "CRITICAL FALLBACK INSTRUCTION — FULL FILE REPLACE REQUIRED" in prompt
+    assert "Previous Failure Reason: GUID parsing error" in prompt
 
 
 # =========================================================================
@@ -120,14 +123,15 @@ def test_build_generation_prompt_fallback_injection():
 
 
 def test_closed_loop_reviewer_feedback(memory_db):
-    """Phase 3: Reviewer REJECT feedback is available to subsequent developer turns."""
+    """Phase 3: Unaddressed Reviewer feedback is extracted and injected into Developer prompt."""
     cursor = memory_db.cursor()
-    cursor.execute(
-        "INSERT INTO agent_feedback (task_id, agent_name, message, suggestion, priority) "
-        "VALUES ('task_001', 'reviewer', 'Missing tests', 'Add unit coverage', 'HIGH')"
-    )
+    cursor.execute("""
+        INSERT INTO agent_feedback (task_id, file_path, agent_name, message, addressed, timestamp)
+        VALUES ('task_001', 'main.py', 'reviewer', 'Proposal 42 REJECTED: Syntax error on line 10', 0, '2026-01-01T00:00:00')
+        """)
     memory_db.commit()
 
+    # get_db_connection is a context manager — yield the in-memory conn
     class _CM:
         def __enter__(self):
             return memory_db
@@ -135,13 +139,18 @@ def test_closed_loop_reviewer_feedback(memory_db):
         def __exit__(self, *args):
             return False
 
-    with patch("core.db_connection.get_db_connection", return_value=_CM()):
-        # Smoke: feedback row is queryable for closed-loop prompts
-        rows = memory_db.execute(
-            "SELECT message FROM agent_feedback WHERE task_id = ? AND agent_name = 'reviewer'",
-            ("task_001",),
-        ).fetchall()
-        assert rows and "Missing tests" in rows[0][0]
+    with patch("workflow.developer_edit.get_db_connection", return_value=_CM()):
+        from workflow.developer_edit import _build_generation_prompt
+
+        prompt = _build_generation_prompt(
+            instructions="Update main.py",
+            edit_method="guid",
+            files_content=["print('hello')"],
+            requested_files=["main.py"],
+            task_id="task_001",
+        )
+        assert "PREVIOUS ATTEMPT REJECTED BY REVIEWER — CORRECTION REQUIRED" in prompt
+        assert "Syntax error on line 10" in prompt
 
 
 # =========================================================================
@@ -215,7 +224,12 @@ def test_export_db_full_scope(memory_db, tmp_path):
         def __exit__(self, *args):
             return False
 
-    # Lightweight check: both task rows are visible for full-scope export
-    with patch("core.db_connection.get_db_connection", return_value=_CM()):
-        rows = memory_db.execute("SELECT id FROM tasks ORDER BY id").fetchall()
-        assert [r[0] for r in rows] == ["task_001", "task_002"]
+    with patch("cli.commands.get_db_connection", return_value=_CM()):
+        from cli.commands import cmd_export_db
+
+        export_dir = tmp_path / "exports"
+        cmd_export_db(output_dir=export_dir, task_id=None)
+
+        content = (export_dir / "tasks.csv").read_text(encoding="utf-8")
+        assert "task_001" in content
+        assert "task_002" in content
