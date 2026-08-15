@@ -1,17 +1,35 @@
 #!/usr/bin/env bash
 
-# Test suite runner for PrizmForge (Parallelized Edition)
+# Test suite runner for PrizmForge
+# Supports quick / normal / full / slow, optional sequential batching for
+# memory-safe full runs on ~16GB hosts.
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+REPO_ROOT="$(pwd)"
 
-# Default configuration
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
 PYTHON_EXEC="python3"
-TEST_MODE="quick"   # Modes: quick (default), normal, full, slow
-PARALLEL_JOBS="auto" # Default: auto-detect CPU cores for parallel execution
+TEST_MODE="quick"       # quick | normal | full | slow
+PARALLEL_JOBS="auto"    # auto | 1 | N
+BATCHED=0               # 0 = single pytest invocation; 1 = sequential batches
+BATCH_FILTER=""         # optional: run only this batch name when BATCHED=1
+PER_TEST_TIMEOUT=30     # seconds; requires pytest-timeout
+REPORT_DIR=".PrizmForge/reports"
 
-# Help documentation
+# Heavy files: own batch, always serial (-j 1) to avoid SQLite / fixture OOM
+HEAVY_TARGETS=(
+  "tests/test_governed_editing.py"
+  "tests/unit/test_hardening.py"
+  "tests/unit/test_task_runner.py"
+  "tests/unit/test_parallel_workers.py"
+  "tests/unit/test_worker_lifecycle.py"
+  "tests/integration/test_unattended_with_mock.py"
+)
+
 show_help() {
   cat << EOF
 Usage: $(basename "$0") [OPTIONS] [-- [PYTEST_ARGS]]
@@ -19,83 +37,83 @@ Usage: $(basename "$0") [OPTIONS] [-- [PYTEST_ARGS]]
 Test suite runner for PrizmForge.
 
 Options:
-  -p, --python PATH    Path to Python executable (default: python3)
-  -j, --jobs NUM       Number of parallel workers (default: auto, or 1 for single-threaded)
-  -q, --quick          Run the fast-gate test subset (default).
-  -n, --normal         Run the standard test suite under tests/, excluding slow tests (-m "not slow").
-  -f, --full           Run the complete test suite under tests/, including all slow tests.
-  -s, --only-slow      Run ONLY tests marked as @pytest.mark.slow (-m "slow").
-  -h, --help           Display this help message and exit.
+  -p, --python PATH     Path to Python executable (default: python3)
+  -j, --jobs NUM        xdist workers (default: auto; batched defaults to 2;
+                        heavy batch always uses 1)
+  -q, --quick           Fast-gate subset (default)
+  -n, --normal          All tests under tests/ except @pytest.mark.slow
+  -f, --full            Complete suite including slow tests
+  -s, --only-slow       Only @pytest.mark.slow
+  -b, --batched         Sequential batches with per-batch logs (recommended for
+                        --full / --normal on 16GB machines)
+      --batch NAME      With --batched, run only one batch (unit|heavy|integration|root|slow)
+      --timeout SEC     Per-test timeout seconds (default: ${PER_TEST_TIMEOUT}; 0 disables;
+                        needs pytest-timeout)
+  -h, --help            Show this help
 
-Test Modes:
-  --quick (default)   Runs fast-gate core unit and integration test files:
-                      - tests/unit/test_edit_contracts.py
-                      - tests/integration/test_prizmforge_architecture.py
-                      - tests/integration/test_golden_path.py
-                      - tests/integration/test_run_task_cycle.py
-                      - tests/unit/test_events_undo.py
-                      - tests/unit/test_hardening.py
-                      - tests/unit/test_developer_edit_helpers.py
-                      - tests/unit/test_llm_mocks.py
-  --normal            Runs all tests in tests/, skipping @pytest.mark.slow (-m "not slow").
-  --full              Runs all tests in tests/ without skipping any tests.
-  --only-slow         Runs ONLY tests marked with @pytest.mark.slow (-m "slow").
+Batch layout (--batched with --normal or --full):
+  unit         tests/unit/ excluding heavy files  (small -j)
+  heavy        governed editing + concurrency-heavy unit/integration (serial)
+  integration  tests/integration/ excluding heavy  (small -j)
+  root         tests/*.py root files not in heavy  (small -j)
+  slow         with --only-slow --batched, or --batch slow
+
+Each batch writes:
+  ${REPORT_DIR}/pytest-batch-<name>-<timestamp>.log
+  ${REPORT_DIR}/pytest-full-summary-<timestamp>.txt  (append summary lines)
+
+Failed batches do not stop later batches; final exit code is non-zero if any
+batch failed.
 
 Examples:
-  # Run quick gate in parallel using auto-detected CPU cores
-  $0 -p C:\\git\\programs\\Python31209\\python.exe
+  # Quick gate
+  $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe"
 
-  # Run ONLY slow tests in parallel
-  $0 -p C:\\git\\programs\\Python31209\\python.exe --only-slow
+  # Memory-safe full suite (sequential batches, 2 workers, serial heavy)
+  $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe" --full --batched -j 2
 
-  # Run ONLY slow tests using 4 parallel workers
-  $0 -p C:\\git\\programs\\Python31209\\python.exe -s -j 4
+  # Only the heavy serial batch
+  $0 --full --batched --batch heavy -j 1
+
+  # Re-run last failures (pytest built-in)
+  $0 --full --batched -- --lf
 EOF
 }
 
-# Parse command line arguments
+# ---------------------------------------------------------------------------
+# Args
+# ---------------------------------------------------------------------------
 PYTEST_EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p|--python)
-      if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
-        PYTHON_EXEC="$2"
-        shift 2
-      else
-        echo "Error: Option $1 requires a non-empty argument." >&2
-        exit 1
-      fi
+      [[ -n "${2:-}" && ! "$2" =~ ^- ]] || { echo "Error: $1 needs a path" >&2; exit 1; }
+      PYTHON_EXEC="$2"
+      shift 2
       ;;
     -j|--jobs)
-      if [[ -n "${2:-}" && ! "$2" =~ ^- ]]; then
-        PARALLEL_JOBS="$2"
-        shift 2
-      else
-        echo "Error: Option $1 requires a worker count." >&2
-        exit 1
-      fi
+      [[ -n "${2:-}" && ! "$2" =~ ^- ]] || { echo "Error: $1 needs a worker count" >&2; exit 1; }
+      PARALLEL_JOBS="$2"
+      shift 2
       ;;
-    -q|--quick)
-      TEST_MODE="quick"
-      shift
+    -q|--quick)   TEST_MODE="quick";  shift ;;
+    -n|--normal)  TEST_MODE="normal"; shift ;;
+    -f|--full)    TEST_MODE="full";   shift ;;
+    -s|--only-slow) TEST_MODE="slow"; shift ;;
+    -b|--batched) BATCHED=1; shift ;;
+    --batch)
+      [[ -n "${2:-}" && ! "$2" =~ ^- ]] || { echo "Error: --batch needs a name" >&2; exit 1; }
+      BATCH_FILTER="$2"
+      BATCHED=1
+      shift 2
       ;;
-    -n|--normal)
-      TEST_MODE="normal"
-      shift
+    --timeout)
+      [[ -n "${2:-}" && ! "$2" =~ ^- ]] || { echo "Error: --timeout needs seconds" >&2; exit 1; }
+      PER_TEST_TIMEOUT="$2"
+      shift 2
       ;;
-    -f|--full)
-      TEST_MODE="full"
-      shift
-      ;;
-    -s|--only-slow)
-      TEST_MODE="slow"
-      shift
-      ;;
-    -h|--help)
-      show_help
-      exit 0
-      ;;
+    -h|--help) show_help; exit 0 ;;
     --)
       shift
       PYTEST_EXTRA_ARGS+=("$@")
@@ -108,48 +126,260 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Configure test targets based on selected mode
-case "$TEST_MODE" in
-  quick)
-    TEST_TARGETS=(
-      "tests/unit/test_edit_contracts.py"
-      "tests/integration/test_prizmforge_architecture.py"
-      "tests/integration/test_golden_path.py"
-      "tests/integration/test_run_task_cycle.py"
-      "tests/unit/test_events_undo.py"
-      "tests/unit/test_hardening.py"
-      "tests/unit/test_developer_edit_helpers.py"
-      "tests/unit/test_llm_mocks.py"
-    )
-    ;;
-  normal)
-    TEST_TARGETS=(
-      "tests/"
-      "-m" "not slow"
-    )
-    ;;
-  full)
-    TEST_TARGETS=(
-      "tests/"
-    )
-    ;;
-  slow)
-    TEST_TARGETS=(
-      "tests/"
-      "-m" "slow"
-    )
-    ;;
-esac
-
-# Configure parallel xdist flags with file-level grouping (--dist loadfile)
-XDIST_ARGS=()
-if [[ "$PARALLEL_JOBS" != "1" ]]; then
-  XDIST_ARGS+=("-n" "$PARALLEL_JOBS" "--dist" "loadfile")
+# Batched only makes sense for normal/full/slow
+if [[ "$BATCHED" -eq 1 && "$TEST_MODE" == "quick" ]]; then
+  echo "Note: --batched with --quick is a no-op; running quick gate as a single invocation."
+  BATCHED=0
 fi
 
-# Execute pytest
-"$PYTHON_EXEC" -m pytest \
-  "${TEST_TARGETS[@]}" \
-  "${XDIST_ARGS[@]}" \
-  -q --tb=line \
-  "${PYTEST_EXTRA_ARGS[@]}"
+# Default small worker count when batched and user left auto
+if [[ "$BATCHED" -eq 1 && "$PARALLEL_JOBS" == "auto" ]]; then
+  PARALLEL_JOBS=2
+fi
+
+mkdir -p "$REPORT_DIR"
+STAMP="$(date +%Y%m%d_%H%M%S)"
+SUMMARY_FILE="${REPORT_DIR}/pytest-full-summary-${STAMP}.txt"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+path_exists() { [[ -e "$1" ]]; }
+
+run_pytest_once() {
+  # Args: batch_name jobs target1 [target2 ...]
+  local batch_name="$1"
+  local jobs="$2"
+  shift 2
+  local targets=("$@")
+
+  local log_file="${REPORT_DIR}/pytest-batch-${batch_name}-${STAMP}.log"
+  local xdist=()
+  if [[ "$jobs" != "1" ]]; then
+    xdist=(-n "$jobs" --dist loadfile)
+  fi
+
+  local timeout_args=()
+  if [[ -n "$PER_TEST_TIMEOUT" && "$PER_TEST_TIMEOUT" != "0" ]]; then
+    timeout_args=(--timeout="$PER_TEST_TIMEOUT" --timeout-method=thread)
+  fi
+
+  echo ""
+  echo "============================================================"
+  echo "BATCH: ${batch_name}  jobs=${jobs}  targets=${targets[*]}"
+  echo "LOG:   ${log_file}"
+  echo "============================================================"
+
+  local start_ts end_ts rc duration
+  start_ts="$(date +%s)"
+  set +e
+  "$PYTHON_EXEC" -m pytest \
+    "${targets[@]}" \
+    "${xdist[@]}" \
+    "${timeout_args[@]}" \
+    -q --tb=line \
+    "${PYTEST_EXTRA_ARGS[@]}" \
+    2>&1 | tee "$log_file"
+  rc="${PIPESTATUS[0]}"
+  set -e
+  end_ts="$(date +%s)"
+  duration="$((end_ts - start_ts))"
+
+  local status="PASS"
+  [[ "$rc" -eq 0 ]] || status="FAIL"
+
+  local pytest_line
+  pytest_line="$(grep -E 'passed|failed|error|skipped' "$log_file" | tail -1 || true)"
+
+  {
+    echo "[${STAMP}] batch=${batch_name} status=${status} exit=${rc} duration_s=${duration} jobs=${jobs}"
+    echo "  log=${log_file}"
+    echo "  targets=${targets[*]}"
+    [[ -n "$pytest_line" ]] && echo "  result=${pytest_line}"
+  } | tee -a "$SUMMARY_FILE"
+
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Non-batched path (original behavior + timeout + log)
+# ---------------------------------------------------------------------------
+run_single_invocation() {
+  local targets=()
+  case "$TEST_MODE" in
+    quick)
+      targets=(
+        "tests/unit/test_edit_contracts.py"
+        "tests/integration/test_prizmforge_architecture.py"
+        "tests/integration/test_golden_path.py"
+        "tests/integration/test_run_task_cycle.py"
+        "tests/unit/test_events_undo.py"
+        "tests/unit/test_hardening.py"
+        "tests/unit/test_developer_edit_helpers.py"
+        "tests/unit/test_llm_mocks.py"
+      )
+      ;;
+    normal)
+      targets=("tests/" "-m" "not slow")
+      ;;
+    full)
+      targets=("tests/")
+      ;;
+    slow)
+      targets=("tests/" "-m" "slow")
+      ;;
+  esac
+
+  local jobs="$PARALLEL_JOBS"
+  local xdist=()
+  if [[ "$jobs" != "1" ]]; then
+    xdist=(-n "$jobs" --dist loadfile)
+  fi
+  local timeout_args=()
+  if [[ -n "$PER_TEST_TIMEOUT" && "$PER_TEST_TIMEOUT" != "0" ]]; then
+    timeout_args=(--timeout="$PER_TEST_TIMEOUT" --timeout-method=thread)
+  fi
+
+  local log_file="${REPORT_DIR}/pytest-${TEST_MODE}-${STAMP}.log"
+  echo "Running mode=${TEST_MODE} jobs=${jobs} log=${log_file}"
+  set +e
+  "$PYTHON_EXEC" -m pytest \
+    "${targets[@]}" \
+    "${xdist[@]}" \
+    "${timeout_args[@]}" \
+    -q --tb=line \
+    "${PYTEST_EXTRA_ARGS[@]}" \
+    2>&1 | tee "$log_file"
+  local rc="${PIPESTATUS[0]}"
+  set -e
+  echo "exit=${rc} log=${log_file}" | tee -a "$SUMMARY_FILE"
+  return "$rc"
+}
+
+# ---------------------------------------------------------------------------
+# Batched path
+# ---------------------------------------------------------------------------
+should_run_batch() {
+  local name="$1"
+  [[ -z "$BATCH_FILTER" || "$BATCH_FILTER" == "$name" ]]
+}
+
+run_batched() {
+  local overall_rc=0
+  local jobs_small="$PARALLEL_JOBS"
+  [[ "$jobs_small" == "auto" ]] && jobs_small=2
+
+  echo "Batched run mode=${TEST_MODE} small_jobs=${jobs_small} heavy_jobs=1"
+  echo "Summary file: ${SUMMARY_FILE}"
+  echo "Batches continue after failure."
+
+  # ---- unit (light) ----
+  if should_run_batch unit; then
+    if path_exists tests/unit; then
+      local unit_args=("tests/unit")
+      local h
+      for h in "${HEAVY_TARGETS[@]}"; do
+        if [[ "$h" == tests/unit/* ]]; then
+          unit_args+=("--ignore=${h}")
+        fi
+      done
+      case "$TEST_MODE" in
+        normal) unit_args+=("-m" "not slow") ;;
+        slow)   unit_args+=("-m" "slow") ;;
+      esac
+      if ! run_pytest_once unit "$jobs_small" "${unit_args[@]}"; then
+        overall_rc=1
+      fi
+    fi
+  fi
+
+  # ---- heavy (serial) ----
+  if should_run_batch heavy; then
+    local heavy_args=()
+    local h
+    for h in "${HEAVY_TARGETS[@]}"; do
+      path_exists "$h" && heavy_args+=("$h")
+    done
+    if [[ ${#heavy_args[@]} -gt 0 ]]; then
+      case "$TEST_MODE" in
+        normal) heavy_args+=("-m" "not slow") ;;
+        slow)   heavy_args+=("-m" "slow") ;;
+      esac
+      if ! run_pytest_once heavy 1 "${heavy_args[@]}"; then
+        overall_rc=1
+      fi
+    fi
+  fi
+
+  # ---- integration (light) ----
+  if should_run_batch integration; then
+    if path_exists tests/integration; then
+      local int_args=("tests/integration")
+      for h in "${HEAVY_TARGETS[@]}"; do
+        if [[ "$h" == tests/integration/* ]]; then
+          int_args+=("--ignore=${h}")
+        fi
+      done
+      case "$TEST_MODE" in
+        normal) int_args+=("-m" "not slow") ;;
+        slow)   int_args+=("-m" "slow") ;;
+      esac
+      if ! run_pytest_once integration "$jobs_small" "${int_args[@]}"; then
+        overall_rc=1
+      fi
+    fi
+  fi
+
+  # ---- root tests/*.py (not heavy) ----
+  if should_run_batch root; then
+    local root_args=()
+    local f
+    for f in tests/*.py; do
+      [[ -f "$f" ]] || continue
+      local base
+      base="$(basename "$f")"
+      [[ "$base" == "conftest.py" || "$base" == "__init__.py" ]] && continue
+      local skip=0
+      for h in "${HEAVY_TARGETS[@]}"; do
+        [[ "$f" == "$h" ]] && skip=1 && break
+      done
+      [[ "$skip" -eq 1 ]] && continue
+      root_args+=("$f")
+    done
+    if [[ ${#root_args[@]} -gt 0 ]]; then
+      case "$TEST_MODE" in
+        normal) root_args+=("-m" "not slow") ;;
+        slow)   root_args+=("-m" "slow") ;;
+      esac
+      if ! run_pytest_once root "$jobs_small" "${root_args[@]}"; then
+        overall_rc=1
+      fi
+    fi
+  fi
+
+  # ---- slow-only batch ----
+  if should_run_batch slow && [[ "$TEST_MODE" == "slow" || "$BATCH_FILTER" == "slow" ]]; then
+    if ! run_pytest_once slow 1 "tests/" "-m" "slow"; then
+      overall_rc=1
+    fi
+  fi
+
+  echo ""
+  echo "============================================================"
+  echo "Batched run complete. overall_exit=${overall_rc}"
+  echo "Summary: ${SUMMARY_FILE}"
+  echo "============================================================"
+  return "$overall_rc"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+if [[ "$BATCHED" -eq 1 ]]; then
+  run_batched
+  exit $?
+else
+  run_single_invocation
+  exit $?
+fi
