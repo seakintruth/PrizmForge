@@ -44,10 +44,76 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
             # Renamed 'l' -> 'stmt_line' to resolve ruff E741 ambiguous variable name
             meaningful = [stmt_line for stmt_line in stmt.splitlines() if stmt_line.strip() and not stmt_line.strip().startswith("--")]
             if meaningful:
-                conn.execute(stmt)
+                try:
+                    conn.execute(stmt)
+                except sqlite3.OperationalError as e:
+                    # Index on a column not yet present (pre-migration DB) — continue
+                    msg = str(e).lower()
+                    if "no such column" in msg or "already exists" in msg:
+                        print(f"   ℹ️  Schema statement skipped: {e}")
+                    else:
+                        raise
     tail = chr(10).join(buf).strip()
     if tail and any(raw_line.strip() and not raw_line.strip().startswith("--") for raw_line in tail.splitlines()):
         conn.execute(tail)
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    """Return existing column names for a table (empty set if missing)."""
+    try:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    except sqlite3.Error:
+        return set()
+    # PRAGMA table_info: cid, name, type, notnull, dflt_value, pk
+    return {row[1] for row in rows}
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
+    """ADD COLUMN if missing. Safe on existing DBs (CREATE IF NOT EXISTS never alters)."""
+    if column in _table_columns(conn, table):
+        return
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+        print(f"   🔧 Migrated {table}.{column} ({coltype})")
+    except sqlite3.OperationalError as e:
+        # Race or already-added by concurrent init
+        if "duplicate column" not in str(e).lower():
+            print(f"   ⚠️  Could not add {table}.{column}: {e}")
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    """
+    Apply additive column migrations for DBs created before schema changes.
+    CREATE TABLE IF NOT EXISTS does not add new columns to existing tables.
+    """
+    # edit_proposals: task_id required by reporting + query_developer_responses
+    for col, coltype in (
+        ("task_id", "TEXT"),
+        ("selected_mode", "TEXT"),
+        ("fallback_used", "INTEGER DEFAULT 0"),
+        ("final_mode", "TEXT"),
+        ("target_file_path", "TEXT"),
+        ("rationale", "TEXT"),
+        ("reviewed_at", "TIMESTAMP"),
+        ("write_started_at", "TIMESTAMP"),
+        ("write_completed_at", "TIMESTAMP"),
+        ("write_start_line_guid", "TEXT"),
+        ("write_end_line_guid", "TEXT"),
+        ("reviewed_by_agent_id", "INTEGER"),
+        ("proposed_by_agent_id", "INTEGER"),
+        ("affected_line_guids", "TEXT"),
+        ("expected_hashes", "TEXT"),
+        ("status", "TEXT DEFAULT 'pending'"),
+        ("edit_payload", "TEXT"),
+        ("target_file_id", "INTEGER"),
+        ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+    ):
+        _ensure_column(conn, "edit_proposals", col, coltype)
+
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_edit_proposals_task ON edit_proposals(task_id)")
+    except sqlite3.OperationalError as e:
+        print(f"   ⚠️  idx_edit_proposals_task: {e}")
 
 
 def init_db():
@@ -518,9 +584,10 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_file_lines_sort_order ON file_lines(sort_order);
             CREATE INDEX IF NOT EXISTS idx_edit_proposals_status ON edit_proposals(status);
             CREATE INDEX IF NOT EXISTS idx_edit_proposals_file ON edit_proposals(target_file_id);
-            CREATE INDEX IF NOT EXISTS idx_edit_proposals_task ON edit_proposals(task_id);
+            -- idx_edit_proposals_task created in _migrate_schema after column ensure
         """
         _apply_schema(conn, _schema_sql)
+        _migrate_schema(conn)
         try:
             cursor.execute("PRAGMA foreign_keys = ON;")
         except Exception as e:

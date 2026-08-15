@@ -40,6 +40,7 @@ def memory_db():
 
         CREATE TABLE edit_proposals (
             proposal_id TEXT PRIMARY KEY,
+            task_id TEXT,
             target_file_path TEXT,
             rationale TEXT,
             status TEXT,
@@ -162,7 +163,7 @@ def test_sql_response_exact_matching(memory_db):
     cursor = memory_db.cursor()
     cursor.execute("INSERT INTO tasks VALUES ('task_001', 'Test Task', 'in_progress', 'now', NULL)")
     # Minimal columns for query_developer_responses joins; schema here is test-local
-    cursor.execute("INSERT INTO edit_proposals (proposal_id, target_file_path, status) VALUES ('p1', 'app.py', 'applied')")
+    cursor.execute("INSERT INTO edit_proposals (proposal_id, task_id, target_file_path, status) VALUES ('p1', 'task_001', 'app.py', 'applied')")
 
     # Developer Attempt 1 -> Rejected
     cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')")
