@@ -203,6 +203,7 @@ class TestDeveloperSchemaFile:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestApplyContracts:
     def test_find_replace_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal

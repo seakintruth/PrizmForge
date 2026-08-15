@@ -14,6 +14,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -63,6 +65,7 @@ def _content(file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.slow
 class TestFindReplaceWorkflow:
     def test_proposal_approve_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal
@@ -101,6 +104,7 @@ class TestFindReplaceWorkflow:
         assert _content("wf/rename.py") == "x = new_name\ny = new_name\n"
 
 
+@pytest.mark.slow
 class TestFullReplaceWorkflow:
     def test_proposal_approve_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal
@@ -134,6 +138,7 @@ class TestFullReplaceWorkflow:
         assert "c = 30" in _content("wf/small.py")
 
 
+@pytest.mark.slow
 class TestGuidReplaceWorkflow:
     def test_proposal_approve_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal
@@ -168,6 +173,7 @@ class TestGuidReplaceWorkflow:
         assert "print('new')" in _content("wf/guid.py")
 
 
+@pytest.mark.slow
 class TestDiffWorkflow:
     def test_proposal_approve_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal
@@ -178,8 +184,6 @@ class TestDiffWorkflow:
             "wf/diff.py",
             "def hello():\n    print('old')\n    return True\n",
         )
-        diff = '--- a/wf/diff.py\n+++ b/wf/diff.py\n@@ -1,3 +1,3 @@\n def hello():\n-    print("old")\n+    print("new")\n     return True\n'
-        # Use matching quotes to original content
         diff = "--- a/wf/diff.py\n+++ b/wf/diff.py\n@@ -1,3 +1,3 @@\n def hello():\n-    print('old')\n+    print('new')\n     return True\n"
         payload = {
             "target_file_path": "wf/diff.py",
@@ -369,6 +373,7 @@ class TestMockedAgentWorkflow:
         assert final.detected_mode == "find_replace"
         assert "guid" in tried  # first attempt failed
 
+    @pytest.mark.slow
     def test_mocked_developer_output_creates_proposal(self, temp_db, mock_llm):
         """End-to-end: mocked developer JSON → proposal → apply."""
         from file_editing.editing import apply_edit_proposal

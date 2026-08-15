@@ -1,6 +1,6 @@
 # =============================================================================
 # PrizmForge/file_editing/db.py
-# Version: 1.4 - WAL journal mode for concurrent agent access
+# Version: 1.5 - Non-blocking error logging under DB contention
 # Purpose: Database connection, error logging, and reconstruction helpers
 # =============================================================================
 
@@ -9,6 +9,10 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
+
+# log_error must not wait on locks — proposal/apply paths call it on the hot path.
+_LOG_ERROR_CONNECT_TIMEOUT_S = 0.5
+_LOG_ERROR_BUSY_TIMEOUT_MS = 500
 
 
 def get_db_path() -> str:
@@ -69,37 +73,62 @@ def log_error(
     line_guid: str | None = None,
     stack_trace: str | None = None,
 ):
-    """Centralized error logging to stdout + errors table."""
+    """
+    Centralized error logging to stdout + errors table.
+
+    Non-blocking: never waits long on a locked database. Stdout is the
+    reliable channel; the INSERT is best-effort and may be skipped under
+    contention so hot paths (proposal create/apply) cannot stall.
+    """
     print(f"[{severity}] {component}.{category}: {message}")
+
+    conn: sqlite3.Connection | None = None
     try:
-        with get_db_connection() as conn:
-            # Updated to match core/db.py errors table schema
-            conn.execute(
-                """
-                INSERT INTO errors
-                (level, message, context, file_path, function_name, task_id, stack_trace)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+        conn = sqlite3.connect(
+            get_db_path(),
+            timeout=_LOG_ERROR_CONNECT_TIMEOUT_S,
+            isolation_level=None,  # autocommit — no long-held write transaction
+        )
+        try:
+            conn.execute(f"PRAGMA busy_timeout={_LOG_ERROR_BUSY_TIMEOUT_MS}")
+        except Exception:
+            pass
+
+        conn.execute(
+            """
+            INSERT INTO errors
+            (level, message, context, file_path, function_name, task_id, stack_trace)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-                (
-                    severity,  # level
-                    message,  # message
-                    json.dumps(
-                        {
-                            "component": component,
-                            "category": category,
-                            "details": details,
-                            "proposal_id": proposal_id,
-                            "line_guid": line_guid,
-                        }
-                    ),  # context (JSON)
-                    file_path,
-                    f"{component}.{category}",  # function_name
-                    task_id,
-                    stack_trace,
+            (
+                severity,
+                message,
+                json.dumps(
+                    {
+                        "component": component,
+                        "category": category,
+                        "details": details,
+                        "proposal_id": proposal_id,
+                        "line_guid": line_guid,
+                    }
                 ),
-            )
+                file_path,
+                f"{component}.{category}",
+                task_id,
+                stack_trace,
+            ),
+        )
+    except sqlite3.OperationalError as e:
+        # Locked / busy / IO — drop DB write, never block caller
+        print(f"[WARN] log_error DB skip (non-blocking): {e}")
     except Exception as e:
         print(f"CRITICAL: Failed to log error to DB: {e}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def initialize_database(db_path: str | None = None):

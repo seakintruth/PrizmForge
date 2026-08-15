@@ -9,7 +9,7 @@ from file_editing.edit_payload import EditPayload
 
 # =============================================================================
 # PrizmForge/workflow/proposal_builder.py
-# Version: 1.8
+# Version: 1.9
 # Purpose: Bridge between Developer agent output and governed edit proposals
 #          Fully aligned with current edit_proposals schema (includes task_id)
 # =============================================================================
@@ -161,14 +161,6 @@ def create_proposal_from_developer_output(
                 ),
             )
 
-            log_error(
-                "proposal_builder",
-                "create_proposal",
-                "INFO",
-                f"Proposal created: {proposal_id} for {target_file_path}",
-                proposal_id=proposal_id,
-            )
-
             result = {
                 "status": "success",
                 "proposal_id": proposal_id,
@@ -181,7 +173,14 @@ def create_proposal_from_developer_output(
                 "message": "Proposal created and ready for review",
             }
 
-        # Publish outside the DB connection to avoid lock contention
+        # After commit: audit log + event (never inside the write transaction)
+        log_error(
+            "proposal_builder",
+            "create_proposal",
+            "INFO",
+            f"Proposal created: {proposal_id} for {target_file_path}",
+            proposal_id=proposal_id,
+        )
         publish_event(
             "proposal.created",
             source="proposal_builder",
