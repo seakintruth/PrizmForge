@@ -111,9 +111,7 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
         _ensure_column(conn, "edit_proposals", col, coltype)
 
     try:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_edit_proposals_task ON edit_proposals(task_id)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_edit_proposals_task ON edit_proposals(task_id)")
     except sqlite3.OperationalError as e:
         print(f"   ⚠️  idx_edit_proposals_task: {e}")
 
