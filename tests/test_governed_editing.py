@@ -1,6 +1,6 @@
 # =============================================================================
 # tests/test_governed_editing.py
-# Version: 2.3 - Fix usedforsecurity keyword placement (Python 3.12)
+# Version: 2.4 - Mark module slow (proposal→apply lifecycle)
 # =============================================================================
 
 import hashlib
@@ -11,6 +11,9 @@ import tempfile
 from pathlib import Path
 
 import pytest
+
+# Full proposal→apply lifecycle is DB-heavy; exclude from --normal
+pytestmark = pytest.mark.slow
 
 from core.db import init_db
 from file_editing.editing import apply_edit_proposal
@@ -85,11 +88,6 @@ def sample_file(db):
 
     db.commit()
     return file_id
-
-
-# =============================================================================
-# Tests with correct EditPayload structure (v1.3)
-# =============================================================================
 
 
 def test_apply_replace_block(db, sample_file):
@@ -254,11 +252,6 @@ def test_full_proposal_lifecycle(db, sample_file):
     assert result["status"] == "success"
 
 
-# =============================================================================
-# Edge Case Tests
-# =============================================================================
-
-
 def test_delete_lines_single_line_only_start_guid(db, sample_file):
     """Delete single line when only start_line_guid is provided (no end_line_guid)."""
     payload = {
@@ -290,7 +283,6 @@ def test_delete_lines_single_line_only_start_guid(db, sample_file):
 
     result = apply_edit_proposal(proposal_id)
     assert result["status"] == "success"
-    # lines_deleted lives inside the operations result
     ops = result.get("operations", [])
     assert len(ops) > 0
     assert ops[0].get("lines_deleted", 0) >= 1
@@ -325,7 +317,6 @@ def test_delete_lines_nonexistent_start_guid(db, sample_file):
     db.commit()
 
     result = apply_edit_proposal(proposal_id)
-    # Because the GUID doesn't exist, hash validation fails → conflicted
     assert result["status"] in ("conflicted", "error")
 
 
