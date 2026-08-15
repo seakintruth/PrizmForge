@@ -38,7 +38,7 @@ def fetch_latest_reviewer_feedback(task_id: str, target_file: str) -> dict | Non
     Schema (core/db.py agent_feedback):
       message, suggestion, timestamp — NOT feedback_text / created_at
     Schema (edit_proposals):
-      proposal_id PK — no task_id column
+      proposal_id PK, task_id (when present)
     """
     try:
         with get_db_connection() as conn:
@@ -68,16 +68,20 @@ def fetch_latest_reviewer_feedback(task_id: str, target_file: str) -> dict | Non
                     reason = f"{msg}\nSuggestion: {sug}" if msg else sug
                 return {"feedback_id": fb_row[0], "reason": reason or "Reviewer rejection (no detail)"}
 
-            # Fallback: latest rejected proposal for this file (no task_id on edit_proposals)
+            # Prefer rejected proposals for this task+file; fall back to file-only
             cursor.execute(
                 """
                 SELECT proposal_id, rationale
                 FROM edit_proposals
-                WHERE target_file_path = ? AND status = 'rejected'
-                ORDER BY COALESCE(created_at, '') DESC
+                WHERE target_file_path = ?
+                  AND status = 'rejected'
+                  AND (task_id = ? OR task_id IS NULL)
+                ORDER BY
+                    CASE WHEN task_id = ? THEN 0 ELSE 1 END,
+                    COALESCE(created_at, '') DESC
                 LIMIT 1
                 """,
-                (target_file,),
+                (target_file, task_id, task_id),
             )
 
             prop_row = cursor.fetchone()
@@ -273,8 +277,6 @@ def run_developer_mutation(  # noqa: C901
         print("   ❌ No files loaded successfully")
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
         return {"status": "error", "message": "no file content"}
-    # In run_developer_mutation(), replace the generation + fallback section
-    # with the following logic.
 
     modes_tried: list[str] = []
     response = None
@@ -295,8 +297,6 @@ def run_developer_mutation(  # noqa: C901
         # FORCE CLEAN RE-QUERY WHEN MODE CHANGES
         # ------------------------------------------------------------------
         if fallback_used:
-            # Build a completely self-contained prompt that does not rely on
-            # previous (failed) attempts.
             clean_instructions = (
                 f"**NEW ATTEMPT - PREVIOUS EDIT MODE FAILED**\n\n"
                 f"Previous mode(s) tried: {', '.join(modes_tried[:-1])}\n"
@@ -306,8 +306,6 @@ def run_developer_mutation(  # noqa: C901
                 f"Start fresh.\n\n"
                 f"Original task instructions:\n{instructions}"
             )
-            # Pass minimal context so the model is not contaminated by the
-            # previous failed response.
             current_context = []
         else:
             clean_instructions = instructions
@@ -328,7 +326,7 @@ def run_developer_mutation(  # noqa: C901
             "developer",
             gen_prompt,
             task_id,
-            current_context,  # ← clean context on fallback
+            current_context,
             model_choice,
         )
 
@@ -406,6 +404,7 @@ def run_developer_mutation(  # noqa: C901
         selected_mode=original_selected_mode,
         fallback_used=fallback_used,
         final_mode=validation.detected_mode or edit_method,
+        task_id=task_id,
     )
     if prop.get("status") != "success":
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
@@ -420,11 +419,7 @@ def run_developer_mutation(  # noqa: C901
     # ---------------------------------------------------------------------------
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
 
-    # Build a rich context for the reviewer
     original_content = get_file_content_from_db(target_file_path) or ""
-    # For full_replace / find_replace / etc. we can also reconstruct what the
-    # payload would produce, but the safest immediate improvement is to show
-    # the original file + the full EditPayload.
 
     final_mode = data.get("_final_mode") or edit_method or validation.detected_mode or "unknown"
 
@@ -489,7 +484,6 @@ def run_developer_mutation(  # noqa: C901
             "MEDIUM",
         )
 
-    # 🎯 PHASE 3 INJECTION: Write rejection feedback using real schema columns
     if decision_result == "REJECT":
         print(f"   ❌ Reviewer rejected proposal: {reason}")
         update_proposal_status(proposal_id, "rejected")

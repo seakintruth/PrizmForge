@@ -394,6 +394,7 @@ def init_db():
             -- Edit proposals for review workflow
             CREATE TABLE IF NOT EXISTS edit_proposals (
                 proposal_id TEXT PRIMARY KEY,
+                task_id TEXT,
                 target_file_id INTEGER,
                 target_file_path TEXT,
                 edit_payload TEXT NOT NULL,
@@ -517,6 +518,7 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_file_lines_sort_order ON file_lines(sort_order);
             CREATE INDEX IF NOT EXISTS idx_edit_proposals_status ON edit_proposals(status);
             CREATE INDEX IF NOT EXISTS idx_edit_proposals_file ON edit_proposals(target_file_id);
+            CREATE INDEX IF NOT EXISTS idx_edit_proposals_task ON edit_proposals(task_id);
         """
         _apply_schema(conn, _schema_sql)
         try:
