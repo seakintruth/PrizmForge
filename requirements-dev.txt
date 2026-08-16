@@ -13,7 +13,7 @@ pytest-xdist>=3.5.0
 
 # Code quality (recommended)
 black>=26.5.1
-flake8>=6.1.0
+flake8>=7.3.0
 isort>=8.0.1
 
 # Lint / fast fixer
