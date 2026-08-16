@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -41,9 +42,22 @@ def test_normalize_path_relative_resolves_to_cwd(tmp_path, monkeypatch):
 
 
 def test_normalize_path_home_expand(monkeypatch, tmp_path):
-    # Point HOME at tmp so expanduser is deterministic
-    monkeypatch.setenv("HOME", str(tmp_path))
-    (tmp_path / "home_file").write_text("x")
+    """expanduser is deterministic when HOME/USERPROFILE point at tmp_path.
+
+    POSIX uses HOME; Windows uses USERPROFILE (HOME alone is ignored).
+    """
+    home = str(tmp_path)
+    monkeypatch.setenv("HOME", home)
+    monkeypatch.setenv("USERPROFILE", home)
+    # Windows also consults HOMEDRIVE+HOMEPATH when USERPROFILE is unset;
+    # keep them consistent if present so expanduser cannot escape tmp_path.
+    if os.name == "nt":
+        # tmp_path is typically C:\Users\...\AppData\Local\Temp\...
+        drive, tail = os.path.splitdrive(home)
+        if drive:
+            monkeypatch.setenv("HOMEDRIVE", drive)
+            monkeypatch.setenv("HOMEPATH", tail if tail.startswith("\\") else "\\" + tail.lstrip("\\/"))
+    (tmp_path / "home_file").write_text("x", encoding="utf-8")
     result = normalize_path("~/home_file")
     assert result == (tmp_path / "home_file").resolve()
 
@@ -58,8 +72,6 @@ def test_normalize_path_mixed_slashes(tmp_path, monkeypatch):
     result = normalize_path("a/b")
     assert result == (tmp_path / "a" / "b").resolve()
     # Backslash: on Windows it separates; on POSIX it is part of the name
-    import os
-
     if os.name == "nt":
         result_bs = normalize_path("a\\b")
         assert result_bs == (tmp_path / "a" / "b").resolve()
