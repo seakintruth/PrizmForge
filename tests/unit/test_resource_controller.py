@@ -145,6 +145,7 @@ class TestResourceControllerWorker:
         assert worker is not None
         assert hasattr(worker, "optimizer")
 
+    @pytest.mark.slow
     def test_resource_controller_worker_start_stop_lifecycle(self, mock_minimal_config):
         """Worker should start and stop cleanly."""
         worker = ResourceControllerWorker()
@@ -154,6 +155,7 @@ class TestResourceControllerWorker:
         worker.stop()
         assert not worker.running
 
+    @pytest.mark.slow
     def test_worker_uses_optimizer_gracefully(self, mock_minimal_config):
         """Worker should use optimizer without crashing."""
         worker = ResourceControllerWorker()
@@ -170,6 +172,7 @@ class TestResourceControllerWorker:
         assert hasattr(worker, "config")
         assert hasattr(worker, "rc_config")
 
+    @pytest.mark.slow
     def test_worker_thread_safety_of_stop(self, mock_minimal_config):
         """Stop should be thread-safe."""
         worker = ResourceControllerWorker()
