@@ -116,9 +116,7 @@ def pytest_runtest_logreport(report) -> None:
     markers = sorted(
         name
         for name, val in keywords.items()
-        if val is True and name not in {"", report.outcome}
-        and not name.startswith("test_")
-        and name not in {"pytestmark", "parametrize"}
+        if val is True and name not in {"", report.outcome} and not name.startswith("test_") and name not in {"pytestmark", "parametrize"}
     )
     # Explicit slow check is what the analyzer cares about most.
     is_slow = bool(keywords.get("slow")) or "slow" in markers
@@ -164,9 +162,7 @@ def pytest_sessionfinish(session, exitstatus) -> None:
                     by_id = {t["nodeid"]: t for t in prev["tests"] if "nodeid" in t}
                     for t in merged_tests:
                         by_id[t["nodeid"]] = t
-                    merged_tests = sorted(
-                        by_id.values(), key=lambda r: r["duration_s"], reverse=True
-                    )
+                    merged_tests = sorted(by_id.values(), key=lambda r: r["duration_s"], reverse=True)
             except (json.JSONDecodeError, OSError, TypeError):
                 pass
         latest.write_text(

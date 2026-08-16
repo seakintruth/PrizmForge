@@ -109,16 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         tests = _load_report(DEFAULT_LATEST)
         sources = [str(DEFAULT_LATEST)]
 
-    promote = [
-        t
-        for t in tests
-        if float(t.get("duration_s", 0)) >= args.promote_above and not t.get("slow")
-    ]
-    demote = [
-        t
-        for t in tests
-        if float(t.get("duration_s", 0)) < args.demote_below and t.get("slow")
-    ]
+    promote = [t for t in tests if float(t.get("duration_s", 0)) >= args.promote_above and not t.get("slow")]
+    demote = [t for t in tests if float(t.get("duration_s", 0)) < args.demote_below and t.get("slow")]
     slow_marked = [t for t in tests if t.get("slow")]
     normal = [t for t in tests if not t.get("slow")]
 
@@ -126,12 +118,8 @@ def main(argv: list[str] | None = None) -> int:
         out = {
             "sources": sources,
             "count": len(tests),
-            "promote_to_slow": [
-                {"nodeid": t["nodeid"], "duration_s": t.get("duration_s")} for t in promote
-            ],
-            "demote_from_slow": [
-                {"nodeid": t["nodeid"], "duration_s": t.get("duration_s")} for t in demote
-            ],
+            "promote_to_slow": [{"nodeid": t["nodeid"], "duration_s": t.get("duration_s")} for t in promote],
+            "demote_from_slow": [{"nodeid": t["nodeid"], "duration_s": t.get("duration_s")} for t in demote],
             "slowest": [
                 {
                     "nodeid": t["nodeid"],
@@ -148,23 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     print("Sources:")
     for s in sources:
         print(f"  {s}")
-    print(
-        f"Tests: {len(tests)}  "
-        f"(slow-marked={len(slow_marked)}, normal={len(normal)})"
-    )
-    print(
-        f"Thresholds: promote >= {args.promote_above}s  "
-        f"demote < {args.demote_below}s"
-    )
+    print(f"Tests: {len(tests)}  (slow-marked={len(slow_marked)}, normal={len(normal)})")
+    print(f"Thresholds: promote >= {args.promote_above}s  demote < {args.demote_below}s")
     print()
 
     print(f"=== Top {min(args.top, len(tests))} slowest ===")
     for t in tests[: args.top]:
         tag = "SLOW" if t.get("slow") else "    "
-        print(
-            f"  {_fmt(float(t.get('duration_s', 0))):>8}  [{tag}]  "
-            f"{t.get('outcome', '?'):7}  {t['nodeid']}"
-        )
+        print(f"  {_fmt(float(t.get('duration_s', 0))):>8}  [{tag}]  {t.get('outcome', '?'):7}  {t['nodeid']}")
     print()
 
     print(f"=== Promote to @pytest.mark.slow  ({len(promote)}) ===")
@@ -185,16 +164,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if slow_marked:
         slow_total = sum(float(t.get("duration_s", 0)) for t in slow_marked)
-        print(
-            f"Slow-marked wall time (sum of call durations): {_fmt(slow_total)} "
-            f"across {len(slow_marked)} tests"
-        )
+        print(f"Slow-marked wall time (sum of call durations): {_fmt(slow_total)} across {len(slow_marked)} tests")
     if normal:
         normal_total = sum(float(t.get("duration_s", 0)) for t in normal)
-        print(
-            f"Normal wall time (sum of call durations): {_fmt(normal_total)} "
-            f"across {len(normal)} tests"
-        )
+        print(f"Normal wall time (sum of call durations): {_fmt(normal_total)} across {len(normal)} tests")
 
     return 0
 
