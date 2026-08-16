@@ -2,6 +2,8 @@
 
 Technical details and system design documentation.
 
+Operational test commands, markers, and batch gates live in [`tests/README.md`](tests/README.md).
+
 ## Table of Contents
 
 - [System Overview](#system-overview)
@@ -42,7 +44,7 @@ The legacy direct diff/patch editing path is deprecated. All modifications must 
 ```mermaid
 flowchart TB
     %% ==================== PARALLEL BACKGROUND AGENTS ====================
-    subgraph Parallel["🟢 PARALLEL BACKGROUND AGENTS"]
+    subgraph Parallel["PARALLEL BACKGROUND AGENTS"]
         direction TB
         jr_reviewer["jr_reviewer"]
         jr_researcher["jr_researcher"]
@@ -52,7 +54,7 @@ flowchart TB
     end
 
     %% ==================== SUPPORT LAYER ====================
-    subgraph Support["🔵 SUPPORT LAYER"]
+    subgraph Support["SUPPORT LAYER"]
         prioritizer["Prioritizer"]
         resource_controller["Resource Controller"]
         archivist["Archivist"]
@@ -60,7 +62,7 @@ flowchart TB
     end
 
     %% ==================== GOVERNED SEQUENTIAL LOOP ====================
-    subgraph Governed["🔴 GOVERNED SEQUENTIAL LOOP"]
+    subgraph Governed["GOVERNED SEQUENTIAL LOOP"]
         direction TB
         orchestrator["Orchestrator<br/>(developer | background | complete only)"]
         developer["Developer<br/>(EditPayload only)"]
@@ -92,38 +94,38 @@ flowchart TB
 
 #### Key Design Principles
 
-**🟢 Parallel Background Agents**  
-`jr_reviewer`, `jr_researcher`, `tech_writer`, `security_reviewer`, and `deployment_validator` run continuously in parallel threads. They post findings to the `prioritizer` and never directly modify files. They can be forcefully triggered via `force_review_cycle()`.
+**Parallel Background Agents**  
+`jr_reviewer`, `jr_researcher`, `tech_writer`, `security_reviewer`, and `deployment_validator` run continuously in parallel threads. They post findings to the `prioritizer` and never directly modify files. They can be forcefully triggered via `force_review_cycle()`. Pool start is gated by `background_agents_enabled` in config (default true); when false, `BackgroundAgentPool.start()` is a no-op.
 
-**🔵 Support Layer**  
+**Support Layer**  
 - **Prioritizer**: Scores, deduplicates, and ranks feedback. Human input receives strong bias. Surfaces the top actionable items to the orchestrator.
 - **Resource Controller**: Monitors token usage and API rate limits. Applies progressive throttling and supports temporary disabling during forced review cycles.
 - **Archivist**: Compresses old messages while preserving key decisions.
 
-**🔴 Governed Sequential Loop (Critical Mutation Path)**  
-This is now the **only** supported path for modifying files:
+**Governed Sequential Loop (Critical Mutation Path)**  
+This is the **only** supported path for modifying files:
 - `orchestrator` may only return `developer`, `background`, or `complete`.
 - `developer` must output a structured `EditPayload`.
 - A proposal is created and sent to the `reviewer`.
 - The `reviewer` acts as a strict safety gate (JSON decision).
 - Only approved proposals are materialized to disk.
 
-**👤 Human as First-Class Agent**  
+**Human as First-Class Agent**  
 Human input is posted to the message bus with `priority="CRITICAL"` and receives strong bias in the prioritizer.
 
-#### Data Flow (Updated)
+#### Data Flow
 
 ```
 Background Agents → Prioritizer → Orchestrator
-                                      │
-                    ┌─────────────────┴─────────────────┐
-                    │                                   │
+                                      |
+                    +-----------------+-----------------+
+                    |                                   |
               developer                           background
-                    │                                   │
+                    |                                   |
               EditPayload → Proposal → Reviewer    force_review_cycle()
-                    │                                   │
+                    |                                   |
               materialize_proposal()              Parallel Agents
-                    │                                   │
+                    |                                   |
               Disk + Git                          Prioritizer
 ```
 
@@ -132,8 +134,6 @@ Background Agents → Prioritizer → Orchestrator
 ### Agent Architecture
 
 #### Agent Categories
-
-PrizmForge now clearly separates agents into two categories:
 
 | Category              | Agents                                      | Can Mutate Files? | Invocation                  | Notes |
 |-----------------------|---------------------------------------------|-------------------|-----------------------------|-------|
@@ -181,6 +181,8 @@ The governed editing system replaces fragile diff/patch operations with a struct
    - The full `EditPayload`
    - `affected_line_guids`
    - `expected_hashes` (for optimistic concurrency)
+   - Optional mode metadata: `selected_mode`, `fallback_used`, `final_mode`
+   - `task_id` for reporting and query tooling
 3. The proposal enters `pending` → `under_review` → `approved` / `rejected` lifecycle.
 4. On `APPROVE`, `materialize_proposal()` applies the changes using GUID-based operations.
 5. After a successful write, overlapping pending proposals are marked `needs_revalidation`.
@@ -193,7 +195,8 @@ The governed editing system replaces fragile diff/patch operations with a struct
 | Core Editing Engine              | `file_editing/editing.py`             | GUID validation, `apply_replace_block`, `apply_insert_after`, `apply_delete_lines`, sort_order management |
 | Proposal Builder                 | `workflow/proposal_builder.py`        | Converts Developer output into tracked proposals + hash capture |
 | Materialization                  | `file_editing/writer.py`              | Atomic write to disk + post-write invalidation |
-| Database Schema                  | `core/db.py` (consolidated)           | `files`, `file_lines`, `edit_proposals`, `file_documentation`, + core tables |
+| Content safety                   | `core/content_safety.py`              | Reject binary magic / NUL-heavy payloads on full_replace, create_file, write_file_to_disk |
+| Database Schema                  | `core/db.py` (consolidated)           | `files`, `file_lines`, `edit_proposals`, `file_documentation`, `events`, `file_symbols`, + core tables |
 
 #### Line-Level Storage
 
@@ -211,12 +214,8 @@ Source code is stored line-by-line in the `file_lines` table:
 - Hashes are validated before applying changes.
 - After a successful materialization, any other pending proposals that touched the same lines are automatically invalidated.
 
-**✅ Next Batch - Updated Sections**
-
-Here are the next three sections written in a technical deep-dive style, updated to reflect the current governed editing architecture.
-
-
 #### File Context Delivery
+
 **All file content sent to any agent must be delivered as structured data containing line_guid for every line.**
 
 Files are always retrieved from the database.
@@ -225,11 +224,13 @@ This is the only way agents can reference lines for editing.
 
 ### Database Schema
 
-**All database tables are now defined in a single location**: `core/db.py` → `init_db()`.
+**All database tables are defined in a single location**: `core/db.py` → `init_db()`.
 
 The legacy `file_editing/schema.py` has been deprecated. All governed editing tables (`files`, `file_lines`, `edit_proposals`, etc.) have been consolidated into the main schema for consistency and easier testing.
 
 The system uses a single SQLite database. The path can be overridden via the `PRIZMFORGE_DB_PATH` environment variable (especially useful during testing).
+
+Additive migrations run in `_migrate_schema()` so existing DBs pick up new columns (e.g. `edit_proposals.task_id`, mode fields) without recreate.
 
 #### Governed Editing Tables
 
@@ -251,7 +252,7 @@ CREATE TABLE file_lines (
     line_guid TEXT PRIMARY KEY,
     file_id INTEGER NOT NULL,
     sort_order REAL NOT NULL,
-    content TEXT,
+    content TEXT NOT NULL,
     content_hash TEXT,
     is_deleted INTEGER DEFAULT 0,
     version INTEGER DEFAULT 1,
@@ -259,9 +260,10 @@ CREATE TABLE file_lines (
     FOREIGN KEY (file_id) REFERENCES files(file_id)
 );
 
--- Edit proposals with optimistic concurrency support
+-- Edit proposals with optimistic concurrency + mode / task metadata
 CREATE TABLE edit_proposals (
     proposal_id TEXT PRIMARY KEY,
+    task_id TEXT,
     target_file_id INTEGER,
     target_file_path TEXT,
     edit_payload TEXT NOT NULL,
@@ -277,7 +279,9 @@ CREATE TABLE edit_proposals (
     write_completed_at TIMESTAMP,
     write_start_line_guid TEXT,
     write_end_line_guid TEXT,
-    FOREIGN KEY (target_file_id) REFERENCES files(file_id)
+    selected_mode TEXT,
+    fallback_used INTEGER DEFAULT 0,
+    final_mode TEXT
 );
 
 -- Per-file documentation
@@ -288,6 +292,29 @@ CREATE TABLE file_documentation (
     version INTEGER DEFAULT 1,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (file_id) REFERENCES files(file_id)
+);
+
+-- Thin append-only mutation event log (proposal lifecycle, materialize, undo)
+CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id TEXT,
+    ts TEXT,
+    type TEXT NOT NULL,
+    source TEXT,
+    payload_json TEXT,
+    proposal_id TEXT
+);
+
+-- Structural symbol index (sqlite source of truth)
+CREATE TABLE file_symbols (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    name TEXT NOT NULL,
+    qualname TEXT NOT NULL,
+    lineno INTEGER,
+    updated_at TEXT NOT NULL,
+    UNIQUE(file_path, kind, qualname)
 );
 ```
 
@@ -338,23 +365,20 @@ CREATE TABLE project_files (
 
 -- Resource controller decisions and learning
 CREATE TABLE resource_decisions (...);
-
 CREATE TABLE agent_profiles (...);
 
--- Centralized error logging
+-- Centralized error logging (matches core/db.py)
 CREATE TABLE errors (
-    error_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    component TEXT,
-    error_category TEXT,
-    severity TEXT,
-    message TEXT,
-    details TEXT,
-    task_id TEXT,
-    proposal_id TEXT,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT NOT NULL,
+    message TEXT NOT NULL,
+    context TEXT,
     file_path TEXT,
-    line_guid TEXT,
+    function_name TEXT,
+    task_id TEXT,
+    agent_name TEXT,
     stack_trace TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
@@ -365,8 +389,12 @@ CREATE INDEX idx_file_lines_file_id ON file_lines(file_id);
 CREATE INDEX idx_file_lines_sort_order ON file_lines(sort_order);
 CREATE INDEX idx_edit_proposals_status ON edit_proposals(status);
 CREATE INDEX idx_edit_proposals_file ON edit_proposals(target_file_id);
+CREATE INDEX idx_edit_proposals_task ON edit_proposals(task_id);
 CREATE INDEX idx_messages_to_agent ON messages(to_agent, read);
 CREATE INDEX idx_agent_feedback_addressed ON agent_feedback(addressed);
+CREATE INDEX idx_events_task ON events(task_id);
+CREATE INDEX idx_events_type ON events(type);
+CREATE INDEX idx_file_symbols_path ON file_symbols(file_path);
 ```
 
 ---
@@ -500,6 +528,14 @@ Background agents run continuously to:
 - Identify issues, improvement opportunities, documentation gaps, and security concerns.
 - Feed findings into the `prioritizer` for orchestration.
 
+#### Enable gate
+
+`BackgroundAgentPool.start()` reads config via `get_config()`:
+
+- If `background_agents_enabled` is `False`, start is a **no-op** (no worker or feeder threads).
+- Default is enabled (`True`) when the key is absent.
+- Tests force isolation via `isolated_project` / `mock_minimal_config` and multi-target `get_config` patches so live config cannot leak into the suite.
+
 #### Architecture
 
 The system is built around `BackgroundAgentPool`, which manages:
@@ -508,6 +544,7 @@ The system is built around `BackgroundAgentPool`, which manages:
 - One worker thread per background agent.
 - A continuous feeder thread that periodically injects files for review.
 - Per-agent review tracking to avoid redundant work.
+- Active-agent filter and feeder interval controls used by the resource controller.
 
 ```python
 @dataclass
@@ -731,7 +768,7 @@ class RateLimiter:
 
 - **Endpoint Manager**: Calls `wait_if_needed(endpoint_name)` before making API requests.
 - **Resource Controller**: Can dynamically reduce rate limits during budget pressure via `set_max_calls()`.
-- Configuration is read from `config.json` under each endpoint’s `rate_limit_per_minute` field.
+- Configuration is read from `config.json` under each endpoint's `rate_limit_per_minute` field.
 
 #### Behavior
 
@@ -787,7 +824,7 @@ If the budget is exceeded, the system can either reject the call or trigger fall
 
 ### Resource Controller
 
-The `ResourceControllerWorker` (implemented in `agents/resource_controller_worker.py`) acts as the system’s budget governor. It continuously monitors resource consumption and dynamically adjusts system behavior to prevent quota exhaustion and control costs.
+The `ResourceControllerWorker` (implemented in `agents/resource_controller_worker.py`) acts as the system's budget governor. It continuously monitors resource consumption and dynamically adjusts system behavior to prevent quota exhaustion and control costs.
 
 #### Core Responsibilities
 
@@ -831,43 +868,26 @@ PrizmForge uses a centralized error handling approach to improve debuggability a
 
 #### Centralized Error Logging
 
-All significant errors are routed through a single function:
-
-```python
-log_error(
-    component="file_editing",
-    category="apply",
-    severity="HIGH",
-    message="Optimistic validation failed",
-    proposal_id=proposal_id,
-    ...
-)
-```
-
-Errors are written to both **stdout** (for immediate visibility) and the `errors` table in the database.
-
-#### Errors Table Schema
+Significant errors are routed through helpers that write to **stdout** and the `errors` table. Schema (from `core/db.py`):
 
 ```sql
 CREATE TABLE errors (
-    error_id INTEGER PRIMARY KEY AUTOINCREMENT,
-    component TEXT,
-    error_category TEXT,
-    severity TEXT,           -- INFO, MEDIUM, HIGH, CRITICAL
-    message TEXT,
-    details TEXT,
-    task_id TEXT,
-    proposal_id TEXT,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    level TEXT NOT NULL,
+    message TEXT NOT NULL,
+    context TEXT,
     file_path TEXT,
-    line_guid TEXT,
+    function_name TEXT,
+    task_id TEXT,
+    agent_name TEXT,
     stack_trace TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    timestamp TEXT DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-#### Severity Levels
+#### Severity / level usage
 
-| Severity   | Typical Use Case                          | Example |
+| Level      | Typical Use Case                          | Example |
 |------------|-------------------------------------------|--------|
 | `INFO`     | Informational / non-critical events       | Successful renumbering of sort orders |
 | `MEDIUM`   | Recoverable issues or warnings            | Failed to adjust agent pool |
@@ -880,18 +900,15 @@ The `file_editing` module makes heavy use of centralized logging:
 - `editing.py` logs validation failures, sort order issues, and apply errors.
 - `proposal_builder.py` logs proposal creation failures.
 - `writer.py` logs materialization and write errors.
-- `db.py` provides the `log_error()` helper used throughout the subsystem.
 
-This ensures that errors related to proposals, line GUIDs, and file writes are consistently captured with relevant context (e.g., `proposal_id`, `file_path`, `line_guid`).
+Mutation lifecycle is also recorded in the append-only `events` table (`core.events.publish_event` / `list_events`) for proposal create/approve/reject, materialize, fail, fallback, and undo.
 
 #### Observability Benefits
 
 - Enables post-mortem analysis of failed proposals.
 - Supports debugging of optimistic concurrency conflicts.
 - Provides an audit trail for autonomous modifications.
-- Allows querying errors by component, severity, or proposal for operational monitoring.
-
-The combination of structured logging + database persistence gives operators visibility into both transient issues and systemic problems without relying solely on console output.
+- Allows querying errors by level, agent, or task for operational monitoring.
 
 ---
 
@@ -901,22 +918,11 @@ The system incorporates several performance optimizations focused on reducing re
 
 #### Database Optimization
 
-Frequent queries are supported by targeted indexes:
-
-```sql
-CREATE INDEX idx_file_lines_file_id ON file_lines(file_id);
-CREATE INDEX idx_file_lines_sort_order ON file_lines(sort_order);
-CREATE INDEX idx_edit_proposals_status ON edit_proposals(status);
-CREATE INDEX idx_edit_proposals_file ON edit_proposals(target_file_id);
-CREATE INDEX idx_messages_to_agent ON messages(to_agent, read);
-CREATE INDEX idx_agent_feedback_addressed ON agent_feedback(addressed);
-```
-
-Query patterns in the governed editing path (especially `file_lines` lookups by `line_guid` and `sort_order`) benefit significantly from these indexes.
+Frequent queries are supported by targeted indexes on `file_lines`, `edit_proposals` (including `task_id`), `messages`, `agent_feedback`, `events`, and `file_symbols`.
 
 #### Token Estimation Strategy
 
-Token estimation is performed **once at write time** rather than repeatedly during context construction. When files are modified through `materialize_proposal()`, `sync_file_to_database()` computes and stores token estimates in both `project_files` and `file_summaries`. This pre-computed data is then used by the context manager, reducing overhead during orchestrator and agent calls.
+Token estimation is performed **once at write time** rather than repeatedly during context construction. When files are modified through `materialize_proposal()`, `sync_file_to_database()` computes and stores token estimates in both `project_files` and `file_summaries`.
 
 #### Context Management
 
@@ -976,13 +982,20 @@ Access to `.PrizmForge/agents.db` should be restricted to authorized users and p
 - Certificates are validated by the `requests` library.
 - Corporate proxy support is available via the `proxy` section in `config.json`.
 
+#### Path containment and content safety
+
+- Resolved project paths must stay under the **repository root** (directory containing `config.json`) for governed writes.
+- `core/content_safety.py` rejects binary payloads (PE/MSI/OLE magic, NUL-heavy content) on `full_replace`, `create_file`, and `write_file_to_disk`. Text scripts (`.ps1`, `.bat`, `.cmd`, `.js`, ...) are allowed.
+- Config: `content_safety.disallow_binary_content` (default true) and optional `blocked_extensions` allow-list.
+
 #### Autonomous Modification Risks
 
 Because the system can propose and apply code changes, the following controls are in place:
 - All modifications go through the **Reviewer safety gate** (JSON approval required).
 - Optimistic concurrency checks prevent conflicting edits.
-- Every change is recorded with proposal metadata and can be audited via `edit_proposals` and `file_modifications`.
+- Every change is recorded with proposal metadata and can be audited via `edit_proposals`, `file_modifications`, and `events`.
 - Git integration (when enabled) provides an additional rollback layer.
+- Proposal undo restores pre-apply snapshots when available.
 
 No changes are written to disk without explicit reviewer approval in the governed path.
 
@@ -990,7 +1003,7 @@ No changes are written to disk without explicit reviewer approval in the governe
 
 - Regularly review the `errors` table for unexpected behavior.
 - Monitor `endpoint_fallbacks` and `resource_decisions` for signs of instability.
-- Limit background agent activity in sensitive codebases via configuration.
-- Use the resource controller’s project goals section to enforce human-defined boundaries.
+- Limit background agent activity in sensitive codebases via configuration (`background_agents_enabled` or per-agent toggles).
+- Use the resource controller's project goals section to enforce human-defined boundaries.
 
 ---

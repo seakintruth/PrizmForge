@@ -8,13 +8,17 @@ Deterministic tests for governed multi-agent editing. **No network required** fo
 ## Quick start
 
 ```bash
-# From repo root
-pip install -r requirements-dev.txt   # pytest, pytest-mock (+ optional black/isort/ruff/mypy)
+# From repo root (prefer project .venv)
+./utils/setup.sh && source .venv/bin/activate   # or .venv\\Scripts\\activate on Windows
 
-pytest tests/ -m "not slow" -q        # full CI-friendly suite
-pytest tests/ -v                      # verbose
-./utils/run_tests.sh --normal -j 4    # preferred CI entry (batched runner)
-pytest tests/ -m slow -q              # concurrent worker stress only
+# Preferred runners (resolve .venv automatically)
+./utils/run_tests.sh --normal --batched -j 2    # merge gate (~5s on typical hosts)
+./utils/run_tests.sh --full --batched -j 2      # includes slow
+./utils/run_tests.sh --quick                    # curated smoke subset
+
+# Direct pytest (markers only; no batch isolation matrix)
+pytest tests/ -m "not slow and not serial" -q
+pytest tests/ -m "serial and not slow" -q -n 0
 ```
 
 **Without pytest** (ultra-minimal image):
@@ -28,6 +32,74 @@ python -m utils.run_critical_tests
 ```bash
 python -m utils.smoke_real_model
 ```
+
+**Duration rebalance** (after a full batched run):
+
+```bash
+./utils/run_tests.sh --full --batched -j 2
+python utils/analyze_test_durations.py
+```
+
+---
+
+## Markers (orthogonal axes)
+
+Registered in `pytest.ini`. **Do not conflate them.**
+
+| Marker | Meaning | Scheduling |
+|--------|---------|------------|
+| `@pytest.mark.slow` | Long-running (measured duration gate) | Excluded from `--normal`; runs under `--full` / `--only-slow` |
+| `@pytest.mark.serial` | Isolation required (shared pool/DB/process state) | Always `-j 1`; still runs under `--normal` when **not** slow |
+
+A test may be any combination:
+
+| Combination | Batch (`--batched`) | In `--normal`? |
+|-------------|---------------------|----------------|
+| neither | `unit` / `integration` / `root` at `-j N` | yes |
+| `serial` only | `serial` at `-j 1` | yes |
+| `slow` only | `slow-parallel` at `-j N` | no |
+| `slow` + `serial` | `slow-serial` at `-j 1` | no |
+
+**Guidance**
+
+- Mark **slow** from measured call time (promote ≥ ~2s; demote < ~0.5–1s). Prefer per-method markers over class-level when a class mixes fast helpers with pool start/stop.
+- Mark **serial** when the test uses process-global pools, shared sqlite without full isolation, or must not share a worker with peers.
+- `utils/run_tests.sh` still has a short `SERIAL_PATHS` safety net for modules not yet annotated; prefer markers and delete path entries as they land.
+
+```bash
+# Examples
+pytest tests/ -m "not slow" -q                  # normal gate (may still mix serial under xdist if not batched)
+./utils/run_tests.sh --normal --batched -j 2    # preferred: serial isolated at -j 1
+./utils/run_tests.sh --full --batched -j 2      # + slow-parallel + slow-serial
+./utils/run_tests.sh --batch slow-serial -j 1
+```
+
+---
+
+## Gates
+
+| Gate | Command | Intent |
+|------|---------|--------|
+| **Quick** | `./utils/run_tests.sh --quick` | Curated smoke subset |
+| **Normal** | `./utils/run_tests.sh --normal --batched -j 2` | Merge / GHA — all non-slow (serial-but-fast included) |
+| **Full** | `./utils/run_tests.sh --full --batched -j 2` | Complete matrix including slow |
+| **Only slow** | `./utils/run_tests.sh --only-slow --batched -j 2` | Duration / pool stress only |
+| **Live** | `python -m utils.smoke_real_model` | Optional real API (not a merge gate) |
+| **Lint** | `ruff check .` and `ruff format --check .` | GHA `code-quality` job |
+
+Per-batch logs and duration JSON land under `.PrizmForge/reports/`:
+
+- `pytest-batch-<name>-<stamp>.log`
+- `test-durations-<name>-<stamp>.json`
+- `pytest-full-summary-<stamp>.txt`
+- `test-durations-latest.json` (merged view for `analyze_test_durations.py`)
+
+The runner writes each batch log by redirect-then-cat (not `tee`) so failures are preserved under Git Bash / MSYS.
+
+### MockLLM import sites
+
+`call_agent` is patched at all entries in `tests.mocks.openai.CALL_AGENT_PATCH_TARGETS`.
+New modules that `from agents.base import call_agent` must call `register_call_agent_patch_target(...)`.
 
 ---
 
@@ -64,7 +136,7 @@ pytest tests/unit/test_edit_response_validator.py \
 4. **Prefer exact values** for auto-fills, mode tags, cooldown defaults, and DB rows.
 5. Soft `in (A, B)` is allowed only when two failure reasons are both correct for the same input shape (e.g. extraction vs parse).
 
-Path containment remains covered by `test_path_normalization.py` (writer). Edit op parse/apply matrix lives in `test_edit_contracts.py` (some apply cases marked `slow`).
+Path containment remains covered by `test_path_normalization.py` (writer). Edit op parse/apply matrix lives in `test_edit_contracts.py` (fast; not slow).
 
 ---
 
@@ -73,21 +145,6 @@ Path containment remains covered by `test_path_normalization.py` (writer). Edit 
 Automated tests cover: orchestrator routing, backlog override, multi-turn cycle, reviewer reject, background pool lifecycle, RC optimizer shapes, HTTP 401/429 shapes, governed edit pipeline, **binary content rejection** (MSI/PE/OLE — not text scripts), and the high-priority pure modules above.
 
 **Out of CI scope:** real-model quality, multi-hour unattended (see soak runbooks under `.PrizmForge/reports/` when present).
-
-## Gates (production hardening)
-
-| Gate | Command | Intent |
-|------|---------|--------|
-| **Fast / normal** | `./utils/run_tests.sh --normal -j 4` | Merge / GHA `test-normal` job |
-| **Full** | `./utils/run_tests.sh --full --batched` | Host-aware full matrix |
-| **Slow** | `pytest tests/ -m slow` | Concurrent worker stress |
-| **Live** | `python -m utils.smoke_real_model` | Optional real API (not a merge gate) |
-| **Lint** | `ruff check .` and `ruff format --check .` | GHA `code-quality` job |
-
-### MockLLM import sites
-
-`call_agent` is patched at all entries in `tests.mocks.openai.CALL_AGENT_PATCH_TARGETS`.
-New modules that `from agents.base import call_agent` must call `register_call_agent_patch_target(...)`.
 
 ## Philosophy (operational)
 
@@ -114,7 +171,7 @@ def test_flow(mock_llm):
         ...
 ```
 
-Fixtures (see `conftest.py`): `mock_llm`, `mock_llm_patched`, `mock_openai_chat`, `temp_db`, `mock_minimal_config`, `_isolate_prizmforge_workspace` (autouse).
+Fixtures (see `conftest.py`): `mock_llm`, `mock_llm_patched`, `mock_openai_chat`, `temp_db`, `mock_minimal_config`, `isolated_project`, `_isolate_prizmforge_workspace` (autouse).
 
 ---
 
@@ -153,39 +210,27 @@ tests/
 │   ├── test_edit_payload.py
 │   ├── test_proposal_builder.py
 │   ├── test_config.py
-│   ├── test_json_parser.py
-│   ├── test_response_parser.py
-│   ├── test_agent_schemas.py
-│   ├── test_endpoint_manager.py
-│   ├── test_rate_limiter.py
+│   ├── test_parallel_workers.py   # module serial; start/stop methods slow
+│   ├── test_worker_lifecycle.py   # module serial; start/stop methods slow
 │   ├── test_edit_contracts.py
 │   ├── test_path_normalization.py
 │   ├── test_content_safety.py
 │   └── ...
-└── test_governed_editing.py  # root-level governed path tests
+└── test_governed_editing.py  # root-level governed path tests (serial)
 ```
-
----
-
-## Markers
-
-```bash
-pytest tests/ -m "not slow"    # default CI-friendly run
-pytest tests/ -m slow          # concurrent worker / heavy apply contracts
-```
-
-Registered in `pytest.ini` (`slow`). A `serial` marker may land from the slow/serial-decouple work; until then, isolation is enforced via the batched runner / `SERIAL_PATHS` safety net in `utils/run_tests.sh`.
 
 ---
 
 ## Dependencies
 
-From repo root `requirements-dev.txt` (Advana-friendly):
+From repo root `requirements-dev.txt` (Advana-friendly floors):
 
 ```text
-pytest>=7.4.0,<9.1   # some hosts cap at 9.0.3
+pytest>=9.0.3          # some hosts cannot go above 9.0.3; CI may use newer
 pytest-mock>=3.12.0
-# optional: black, isort, ruff, mypy
+pytest-xdist
+pytest-timeout
+# optional: black>=24.4.2, isort>=7.0.0, ruff, mypy
 ```
 
 Runtime remains minimal (`requirements.txt`).
@@ -193,7 +238,7 @@ Runtime remains minimal (`requirements.txt`).
 ## Moving toward TDD (beyond unit tests and coverage)
 
 PrizmForge is largely **test-supported** today (tests follow implementation), not pure classic TDD.
-The suite already goes past “unit + coverage %”: workflow integration, agent/LLM boundary mocks, and contract/snapshot checks. Coverage is a **signal**, not the definition of quality.
+The suite already goes past "unit + coverage %": workflow integration, agent/LLM boundary mocks, and contract/snapshot checks. Coverage is a **signal**, not the definition of quality.
 
 ### What the current framework accomplishes
 
@@ -203,14 +248,14 @@ The suite already goes past “unit + coverage %”: workflow integration, agent
 | **Integration / workflow** | `tests/integration/`, cycle / edit workflow tests | Governed edit path: modes → payload → proposal → apply/materialize-style outcomes |
 | **Agent / LLM boundary** | `MockLLM`, `llm.test_mode`, `mock_responses` queues | Agent JSON and multi-turn behavior **without live models** |
 | **Contracts / snapshots** | Prompt snapshots, edit contracts, table fuzz | Schema and prompt regression guards |
-| **Gates** | Fast / full / slow / live + ruff | Cheap inner loop vs heavier paths; live API is optional and non-merge |
+| **Gates** | Quick / normal / full / only-slow / live + ruff | Cheap inner loop vs heavier paths; live API is optional and non-merge |
 
 **Not primary today:** Gherkin BDD, formal ATDD tooling, UI component tests, browser E2E, multi-hour live unattended as CI.
 
 ### Process guidance
 
-- Fast gate = inner unit + tight contracts.
-- Slow = concurrent workers + optional full mock unattended.
+- Normal batched gate = inner unit + serial-but-fast + tight contracts (~5s).
+- Slow = pool lifecycle / RC / multi-turn / unattended mock stress (`--full`).
 - Live model smoke stays optional and non-blocking for merge.
 - New features: prefer **outer failing test first**, then inner units.
 - When generating tests with an agent: inject focal signatures, fixture inventory, and forbidden hollow patterns; fill bodies inside a fixed skeleton; reject soft asserts in post-process.
