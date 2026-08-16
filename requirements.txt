@@ -3,4 +3,4 @@
 #
 # Runtime surface is intentionally minimal for hardened environments.
 
-requests>=2.31.0
+requests>=2.34.2
