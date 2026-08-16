@@ -578,9 +578,9 @@ files_per_agent = 1  # Instead of 3
 ```json
 {
   "agent_model_preferences": {
-    "jr_reviewer": "gemini-3-flash-preview",
-    "jr_researcher": "gemini-3-flash-preview",
-    "tech_writer": "gemini-3-flash-preview"
+    "jr_reviewer": "gemini-3.6-flash",
+    "jr_researcher": "gemini-3.6-flash",
+    "tech_writer": "gemini-3.6-flash"
   }
 }
 ```
@@ -824,8 +824,8 @@ ls -la
 ```json
 {
   "agent_model_preferences": {
-    "orchestrator": "gemini-3-flash-preview",
-    "jr_reviewer": "gemini-3-flash-preview"
+    "orchestrator": "gemini-3.6-flash",
+    "jr_reviewer": "gemini-3.6-flash"
   }
 }
 ```
@@ -1138,7 +1138,7 @@ ORDER BY timestamp DESC;
 curl -X POST https://api.our.example.domain/v1/chat/completions \
   -H "Authorization: Bearer YOUR_KEY" \
   -H "Content-Type: application/json" \
-  -d '{"model":"gemini-3-flash-preview","messages":[{"role":"user","content":"test"}]}'
+  -d '{"model":"gemini-3.6-flash","messages":[{"role":"user","content":"test"}]}'
 ```
 
 **Step 5: Check database**

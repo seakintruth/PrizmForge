@@ -272,7 +272,7 @@ class HeuristicOptimizer:
                     active_agents=["prioritizer"],  # Only prioritizer
                     rate_limit_per_minute=max(30, int(state.api_rate_limit * 0.5)),
                     model_downgrades={
-                        "developer": "gemini-3-flash-preview",  # Fast fixes
+                        "developer": "gemini-3.6-flash",  # Fast fixes
                         "prioritizer": "gemini-3.1-pro-preview",  # Keep quality
                     },
                     reasoning=(
@@ -318,12 +318,12 @@ class HeuristicOptimizer:
             active_agents=["prioritizer"],  # Only prioritizer
             rate_limit_per_minute=max(10, int(state.api_rate_limit * 0.1)),
             model_downgrades={
-                "prioritizer": "gemini-3-flash-preview",
-                "orchestrator": "gemini-3-flash-preview",
-                "developer": "gemini-3-flash-preview",
-                "jr_reviewer": "gemini-3-flash-preview",
-                "jr_researcher": "gemini-3-flash-preview",
-                "tech_writer": "gemini-3-flash-preview",
+                "prioritizer": "gemini-3.6-flash",
+                "orchestrator": "gemini-3.6-flash",
+                "developer": "gemini-3.6-flash",
+                "jr_reviewer": "gemini-3.6-flash",
+                "jr_researcher": "gemini-3.6-flash",
+                "tech_writer": "gemini-3.6-flash",
             },
             reasoning=(
                 f"🚨 CRITICAL: {state.budget_percentage:.1%} budget remaining. "
@@ -351,10 +351,10 @@ class HeuristicOptimizer:
             active_agents=active_agents,
             rate_limit_per_minute=max(20, int(state.api_rate_limit * 0.3)),
             model_downgrades={
-                "jr_reviewer": "gemini-3-flash-preview",
-                "jr_researcher": "gemini-3-flash-preview",
-                "tech_writer": "gemini-3-flash-preview",
-                "archivist": "gemini-3-flash-preview",
+                "jr_reviewer": "gemini-3.6-flash",
+                "jr_researcher": "gemini-3.6-flash",
+                "tech_writer": "gemini-3.6-flash",
+                "archivist": "gemini-3.6-flash",
             },
             reasoning=(
                 f"⚠️  AGGRESSIVE: {state.budget_percentage:.1%} budget remaining. "
@@ -387,8 +387,8 @@ class HeuristicOptimizer:
             active_agents=active_agents,
             rate_limit_per_minute=max(40, int(state.api_rate_limit * 0.6)),
             model_downgrades={
-                "tech_writer": "gemini-3-flash-preview",
-                "archivist": "gemini-3-flash-preview",
+                "tech_writer": "gemini-3.6-flash",
+                "archivist": "gemini-3.6-flash",
             },
             reasoning=(
                 f"⚡ MODERATE: {state.budget_percentage:.1%} budget remaining. "

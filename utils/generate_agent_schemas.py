@@ -235,7 +235,7 @@ SUPPORT_WORKER_SCHEMAS = {
                 "background_feeder_interval": 90,
                 "active_agents": ["jr_reviewer", "jr_researcher", "prioritizer"],
                 "rate_limit_per_minute": 60,
-                "model_downgrades": {"tech_writer": "gemini-3-flash-preview"},
+                "model_downgrades": {"tech_writer": "gemini-3.6-flash"},
                 "reasoning": "Budget at 40%, reducing activity to conserve tokens",
             },
         },

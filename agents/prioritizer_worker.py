@@ -393,7 +393,7 @@ Respond with JSON ONLY:
                 "prioritizer",
                 prompt,
                 self.current_task_id,
-                model_override="gemini-3-flash-preview",
+                model_override="gemini-3.6-flash",
             )
 
             if not response:
@@ -480,7 +480,7 @@ Respond with JSON ONLY:
                 "prioritizer",
                 prompt,
                 self.current_task_id,
-                model_override="gemini-3-flash-preview",
+                model_override="gemini-3.6-flash",
             )
 
             if not response:

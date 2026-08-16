@@ -90,7 +90,7 @@
       "temperature": 0.5,
       "description": "Strong reasoning, good balance"
     },
-    "gemini-3-flash-preview": {
+    "gemini-3.6-flash": {
       "endpoint": "gemini",
       "max_output_tokens": 16384,
       "temperature": 0.7,
@@ -107,17 +107,17 @@
     "orchestrator": "gemini-3.1-pro-preview",
     "developer": "gemini-3.1-pro-preview",
     "reviewer": "gemini-3.1-pro-preview",
-    "researcher": "gemini-3-flash-preview",
+    "researcher": "gemini-3.6-flash",
     "prioritizer": "gemini-3.1-pro-preview",
-    "jr_reviewer": "gemini-3-flash-preview",
-    "jr_researcher": "gemini-3-flash-preview",
-    "tech_writer": "gemini-3-flash-preview",
+    "jr_reviewer": "gemini-3.6-flash",
+    "jr_researcher": "gemini-3.6-flash",
+    "tech_writer": "gemini-3.6-flash",
     "file_manager": "gemini-3.1-pro-preview",
     "archivist": "gemini-3.1-pro-preview",
-    "project_reporter": "gemini-3-flash-preview",
+    "project_reporter": "gemini-3.6-flash",
     "resource_controller": "gemini-3.1-pro-preview",
     "deployment_validator": "gemini-3.1-pro-preview",
-    "security_reviewer": "gemini-3-flash-preview"
+    "security_reviewer": "gemini-3.6-flash"
   },
   "proxy": {
     "http": "",
