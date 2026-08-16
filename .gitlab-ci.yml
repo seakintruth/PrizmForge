@@ -1,4 +1,4 @@
-# PrizmForge GitLab CI — mirrors GitHub Actions lint + normal test gate.
+# PrizmForge GitLab CI - mirrors GitHub Actions lint + normal test gate.
 # Heavy/full suites (worker lifecycle, governed apply) stay local until
 # background-worker teardown is reliable under pytest-timeout.
 
@@ -15,7 +15,8 @@ cache:
   paths:
     - .cache/pip
 
-.python_setup: &
+# Anchor must be named: `&python_setup` (bare `&` is a YAML parse error).
+.python_setup: &python_setup
   image: python:3.12-bookworm
   before_script:
     - python -m pip install --upgrade pip
@@ -44,8 +45,8 @@ test:normal:
   timeout: 20 minutes
   script:
     - chmod +x utils/run_tests.sh
-    # Shared runners vary; 2 workers keeps memory safe
-    - ./utils/run_tests.sh --normal -j 2 --timeout 30
+    # --batched keeps @pytest.mark.serial at -j 1; parallel batches use -j 2
+    - ./utils/run_tests.sh --normal --batched -j 2 --timeout 30
   artifacts:
     when: always
     paths:
