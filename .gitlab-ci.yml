@@ -1,21 +1,22 @@
 # PrizmForge GitLab CI (web.git.mil)
 # Mirrors GitHub Actions lint + normal test gate.
 # Heavy/full suites stay local until worker teardown is reliable under timeout.
+#
+# Speed notes (K8s executor, ephemeral pods):
+# - Lint installs only ruff (not requirements-dev).
+# - No `pip install --upgrade pip` (saves ~30s).
+# - Shared cache URL / Nexus mirror / prebuilt image are platform concerns;
+#   this file does not depend on them.
 
 # Prevent duplicate pipelines when a Merge Request is active
 workflow:
   rules:
-    # MR pipeline
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    # Branch push while an MR is open for this branch → skip branch pipeline
     - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
       when: never
-    # Standard branch pipelines (push before an MR exists, default branch, etc.)
     - if: '$CI_COMMIT_BRANCH'
-    # Manual / web triggers from the GitLab UI
     - if: '$CI_PIPELINE_SOURCE == "web"'
 
-# Retry on sync.git.mil clone / runner flakes (same pattern as other USG projects)
 default:
   retry:
     max: 2
@@ -29,46 +30,58 @@ stages:
   - test
 
 variables:
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   PYTEST_ADDOPTS: ""
+  # Quiet pip; avoid version-check chatter
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_ROOT_USER_ACTION: ignore
 
-cache:
-  key: "${CI_COMMIT_REF_SLUG}"
-  paths:
-    - .cache/pip
-
-# Shared job defaults. Anchor must be named (`&python_setup`, not bare `&`).
-# Runner tag is a routing label (not a secret); auth is the runner registration token.
-.python_setup: &python_setup
+# Shared defaults (named anchor required — bare `&` is invalid YAML).
+# Runner tag is a routing label, not a secret.
+.python_base: &python_base
   image: python:3.12-bookworm
   tags:
     - USG-DOD-Global-Custom-Docker-Containers-BuildRunner1
-  before_script:
-    - python -m pip install --upgrade pip
-    - pip install -r requirements-dev.txt
-    - |
-      if [ ! -f config.json ]; then
-        cp example_config.json config.json
-      fi
 
-lint:ruff:
-  <<: *python_setup
-  stage: lint
-  script:
-    - pip install ruff
-    - ruff check .
-    - ruff format --check .
+.rules_default: &rules_default
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
     - if: '$CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/'
 
+lint:ruff:
+  <<: *python_base
+  stage: lint
+  script:
+    # Lint gate only needs ruff — do not install pytest/black/mypy/pylint/etc.
+    - pip install ruff
+    - ruff check .
+    - ruff format --check .
+  <<: *rules_default
+
 test:normal:
-  <<: *python_setup
+  <<: *python_base
   stage: test
   needs: ["lint:ruff"]
   timeout: 20 minutes
+  # Optional local pip download cache. On ephemeral K8s pods without a
+  # runner-level shared cache URL this usually misses; harmless when it does.
+  variables:
+    PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  cache:
+    key:
+      files:
+        - requirements.txt
+        - requirements-dev.txt
+    paths:
+      - .cache/pip
+    policy: pull-push
+  before_script:
+    - pip install -r requirements-dev.txt
+    - |
+      if [ ! -f config.json ]; then
+        cp example_config.json config.json
+      fi
   script:
     - chmod +x utils/run_tests.sh
     # --batched keeps @pytest.mark.serial at -j 1; parallel batches use -j 2
@@ -78,8 +91,4 @@ test:normal:
     paths:
       - .PrizmForge/reports/
     expire_in: 14 days
-  rules:
-    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
-    - if: '$CI_PIPELINE_SOURCE == "web"'
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-    - if: '$CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/'
+  <<: *rules_default
