@@ -95,14 +95,12 @@ def test_post_results_writes_orchestrator_message(temp_db):
     from core.db_connection import get_db_connection
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT from_agent, to_agent, content, priority
             FROM messages
             WHERE task_id = 't_post'
             ORDER BY id DESC LIMIT 1
-            """
-        ).fetchone()
+            """).fetchone()
     assert row is not None
     assert row[0] == "prioritizer"
     assert row[1] == "orchestrator"
