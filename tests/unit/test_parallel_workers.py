@@ -9,6 +9,9 @@ import pytest
 
 from agents.parallel_workers import BackgroundAgentPool, FileChangeEvent, get_agent_pool
 
+# Process-global pool / threads → must not share xdist workers.
+pytestmark = pytest.mark.serial
+
 # Minimal agent set so pool.start() actually launches threads under test.
 # Real config.json agents must never leak in (conftest forces {}).
 _TEST_BG_AGENTS = {
@@ -203,7 +206,7 @@ class TestAgentPoolActiveControl:
 @pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestConcurrentBehavior:
-    """Tests for concurrent behavior (slower tests)."""
+    """Tests for concurrent behavior (duration-slow; module already serial)."""
 
     def test_multiple_file_changes_concurrent(self, pool_env):
         with patch(
