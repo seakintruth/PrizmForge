@@ -45,7 +45,9 @@ def sanitize_path_token(raw: str | None) -> str | None:
 
     # Drop residual emphasis / fence characters inside the token
     s = re.sub(r"[*`]+", "", s).strip()
-    s = s.strip(".,;")
+    # Trailing punctuation only — never strip leading dots (would turn
+    # "../secret.py" into "secret.py" and defeat traversal rejection).
+    s = s.rstrip(".,;")
     if not s or s.upper() in _NONE_TOKENS:
         return None
 
@@ -91,14 +93,16 @@ def extract_files_needed_from_text(text: str, *, max_files: int = 8) -> list[str
 
 
 def is_valid_edit_target_path(path: str | None) -> bool:
-    """True when path is a sanitized relative path safe for proposals / create_file."""
+    """
+    True when *path is already a clean relative path* (no markdown, no traversal).
+
+    Unlike sanitize_path_token, this does not accept decorated input — it only
+    returns True when the input normalizes to itself (slash normalize only).
+    """
     if path is None:
         return False
     clean = sanitize_path_token(path)
     if not clean:
         return False
-    # Reject if sanitize had to change the semantic path beyond slash normalize
-    str(path).replace("\\", "/").strip()
-    # Allow input that only differed by markdown/wrappers: clean must equal
-    # sanitize of itself (always) — compare to a second sanitize of cleaned form
-    return clean == sanitize_path_token(clean)
+    normalized = str(path).replace("\\", "/").strip()
+    return normalized == clean
