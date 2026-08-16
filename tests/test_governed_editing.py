@@ -5,16 +5,11 @@
 
 import hashlib
 import os
-import sqlite3
 import sys
 import tempfile
 from pathlib import Path
 
 import pytest
-
-from core.db import init_db
-from file_editing.editing import apply_edit_proposal
-from workflow.proposal_builder import create_proposal_from_developer_output
 
 # Full proposal→apply lifecycle is DB-heavy; exclude from --normal
 pytestmark = pytest.mark.slow
@@ -35,5 +30,5 @@ def db(monkeypatch):
     to guarantee a clean state.
     """
 
-    fd, db_path = tempfile.mkstemp(suffix=".db")
+    fd, _db_path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
