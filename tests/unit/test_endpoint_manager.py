@@ -93,11 +93,7 @@ def test_extract_response_custom_path():
         "gemini",
         {"response_path": ["candidates", 0, "content", "parts", 0, "text"]},
     )
-    data = {
-        "candidates": [
-            {"content": {"parts": [{"text": "Gemini says hi"}]}}
-        ]
-    }
+    data = {"candidates": [{"content": {"parts": [{"text": "Gemini says hi"}]}}]}
     assert cfg.extract_response(data) == "Gemini says hi"
 
 
@@ -321,9 +317,7 @@ def test_get_available_endpoints_sorted_by_priority(manager):
 
 
 def test_get_available_endpoints_excludes_cooldown(manager):
-    manager.endpoints["primary"].health.mark_failure(
-        EndpointStatus.RATE_LIMITED, cooldown_minutes=5
-    )
+    manager.endpoints["primary"].health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=5)
     available = manager.get_available_endpoints()
     names = [ep.name for ep in available]
     assert "primary" not in names
@@ -355,7 +349,7 @@ def test_get_health_summary_shape(manager):
     summary = manager.get_health_summary()
     assert "primary" in summary
     assert "secondary" in summary
-    for name, info in summary.items():
+    for _name, info in summary.items():
         assert "status" in info
         assert "available" in info
         assert "error_count" in info
