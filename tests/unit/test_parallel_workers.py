@@ -32,7 +32,7 @@ class TestParallelWorkers:
         assert hasattr(pool, "start")
         assert hasattr(pool, "stop")
 
-    def test_agent_pool_start_stop(self, mock_minimal_config):
+    def test_agent_pool_start_stop(self, isolated_project):
         """Agent pool should start and stop without crashing."""
         pool = BackgroundAgentPool()
         try:
@@ -51,7 +51,7 @@ class TestParallelWorkers:
         pool2 = get_agent_pool()
         assert pool1 is pool2
 
-    def test_queue_file_change(self, mock_minimal_config):
+    def test_queue_file_change(self, isolated_project):
         """Should be able to queue file changes."""
         pool = BackgroundAgentPool()
         pool.start(task_id="test_task")
@@ -66,7 +66,7 @@ class TestParallelWorkers:
             assert pool.running is False
 
     @patch("agents.parallel_workers.call_agent")
-    def test_worker_processes_events(self, mock_call_agent, mock_minimal_config):
+    def test_worker_processes_events(self, mock_call_agent, isolated_project):
         """Workers should process queued events."""
         mock_call_agent.return_value = '{"findings": [], "summary": "ok"}'
 
@@ -84,7 +84,7 @@ class TestParallelWorkers:
             pool.stop()
             assert pool.running is False
 
-    def test_empty_queue_handling(self):
+    def test_empty_queue_handling(self, isolated_project):
         """Worker should handle empty queue gracefully."""
         pool = BackgroundAgentPool()
         pool.start(task_id="test_task")
@@ -92,7 +92,7 @@ class TestParallelWorkers:
         pool.stop()
         assert pool.running is False
 
-    def test_force_review_cycle(self, mock_minimal_config):
+    def test_force_review_cycle(self, isolated_project):
         """Force review cycle should queue files."""
         pool = get_agent_pool()
         pool.start(task_id="test_task")
@@ -128,6 +128,7 @@ class TestAgentPoolConfiguration:
         assert isinstance(pool.random_review_agents, list)
 
 
+@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestAgentPoolActiveControl:
     """Tests for controlling which agents are active."""
 
@@ -156,11 +157,12 @@ class TestAgentPoolActiveControl:
 
 
 @pytest.mark.slow
+@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestConcurrentBehavior:
     """Tests for concurrent behavior (slower tests)."""
 
     @patch("agents.parallel_workers.call_agent")
-    def test_multiple_file_changes_concurrent(self, mock_call_agent, mock_minimal_config):
+    def test_multiple_file_changes_concurrent(self, mock_call_agent, isolated_project):
         """Should handle multiple concurrent file changes."""
         mock_call_agent.return_value = '{"findings": [], "summary": "ok"}'
 
@@ -183,7 +185,7 @@ class TestConcurrentBehavior:
         finally:
             pool.stop()
 
-    def test_start_stop_lifecycle(self):
+    def test_start_stop_lifecycle(self, isolated_project):
         """Should handle multiple start/stop cycles."""
         pool = BackgroundAgentPool()
 
