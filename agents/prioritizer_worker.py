@@ -499,6 +499,10 @@ Respond with JSON ONLY:
         except Exception as e:
             print(f"    ⚠️  Category scoring error: {e}")
 
+    def _top_by_score(self, items: list[FeedbackItem], limit: int = 8) -> list[FeedbackItem]:
+        """Deterministic fallback ranking when the ranking LLM is unavailable."""
+        return sorted(items, key=lambda x: x.score, reverse=True)[:limit]
+
     def _cross_category_ranking(self, by_category: dict[str, list[FeedbackItem]]) -> list[FeedbackItem]:
         """Phase 3: Cross-category prioritization"""
         print("    → Phase 3: Cross-category ranking")
@@ -542,8 +546,9 @@ Respond with JSON ONLY:
                 model_override="gemini-3.1-pro-preview",
             )
 
+            # Empty / None response: same deterministic fallback as exception path
             if not response:
-                return all_items[:8]
+                return self._top_by_score(all_items)
 
             data = parse_json_response(
                 response,
@@ -569,7 +574,7 @@ Respond with JSON ONLY:
             print(f"    ⚠️  Cross-category ranking error: {e}")
 
         # Fallback: return top 8 by score
-        return sorted(all_items, key=lambda x: x.score, reverse=True)[:8]
+        return self._top_by_score(all_items)
 
     def _post_results(self, ranked: list[FeedbackItem]):
         """Phase 4: Post to orchestrator"""

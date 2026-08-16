@@ -39,7 +39,7 @@ Test suite runner for PrizmForge.
 Options:
   -p, --python PATH     Path to Python executable (default: python3)
   -j, --jobs NUM        xdist workers (default: auto; batched defaults to 2;
-                        heavy and slow batches always use 1)
+                        heavy, slow, and full-mode integration always use 1)
   -q, --quick           Fast-gate subset (default)
   -n, --normal          All tests under tests/ except @pytest.mark.slow
   -f, --full            Complete suite including slow tests
@@ -54,13 +54,16 @@ Options:
 Batch layout (--batched with --normal or --full):
   unit         tests/unit/ excluding heavy files  (small -j, not slow)
   heavy        concurrency-heavy targets          (serial -j 1, not slow)
-  integration  tests/integration/ excluding heavy (small -j, not slow)
+  integration  tests/integration/ excluding heavy (small -j under normal;
+               serial -j 1 under --full; not slow)
   root         tests/*.py root files not in heavy (small -j, not slow)
   slow         @pytest.mark.slow only             (serial -j 1; --full and --only-slow)
 
-Under --full --batched, slow tests are NEVER mixed into parallel batches;
-they run only in the final serial "slow" batch. That avoids xdist worker
-deaths (node down / exit 120) from OOM-prone task-cycle tests.
+Under --full --batched:
+  - slow tests are NEVER mixed into parallel batches; they run only in the
+    final serial "slow" batch.
+  - the integration batch is forced serial (-j 1) to avoid xdist worker
+    deaths (node down / exit 120) seen on ~16GB hosts.
 
 Each batch writes:
   ${REPORT_DIR}/pytest-batch-<name>-<timestamp>.log
@@ -73,7 +76,8 @@ Examples:
   # Quick gate
   $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe"
 
-  # Memory-safe full suite (parallel not-slow + serial heavy + serial slow)
+  # Memory-safe full suite (parallel not-slow unit/root + serial heavy +
+  # serial integration + serial slow)
   $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe" --full --batched -j 2
 
   # Only the heavy serial batch
@@ -157,9 +161,9 @@ path_exists() { [[ -e "$1" ]]; }
 # Append -m filter for parallel/heavy batches.
 # normal + full: exclude slow (slow runs in its own serial batch under full).
 # slow mode: only slow tests.
+# Prefer explicit array append over nameref so Git Bash / older bash still
+# show "-m not slow" in the BATCH targets line.
 append_batch_marker() {
-  # Usage: append_batch_marker args_array_name
-  # Bash nameref so callers pass the array name to mutate.
   local -n _batch_args="$1"
   case "$TEST_MODE" in
     normal|full)
@@ -294,12 +298,20 @@ run_batched() {
   local jobs_small="$PARALLEL_JOBS"
   [[ "$jobs_small" == "auto" ]] && jobs_small=2
 
-  echo "Batched run mode=${TEST_MODE} small_jobs=${jobs_small} heavy_jobs=1 slow_jobs=1"
+  # Under --full, integration is forced serial to avoid xdist node deaths
+  # (node down / exit 120) observed on ~16GB hosts after long runs.
+  local jobs_integration="$jobs_small"
+  if [[ "$TEST_MODE" == "full" ]]; then
+    jobs_integration=1
+  fi
+
+  echo "Batched run mode=${TEST_MODE} small_jobs=${jobs_small} integration_jobs=${jobs_integration} heavy_jobs=1 slow_jobs=1"
   echo "Summary file: ${SUMMARY_FILE}"
   echo "Batches continue after failure."
   if [[ "$TEST_MODE" == "full" ]]; then
     echo "Note: --full excludes @pytest.mark.slow from parallel/heavy batches;"
     echo "      slow tests run only in the final serial 'slow' batch."
+    echo "Note: --full forces the integration batch to serial (-j 1)."
   fi
 
   # ---- unit (light) ----
@@ -334,7 +346,7 @@ run_batched() {
     fi
   fi
 
-  # ---- integration (light) ----
+  # ---- integration (serial under --full; small -j under --normal) ----
   if should_run_batch integration; then
     if path_exists tests/integration; then
       local int_args=("tests/integration")
@@ -344,7 +356,7 @@ run_batched() {
         fi
       done
       append_batch_marker int_args
-      if ! run_pytest_once integration "$jobs_small" "${int_args[@]}"; then
+      if ! run_pytest_once integration "$jobs_integration" "${int_args[@]}"; then
         overall_rc=1
       fi
     fi
