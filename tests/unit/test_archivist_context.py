@@ -63,7 +63,7 @@ def test_archive_old_messages_requires_threshold(temp_db, mock_llm):
 
     old = (datetime.now() - timedelta(minutes=30)).isoformat()
     with get_db_connection() as conn:
-        for _i in range(3):
+        for _ in range(3):
             conn.execute(
                 """
                 INSERT INTO messages (from_agent, to_agent, content, task_id, priority, read, timestamp)
