@@ -55,10 +55,6 @@ DURATIONS_N=50
 SERIAL_PATHS=(
   "tests/unit/test_hardening.py"
   "tests/unit/test_task_runner.py"
-  "tests/unit/test_parallel_workers.py"
-  "tests/unit/test_worker_lifecycle.py"
-  "tests/integration/test_unattended_with_mock.py"
-  "tests/test_governed_editing.py"
 )
 
 show_help() {
