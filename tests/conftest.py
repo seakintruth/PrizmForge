@@ -42,6 +42,29 @@ def _force_test_safe_config(cfg: dict, project_dir: str) -> dict:
     return out
 
 
+# Modules that do `from core.config import get_config` (local name binding).
+# Patching only core.config.get_config is NOT enough for these sites.
+_GET_CONFIG_PATCH_TARGETS = (
+    "core.config.get_config",
+    "agents.parallel_workers.get_config",
+    "agents.resource_controller_worker.get_config",
+    "agents.reporter_worker.get_config",
+    "agents.orchestrator.get_config",
+    "workflow.task_runner.get_config",
+)
+
+
+def _patch_get_config_everywhere(monkeypatch, getter) -> None:
+    """Replace get_config at the module and at every known import site."""
+    for target in _GET_CONFIG_PATCH_TARGETS:
+        try:
+            monkeypatch.setattr(target, getter)
+        except (AttributeError, ImportError):
+            # Module may not be imported yet; later imports still pick up
+            # core.config.get_config when using attribute access.
+            pass
+
+
 @pytest.fixture(autouse=True)
 def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
     """
@@ -51,6 +74,7 @@ def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
       - PRIZMFORGE_DB_PATH → <tmp>/.PrizmForge/agents.db
       - core.config.get_config() project_directory → <tmp>/project
       - background_agents_enabled=False and background_agents={} (hard override)
+      - get_config local bindings in parallel_workers / RC / reporter / etc.
 
     Does NOT call init_db (keeps pure unit tests light). Tests that touch
     the DB should request the temp_db fixture (or one that depends on it).
@@ -79,7 +103,7 @@ def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
             cfg = {}
         return _force_test_safe_config(cfg, str(project))
 
-    monkeypatch.setattr(core_config, "get_config", _isolated_get_config)
+    _patch_get_config_everywhere(monkeypatch, _isolated_get_config)
 
     yield {
         "base": base,
@@ -101,22 +125,21 @@ def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
 @pytest.fixture(scope="function")
 def temp_db(monkeypatch, _isolate_prizmforge_workspace):
     """
-    Fresh temp database with full schema for one test.
+    Initialize a fresh agents.db under the isolated workspace and return its path.
 
-    Uses the autouse workspace's PRIZMFORGE_DB_PATH, then runs init_db().
+    Dependent fixtures (isolated_project, etc.) use this so schema exists without
+    writing into the real repo .PrizmForge directory.
     """
-    db_path = str(_isolate_prizmforge_workspace["db_path"])
-    monkeypatch.setenv("PRIZMFORGE_DB_PATH", db_path)
+    from core.db import init_db
 
+    db_path = _isolate_prizmforge_workspace["db_path"]
     p = Path(db_path)
+    p.parent.mkdir(parents=True, exist_ok=True)
     if p.exists():
         try:
             p.unlink()
         except OSError:
             pass
-    p.parent.mkdir(parents=True, exist_ok=True)
-
-    from core.db import init_db
 
     init_db()
 
@@ -179,7 +202,7 @@ def mock_minimal_config(monkeypatch, _isolate_prizmforge_workspace):
         "default_model": "mock-model",
     }
 
-    monkeypatch.setattr(core_config, "get_config", lambda: minimal_config)
+    _patch_get_config_everywhere(monkeypatch, lambda: minimal_config)
     return minimal_config
 
 
@@ -206,52 +229,22 @@ def capsys_and_temp_db(temp_db, capsys):
 
 
 @pytest.fixture
-def mock_openai_chat(monkeypatch):
+def mock_openai_response():
     """
-    Mock OpenAI-compatible chat completion at the HTTP layer (requests.post).
-
     Stdlib-only — does not require pytest-mock or responses.
+    Returns a factory that configures MockLLM for a single response string.
     """
-    from tests.mocks.openai import make_requests_response
-
-    state = {"response_text": "Mocked response", "status_code": 200}
-
-    def _fake_post(*args, **kwargs):
-        return make_requests_response(
-            state["response_text"],
-            status_code=state["status_code"],
-        )
-
-    monkeypatch.setattr("agents.base.requests.post", _fake_post)
-    try:
-        import requests as _requests
-
-        monkeypatch.setattr(_requests, "post", _fake_post)
-    except Exception as e:
-        print(f"    ⚠️  Exception handled in conftest.py: {e}")
+    from tests.mocks.openai import MockLLM
 
     def _configure(response_text: str = "Mocked response", status_code: int = 200):
-        state["response_text"] = response_text
-        state["status_code"] = status_code
-        return state
+        return MockLLM(response_text=response_text, status_code=status_code)
 
     return _configure
 
 
 @pytest.fixture
 def mock_llm():
-    """
-    High-level scriptable LLM mock (patches call_agent / call_endpoint).
-    """
+    """Bare MockLLM instance for tests that manage the context themselves."""
     from tests.mocks.openai import MockLLM
 
     return MockLLM()
-
-
-@pytest.fixture
-def mock_llm_patched(mock_llm):
-    """
-    Same as mock_llm, but already patches call_agent for the duration of the test.
-    """
-    with mock_llm.patch_call_agent():
-        yield mock_llm
