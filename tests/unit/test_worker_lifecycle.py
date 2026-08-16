@@ -2,8 +2,9 @@
 Phase 5 — Background worker lifecycle & RC decision hardening.
 
 Focus: start/stop idempotency, active-agent pause, feeder interval under lock,
-BoundedSet, HeuristicOptimizer backlog decisions. Self-bounded timings (no
-pytest-timeout required).
+BoundedSet, HeuristicOptimizer backlog decisions.
+
+All pool.start() paths use patched call_agent — never live LLM.
 """
 
 from __future__ import annotations
@@ -17,6 +18,31 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+_TEST_BG_AGENTS = {
+    "jr_reviewer": {
+        "enabled": True,
+        "on_modification": True,
+        "random_review": True,
+    },
+}
+
+
+@pytest.fixture
+def pool_env(isolated_project, monkeypatch):
+    """Enable one feedback agent for lifecycle tests that need a live pool."""
+    from core import config as core_config
+
+    cfg = dict(isolated_project["config"])
+    cfg["background_agents_enabled"] = True
+    cfg["background_agents"] = dict(_TEST_BG_AGENTS)
+    cfg["background_feeder"] = {"interval_seconds": 60}
+    monkeypatch.setattr(core_config, "get_config", lambda: cfg)
+    try:
+        monkeypatch.setattr("agents.parallel_workers.get_config", lambda: cfg)
+    except Exception:
+        pass
+    return cfg
 
 
 class TestBoundedSet:
@@ -52,30 +78,45 @@ class TestPoolLifecycle:
         assert pool.workers == []
         assert pool.feeder_thread is None
 
-    def test_start_stop_clears_running_flag(self):
+    def test_start_stop_clears_running_flag(self, pool_env):
+        from agents.parallel_workers import BackgroundAgentPool
+
+        with patch(
+            "agents.parallel_workers.call_agent",
+            return_value='{"findings": []}',
+        ):
+            pool = BackgroundAgentPool()
+            pool.start(task_id="life1")
+            time.sleep(0.2)
+            pool.stop()
+            assert pool.running is False
+            assert pool.workers == []
+            pool.stop()
+
+    def test_start_when_disabled_is_noop(self, isolated_project):
+        """background_agents_enabled=False → start does not launch workers."""
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
-        # May start with zero agents depending on config — still must not hang
-        pool.start(task_id="life1")
-        time.sleep(0.2)
-        pool.stop()
+        pool.start(task_id="disabled")
         assert pool.running is False
         assert pool.workers == []
-        # Second stop safe
-        pool.stop()
 
-    def test_start_when_already_running_is_noop(self):
+    def test_start_when_already_running_is_noop(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
-        pool = BackgroundAgentPool()
-        pool.start(task_id="life2")
-        try:
-            was_running = pool.running
-            pool.start(task_id="life2b")  # should return early
-            assert pool.running == was_running
-        finally:
-            pool.stop()
+        with patch(
+            "agents.parallel_workers.call_agent",
+            return_value='{"findings": []}',
+        ):
+            pool = BackgroundAgentPool()
+            pool.start(task_id="life2")
+            try:
+                was_running = pool.running
+                pool.start(task_id="life2b")  # should return early
+                assert pool.running == was_running
+            finally:
+                pool.stop()
 
     def test_force_review_when_not_running(self, capsys):
         from agents.parallel_workers import BackgroundAgentPool
@@ -86,49 +127,58 @@ class TestPoolLifecycle:
         assert "not running" in out or True  # soft
 
 
-@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
+@pytest.mark.usefixtures("temp_db")
 class TestActiveAgentControl:
-    def test_pause_all_feedback_agents(self):
+    def test_pause_all_feedback_agents(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
-        pool = BackgroundAgentPool()
-        pool.start(task_id="ctrl1")
-        try:
-            # Empty list after filtering support workers → pause feedback
-            pool.set_active_agents([])
-            assert pool.active_agents_filter is not None
-            assert len(pool.active_agents_filter) == 0
-        finally:
-            pool.stop()
+        with patch(
+            "agents.parallel_workers.call_agent",
+            return_value='{"findings": []}',
+        ):
+            pool = BackgroundAgentPool()
+            pool.start(task_id="ctrl1")
+            try:
+                pool.set_active_agents([])
+                assert pool.active_agents_filter is not None
+                assert len(pool.active_agents_filter) == 0
+            finally:
+                pool.stop()
 
-    def test_reenable_subset(self):
+    def test_reenable_subset(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
-        pool = BackgroundAgentPool()
-        pool.start(task_id="ctrl2")
-        try:
-            pool.set_active_agents(["jr_reviewer"])
-            assert pool.active_agents_filter is not None
-            # prioritizer is support and stripped from filter
-            assert "prioritizer" not in (pool.active_agents_filter or set())
-        finally:
-            pool.stop()
+        with patch(
+            "agents.parallel_workers.call_agent",
+            return_value='{"findings": []}',
+        ):
+            pool = BackgroundAgentPool()
+            pool.start(task_id="ctrl2")
+            try:
+                pool.set_active_agents(["jr_reviewer"])
+                assert pool.active_agents_filter is not None
+                assert "prioritizer" not in (pool.active_agents_filter or set())
+            finally:
+                pool.stop()
 
-    def test_feeder_interval_under_lock(self):
+    def test_feeder_interval_under_lock(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
-        pool = BackgroundAgentPool()
-        pool.start(task_id="ctrl3")
-        try:
-            pool.set_feeder_interval(45)
-            # base must update too — adaptive feeder overwrites from base
-            assert pool.base_feeder_interval == 45
-            assert pool.feeder_interval == 45
-            pool.set_feeder_interval(15)
-            assert pool.base_feeder_interval == 15
-            assert pool.feeder_interval == 15
-        finally:
-            pool.stop()
+        with patch(
+            "agents.parallel_workers.call_agent",
+            return_value='{"findings": []}',
+        ):
+            pool = BackgroundAgentPool()
+            pool.start(task_id="ctrl3")
+            try:
+                pool.set_feeder_interval(45)
+                assert pool.base_feeder_interval == 45
+                assert pool.feeder_interval == 45
+                pool.set_feeder_interval(15)
+                assert pool.base_feeder_interval == 15
+                assert pool.feeder_interval == 15
+            finally:
+                pool.stop()
 
 
 class TestHeuristicOptimizerDecisions:
@@ -198,13 +248,11 @@ class TestResourceControllerLifecycle:
         assert not w.running
 
 
-@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
+@pytest.mark.usefixtures("temp_db")
 class TestPoolBehavioralP2:
     """P2.1 — start / queue / stop with patched call_agent."""
 
-    def test_start_queue_stop_with_mock_agent(self):
-        import time
-
+    def test_start_queue_stop_with_mock_agent(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
         with patch("agents.parallel_workers.call_agent", return_value='{"findings":[]}'):
@@ -216,26 +264,27 @@ class TestPoolBehavioralP2:
                     operation="modified",
                     content="x = 1\n",
                 )
-                time.sleep(0.8)
+                time.sleep(0.5)
             finally:
                 pool.stop()
             assert pool.running is False
             assert pool.workers == [] or isinstance(pool.workers, list)
 
-    def test_pause_active_agents_clears_filter(self):
+    def test_pause_active_agents_clears_filter(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
-        pool = BackgroundAgentPool()
-        pool.start(task_id="p2_pause")
-        try:
-            pool.set_active_agents([])
-            assert pool.active_agents_filter is not None
-            assert len(pool.active_agents_filter) == 0
-            pool.set_active_agents(["jr_reviewer"])
-            assert pool.active_agents_filter is not None
-        finally:
-            pool.stop()
-            assert pool.running is False
+        with patch("agents.parallel_workers.call_agent", return_value='{"findings":[]}'):
+            pool = BackgroundAgentPool()
+            pool.start(task_id="p2_pause")
+            try:
+                pool.set_active_agents([])
+                assert pool.active_agents_filter is not None
+                assert len(pool.active_agents_filter) == 0
+                pool.set_active_agents(["jr_reviewer"])
+                assert pool.active_agents_filter is not None
+            finally:
+                pool.stop()
+                assert pool.running is False
 
 
 class TestRCOptimizerP2:
