@@ -89,8 +89,7 @@ class TestCreateProposal:
 
         with get_db_connection() as conn:
             row = conn.execute(
-                "SELECT task_id, selected_mode, fallback_used, final_mode, status "
-                "FROM edit_proposals WHERE proposal_id = ?",
+                "SELECT task_id, selected_mode, fallback_used, final_mode, status FROM edit_proposals WHERE proposal_id = ?",
                 (result["proposal_id"],),
             ).fetchone()
             assert row is not None
@@ -151,9 +150,7 @@ class TestCreateProposal:
                 }
             ],
         }
-        created = create_proposal_from_developer_output(
-            payload, 1, "demo/st.py", task_id="t-status"
-        )
+        created = create_proposal_from_developer_output(payload, 1, "demo/st.py", task_id="t-status")
         assert created["status"] == "success"
         ok = update_proposal_status(created["proposal_id"], "approved", reviewed_by_agent_id=9)
         assert ok is True
