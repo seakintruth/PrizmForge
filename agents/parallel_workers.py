@@ -4,7 +4,6 @@ import queue
 import random
 import sqlite3
 import threading
-import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -15,6 +14,7 @@ from agents.base import call_agent
 from agents.prioritizer_worker import get_prioritizer_worker
 from agents.reporter_worker import get_reporter_worker
 from agents.response_cleaner import clean_llm_response
+from agents.worker_utils import interruptible_sleep
 from core.config import get_config
 from core.db import get_db_path
 from core.db_helpers import post_message, save_agent_feedback
@@ -76,8 +76,8 @@ class BackgroundAgentPool:
         # Load agent configurations from config
         config = get_config()
 
-        self.agent_configs = config.get("background_agents", {})
-        self.feeder_config = config.get("background_feeder", {})
+        self.agent_configs = config.get("background_agents", {}) or {}
+        self.feeder_config = config.get("background_feeder", {}) or {}
         self.feeder_interval = self.feeder_config.get("interval_seconds", 30)
         self.base_feeder_interval = self.feeder_interval  # Store original
 
@@ -100,7 +100,15 @@ class BackgroundAgentPool:
 
         Safe against concurrent start/stop: if a previous stop left live threads,
         they are joined before new workers are launched.
+
+        Respects ``background_agents_enabled``. When False, this is a no-op so
+        tests and unattended runs with the flag off never spawn LLM workers.
         """
+        config = get_config()
+        if not config.get("background_agents_enabled", True):
+            print("    Background agents disabled (background_agents_enabled=False)")
+            return
+
         with self._state_lock:
             if self.running:
                 return
@@ -114,6 +122,8 @@ class BackgroundAgentPool:
             all_agents = set(self.modification_agents + self.random_review_agents)
             if not all_agents:
                 print("    Warning: No background agents enabled")
+                # Still mark running=False — nothing to stop later
+                self.running = False
                 return
 
             with self._queue_lock:
@@ -129,9 +139,9 @@ class BackgroundAgentPool:
                 worker.start()
                 self.workers.append(worker)
 
-                config = self.agent_configs.get(agent_name, {})
-                mod_flag = "on_mod" if config.get("on_modification") else ""
-                random_flag = "random" if config.get("random_review") else ""
+                agent_cfg = self.agent_configs.get(agent_name, {})
+                mod_flag = "on_mod" if agent_cfg.get("on_modification") else ""
+                random_flag = "random" if agent_cfg.get("random_review") else ""
                 flags = f"[{mod_flag}+{random_flag}]" if mod_flag and random_flag else f"[{mod_flag or random_flag}]"
                 print(f"    Started {agent_name} worker {flags}")
 
@@ -171,10 +181,11 @@ class BackgroundAgentPool:
 
         with self._state_lock:
             if not self.running and not self.workers and self.feeder_thread is None:
-                return
-
-            self.running = False
-            self._join_workers_unlocked(timeout=2.0)
+                # Still stop support workers — they may have been started elsewhere
+                pass
+            else:
+                self.running = False
+                self._join_workers_unlocked(timeout=2.0)
 
         get_archivist_worker().stop()
         get_prioritizer_worker().stop()
@@ -287,7 +298,8 @@ class BackgroundAgentPool:
                 queue_size = self.event_queue.qsize()
                 self._adjust_feeder_interval(queue_size)
 
-                time.sleep(self.feeder_interval)
+                # interruptible so stop() does not wait out a 30–300s sleep
+                interruptible_sleep(self.feeder_interval, lambda: self.running)
 
                 if not self.running:
                     break
@@ -296,7 +308,7 @@ class BackgroundAgentPool:
 
             except Exception as e:
                 print(f"    File feeder error: {e}")
-                time.sleep(60)
+                interruptible_sleep(5, lambda: self.running)
 
     def _adjust_feeder_interval(self, queue_size: int):
         """Adjust feeding interval based on queue backlog to prevent overwhelming agents."""
@@ -451,11 +463,11 @@ class BackgroundAgentPool:
         while self.running:
             if self.active_agents_filter is not None:
                 if len(self.active_agents_filter) == 0:
-                    time.sleep(5)
+                    interruptible_sleep(1.0, lambda: self.running)
                     continue
 
                 if agent_name not in self.active_agents_filter:
-                    time.sleep(5)
+                    interruptible_sleep(1.0, lambda: self.running)
                     continue
 
             try:
@@ -466,7 +478,7 @@ class BackgroundAgentPool:
             if event.content is None:
                 continue
 
-            time.sleep(0.5)
+            interruptible_sleep(0.1, lambda: self.running)
 
             self._process_file(agent_name, event)
 
