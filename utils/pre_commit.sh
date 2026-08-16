@@ -19,7 +19,24 @@ mkdir -p "$REPORT_DIR"
 RUFF_LOG="$REPORT_DIR/ruff-check-$(date +%Y%m%d_%H%M%S).log"
 
 # Default configuration (overridable via ENV vars or CLI arguments)
-PYTHON_EXEC="${PYTHON_EXEC:-python3}"
+# Resolve Python: explicit PYTHON_EXEC env > project .venv > active venv > python3
+if [[ -z "${PYTHON_EXEC:-}" ]]; then
+    if [[ -x "${GIT_ROOT}/.venv/bin/python" ]]; then
+        PYTHON_EXEC="${GIT_ROOT}/.venv/bin/python"
+    elif [[ -x "${GIT_ROOT}/.venv/Scripts/python.exe" ]]; then
+        PYTHON_EXEC="${GIT_ROOT}/.venv/Scripts/python.exe"
+    elif [[ -n "${VIRTUAL_ENV:-}" ]]; then
+        if [[ -x "${VIRTUAL_ENV}/bin/python" ]]; then
+            PYTHON_EXEC="${VIRTUAL_ENV}/bin/python"
+        elif [[ -x "${VIRTUAL_ENV}/Scripts/python.exe" ]]; then
+            PYTHON_EXEC="${VIRTUAL_ENV}/Scripts/python.exe"
+        else
+            PYTHON_EXEC="python3"
+        fi
+    else
+        PYTHON_EXEC="python3"
+    fi
+fi
 SHOW_SUMMARY="${SHOW_SUMMARY:-true}"
 STAGE_FIXED_FILES="${STAGE_FIXED_FILES:-true}" # Auto-stage fixes during git commit
 FAILED_CHECKS=()
@@ -61,14 +78,19 @@ install_or_update_hook() {
 #!/bin/bash
 # Auto-generated pre-commit hook by utils/pre_commit.sh
 
-# Resolve Python Executable in priority order
+# Resolve Python Executable in priority order:
+# explicit PYTHON_EXEC > project .venv > active VIRTUAL_ENV > fallback
 if [ -n "\$PYTHON_EXEC" ]; then
     PY_BIN="\$PYTHON_EXEC"
+elif [ -x ".venv/bin/python" ]; then
+    PY_BIN=".venv/bin/python"
+elif [ -x ".venv/Scripts/python.exe" ]; then
+    PY_BIN=".venv/Scripts/python.exe"
 elif [ -n "\$VIRTUAL_ENV" ]; then
-    PY_BIN="\$VIRTUAL_ENV/Scripts/python.exe"
-    [ ! -f "\$PY_BIN" ] && PY_BIN="\$VIRTUAL_ENV/bin/python"
+    PY_BIN="\$VIRTUAL_ENV/bin/python"
+    [ ! -x "\$PY_BIN" ] && PY_BIN="\$VIRTUAL_ENV/Scripts/python.exe"
 else
-    PY_BIN="${PYTHON_EXEC}"
+    PY_BIN="python3"
 fi
 
 export PYTHON_EXEC="\$PY_BIN"
@@ -115,7 +137,7 @@ echo -e "${BLUE}Executable: ${PYTHON_EXEC}${NC}"
 echo -e "${BLUE}═══════════════════════════════════════════════════${NC}\n"
 
 # Format checks (auto-fix, non-blocking)
-echo -e "${BLUE}📝 Formatting & Auto-fixing...${NC}\n"
+echo -e "${BLUE}📝 Formatting & Auto-Fixing...${NC}\n"
 
 "$PYTHON_EXEC" -m black . > /dev/null 2>&1 && echo -e "${GREEN}✅ black${NC}" || echo -e "${YELLOW}⚠️  black${NC}"
 "$PYTHON_EXEC" -m isort . > /dev/null 2>&1 && echo -e "${GREEN}✅ isort${NC}" || echo -e "${YELLOW}⚠️  isort${NC}"
