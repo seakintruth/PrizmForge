@@ -160,7 +160,7 @@ def test_validate_config_accepts_minimal(tmp_path, monkeypatch):
 
 
 def test_validate_config_rejects_unknown_file_editing_method(tmp_path):
-    with pytest.raises(ValueError, match="file_editing.method"):
+    with pytest.raises(ValueError, match=r"file_editing\.method"):
         validate_config(
             {
                 "project_directory": str(tmp_path / "p"),

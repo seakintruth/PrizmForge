@@ -64,7 +64,7 @@ def _extract_json_object(text: str) -> str | None:
     return cleaned[start : end + 1]
 
 
-def validate_developer_edit_response(response: str) -> EditValidationResult:
+def validate_developer_edit_response(response: str) -> EditValidationResult:  # noqa: C901
     """
     Classify a raw developer agent response as a usable edit or a failure.
 
