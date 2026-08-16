@@ -41,7 +41,7 @@ class EditValidationResult:
 
 
 def _extract_json_object(text: str) -> str | None:
-    """Best-effort extraction of a top-level JSON object from LLM output."""
+    """Best-effort extraction of a top-level JSON object or array from LLM output."""
     if not text or not text.strip():
         return None
 
@@ -56,12 +56,22 @@ def _extract_json_object(text: str) -> str | None:
         cleaned = cleaned[:-3]
     cleaned = cleaned.strip()
 
-    start = cleaned.find("{")
+    # Prefer a root array when the response is clearly an array of operations
+    arr_start = cleaned.find("[")
+    obj_start = cleaned.find("{")
+
+    if arr_start != -1 and (obj_start == -1 or arr_start < obj_start):
+        arr_end = cleaned.rfind("]")
+        if arr_end > arr_start:
+            return cleaned[arr_start : arr_end + 1]
+
+    if obj_start == -1:
+        return None
     end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    if end == -1 or end <= obj_start:
         return None
 
-    return cleaned[start : end + 1]
+    return cleaned[obj_start : end + 1]
 
 
 def validate_developer_edit_response(response: str) -> EditValidationResult:  # noqa: C901
@@ -117,26 +127,26 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
             message="Root JSON value is not an object or array of operations",
         )
 
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        return EditValidationResult(
-            is_valid=False,
-            reason=EditFailureReason.INVALID_JSON,
-            message=f"JSON parse error: {e}",
-        )
-
-    if not isinstance(data, dict):
-        return EditValidationResult(
-            is_valid=False,
-            reason=EditFailureReason.UNKNOWN_STRUCTURE,
-            message="Root JSON value is not an object",
-        )
-
     # --- Detect mode and validate minimum usable content ---
 
-    # Full-file replacement
-    if "new_content" in data:
+    # Single top-level operation (GUID style) must be checked before full_replace.
+    # replace_block uses new_content as a *list* of lines; full_replace uses a string.
+    if data.get("type") in {
+        "replace_block",
+        "insert_after",
+        "delete_lines",
+        "find_replace",
+    }:
+        return EditValidationResult(
+            is_valid=True,
+            data=data,
+            detected_mode="guid",
+            message="Valid single-operation payload",
+        )
+
+    # Full-file replacement — only when new_content is a string (or None/blank).
+    # A list value for new_content belongs to replace_block (already handled above).
+    if "new_content" in data and not isinstance(data.get("new_content"), list):
         new_content = data.get("new_content")
         if new_content is None or (isinstance(new_content, str) and not new_content.strip()):
             return EditValidationResult(
@@ -146,12 +156,13 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
                 data=data,
                 detected_mode="full_replace",
             )
-        return EditValidationResult(
-            is_valid=True,
-            data=data,
-            detected_mode="full_replace",
-            message="Valid full_replace payload",
-        )
+        if isinstance(new_content, str):
+            return EditValidationResult(
+                is_valid=True,
+                data=data,
+                detected_mode="full_replace",
+                message="Valid full_replace payload",
+            )
 
     # Find / replace (single or list)
     if "find" in data and "replace" in data:
@@ -182,19 +193,6 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
     # GUID / operations style (current governed path)
     operations = data.get("operations")
     if operations is None:
-        # Some models emit a single operation at the top level
-        if data.get("type") in {
-            "replace_block",
-            "insert_after",
-            "delete_lines",
-            "find_replace",
-        }:
-            return EditValidationResult(
-                is_valid=True,
-                data=data,
-                detected_mode="guid",
-                message="Valid single-operation payload",
-            )
         return EditValidationResult(
             is_valid=False,
             reason=EditFailureReason.NO_OPERATIONS,

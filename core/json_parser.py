@@ -85,6 +85,7 @@ class JSONParser:
             )
 
         # Try extraction strategies in order
+        last_structured_failure: ParseResult | None = None
         for strategy in self.extraction_strategies:
             json_str = strategy(response)
 
@@ -97,6 +98,11 @@ class JSONParser:
             if result.success:
                 return result
 
+            # A structured failure (e.g. missing required keys under strict=True)
+            # means we successfully decoded JSON but rejected it - stop searching.
+            if result.status == ParseStatus.MALFORMED and result.data is not None:
+                return result
+
             # Check if truncated (resumable)
             if self._looks_truncated(json_str):
                 return ParseResult(
@@ -107,7 +113,11 @@ class JSONParser:
                     confidence=0.3,
                 )
 
+            last_structured_failure = result
+
         # All strategies failed
+        if last_structured_failure is not None and last_structured_failure.error:
+            return last_structured_failure
         return ParseResult(
             status=ParseStatus.MALFORMED,
             data=None,
@@ -132,7 +142,14 @@ class JSONParser:
         return None
 
     def _extract_brace_bounded(self, response: str) -> str | None:
-        """Extract from first { to last }"""
+        """Extract from first { to last }, or first [ to last ] for root arrays."""
+        stripped = response.strip()
+        # Prefer root array when the response clearly starts with one
+        if stripped.startswith("["):
+            end = stripped.rfind("]")
+            if end > 0:
+                return stripped[: end + 1]
+
         if "{" not in response or "}" not in response:
             return None
 
@@ -208,8 +225,8 @@ class JSONParser:
         try:
             data = json.loads(json_str)
 
-            # Validate expected keys
-            if expected_keys:
+            # Validate expected keys only when the result is a mapping
+            if expected_keys and isinstance(data, dict):
                 missing = [k for k in expected_keys if k not in data]
 
                 if missing:
@@ -348,13 +365,13 @@ def parse_json_response(
     result = parser.parse(response, expected_keys, strict)
 
     if result.success:
-        if result.error and strict:  # ✅ Only show warnings if strict mode
-            print(f"    ⚠️  {agent_name}: {result.error}")
+        if result.error and strict:
+            print(f"    WARNING {agent_name}: {result.error}")
         return result.data
 
     # Handle truncation with auto-resume
     if result.can_resume and auto_resume:
-        print(f"    🔄 {agent_name}: Response truncated, requesting continuation...")
+        print(f"    RESUME {agent_name}: Response truncated, requesting continuation...")
 
         resume_prompt = parser.build_resume_prompt(result.raw_json, "")
         continuation = auto_resume(resume_prompt)
@@ -365,11 +382,11 @@ def parse_json_response(
             retry_result = parser.parse(combined, expected_keys, strict)
 
             if retry_result.success:
-                print(f"    ✅ {agent_name}: Successfully resumed truncated response")
+                print(f"    OK {agent_name}: Successfully resumed truncated response")
                 return retry_result.data
 
     # Failed
-    print(f"    ❌ {agent_name}: JSON parse failed - {result.error}")
+    print(f"    FAIL {agent_name}: JSON parse failed - {result.error}")
     print(f"       Status: {result.status.value}, Confidence: {result.confidence:.1%}")
     if result.raw_json:
         print(f"       Raw (first 200 chars): {result.raw_json[:200]}")
