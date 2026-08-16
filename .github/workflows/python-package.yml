@@ -42,7 +42,7 @@ jobs:
           ruff format . || true
 
       - name: Commit & Push Changes
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v7
         with:
           commit_message: "style: automated formatting and ruff fixes [skip ci]"
           commit_user_name: "PrizmForge Bot"
