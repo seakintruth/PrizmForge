@@ -2,11 +2,11 @@
 
 import json
 import threading
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from agents.base import call_agent
+from agents.worker_utils import interruptible_sleep
 from core.config import get_config
 from core.db_connection import get_db_connection
 
@@ -40,7 +40,8 @@ class ProjectReporterWorker:
     def stop(self):
         self.running = False
         if self.worker_thread:
-            self.worker_thread.join(timeout=5.0)
+            self.worker_thread.join(timeout=2.0)
+            self.worker_thread = None
         print("    🛑 Stopped Project Reporter worker")
 
     def _load_last_state(self):
@@ -82,7 +83,8 @@ class ProjectReporterWorker:
     def _worker_loop(self):
         while self.running:
             try:
-                time.sleep(300)  # Check every 5 minutes
+                # Was time.sleep(300) — blocked stop() for up to 5 minutes
+                interruptible_sleep(300, lambda: self.running)
                 if not self.running:
                     break
 
@@ -91,24 +93,21 @@ class ProjectReporterWorker:
 
             except Exception as e:
                 print(f"    ⚠️  Project Reporter error: {e}")
-                time.sleep(600)
+                interruptible_sleep(60, lambda: self.running)
 
     def _should_generate_report(self) -> bool:
         now = datetime.now()
 
-        # Time-based trigger
         interval = self.config.get("interval_minutes", 60)
         if self.last_report_time is None:
             return True
         if (now - self.last_report_time).total_seconds() >= interval * 60:
             return True
 
-        # Change-based trigger
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                # Count files modified since last report
                 if self.last_report_time:
                     cursor.execute(
                         """
@@ -132,7 +131,6 @@ class ProjectReporterWorker:
             threshold_pct = self.config.get("change_threshold_percent", 5.0)
             threshold_lines = self.config.get("change_threshold_lines", 200)
 
-            # Simple heuristic: if > threshold % of files changed or > threshold lines
             total_files = self._get_total_indexed_files()
             pct_changed = (file_count / max(total_files, 1)) * 100
 
@@ -154,16 +152,14 @@ class ProjectReporterWorker:
                 count = cursor.fetchone()[0]
             return count
         except Exception:
-            return 100  # fallback
+            return 100
 
     def _generate_report(self):
         print("    📊 Generating project report...")
 
         try:
-            # Gather data
             report_data = self._gather_report_data()
 
-            # Call the agent
             prompt = self._build_prompt(report_data)
             response = call_agent("project_reporter", prompt, self.task_id or "global")
 
@@ -171,19 +167,15 @@ class ProjectReporterWorker:
                 print("    ⚠️  Reporter agent returned no response")
                 return
 
-            # Save report
             report_path = self._save_report(response, report_data)
 
-            # Record in database
             self._record_report(report_path, report_data, response)
 
-            # Update state
             self.last_report_time = datetime.now()
             self._save_state()
 
             print(f"    ✅ Project report saved: {report_path}")
 
-            # Optional: notify orchestrator
             self._notify_orchestrator(report_path)
 
         except Exception as e:
@@ -196,7 +188,6 @@ class ProjectReporterWorker:
             start_time = self.last_report_time or (datetime.now() - timedelta(hours=24))
             end_time = datetime.now()
 
-            # File modifications
             cursor.execute(
                 """
                 SELECT file_path, operation, changed_by, timestamp
@@ -209,7 +200,6 @@ class ProjectReporterWorker:
             )
             modifications = cursor.fetchall()
 
-            # Git commits (if available)
             git_commits = []
             if self.config.get("include_git_commits", True):
                 try:
@@ -235,7 +225,6 @@ class ProjectReporterWorker:
                 except Exception as e:
                     print(f"    ⚠️  Exception handled in reporter_worker.py: {e}")
 
-            # Addressed feedback
             cursor.execute(
                 """
                 SELECT agent_name, file_path, priority, message, addressed_at
@@ -284,7 +273,6 @@ Please produce the full Markdown report following the exact structure defined in
         timestamp = datetime.now().strftime("%Y%m%d_%H%M")
         filename = f"project_report_{timestamp}.md"
 
-        # Get absolute path
         from core.config import get_config
 
         config = get_config()
@@ -294,7 +282,6 @@ Please produce the full Markdown report following the exact structure defined in
 
         filepath = reports_dir / filename
 
-        # Clean up old reports
         self._cleanup_old_reports(reports_dir)
 
         with open(filepath, "w", encoding="utf-8") as f:
