@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 
 def test_preflight_ok_in_test_mode(tmp_path, monkeypatch):
     from core.preflight import preflight_unattended

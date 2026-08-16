@@ -55,9 +55,7 @@ def test_age_feedback_dismisses_old_low_only(temp_db):
     assert result["dismissed_low"] >= 1
 
     with get_db_connection() as conn:
-        rows = conn.execute(
-            "SELECT priority, addressed, addressed_by FROM agent_feedback WHERE task_id = 't_age'"
-        ).fetchall()
+        rows = conn.execute("SELECT priority, addressed, addressed_by FROM agent_feedback WHERE task_id = 't_age'").fetchall()
         by_pri = {}
         for pri, addressed, by in rows:
             by_pri.setdefault(pri.upper(), []).append((addressed, by))
