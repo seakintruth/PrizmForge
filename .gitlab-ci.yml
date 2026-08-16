@@ -31,18 +31,16 @@ stages:
 
 variables:
   PYTEST_ADDOPTS: ""
-  # Quiet pip; avoid version-check chatter
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PIP_ROOT_USER_ACTION: ignore
 
-# Shared defaults (named anchor required — bare `&` is invalid YAML).
-# Runner tag is a routing label, not a secret.
-.python_base: &python_base
+# Hidden templates (GitLab `extends`). Runner tag is a routing label, not a secret.
+.python_base:
   image: python:3.12-bookworm
   tags:
     - USG-DOD-Global-Custom-Docker-Containers-BuildRunner1
 
-.rules_default: &rules_default
+.rules_default:
   rules:
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
     - if: '$CI_PIPELINE_SOURCE == "web"'
@@ -50,17 +48,20 @@ variables:
     - if: '$CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/'
 
 lint:ruff:
-  <<: *python_base
+  extends:
+    - .python_base
+    - .rules_default
   stage: lint
   script:
     # Lint gate only needs ruff — do not install pytest/black/mypy/pylint/etc.
     - pip install ruff
     - ruff check .
     - ruff format --check .
-  <<: *rules_default
 
 test:normal:
-  <<: *python_base
+  extends:
+    - .python_base
+    - .rules_default
   stage: test
   needs: ["lint:ruff"]
   timeout: 20 minutes
@@ -91,4 +92,3 @@ test:normal:
     paths:
       - .PrizmForge/reports/
     expire_in: 14 days
-  <<: *rules_default
