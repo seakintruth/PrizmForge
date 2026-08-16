@@ -162,7 +162,6 @@ def mock_minimal_config(monkeypatch, _isolate_prizmforge_workspace):
     cannot launch live LLM workers unless a test explicitly re-enables them
     and patches call_agent.
     """
-
     project_dir = str(_isolate_prizmforge_workspace["project"])
     Path(project_dir).mkdir(parents=True, exist_ok=True)
 
@@ -228,22 +227,52 @@ def capsys_and_temp_db(temp_db, capsys):
 
 
 @pytest.fixture
-def mock_openai_response():
+def mock_openai_chat(monkeypatch):
     """
+    Mock OpenAI-compatible chat completion at the HTTP layer (requests.post).
+
     Stdlib-only — does not require pytest-mock or responses.
-    Returns a factory that configures MockLLM for a single response string.
     """
-    from tests.mocks.openai import MockLLM
+    from tests.mocks.openai import make_requests_response
+
+    state = {"response_text": "Mocked response", "status_code": 200}
+
+    def _fake_post(*args, **kwargs):
+        return make_requests_response(
+            state["response_text"],
+            status_code=state["status_code"],
+        )
+
+    monkeypatch.setattr("agents.base.requests.post", _fake_post)
+    try:
+        import requests as _requests
+
+        monkeypatch.setattr(_requests, "post", _fake_post)
+    except Exception as e:
+        print(f"    ⚠️  Exception handled in conftest.py: {e}")
 
     def _configure(response_text: str = "Mocked response", status_code: int = 200):
-        return MockLLM(response_text=response_text, status_code=status_code)
+        state["response_text"] = response_text
+        state["status_code"] = status_code
+        return state
 
     return _configure
 
 
 @pytest.fixture
 def mock_llm():
-    """Bare MockLLM instance for tests that manage the context themselves."""
+    """
+    High-level scriptable LLM mock (patches call_agent / call_endpoint).
+    """
     from tests.mocks.openai import MockLLM
 
     return MockLLM()
+
+
+@pytest.fixture
+def mock_llm_patched(mock_llm):
+    """
+    Same as mock_llm, but already patches call_agent for the duration of the test.
+    """
+    with mock_llm.patch_call_agent():
+        yield mock_llm
