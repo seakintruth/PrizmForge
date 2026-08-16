@@ -200,10 +200,10 @@ class TestDeveloperSchemaFile:
 
 # ---------------------------------------------------------------------------
 # Apply contracts (DB) for implemented ops
+# Duration report 2026-08-16: each case ~0.03–0.04s — not a slow gate.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestApplyContracts:
     def test_find_replace_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal
