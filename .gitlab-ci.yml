@@ -1,6 +1,28 @@
-# PrizmForge GitLab CI - mirrors GitHub Actions lint + normal test gate.
-# Heavy/full suites (worker lifecycle, governed apply) stay local until
-# background-worker teardown is reliable under pytest-timeout.
+# PrizmForge GitLab CI (web.git.mil)
+# Mirrors GitHub Actions lint + normal test gate.
+# Heavy/full suites stay local until worker teardown is reliable under timeout.
+
+# Prevent duplicate pipelines when a Merge Request is active
+workflow:
+  rules:
+    # MR pipeline
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    # Branch push while an MR is open for this branch → skip branch pipeline
+    - if: '$CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS'
+      when: never
+    # Standard branch pipelines (push before an MR exists, default branch, etc.)
+    - if: '$CI_COMMIT_BRANCH'
+    # Manual / web triggers from the GitLab UI
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+
+# Retry on sync.git.mil clone / runner flakes (same pattern as other USG projects)
+default:
+  retry:
+    max: 2
+    when:
+      - runner_system_failure
+      - unknown_failure
+      - api_failure
 
 stages:
   - lint
@@ -15,9 +37,12 @@ cache:
   paths:
     - .cache/pip
 
-# Anchor must be named: `&python_setup` (bare `&` is a YAML parse error).
+# Shared job defaults. Anchor must be named (`&python_setup`, not bare `&`).
+# Runner tag is a routing label (not a secret); auth is the runner registration token.
 .python_setup: &python_setup
   image: python:3.12-bookworm
+  tags:
+    - USG-DOD-Global-Custom-Docker-Containers-BuildRunner1
   before_script:
     - python -m pip install --upgrade pip
     - pip install -r requirements-dev.txt
@@ -34,9 +59,10 @@ lint:ruff:
     - ruff check .
     - ruff format --check .
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/'
 
 test:normal:
   <<: *python_setup
@@ -53,6 +79,7 @@ test:normal:
       - .PrizmForge/reports/
     expire_in: 14 days
   rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_PIPELINE_SOURCE == "web"'
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+    - if: '$CI_COMMIT_BRANCH =~ /^(main|develop|feature\/.*|fix\/.*|ci\/.*)$/'
