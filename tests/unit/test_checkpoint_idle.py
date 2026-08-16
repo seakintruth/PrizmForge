@@ -79,8 +79,6 @@ def test_unattended_counts_file_modifications_for_task(temp_db):
 
 
 def test_min_idle_config_defaults_and_override():
-    cfg = UnattendedConfig.from_config(
-        {"cli_mode": {"unattended": {"min_idle_minutes": 30, "checkpoint_interval_minutes": 15}}}
-    )
+    cfg = UnattendedConfig.from_config({"cli_mode": {"unattended": {"min_idle_minutes": 30, "checkpoint_interval_minutes": 15}}})
     assert cfg.min_idle_minutes == 30.0
     assert cfg.checkpoint_interval_minutes == 15

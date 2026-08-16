@@ -49,9 +49,7 @@ def test_filter_dismisses_placeholder_and_short_messages(temp_db):
     assert any("null checks" in v.message for v in valid)
 
     with get_db_connection() as conn:
-        rows = conn.execute(
-            "SELECT id, addressed, addressed_by FROM agent_feedback WHERE task_id = 't_q' ORDER BY id"
-        ).fetchall()
+        rows = conn.execute("SELECT id, addressed, addressed_by FROM agent_feedback WHERE task_id = 't_q' ORDER BY id").fetchall()
     dismissed_ids = {r[0] for r in rows if r[1] == 1}
     assert 1 in dismissed_ids or 2 in dismissed_ids or 3 in dismissed_ids
     # Substantive item should remain unaddressed if it was in DB
@@ -65,13 +63,11 @@ def test_filter_dismisses_category_echo(temp_db):
     from core.db_connection import get_db_connection
 
     with get_db_connection() as conn:
-        conn.execute(
-            """
+        conn.execute("""
             INSERT INTO agent_feedback
             (id, agent_name, file_path, priority, category, message, task_id, addressed, timestamp)
             VALUES (10, 'jr_reviewer', 'a.py', 'LOW', 'style', 'style', 't_echo', 0, datetime('now'))
-            """
-        )
+            """)
 
     valid, dismissed = worker._filter_low_quality_feedback([_item(10, "style", category="style")])
     assert dismissed == 1
