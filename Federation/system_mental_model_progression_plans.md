@@ -9,14 +9,14 @@ This document defines the evolution path of PrizmForge from its current state to
 
 ---
 
-## Current State: Stage 0 – Legacy PrizmForge
+## Current State: Stage 0 - Legacy PrizmForge
 
 **Mental Model**: Single-threaded governed editor with parallel observers and explicit flow control.
 
 ### Key Characteristics
 - A single `Developer` agent performs all code mutations (primary bottleneck).
 - Background agents generate a high volume of ideas (\~100:1 idea-to-adoption ratio).
-- The **Resource Controller** throttles new idea generation once the idea stack reaches \~100–200 items.
+- The **Resource Controller** throttles new idea generation once the idea stack reaches \~100-200 items.
 - The **Prioritizer + Archivist** consolidate and manage the idea queue.
 - All changes go through a strict serial pipeline with strong safety (line GUIDs, optimistic concurrency, content hashing, and reviewer gate).
 
@@ -30,7 +30,7 @@ This stage has two distinct issues:
 
 ---
 
-## Stage 1 – Enhanced PrizmForge (Next Target)
+## Stage 1 - Enhanced PrizmForge (Next Target)
 
 **Mental Model**: Strengthened single-Territory system with better filtering and controlled parallelism.
 
@@ -64,7 +64,7 @@ This stage has two distinct issues:
 
 ---
 
-## Stage 2 – Forge Federation (Longer-Term Vision)
+## Stage 2 - Forge Federation (Longer-Term Vision)
 
 **Mental Model**: Stewardship-oriented Constitutional Polycentric Republic.
 

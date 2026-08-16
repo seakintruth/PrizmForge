@@ -86,9 +86,9 @@ Fixtures (see `conftest.py`): `mock_llm`, `mock_llm_patched`, `mock_openai_chat`
 
 | Allowed | Blocked |
 |---------|---------|
-| Text source (`.py`, `.ps1`, `.bat`, `.cmd`, `.js`, …) | PE/`MZ`, ELF, OLE/CFB (MSI), Mach-O magic |
+| Text source (`.py`, `.ps1`, `.bat`, `.cmd`, `.js`, ...) | PE/`MZ`, ELF, OLE/CFB (MSI), Mach-O magic |
 | Normal UTF-8 source | NUL bytes / high non-text ratio |
-| | Paths that are binary formats only (`.msi`, `.exe`, `.dll`, …) |
+| | Paths that are binary formats only (`.msi`, `.exe`, `.dll`, ...) |
 
 Text scripting languages are **not** blocked by extension. Only **binary** payloads and binary package/executable extensions.
 
@@ -166,7 +166,7 @@ and contract/snapshot checks. Coverage is a **signal**, not the definition of qu
 
 Prioritized for multi-agent, governed edits, config-only unattended, Advana limits:
 
-1. **Double-loop TDD (preferred)** — Outer: failing acceptance/integration test for a workflow outcome (e.g. seed task materializes files under `test_mode`, MSI `full_replace` rejected, unattended preflight exit). Inner: classic red–green–refactor on pure modules (`content_safety`, `symbol_index`, preflight, mode selection).
+1. **Double-loop TDD (preferred)** — Outer: failing acceptance/integration test for a workflow outcome (e.g. seed task materializes files under `test_mode`, MSI `full_replace` rejected, unattended preflight exit). Inner: classic red-green-refactor on pure modules (`content_safety`, `symbol_index`, preflight, mode selection).
 2. **Classic TDD (inner loop)** — For **new** pure logic only; less natural for the whole task-runner until thinner.
 3. **Integration-first outer tests** — Treat edit pipeline + orchestrator decisions as the product API; write those tests before changing mutation/reviewer/materialize behavior.
 4. **API / contract TDD** — Orchestrator JSON, developer `EditPayload`, reviewer decision, MockLLM queues are the “service API.”

@@ -3,7 +3,7 @@
 Add the following section to your **Developer agent system prompt**:
 
 ```markdown
-## Governed File Editing – Mandatory Rules
+## Governed File Editing - Mandatory Rules
 
 You **must** output all file modifications using the structured `EditPayload` format.  
 Raw diffs, full file rewrites, or direct file writes are **not allowed**.

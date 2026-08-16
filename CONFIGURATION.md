@@ -164,7 +164,7 @@ Map of agent name → model id string. Typical agents:
 | `enabled` | bool | |
 | `check_interval_seconds` | number | |
 | `max_tokens_per_day` | int | |
-| `aggressive_throttling_threshold` | number | 0–1 budget fraction |
+| `aggressive_throttling_threshold` | number | 0-1 budget fraction |
 | `project_goals` | object | Human-owned goals (treat as immutable for agents) |
 
 ### `resource_controller.project_goals`
@@ -247,7 +247,7 @@ Built-in default extensions (when key omitted):
 
 `.msi` `.msp` `.msm` `.msu` `.exe` `.dll` `.sys` `.com` `.scr` `.cpl` `.ocx` `.drv` `.bin` `.iso` `.img` `.dmg` `.appx` `.appxbundle` `.msix` `.cab`
 
-Text scripts (`.ps1`, `.bat`, `.cmd`, `.js`, …) are **not** in that catalog.
+Text scripts (`.ps1`, `.bat`, `.cmd`, `.js`, ...) are **not** in that catalog.
 
 To allow an MSI **path**, remove `.msi` from `blocked_extensions`. Real MSI **bytes** are still blocked while `disallow_binary_content` is true.
 
