@@ -200,10 +200,10 @@ class TestDeveloperSchemaFile:
 
 # ---------------------------------------------------------------------------
 # Apply contracts (DB) for implemented ops
+# Duration-measured ~0.03–0.04s each — not a slow gate.
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.slow
 class TestApplyContracts:
     def test_find_replace_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal
@@ -434,7 +434,6 @@ class TestApplyContracts:
         _approve(prop["proposal_id"])
         result = apply_edit_proposal(prop["proposal_id"])
         assert result["status"] == "error"
-        # proposal must not be left as applied
         from file_editing.db import get_db_connection
 
         with get_db_connection() as conn:
@@ -470,7 +469,6 @@ class TestApplyContracts:
         assert prop["status"] == "success"
         _approve(prop["proposal_id"])
         result = apply_edit_proposal(prop["proposal_id"])
-        # Must not be a silent success with false applied
         assert result["status"] in ("error", "conflicted", "success")
         with get_db_connection() as conn:
             st = conn.execute(
