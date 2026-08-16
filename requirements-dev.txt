@@ -24,7 +24,7 @@ mypy>=2.3.0
 
 # Optional
 pylint>=4.0.7
-coverage>=7.0.0
+coverage>=7.15.4
 
 # for Utils/run_codemodes.py
 libcst>=1.9.0
