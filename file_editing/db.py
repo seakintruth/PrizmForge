@@ -94,3 +94,21 @@ def initialize_database(db_path: str | None = None):
     This function is kept for backward compatibility only.
     """
     print("⚠️  file_editing.initialize_database() is deprecated. Call core.db.init_db() instead.")
+
+
+def get_line_hashes_for_file(file_path: str) -> dict[str, str]:
+    """Return {line_guid: content_hash} for all current lines of a file."""
+    conn = sqlite3.connect(get_db_path())
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT line_guid, content_hash
+            FROM file_lines
+            WHERE file_path = ? AND is_current = 1
+            """,
+            (file_path,),
+        ).fetchall()
+        return {row["line_guid"]: row["content_hash"] for row in rows}
+    finally:
+        conn.close()
