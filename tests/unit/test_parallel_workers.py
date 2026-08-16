@@ -213,7 +213,7 @@ class TestAgentPoolActiveControl:
 @pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestConcurrentBehavior:
-    """Concurrent pool behavior (9–25s)."""
+    """Concurrent pool behavior (9-25s)."""
 
     def test_multiple_file_changes_concurrent(self, pool_env):
         with patch(
