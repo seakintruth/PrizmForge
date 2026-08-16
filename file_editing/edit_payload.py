@@ -5,7 +5,13 @@ from typing import Any, Literal
 
 
 def _validate_target_path(path: str | None, *, field_name: str = "target_file_path") -> str:
-    """Require a clean relative path (no markdown decoration or traversal)."""
+    """
+    Require a clean relative path (no markdown decoration or traversal).
+
+    Decorated tokens are accepted upstream via sanitize in FILES_NEEDED extraction;
+    at the EditPayload boundary the path must already be clean so junk does not
+    enter proposals.
+    """
     from workflow.path_targets import sanitize_path_token
 
     if not isinstance(path, str):
@@ -13,9 +19,8 @@ def _validate_target_path(path: str | None, *, field_name: str = "target_file_pa
     cleaned = sanitize_path_token(path)
     if not cleaned:
         raise ValueError(f"{field_name} is not a valid relative path: {path!r}")
-    # Reject if decoration changed the path meaning without producing a clean form match
-    # sanitize already stripped wrappers; require the cleaned form is the canonical one
-    if cleaned != sanitize_path_token(cleaned):
+    normalized = path.replace("\\", "/").strip()
+    if normalized != cleaned:
         raise ValueError(f"{field_name} is not a valid relative path: {path!r}")
     return cleaned
 
