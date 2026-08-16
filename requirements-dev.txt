@@ -17,7 +17,7 @@ flake8>=7.3.0
 isort>=8.0.1
 
 # Lint / fast fixer
-ruff>=0.16.0
+ruff>=0.16.2
 
 # Type checking
 mypy>=2.3.0
