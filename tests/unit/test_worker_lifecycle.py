@@ -5,6 +5,9 @@ Focus: start/stop idempotency, active-agent pause, feeder interval under lock,
 BoundedSet, HeuristicOptimizer backlog decisions.
 
 All pool.start() paths use patched call_agent — never live LLM.
+
+Duration report 2026-08-16: pool start/stop cases 5–13s → slow.
+Process-global pool/threads → serial.
 """
 
 from __future__ import annotations
@@ -18,6 +21,8 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
+
+pytestmark = pytest.mark.serial
 
 _TEST_BG_AGENTS = {
     "jr_reviewer": {
@@ -66,6 +71,7 @@ class TestBoundedSet:
         assert "a" not in s
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestPoolLifecycle:
     def test_idempotent_stop(self):
@@ -127,6 +133,7 @@ class TestPoolLifecycle:
         assert "not running" in out or True  # soft
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestActiveAgentControl:
     def test_pause_all_feedback_agents(self, pool_env):
@@ -227,6 +234,7 @@ class TestHeuristicOptimizerDecisions:
         assert "jr_reviewer" in opt.agent_profiles or len(opt.agent_profiles) >= 0
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestResourceControllerLifecycle:
     def test_double_stop_safe(self):
@@ -248,6 +256,7 @@ class TestResourceControllerLifecycle:
         assert not w.running
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestPoolBehavioralP2:
     """P2.1 — start / queue / stop with patched call_agent."""
