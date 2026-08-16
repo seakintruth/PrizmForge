@@ -4,81 +4,38 @@
 # Purpose: Database connection, error logging, and reconstruction helpers
 # =============================================================================
 
+from __future__ import annotations
+
 import json
-import os
 import sqlite3
-from contextlib import contextmanager
-from pathlib import Path
+from typing import Any
 
-# log_error must not wait on locks — proposal/apply paths call it on the hot path.
-_LOG_ERROR_CONNECT_TIMEOUT_S = 0.5
-_LOG_ERROR_BUSY_TIMEOUT_MS = 500
+from core.db import get_db_path
 
-
-def get_db_path() -> str:
-    """
-    Get database path using centralized core.db configuration.
-    Falls back to legacy path if core.db is unavailable.
-    """
-    try:
-        from core.db import get_db_path as core_get_db_path
-
-        return core_get_db_path()
-    except ImportError:
-        # Fallback for standalone usage
-        return os.environ.get(
-            "PRIZMFORGE_DB_PATH",
-            str(Path(__file__).parent.parent / ".PrizmForge" / "agents.db"),
-        )
-
-
-@contextmanager
-def get_db_connection():
-    """Context manager for SQLite connection with proper commit/rollback."""
-    conn = sqlite3.connect(get_db_path(), timeout=60.0)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-    except Exception as e:
-        print(f"    ⚠️  Exception handled in db.py: {e}")
-    try:
-        yield conn
-        try:
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            # Best-effort commit on flaky mounts
-            print(f"[WARN] file_editing.db commit: {e}")
-    except Exception:
-        try:
-            conn.rollback()
-        except Exception as e:
-            print(f"    ⚠️  Exception handled in db.py: {e}")
-        raise
-    finally:
-        try:
-            conn.close()
-        except Exception as e:
-            print(f"    ⚠️  Exception handled in db.py: {e}")
+# Short timeouts so log_error never blocks proposal create/apply under lock contention.
+_LOG_ERROR_CONNECT_TIMEOUT_S = 0.25
+_LOG_ERROR_BUSY_TIMEOUT_MS = 250
 
 
 def log_error(
+    severity: str,
     component: str,
     category: str,
-    severity: str,
     message: str,
-    details: str | None = None,
+    *,
+    details: dict[str, Any] | None = None,
+    file_path: str | None = None,
     task_id: str | None = None,
     proposal_id: str | None = None,
-    file_path: str | None = None,
     line_guid: str | None = None,
     stack_trace: str | None = None,
-):
+) -> None:
     """
-    Centralized error logging to stdout + errors table.
+    Best-effort error logging that never blocks the caller.
 
-    Non-blocking: never waits long on a locked database. Stdout is the
-    reliable channel; the INSERT is best-effort and may be skipped under
-    contention so hot paths (proposal create/apply) cannot stall.
+    Always prints to stdout first (the reliable channel). The INSERT is
+    best-effort and may be skipped under contention so hot paths
+    (proposal create/apply) cannot stall.
     """
     print(f"[{severity}] {component}.{category}: {message}")
 
@@ -91,7 +48,7 @@ def log_error(
         )
         try:
             conn.execute(f"PRAGMA busy_timeout={_LOG_ERROR_BUSY_TIMEOUT_MS}")
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
         conn.execute(
@@ -127,7 +84,7 @@ def log_error(
         if conn is not None:
             try:
                 conn.close()
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -137,35 +94,3 @@ def initialize_database(db_path: str | None = None):
     This function is kept for backward compatibility only.
     """
     print("⚠️  file_editing.initialize_database() is deprecated. Call core.db.init_db() instead.")
-
-
-def reconstruct_file_content(conn: sqlite3.Connection, file_id: int) -> str:
-    """Rebuild file content from DB lines (sorted by sort_order)."""
-    cursor = conn.execute(
-        """
-        SELECT content
-        FROM file_lines
-        WHERE file_id = ? AND is_deleted = 0
-        ORDER BY sort_order
-    """,
-        (file_id,),
-    )
-    lines = []
-    for row in cursor.fetchall():
-        if isinstance(row, sqlite3.Row) or (hasattr(row, "keys") and not isinstance(row, tuple)):
-            lines.append(row["content"])
-        else:
-            lines.append(row[0])
-    return "\n".join(lines)
-
-
-def capture_current_hashes(conn: sqlite3.Connection, file_id: int, line_guids: list[str]) -> dict[str, str]:
-    """Return {line_guid: content_hash} for the given guids."""
-    if not line_guids:
-        return {}
-    placeholders = ",".join("?" * len(line_guids))
-    rows = conn.execute(
-        f"SELECT line_guid, content_hash FROM file_lines WHERE line_guid IN ({placeholders})",
-        line_guids,
-    ).fetchall()
-    return {row["line_guid"]: row["content_hash"] for row in rows}
