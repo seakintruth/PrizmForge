@@ -15,13 +15,11 @@ def test_archive_raw_response_success(temp_db):
         parse_success=True,
     )
     with get_db_connection() as conn:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT agent_name, parse_success, parse_error, response
             FROM agent_responses_archive
             WHERE task_id = 't_arc'
-            """
-        ).fetchone()
+            """).fetchone()
     assert row is not None
     assert row[0] == "developer"
     assert row[1] == 1
@@ -42,8 +40,6 @@ def test_archive_raw_response_parse_failure(temp_db):
         parse_error="JSONDecodeError",
     )
     with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT parse_success, parse_error FROM agent_responses_archive WHERE task_id = 't_fail'"
-        ).fetchone()
+        row = conn.execute("SELECT parse_success, parse_error FROM agent_responses_archive WHERE task_id = 't_fail'").fetchone()
     assert row[0] == 0
     assert row[1] == "JSONDecodeError"
