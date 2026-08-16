@@ -7,7 +7,7 @@ Covers:
 - edit response validation failure modes
 - scripted multi-agent turns (orchestrator / developer / reviewer)
 
-Pipeline cases measured ~0.03–0.05s — not a slow gate.
+Pipeline cases measured ~0.03-0.05s — not a slow gate.
 """
 
 from __future__ import annotations

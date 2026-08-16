@@ -6,7 +6,8 @@ BoundedSet, HeuristicOptimizer backlog decisions.
 
 All pool.start() paths use patched call_agent — never live LLM.
 
-Pool start/stop cases measured 5–13s → slow; module is serial.
+Pool start/stop cases measured 5-13s → slow; module is serial.
+Near-zero helpers stay serial-only (not slow).
 """
 
 from __future__ import annotations
@@ -70,9 +71,9 @@ class TestBoundedSet:
         assert "a" not in s
 
 
-@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestPoolLifecycle:
+    @pytest.mark.slow
     def test_idempotent_stop(self):
         from agents.parallel_workers import BackgroundAgentPool
 
@@ -83,6 +84,7 @@ class TestPoolLifecycle:
         assert pool.workers == []
         assert pool.feeder_thread is None
 
+    @pytest.mark.slow
     def test_start_stop_clears_running_flag(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
@@ -107,6 +109,7 @@ class TestPoolLifecycle:
         assert pool.running is False
         assert pool.workers == []
 
+    @pytest.mark.slow
     def test_start_when_already_running_is_noop(self, pool_env):
         from agents.parallel_workers import BackgroundAgentPool
 
@@ -233,7 +236,6 @@ class TestHeuristicOptimizerDecisions:
         assert "jr_reviewer" in opt.agent_profiles or len(opt.agent_profiles) >= 0
 
 
-@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestResourceControllerLifecycle:
     def test_double_stop_safe(self):
@@ -244,6 +246,7 @@ class TestResourceControllerLifecycle:
         w.stop()
         assert not w.running
 
+    @pytest.mark.slow
     def test_start_stop(self):
         from agents.resource_controller_worker import ResourceControllerWorker
 

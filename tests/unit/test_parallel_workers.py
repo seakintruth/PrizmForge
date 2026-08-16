@@ -41,10 +41,9 @@ def pool_env(isolated_project, monkeypatch):
     return cfg
 
 
-@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestParallelWorkers:
-    """Pool start/stop + queue cases — 5–9s each on measured hardware."""
+    """Pool helpers + start/stop/queue cases. Only measured-slow methods get @pytest.mark.slow."""
 
     def test_file_change_event_creation(self):
         """FileChangeEvent should be constructible with correct fields."""
@@ -68,6 +67,7 @@ class TestParallelWorkers:
         assert hasattr(pool, "start")
         assert hasattr(pool, "stop")
 
+    @pytest.mark.slow
     def test_agent_pool_start_stop(self, pool_env):
         """Agent pool should start and stop without crashing — under MockLLM."""
         with patch(
@@ -83,6 +83,7 @@ class TestParallelWorkers:
             except Exception as e:
                 pytest.fail(f"Agent pool failed: {e}")
 
+    @pytest.mark.slow
     def test_start_noop_when_agents_disabled(self, isolated_project):
         """With background_agents_enabled=False, start must not launch workers."""
         pool = BackgroundAgentPool()
@@ -97,6 +98,7 @@ class TestParallelWorkers:
         pool2 = get_agent_pool()
         assert pool1 is pool2
 
+    @pytest.mark.slow
     def test_queue_file_change(self, pool_env):
         """Should be able to queue file changes under MockLLM."""
         with patch(
@@ -113,6 +115,7 @@ class TestParallelWorkers:
                 pool.stop()
                 assert pool.running is False
 
+    @pytest.mark.slow
     def test_worker_processes_events(self, pool_env):
         """Workers should process queued events via mocked call_agent."""
         with patch(
@@ -129,6 +132,7 @@ class TestParallelWorkers:
                 pool.stop()
                 assert pool.running is False
 
+    @pytest.mark.slow
     def test_empty_queue_handling(self, pool_env):
         """Worker should handle empty queue gracefully."""
         with patch(
@@ -141,6 +145,7 @@ class TestParallelWorkers:
             pool.stop()
             assert pool.running is False
 
+    @pytest.mark.slow
     def test_force_review_cycle(self, pool_env):
         """Force review cycle should queue files under MockLLM."""
         with patch(
@@ -178,11 +183,11 @@ class TestAgentPoolConfiguration:
         assert isinstance(pool.random_review_agents, list)
 
 
-@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestAgentPoolActiveControl:
-    """Active-agent control with live pool start (~8s)."""
+    """Active-agent control; only live pool start is slow."""
 
+    @pytest.mark.slow
     def test_set_active_agents(self, pool_env):
         with patch(
             "agents.parallel_workers.call_agent",
@@ -208,7 +213,7 @@ class TestAgentPoolActiveControl:
 @pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestConcurrentBehavior:
-    """Concurrent pool behavior (9–25s)."""
+    """Concurrent pool behavior (9-25s)."""
 
     def test_multiple_file_changes_concurrent(self, pool_env):
         with patch(
