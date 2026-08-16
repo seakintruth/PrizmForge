@@ -20,7 +20,7 @@ isort>=8.0.1
 ruff>=0.16.0
 
 # Type checking
-mypy>=1.5.0
+mypy>=2.3.0
 
 # Optional
 pylint>=4.0.7
