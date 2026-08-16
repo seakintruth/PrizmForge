@@ -16,9 +16,7 @@ _SAFE_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 
 _FILES_NEEDED_LINE = re.compile(r"FILES_NEEDED:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 
-_PROSE_FILE = re.compile(
-    r"(?:^|\s|`)([A-Za-z0-9_./\\-]+\.(?:py|json|js|txt|md|html|css|yaml|yml|sh))(?:$|\s|`|[,;])"
-)
+_PROSE_FILE = re.compile(r"(?:^|\s|`)([A-Za-z0-9_./\\-]+\.(?:py|json|js|txt|md|html|css|yaml|yml|sh))(?:$|\s|`|[,;])")
 
 
 def sanitize_path_token(raw: str | None) -> str | None:
