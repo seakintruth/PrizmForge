@@ -15,14 +15,13 @@ from core.config import (
     validate_config,
 )
 
+
 # ---------------------------------------------------------------------------
 # normalize_path
 # ---------------------------------------------------------------------------
 
 
 def test_normalize_path_empty_returns_dot():
-    assert normalize_path("") == Path(".").resolve() or normalize_path("") == Path(".")
-    # Implementation returns Path(".") then may resolve; accept either resolved or relative
     p = normalize_path("")
     assert p == Path(".") or p == Path(".").resolve()
 
@@ -109,7 +108,9 @@ def test_get_repo_root_from_config_location(tmp_path, monkeypatch):
 
 def test_ensure_project_directory_creates(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.json").write_text(json.dumps({"project_directory": "./my_proj"}))
+    (tmp_path / "config.json").write_text(
+        json.dumps({"project_directory": "./my_proj"})
+    )
     # Patch get_config to avoid full load_config side effects
     from core import config as cfg_mod
 
@@ -161,41 +162,41 @@ def test_validate_config_accepts_minimal(tmp_path, monkeypatch):
     assert (tmp_path / "proj").exists()
 
 
-def test_validate_config_rejects_unknown_file_editing_method():
+def test_validate_config_rejects_unknown_file_editing_method(tmp_path):
     with pytest.raises(ValueError, match="file_editing.method"):
         validate_config(
             {
-                "project_directory": "./p",
+                "project_directory": str(tmp_path / "p"),
                 "file_editing": {"method": "telepathy"},
             }
         )
 
 
-def test_validate_config_rejects_bad_preferred_modes():
+def test_validate_config_rejects_bad_preferred_modes(tmp_path):
     with pytest.raises(ValueError, match="preferred_modes"):
         validate_config(
             {
-                "project_directory": "./p",
+                "project_directory": str(tmp_path / "p"),
                 "file_editing": {"preferred_modes": []},
             }
         )
 
 
-def test_validate_config_rejects_unknown_preferred_mode():
+def test_validate_config_rejects_unknown_preferred_mode(tmp_path):
     with pytest.raises(ValueError, match="unknown modes"):
         validate_config(
             {
-                "project_directory": "./p",
+                "project_directory": str(tmp_path / "p"),
                 "file_editing": {"preferred_modes": ["guid", "warp"]},
             }
         )
 
 
-def test_validate_config_rejects_bad_threshold():
+def test_validate_config_rejects_bad_threshold(tmp_path):
     with pytest.raises(ValueError, match="small_file_threshold_lines"):
         validate_config(
             {
-                "project_directory": "./p",
+                "project_directory": str(tmp_path / "p"),
                 "file_editing": {"small_file_threshold_lines": 0},
             }
         )
@@ -220,21 +221,21 @@ def test_validate_config_accepts_known_modes(tmp_path, monkeypatch):
     validate_config(cfg)  # must not raise
 
 
-def test_validate_config_rejects_bad_content_safety_type():
+def test_validate_config_rejects_bad_content_safety_type(tmp_path):
     with pytest.raises(ValueError, match="content_safety"):
         validate_config(
             {
-                "project_directory": "./p",
+                "project_directory": str(tmp_path / "p"),
                 "content_safety": "not-a-dict",
             }
         )
 
 
-def test_validate_config_rejects_non_bool_disallow_binary():
+def test_validate_config_rejects_non_bool_disallow_binary(tmp_path):
     with pytest.raises(ValueError, match="disallow_binary_content"):
         validate_config(
             {
-                "project_directory": "./p",
+                "project_directory": str(tmp_path / "p"),
                 "content_safety": {"disallow_binary_content": "yes"},
             }
         )
