@@ -59,6 +59,7 @@ def test_normalize_path_mixed_slashes(tmp_path, monkeypatch):
     assert result == (tmp_path / "a" / "b").resolve()
     # Backslash: on Windows it separates; on POSIX it is part of the name
     import os
+
     if os.name == "nt":
         result_bs = normalize_path("a\\b")
         assert result_bs == (tmp_path / "a" / "b").resolve()
