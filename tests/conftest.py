@@ -8,11 +8,21 @@ Isolation rules:
   fixtures that depend on it), so pure unit tests stay fast.
 - Never inherit live background_agents from the developer's config.json.
   Tests that intentionally exercise the pool must opt in and use MockLLM.
+
+Duration tracking:
+- Each call-phase report is appended to a session list (nodeid, duration,
+  outcome, markers).
+- On session finish a JSON file is written under the *repo* reports dir
+  (not the isolated temp workspace) so batched runs and CI can analyze
+  slow vs normal classification. Override path with PRIZMFORGE_DURATION_REPORT.
 """
 
 from __future__ import annotations
 
+import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -63,6 +73,102 @@ def _patch_get_config_everywhere(monkeypatch, getter) -> None:
             # Module may not be imported yet; later imports still pick up
             # core.config.get_config when using attribute access.
             pass
+
+
+# ---------------------------------------------------------------------------
+# Per-test duration tracking (for slow/normal rebalance)
+# ---------------------------------------------------------------------------
+
+
+def _duration_report_path(config) -> Path:
+    """Resolve where to write the duration JSON (repo reports, not temp ws)."""
+    env = os.environ.get("PRIZMFORGE_DURATION_REPORT", "").strip()
+    if env:
+        return Path(env)
+    batch = os.environ.get("PRIZMFORGE_BATCH_NAME", "").strip() or "session"
+    stamp = os.environ.get("PRIZMFORGE_REPORT_STAMP", "").strip()
+    if not stamp:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    reports = PROJECT_ROOT / ".PrizmForge" / "reports"
+    return reports / f"test-durations-{batch}-{stamp}.json"
+
+
+def pytest_configure(config) -> None:
+    config._prizmforge_duration_records = []
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    if report.when != "call":
+        return
+    records = getattr(item.config, "_prizmforge_duration_records", None)
+    if records is None:
+        return
+    markers = sorted({m.name for m in item.iter_markers()})
+    records.append(
+        {
+            "nodeid": report.nodeid,
+            "duration_s": round(float(report.duration), 4),
+            "outcome": report.outcome,
+            "markers": markers,
+            "slow": "slow" in markers,
+            "file": str(getattr(item, "fspath", "") or ""),
+        }
+    )
+
+
+def pytest_sessionfinish(session, exitstatus) -> None:
+    records = getattr(session.config, "_prizmforge_duration_records", None)
+    if not records:
+        return
+    path = _duration_report_path(session.config)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "exitstatus": int(exitstatus),
+            "batch": os.environ.get("PRIZMFORGE_BATCH_NAME", "session"),
+            "count": len(records),
+            "tests": sorted(records, key=lambda r: r["duration_s"], reverse=True),
+        }
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        # Keep a stable "latest" pointer for the analyzer default path.
+        latest = path.parent / "test-durations-latest.json"
+        # Merge into latest if it already exists from an earlier batch this run.
+        merged_tests = list(payload["tests"])
+        if latest.exists():
+            try:
+                prev = json.loads(latest.read_text(encoding="utf-8"))
+                if isinstance(prev, dict) and isinstance(prev.get("tests"), list):
+                    # Prefer newer record for same nodeid (last batch wins).
+                    by_id = {t["nodeid"]: t for t in prev["tests"] if "nodeid" in t}
+                    for t in merged_tests:
+                        by_id[t["nodeid"]] = t
+                    merged_tests = sorted(
+                        by_id.values(), key=lambda r: r["duration_s"], reverse=True
+                    )
+            except (json.JSONDecodeError, OSError, TypeError):
+                pass
+        latest.write_text(
+            json.dumps(
+                {
+                    "generated_at": payload["generated_at"],
+                    "exitstatus": payload["exitstatus"],
+                    "batch": "merged",
+                    "count": len(merged_tests),
+                    "tests": merged_tests,
+                    "source": str(path.name),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError as e:
+        # Duration reporting must never fail the suite.
+        print(f"    ⚠️  duration report write failed: {e}")
 
 
 @pytest.fixture(autouse=True)
