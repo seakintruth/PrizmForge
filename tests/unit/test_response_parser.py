@@ -38,7 +38,7 @@ def test_markdown_json_fence():
 
 def test_generic_code_block_with_json():
     p = ResponseParser()
-    raw = "```\n{\"ok\": true}\n```"
+    raw = '```\n{"ok": true}\n```'
     r = p.parse(raw)
     assert r.success is True
     assert r.data["ok"] is True
@@ -47,7 +47,7 @@ def test_generic_code_block_with_json():
 def test_code_block_with_language_tag_stripped():
     p = ResponseParser()
     # Non-json language tag on first line should be dropped when content is JSON
-    raw = "```python\n{\"value\": 42}\n```"
+    raw = '```python\n{"value": 42}\n```'
     r = p.parse(raw)
     # Either succeeds via code-block strategy after stripping tag, or via raw slice
     assert r.success is True

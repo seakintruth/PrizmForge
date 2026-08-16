@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from core.json_parser import (
     JSONParser,
     ParseResult,
@@ -11,7 +9,6 @@ from core.json_parser import (
     get_json_parser,
     parse_json_response,
 )
-
 
 # ---------------------------------------------------------------------------
 # ParseResult helpers
