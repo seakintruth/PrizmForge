@@ -64,7 +64,7 @@ def _extract_json_object(text: str) -> str | None:
     return cleaned[start : end + 1]
 
 
-def validate_developer_edit_response(response: str) -> EditValidationResult:  # noqa: C901
+def validate_developer_edit_response(response: str) -> EditValidationResult:
     """
     Classify a raw developer agent response as a usable edit or a failure.
 
@@ -115,22 +115,6 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
             is_valid=False,
             reason=EditFailureReason.UNKNOWN_STRUCTURE,
             message="Root JSON value is not an object or array of operations",
-        )
-
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError as e:
-        return EditValidationResult(
-            is_valid=False,
-            reason=EditFailureReason.INVALID_JSON,
-            message=f"JSON parse error: {e}",
-        )
-
-    if not isinstance(data, dict):
-        return EditValidationResult(
-            is_valid=False,
-            reason=EditFailureReason.UNKNOWN_STRUCTURE,
-            message="Root JSON value is not an object",
         )
 
     # --- Detect mode and validate minimum usable content ---
