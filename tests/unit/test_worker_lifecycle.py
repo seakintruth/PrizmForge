@@ -6,7 +6,7 @@ BoundedSet, HeuristicOptimizer backlog decisions.
 
 All pool.start() paths use patched call_agent — never live LLM.
 
-Pool start/stop cases measured 5–13s → slow; module is serial.
+Pool start/stop cases measured 5-13s → slow; module is serial.
 Near-zero helpers stay serial-only (not slow).
 """
 
