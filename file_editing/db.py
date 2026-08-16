@@ -1,6 +1,6 @@
 # =============================================================================
 # PrizmForge/file_editing/db.py
-# Version: 1.5 - Non-blocking error logging under DB contention
+# Version: 1.6 - reconstruct_file_content matches core.db file_lines schema
 # Purpose: Database connection, error logging, and reconstruction helpers
 # =============================================================================
 
@@ -124,12 +124,16 @@ def initialize_database(db_path: str | None = None):
 
 
 def reconstruct_file_content(conn: sqlite3.Connection, file_id: int) -> str:
-    """Reconstruct current file content from line table ordered by line number."""
+    """Reconstruct current file content from line table ordered by sort_order.
+
+    Schema (core.db): file_lines uses is_deleted + sort_order — not is_current
+    or line_number. Matches initialize_file_lines / writer inserts.
+    """
     cursor = conn.execute(
         """
         SELECT content FROM file_lines
-        WHERE file_id = ? AND is_current = 1
-        ORDER BY line_number
+        WHERE file_id = ? AND COALESCE(is_deleted, 0) = 0
+        ORDER BY sort_order
         """,
         (file_id,),
     )
