@@ -4,7 +4,9 @@
 -r requirements.txt
 
 # Testing (required for full suite)
-pytest>=9.1.1
+# Floor is 9.0.3: some constrained environments cannot install >9.0.3 yet.
+# Unconstrained hosts / CI may still resolve a newer 9.x.
+pytest>=9.0.3
 pytest-mock>=3.15.1
 
 # Optional: parallel / timeout plugins (not required)

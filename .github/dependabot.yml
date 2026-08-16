@@ -11,6 +11,10 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    ignore:
+      # Some environments cannot install pytest >9.0.3 yet (e.g. Advana Nexus).
+      # Re-enable once those mirrors catch up.
+      - dependency-name: "pytest"
 
   # GitHub Actions used by CI workflows
   - package-ecosystem: "github-actions"
