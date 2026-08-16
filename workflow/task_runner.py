@@ -1,7 +1,6 @@
 """Main task execution workflow"""
 
 import json
-import re
 import time
 
 from agents.base import call_agent
@@ -14,6 +13,7 @@ from core.file_operations import get_file_content_from_db
 from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
 from workflow.developer_edit import run_developer_mutation
 from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER
+from workflow.path_targets import extract_files_needed_from_text, sanitize_path_token
 
 # Governed editing imports
 
@@ -236,26 +236,17 @@ PLAN: [brief explanation]"""
 
                 print("   ✅ Developer response received")
 
-                # === EXTRACT FILES FROM PHASE 1 ===
-                requested_files = []
-
-                files_match = re.search(r"FILES_NEEDED:\s*(.+?)(?:\n|$)", understanding, re.IGNORECASE)
-                if files_match:
-                    files_str = files_match.group(1).strip()
-                    if files_str.upper() not in ("NONE", "N/A", "NONE.", "N/A."):
-                        requested_files = [f.strip() for f in files_str.split(",") if f.strip().upper() not in ("NONE", "N/A")]
+                # === EXTRACT FILES FROM PHASE 1 (sanitized) ===
+                requested_files = extract_files_needed_from_text(understanding or "")
 
                 if not requested_files and files_needed:
-                    requested_files = [f for f in files_needed if f and f.upper() not in ("NONE", "N/A")]
+                    requested_files = []
+                    for f in files_needed:
+                        clean = sanitize_path_token(f) if f else None
+                        if clean:
+                            requested_files.append(clean)
                     if requested_files:
                         print(f"   📋 Using orchestrator's files_needed: {', '.join(requested_files)}")
-
-                if not requested_files:
-                    file_pattern = r"(?:^|\s|`)([-a-zA-Z0-9_/\.]+\.(?:py|json|js|txt|md|png|html|css|yaml|yml))(?:$|\s|`)"
-                    found_files = re.findall(file_pattern, understanding)
-                    if found_files:
-                        requested_files = list(dict.fromkeys(found_files))[:4]
-                        print(f"   🔍 Extracted from text: {', '.join(requested_files)}")
 
                 if not requested_files:
                     addressing_ids = decision.get("addressing_feedback_ids", [])
@@ -271,22 +262,28 @@ PLAN: [brief explanation]"""
                             )
                             row = cursor.fetchone()
                             if row:
-                                requested_files = [row[0]]
+                                clean = sanitize_path_token(row[0])
+                                if clean:
+                                    requested_files = [clean]
 
                 if not requested_files:
                     requested_files = ["app.py", "README.md"]
                     print(f"   🚀 Cold-start default: Assigning initial target files: {', '.join(requested_files)}")
 
-                # Validate / Filter files:
+                # Validate / filter paths (drop anything that fails sanitization)
                 valid_files = []
                 for fpath in requested_files:
-                    content_db = get_file_content_from_db(fpath)
+                    clean = sanitize_path_token(fpath)
+                    if not clean:
+                        print(f"   ⚠️  Skipping invalid path token: {fpath!r}")
+                        continue
+                    content_db = get_file_content_from_db(clean)
                     if content_db is not None:
-                        valid_files.append(fpath)
-                        print(f"   📄 Existing file found in DB: {fpath}")
+                        valid_files.append(clean)
+                        print(f"   📄 Existing file found in DB: {clean}")
                     else:
-                        valid_files.append(fpath)
-                        print(f"   ✨ New file target registered for creation: {fpath}")
+                        valid_files.append(clean)
+                        print(f"   ✨ New file target registered for creation: {clean}")
 
                 requested_files = valid_files
 
