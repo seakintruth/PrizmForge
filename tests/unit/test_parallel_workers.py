@@ -41,9 +41,13 @@ def pool_env(isolated_project, monkeypatch):
     return cfg
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestParallelWorkers:
-    """Tests for the parallel background agent system."""
+    """Tests for the parallel background agent system.
+
+    Duration report 2026-08-16: pool start/stop + queue cases are 5–9s.
+    """
 
     def test_file_change_event_creation(self):
         """FileChangeEvent should be constructible with correct fields."""
@@ -177,9 +181,10 @@ class TestAgentPoolConfiguration:
         assert isinstance(pool.random_review_agents, list)
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestAgentPoolActiveControl:
-    """Tests for controlling which agents are active."""
+    """Tests for controlling which agents are active (pool start → 8s)."""
 
     def test_set_active_agents(self, pool_env):
         with patch(
