@@ -2,15 +2,18 @@
 
 Deterministic tests for governed multi-agent editing. **No network required** for the default suite. Designed for Advana / SageMaker environments (pytest + pytest-mock + stdlib mocks).
 
+> **Architecture, gap analysis, and multi-platform strategy** live in [`LLM_CONTEXT.md`](LLM_CONTEXT.md).
+> This README is the operational entry point only.
+
 ## Quick start
 
 ```bash
 # From repo root
-pip install -r requirements-dev.txt   # pytest, pytest-mock (+ optional black/flake8)
+pip install -r requirements-dev.txt   # pytest, pytest-mock (+ optional black/isort/ruff/mypy)
 
 pytest tests/ -m "not slow" -q        # full CI-friendly suite
 pytest tests/ -v                      # verbose
-bash utils/run_tests.sh --normal -j 4 # preferred CI entry (batched runner)
+./utils/run_tests.sh --normal -j 4    # preferred CI entry (batched runner)
 pytest tests/ -m slow -q              # concurrent worker stress only
 ```
 
@@ -67,9 +70,7 @@ Path containment remains covered by `test_path_normalization.py` (writer). Edit 
 
 ## Production hardening scope
 
-Automated tests cover: orchestrator routing, backlog override, multi-turn cycle, reviewer reject,
-background pool lifecycle, RC optimizer shapes, HTTP 401/429 shapes, governed edit pipeline,
-**binary content rejection** (MSI/PE/OLE — not text scripts), high-priority pure modules above.
+Automated tests cover: orchestrator routing, backlog override, multi-turn cycle, reviewer reject, background pool lifecycle, RC optimizer shapes, HTTP 401/429 shapes, governed edit pipeline, **binary content rejection** (MSI/PE/OLE — not text scripts), and the high-priority pure modules above.
 
 **Out of CI scope:** real-model quality, multi-hour unattended (see soak runbooks under `.PrizmForge/reports/` when present).
 
@@ -88,7 +89,7 @@ background pool lifecycle, RC optimizer shapes, HTTP 401/429 shapes, governed ed
 `call_agent` is patched at all entries in `tests.mocks.openai.CALL_AGENT_PATCH_TARGETS`.
 New modules that `from agents.base import call_agent` must call `register_call_agent_patch_target(...)`.
 
-## Philosophy
+## Philosophy (operational)
 
 1. **Mock LLMs by default** — `MockLLM` / `mock_openai_chat` (stdlib `unittest.mock`; no `responses` package).
 2. **Real sqlite + temp filesystem** for file-editing paths.
@@ -138,10 +139,9 @@ Config: `content_safety.disallow_binary_content` (default true); `content_safety
 ```
 tests/
 ├── conftest.py
-├── README.md
-├── doc_todo_architecture.md          # gap analysis / aspirational 7-layer plan
-├── doc_todo_multi_platform_ci_cd.md  # GitHub / GitLab / CodeCommit parity notes
-├── mocks/openai.py                   # MockLLM + CALL_AGENT_PATCH_TARGETS
+├── README.md                 # this file — operational commands & rules
+├── LLM_CONTEXT.md            # durable architecture, gaps, multi-platform strategy
+├── mocks/openai.py           # MockLLM + CALL_AGENT_PATCH_TARGETS
 ├── integration/
 │   ├── test_golden_path.py
 │   ├── test_edit_workflows.py
@@ -162,7 +162,7 @@ tests/
 │   ├── test_path_normalization.py
 │   ├── test_content_safety.py
 │   └── ...
-└── test_governed_editing.py          # root-level governed path tests
+└── test_governed_editing.py  # root-level governed path tests
 ```
 
 ---
@@ -193,8 +193,7 @@ Runtime remains minimal (`requirements.txt`).
 ## Moving toward TDD (beyond unit tests and coverage)
 
 PrizmForge is largely **test-supported** today (tests follow implementation), not pure classic TDD.
-The suite already goes past “unit + coverage %”: workflow integration, agent/LLM boundary mocks,
-and contract/snapshot checks. Coverage is a **signal**, not the definition of quality.
+The suite already goes past “unit + coverage %”: workflow integration, agent/LLM boundary mocks, and contract/snapshot checks. Coverage is a **signal**, not the definition of quality.
 
 ### What the current framework accomplishes
 
