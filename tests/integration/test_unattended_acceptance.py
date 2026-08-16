@@ -11,6 +11,10 @@ import json
 
 import pytest
 
+# Exercises run_task_cycle (same weight class as test_run_task_cycle.py).
+# Keep on --full / --only-slow; exclude from --normal parallel batches.
+pytestmark = pytest.mark.slow
+
 
 @pytest.fixture
 def accept_env(temp_db, tmp_path, monkeypatch):

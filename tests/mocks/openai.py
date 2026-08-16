@@ -18,9 +18,11 @@ from unittest.mock import MagicMock, patch
 CALL_AGENT_PATCH_TARGETS = (
     "agents.base.call_agent",
     "agents.orchestrator.call_agent",
+    "agents.prioritizer_worker.call_agent",
+    "agents.reporter_worker.call_agent",
+    "agents.parallel_workers.call_agent",
     "workflow.task_runner.call_agent",
     "workflow.developer_edit.call_agent",
-    "agents.parallel_workers.call_agent",
 )
 
 
