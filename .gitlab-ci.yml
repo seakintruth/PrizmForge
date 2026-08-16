@@ -5,6 +5,7 @@
 # Speed notes (K8s executor, ephemeral pods):
 # - Lint installs only ruff (not requirements-dev).
 # - No `pip install --upgrade pip` (saves ~30s).
+# - Lint and test share one stage and run in parallel (no needs: edge).
 # - Shared cache URL / Nexus mirror / prebuilt image are platform concerns;
 #   this file does not depend on them.
 
@@ -25,9 +26,9 @@ default:
       - unknown_failure
       - api_failure
 
+# Single stage so lint + test start together (stage barriers force sequential).
 stages:
-  - lint
-  - test
+  - gate
 
 variables:
   PYTEST_ADDOPTS: ""
@@ -51,7 +52,7 @@ lint:ruff:
   extends:
     - .python_base
     - .rules_default
-  stage: lint
+  stage: gate
   script:
     # Lint gate only needs ruff — do not install pytest/black/mypy/pylint/etc.
     - pip install ruff
@@ -62,8 +63,7 @@ test:normal:
   extends:
     - .python_base
     - .rules_default
-  stage: test
-  needs: ["lint:ruff"]
+  stage: gate
   timeout: 20 minutes
   # Optional local pip download cache. On ephemeral K8s pods without a
   # runner-level shared cache URL this usually misses; harmless when it does.
