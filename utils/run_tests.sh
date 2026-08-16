@@ -39,7 +39,7 @@ Test suite runner for PrizmForge.
 Options:
   -p, --python PATH     Path to Python executable (default: python3)
   -j, --jobs NUM        xdist workers (default: auto; batched defaults to 2;
-                        heavy batch always uses 1)
+                        heavy and slow batches always use 1)
   -q, --quick           Fast-gate subset (default)
   -n, --normal          All tests under tests/ except @pytest.mark.slow
   -f, --full            Complete suite including slow tests
@@ -52,11 +52,15 @@ Options:
   -h, --help            Show this help
 
 Batch layout (--batched with --normal or --full):
-  unit         tests/unit/ excluding heavy files  (small -j)
-  heavy        governed editing + concurrency-heavy unit/integration (serial)
-  integration  tests/integration/ excluding heavy  (small -j)
-  root         tests/*.py root files not in heavy  (small -j)
-  slow         with --only-slow --batched, or --batch slow
+  unit         tests/unit/ excluding heavy files  (small -j, not slow)
+  heavy        concurrency-heavy targets          (serial -j 1, not slow)
+  integration  tests/integration/ excluding heavy (small -j, not slow)
+  root         tests/*.py root files not in heavy (small -j, not slow)
+  slow         @pytest.mark.slow only             (serial -j 1; --full and --only-slow)
+
+Under --full --batched, slow tests are NEVER mixed into parallel batches;
+they run only in the final serial "slow" batch. That avoids xdist worker
+deaths (node down / exit 120) from OOM-prone task-cycle tests.
 
 Each batch writes:
   ${REPORT_DIR}/pytest-batch-<name>-<timestamp>.log
@@ -69,11 +73,14 @@ Examples:
   # Quick gate
   $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe"
 
-  # Memory-safe full suite (sequential batches, 2 workers, serial heavy)
+  # Memory-safe full suite (parallel not-slow + serial heavy + serial slow)
   $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe" --full --batched -j 2
 
   # Only the heavy serial batch
   $0 --full --batched --batch heavy -j 1
+
+  # Only slow tests (serial)
+  $0 --only-slow --batched --batch slow -j 1
 
   # Re-run last failures (pytest built-in)
   $0 --full --batched -- --lf
@@ -146,6 +153,23 @@ SUMMARY_FILE="${REPORT_DIR}/pytest-full-summary-${STAMP}.txt"
 # ---------------------------------------------------------------------------
 
 path_exists() { [[ -e "$1" ]]; }
+
+# Append -m filter for parallel/heavy batches.
+# normal + full: exclude slow (slow runs in its own serial batch under full).
+# slow mode: only slow tests.
+append_batch_marker() {
+  # Usage: append_batch_marker args_array_name
+  # Bash nameref so callers pass the array name to mutate.
+  local -n _batch_args="$1"
+  case "$TEST_MODE" in
+    normal|full)
+      _batch_args+=("-m" "not slow")
+      ;;
+    slow)
+      _batch_args+=("-m" "slow")
+      ;;
+  esac
+}
 
 run_pytest_once() {
   # Args: batch_name jobs target1 [target2 ...]
@@ -270,9 +294,13 @@ run_batched() {
   local jobs_small="$PARALLEL_JOBS"
   [[ "$jobs_small" == "auto" ]] && jobs_small=2
 
-  echo "Batched run mode=${TEST_MODE} small_jobs=${jobs_small} heavy_jobs=1"
+  echo "Batched run mode=${TEST_MODE} small_jobs=${jobs_small} heavy_jobs=1 slow_jobs=1"
   echo "Summary file: ${SUMMARY_FILE}"
   echo "Batches continue after failure."
+  if [[ "$TEST_MODE" == "full" ]]; then
+    echo "Note: --full excludes @pytest.mark.slow from parallel/heavy batches;"
+    echo "      slow tests run only in the final serial 'slow' batch."
+  fi
 
   # ---- unit (light) ----
   if should_run_batch unit; then
@@ -284,10 +312,7 @@ run_batched() {
           unit_args+=("--ignore=${h}")
         fi
       done
-      case "$TEST_MODE" in
-        normal) unit_args+=("-m" "not slow") ;;
-        slow)   unit_args+=("-m" "slow") ;;
-      esac
+      append_batch_marker unit_args
       if ! run_pytest_once unit "$jobs_small" "${unit_args[@]}"; then
         overall_rc=1
       fi
@@ -302,10 +327,7 @@ run_batched() {
       path_exists "$h" && heavy_args+=("$h")
     done
     if [[ ${#heavy_args[@]} -gt 0 ]]; then
-      case "$TEST_MODE" in
-        normal) heavy_args+=("-m" "not slow") ;;
-        slow)   heavy_args+=("-m" "slow") ;;
-      esac
+      append_batch_marker heavy_args
       if ! run_pytest_once heavy 1 "${heavy_args[@]}"; then
         overall_rc=1
       fi
@@ -321,10 +343,7 @@ run_batched() {
           int_args+=("--ignore=${h}")
         fi
       done
-      case "$TEST_MODE" in
-        normal) int_args+=("-m" "not slow") ;;
-        slow)   int_args+=("-m" "slow") ;;
-      esac
+      append_batch_marker int_args
       if ! run_pytest_once integration "$jobs_small" "${int_args[@]}"; then
         overall_rc=1
       fi
@@ -348,18 +367,17 @@ run_batched() {
       root_args+=("$f")
     done
     if [[ ${#root_args[@]} -gt 0 ]]; then
-      case "$TEST_MODE" in
-        normal) root_args+=("-m" "not slow") ;;
-        slow)   root_args+=("-m" "slow") ;;
-      esac
+      append_batch_marker root_args
       if ! run_pytest_once root "$jobs_small" "${root_args[@]}"; then
         overall_rc=1
       fi
     fi
   fi
 
-  # ---- slow-only batch ----
-  if should_run_batch slow && [[ "$TEST_MODE" == "slow" || "$BATCH_FILTER" == "slow" ]]; then
+  # ---- slow-only batch (serial) ----
+  # Under --full: all @pytest.mark.slow live here only (not in parallel batches).
+  # Under --only-slow / --batch slow: this is the whole run.
+  if should_run_batch slow && [[ "$TEST_MODE" == "slow" || "$TEST_MODE" == "full" || "$BATCH_FILTER" == "slow" ]]; then
     if ! run_pytest_once slow 1 "tests/" "-m" "slow"; then
       overall_rc=1
     fi
