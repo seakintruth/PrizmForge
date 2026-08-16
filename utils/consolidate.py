@@ -304,7 +304,7 @@ def _write_test_index(out, files: list[FileIndex]) -> None:
 
 def _write_markdown_index(out, files: list[FileIndex]) -> None:
     out.write("## Index: Markdown documentation\n\n")
-    out.write("Doc files and heading sections (`#` … `######`).\n\n")
+    out.write("Doc files and heading sections (`#` ... `######`).\n\n")
     for entry in files:
         out.write(f"### `{entry.path}`\n\n")
         if not entry.sections:

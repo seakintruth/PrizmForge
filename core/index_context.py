@@ -50,7 +50,7 @@ def load_index_text(
     except Exception:
         return ""
     if max_chars and len(text) > max_chars:
-        return text[:max_chars] + f"\n\n… truncated ({len(text)} chars total; see {path})\n"
+        return text[:max_chars] + f"\n\n... truncated ({len(text)} chars total; see {path})\n"
     return text
 
 
@@ -92,7 +92,7 @@ def build_index_context_block(
     )
     if json_block.strip():
         if max_chars and len(json_block) > max_chars:
-            return json_block[:max_chars] + "\n… truncated\n"
+            return json_block[:max_chars] + "\n... truncated\n"
         return json_block
 
     body = load_index_text(

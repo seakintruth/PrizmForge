@@ -15,7 +15,7 @@ def interruptible_sleep(
     """Sleep up to ``seconds`` while ``is_running()`` remains true.
 
     Breaks sleep into short slices so ``stop()`` can set ``running = False``
-    and ``join(timeout=…)`` completes without waiting out a 30-300s sleep.
+    and ``join(timeout=...)`` completes without waiting out a 30-300s sleep.
     """
     if seconds <= 0:
         return

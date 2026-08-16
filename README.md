@@ -178,7 +178,7 @@ This approach provides:
 - Reviewer safety gate before any mutation
 - Post-write invalidation of overlapping proposals
 - Path containment under project dir and **repo root**
-- **Binary payload rejection** (`core/content_safety.py`): PE/MSI/OLE magic, NUL bytes; blocks `.msi`/`.exe`/`.dll` paths — **does not** block text scripts (`.ps1`, `.bat`, `.cmd`, `.js`, …)
+- **Binary payload rejection** (`core/content_safety.py`): PE/MSI/OLE magic, NUL bytes; blocks `.msi`/`.exe`/`.dll` paths — **does not** block text scripts (`.ps1`, `.bat`, `.cmd`, `.js`, ...)
 - Comprehensive error logging, proposal status tracking, and mutation event log
 
 
@@ -209,7 +209,7 @@ Not a full worker event bus.
 LLMs under `full_replace` may emit installers or PE blobs (e.g. Windows MSI) instead of source.
 `core.content_safety.validate_source_content` is enforced on `full_replace`, `create_file`, and `write_file_to_disk`:
 
-- **Reject:** binary magic (PE/`MZ`, ELF, OLE/CFB used by MSI, Mach-O), NUL-heavy payloads, binary-only extensions (`.msi`, `.exe`, `.dll`, …)
+- **Reject:** binary magic (PE/`MZ`, ELF, OLE/CFB used by MSI, Mach-O), NUL-heavy payloads, binary-only extensions (`.msi`, `.exe`, `.dll`, ...)
 - **Allow:** normal text source, including PowerShell/batch/JS scripts (`.ps1`, `.bat`, `.cmd`, `.js`)
 
 Optional `config.json` overrides (defaults are safe/fail-closed):
@@ -329,7 +329,7 @@ python main.py                         # loads config, init_db, optional auto-in
 ### Unattended (config only, no stdin)
 
 ```json
-"cli_mode": { "mode": "unattended", "unattended": { "seed_task": "…", "max_duration_hours": 2 } },
+"cli_mode": { "mode": "unattended", "unattended": { "seed_task": "...", "max_duration_hours": 2 } },
 "llm": { "test_mode": true }
 ```
 

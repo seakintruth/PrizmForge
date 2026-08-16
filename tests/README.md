@@ -86,9 +86,9 @@ Fixtures (see `conftest.py`): `mock_llm`, `mock_llm_patched`, `mock_openai_chat`
 
 | Allowed | Blocked |
 |---------|---------|
-| Text source (`.py`, `.ps1`, `.bat`, `.cmd`, `.js`, …) | PE/`MZ`, ELF, OLE/CFB (MSI), Mach-O magic |
+| Text source (`.py`, `.ps1`, `.bat`, `.cmd`, `.js`, ...) | PE/`MZ`, ELF, OLE/CFB (MSI), Mach-O magic |
 | Normal UTF-8 source | NUL bytes / high non-text ratio |
-| | Paths that are binary formats only (`.msi`, `.exe`, `.dll`, …) |
+| | Paths that are binary formats only (`.msi`, `.exe`, `.dll`, ...) |
 
 Text scripting languages are **not** blocked by extension. Only **binary** payloads and binary package/executable extensions.
 
