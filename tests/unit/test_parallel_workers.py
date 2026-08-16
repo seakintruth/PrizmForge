@@ -102,9 +102,7 @@ class TestParallelWorkers:
             pool = BackgroundAgentPool()
             pool.start(task_id="test_task")
             try:
-                pool.queue_file_change(
-                    file_path="test.py", operation="modified", content="test content"
-                )
+                pool.queue_file_change(file_path="test.py", operation="modified", content="test content")
                 time.sleep(0.3)
                 assert hasattr(pool, "queue") or hasattr(pool, "event_queue") or pool.running is not None
             finally:
@@ -120,9 +118,7 @@ class TestParallelWorkers:
             pool = BackgroundAgentPool()
             pool.start(task_id="test_task")
             try:
-                pool.queue_file_change(
-                    file_path="test.py", operation="modified", content="def test(): pass"
-                )
+                pool.queue_file_change(file_path="test.py", operation="modified", content="def test(): pass")
                 time.sleep(1.0)
                 assert isinstance(mock_call_agent.call_count, int)
             finally:
