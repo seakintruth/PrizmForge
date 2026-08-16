@@ -9,7 +9,7 @@ pytest-mock>=3.15.1
 
 # Optional: parallel / timeout plugins (not required)
 pytest-timeout>=2.4.0
-pytest-xdist>=3.5.0
+pytest-xdist>=3.8.0
 
 # Code quality (recommended)
 black>=26.5.1
@@ -17,7 +17,7 @@ flake8>=7.3.0
 isort>=8.0.1
 
 # Lint / fast fixer
-ruff>=0.16.0
+ruff>=0.16.2
 
 # Type checking
 mypy>=2.3.0

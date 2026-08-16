@@ -297,7 +297,6 @@ class BackgroundAgentPool:
             try:
                 queue_size = self.event_queue.qsize()
                 self._adjust_feeder_interval(queue_size)
-
                 # interruptible so stop() does not wait out a 30-300s sleep
                 interruptible_sleep(self.feeder_interval, lambda: self.running)
 

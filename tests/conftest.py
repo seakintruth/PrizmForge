@@ -6,6 +6,8 @@ Isolation rules:
 - Every test gets a private temp workspace (project + .PrizmForge).
 - DB schema is initialized only when a test requests temp_db (or via
   fixtures that depend on it), so pure unit tests stay fast.
+- Never inherit live background_agents from the developer's config.json.
+  Tests that intentionally exercise the pool must opt in and use MockLLM.
 """
 
 from __future__ import annotations
@@ -23,6 +25,23 @@ sys.path.insert(0, str(PROJECT_ROOT))
 _REPO_PRIZMFORGE = PROJECT_ROOT / ".PrizmForge"
 
 
+def _force_test_safe_config(cfg: dict, project_dir: str) -> dict:
+    """Return a config dict that cannot spawn live LLM workers by default.
+
+    Overrides (not setdefault) so values from the developer's real config.json
+    cannot leak into the test process.
+    """
+    out = dict(cfg) if isinstance(cfg, dict) else {}
+    out["project_directory"] = project_dir
+    out["git"] = False
+    out["git_auto_commit"] = False
+    # CRITICAL: override, do not setdefault — real config often enables these
+    out["background_agents_enabled"] = False
+    out["background_agents"] = {}
+    out["background_feeder"] = {}
+    return out
+
+
 @pytest.fixture(autouse=True)
 def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
     """
@@ -31,6 +50,7 @@ def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
     Sets:
       - PRIZMFORGE_DB_PATH → <tmp>/.PrizmForge/agents.db
       - core.config.get_config() project_directory → <tmp>/project
+      - background_agents_enabled=False and background_agents={} (hard override)
 
     Does NOT call init_db (keeps pure unit tests light). Tests that touch
     the DB should request the temp_db fixture (or one that depends on it).
@@ -57,14 +77,7 @@ def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
             cfg = _orig_get_config()
         except Exception:
             cfg = {}
-        if not isinstance(cfg, dict):
-            cfg = {}
-        out = dict(cfg)
-        out["project_directory"] = str(project)
-        out.setdefault("git", False)
-        out.setdefault("git_auto_commit", False)
-        out.setdefault("background_agents_enabled", False)
-        return out
+        return _force_test_safe_config(cfg, str(project))
 
     monkeypatch.setattr(core_config, "get_config", _isolated_get_config)
 
@@ -122,7 +135,9 @@ def mock_minimal_config(monkeypatch, _isolate_prizmforge_workspace):
     Minimal valid configuration pointed at the isolated temp project.
 
     No shared /tmp/test_project — each test gets its own directory under
-    the autouse workspace.
+    the autouse workspace. background_agents is always empty so pool.start()
+    cannot launch live LLM workers unless a test explicitly re-enables them
+    and patches call_agent.
     """
     from core import config as core_config
 
@@ -134,6 +149,8 @@ def mock_minimal_config(monkeypatch, _isolate_prizmforge_workspace):
         "git": False,
         "git_auto_commit": False,
         "background_agents_enabled": False,
+        "background_agents": {},
+        "background_feeder": {},
         "default_endpoint": "mock",
         "endpoints": {
             "mock": {
