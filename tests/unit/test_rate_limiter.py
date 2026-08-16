@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections import deque
 from unittest.mock import patch
 
 from core.rate_limiter import RateLimiter
@@ -66,52 +67,46 @@ def test_set_max_calls():
 def test_global_limit_triggers_sleep_with_mocked_time():
     """When the window is full, wait_if_needed must sleep then record the call."""
     limiter = RateLimiter(max_calls_per_minute=2)
-    # Seed two calls at t=1000
     limiter.calls.append(1000.0)
     limiter.calls.append(1000.5)
 
     sleeps: list[float] = []
+    # Sequence: decide-to-sleep reads (1010), after sleep jump past window (1061)
+    times = iter([1010.0, 1010.0, 1010.0, 1061.0, 1061.0, 1061.0, 1061.0])
+
+    def fake_time():
+        try:
+            return next(times)
+        except StopIteration:
+            return 1061.0
 
     def fake_sleep(seconds: float):
         sleeps.append(seconds)
 
-    # Now is only 10s later → both calls still in the 60s window
-    with patch("core.rate_limiter.time.time", return_value=1010.0):
+    with patch("core.rate_limiter.time.time", side_effect=fake_time):
         with patch("core.rate_limiter.time.sleep", side_effect=fake_sleep):
-            # After sleep, advance time so the next loop iteration succeeds
-            call_count = {"n": 0}
-
-            def advancing_time():
-                call_count["n"] += 1
-                # First few reads while deciding to sleep stay at 1010;
-                # after sleep, jump past the window so the append succeeds.
-                if sleeps:
-                    return 1061.0
-                return 1010.0
-
-            with patch("core.rate_limiter.time.time", side_effect=advancing_time):
-                limiter.wait_if_needed()
+            limiter.wait_if_needed()
 
     assert len(sleeps) >= 1
     assert sleeps[0] > 0
-    # Call was recorded after the wait
+    # Two old + one new
     assert len(limiter.calls) == 3
 
 
 def test_old_calls_evicted_from_window():
     """Calls older than 60s must be dropped before counting."""
     limiter = RateLimiter(max_calls_per_minute=2)
-    limiter.calls.append(1000.0)  # will be >60s old
+    limiter.calls.append(1000.0)
     limiter.calls.append(1000.5)
 
-    with patch("core.rate_limiter.time.time", return_value=1070.0):  # +70s
+    with patch("core.rate_limiter.time.time", return_value=1070.0):
         with patch("core.rate_limiter.time.sleep") as slept:
             limiter.wait_if_needed()
             slept.assert_not_called()
 
-    # Old entries popped; only the new call remains (or new + any still in window)
-    assert len(limiter.calls) >= 1
-    assert all(t >= 1010.0 for t in limiter.calls)
+    # Both old entries popped; only the new call at 1070 remains
+    assert len(limiter.calls) == 1
+    assert limiter.calls[0] == 1070.0
 
 
 def test_per_endpoint_uses_config_limit(monkeypatch):
@@ -129,24 +124,25 @@ def test_per_endpoint_uses_config_limit(monkeypatch):
     )
 
     limiter = RateLimiter(max_calls_per_minute=1000)
-    limiter.endpoint_calls["slow"] = __import__("collections").deque([1000.0])
+    limiter.endpoint_calls["slow"] = deque([1000.0])
 
     sleeps: list[float] = []
+    times = iter([1010.0, 1010.0, 1010.0, 1061.0, 1061.0, 1061.0, 1061.0])
+
+    def fake_time():
+        try:
+            return next(times)
+        except StopIteration:
+            return 1061.0
 
     def fake_sleep(s: float):
         sleeps.append(s)
 
-    call_n = {"n": 0}
-
-    def advancing_time():
-        call_n["n"] += 1
-        if sleeps:
-            return 1061.0
-        return 1010.0
-
-    with patch("core.rate_limiter.time.time", side_effect=advancing_time):
+    with patch("core.rate_limiter.time.time", side_effect=fake_time):
         with patch("core.rate_limiter.time.sleep", side_effect=fake_sleep):
             limiter.wait_if_needed("slow")
 
     assert len(sleeps) >= 1
-    assert len(limiter.endpoint_calls["slow"]) >= 1
+    assert sleeps[0] > 0
+    # Old + new
+    assert len(limiter.endpoint_calls["slow"]) == 2

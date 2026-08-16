@@ -56,6 +56,7 @@ def test_full_replace_rejects_blank():
 def test_rationale_auto_expand_when_short():
     op = DeleteLines(start_line_guid="g1", rationale="short")
     assert len(op.rationale) >= 10
+    assert "applied as specified" in op.rationale
 
 
 def test_rationale_rejects_too_long():
@@ -125,4 +126,5 @@ def test_edit_payload_auto_rationale_on_ops():
         "operations": [{"type": "delete_lines", "start_line_guid": "g1"}],
     }
     payload = EditPayload.model_validate(data)
-    assert payload.operations[0].rationale  # auto-filled
+    # Auto-fill must produce a concrete default, not empty/None
+    assert payload.operations[0].rationale == "Remove lines"

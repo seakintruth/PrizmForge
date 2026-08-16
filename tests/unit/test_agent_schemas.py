@@ -150,6 +150,7 @@ def test_list_agents_sorted():
     assert agents == sorted(agents)
     assert "orchestrator" in agents
     assert "jr_reviewer" in agents
+    assert len(agents) == len(AGENT_SCHEMAS)
 
 
 def test_get_agents_by_table():
@@ -188,7 +189,8 @@ def test_build_prompt_schema_orchestrator_no_array():
 def test_build_prompt_schema_optional_fields_comment():
     schema = AGENT_SCHEMAS["jr_reviewer"]  # has optional overall_status
     text = schema.build_prompt_schema(["MEDIUM"], ["other"])
-    assert "Optional fields" in text or "overall_status" in text
+    assert "Optional fields" in text
+    assert "overall_status" in text
 
 
 # ---------------------------------------------------------------------------

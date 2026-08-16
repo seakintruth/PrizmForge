@@ -50,12 +50,6 @@ class TestGetAffectedGuids:
 
 
 class TestCreateProposal:
-    def test_create_proposal_function_exists(self):
-        assert callable(create_proposal_from_developer_output)
-
-    def test_update_proposal_status_function_exists(self):
-        assert callable(update_proposal_status)
-
     def test_create_find_replace_persists_task_id(self, temp_db):
         payload = {
             "target_file_path": "demo/task.py",
@@ -125,7 +119,22 @@ class TestCreateProposal:
         assert result["status"] == "success"
         assert result["fallback_used"] is True
         assert result["final_mode"] == "find_replace"
-        assert "fallback_from=guid" in (result.get("message") or "") or result["selected_mode"] == "guid"
+        assert result["selected_mode"] == "guid"
+
+        # Mode tag is embedded in the persisted rationale for auditability
+        from file_editing.db import get_db_connection
+
+        with get_db_connection() as conn:
+            row = conn.execute(
+                "SELECT rationale, fallback_used, final_mode FROM edit_proposals WHERE proposal_id = ?",
+                (result["proposal_id"],),
+            ).fetchone()
+            assert row is not None
+            rationale = row[0] or ""
+            assert "fallback_from=guid" in rationale
+            assert "mode=find_replace" in rationale or "mode=guid" in rationale
+            assert int(row[1]) == 1
+            assert row[2] == "find_replace"
 
     def test_invalid_payload_returns_error(self, temp_db):
         result = create_proposal_from_developer_output(
@@ -135,6 +144,7 @@ class TestCreateProposal:
         )
         assert result["status"] == "error"
         assert "message" in result
+        assert result["message"]  # non-empty error text
 
     def test_update_status_approve(self, temp_db):
         payload = {
@@ -167,3 +177,31 @@ class TestCreateProposal:
 
     def test_update_status_rejects_unknown(self, temp_db):
         assert update_proposal_status("no-such", "not_a_real_status") is False
+
+    def test_update_status_without_reviewer(self, temp_db):
+        payload = {
+            "target_file_path": "demo/nr.py",
+            "summary": "no reviewer id",
+            "rationale": "Status update without reviewed_by_agent_id",
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "x",
+                    "replace": "y",
+                    "rationale": "swap",
+                }
+            ],
+        }
+        created = create_proposal_from_developer_output(payload, 1, "demo/nr.py")
+        assert created["status"] == "success"
+        ok = update_proposal_status(created["proposal_id"], "under_review")
+        assert ok is True
+
+        from file_editing.db import get_db_connection
+
+        with get_db_connection() as conn:
+            row = conn.execute(
+                "SELECT status FROM edit_proposals WHERE proposal_id = ?",
+                (created["proposal_id"],),
+            ).fetchone()
+            assert row[0] == "under_review"

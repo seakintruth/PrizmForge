@@ -61,6 +61,7 @@ def test_parse_plain_array_as_object_wrapper_not_forced():
     r = p.parse('[{"type": "find_replace"}]')
     assert r.success is True
     assert isinstance(r.data, list)
+    assert r.data[0]["type"] == "find_replace"
 
 
 def test_extract_markdown_json_fence():
@@ -88,12 +89,12 @@ def test_extract_generic_markdown_fence_with_json():
 
 def test_extract_generic_markdown_fence_ignores_non_json():
     p = JSONParser()
-    # Fence contains prose — should fall through to brace extraction of nothing useful
     raw = """```
 This is not JSON at all
 ```"""
     r = p.parse(raw)
     assert r.success is False
+    assert r.status == ParseStatus.MALFORMED
 
 
 def test_extract_brace_bounded_with_preamble():
@@ -131,11 +132,9 @@ def test_malformed_unclosed_object_is_truncated_or_malformed():
 
 def test_truncated_unclosed_braces_detected():
     p = JSONParser()
-    # Intentionally incomplete — more opens than closes
     raw = '{"a": 1, "b": {"c": 2'
     r = p.parse(raw)
     assert r.success is False
-    # Either TRUNCATED (looks_truncated) or MALFORMED after failed parse
     assert r.status in (ParseStatus.TRUNCATED, ParseStatus.MALFORMED)
 
 
@@ -194,7 +193,7 @@ def test_build_resume_prompt_contains_context():
     prompt = p.build_resume_prompt(partial, "Please produce an edit payload")
     assert "truncated" in prompt.lower()
     assert "continue" in prompt.lower()
-    assert "main.py" in prompt or "action" in prompt
+    assert "main.py" in prompt
 
 
 def test_build_resume_prompt_short_partial():
@@ -242,18 +241,19 @@ def test_parse_json_response_empty_returns_none():
 
 
 def test_parse_json_response_with_auto_resume_success():
+    """Truncated JSON + auto_resume callback must merge and return parsed data."""
+    # Ends mid-value so _looks_truncated is True and can_resume fires
     partial = '{"status": "ok", "msg":'
     continuation = ' "done"}'
 
     def resume_cb(prompt: str) -> str:
+        assert "truncated" in prompt.lower() or "continue" in prompt.lower()
         return continuation
 
-    # Without resume this would fail; with resume it should merge
     result = parse_json_response(partial, auto_resume=resume_cb, agent_name="test")
-    # Depending on truncation detection, either succeeds via resume or returns None
-    if result is not None:
-        assert result.get("status") == "ok"
-        assert result.get("msg") == "done"
+    assert result is not None, "auto_resume must produce a successful parse"
+    assert result["status"] == "ok"
+    assert result["msg"] == "done"
 
 
 def test_parse_json_response_surrounding_text():
@@ -262,4 +262,5 @@ def test_parse_json_response_surrounding_text():
 Please review."""
     result = parse_json_response(raw)
     assert result is not None
-    assert result.get("status") == "ok"
+    assert result["status"] == "ok"
+    assert result["message"] == "done"

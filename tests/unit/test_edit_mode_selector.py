@@ -68,7 +68,8 @@ def test_custom_fallback_order_filters_unknown():
         instructions="large redesign of the module",
         fallback_order=["bogus", MODE_FIND_REPLACE, MODE_GUID],
     )
-    assert MODE_GUID in d.fallback_chain or MODE_FIND_REPLACE in d.fallback_chain
+    # Unknown modes stripped; order of remaining known modes preserved
+    assert d.fallback_chain == [MODE_FIND_REPLACE, MODE_GUID]
     assert "bogus" not in d.fallback_chain
 
 
@@ -106,10 +107,11 @@ def test_build_prompt_find_replace_contains_operations():
 def test_build_prompt_diff_mentions_unified():
     text = build_developer_edit_prompt(MODE_DIFF, "patch", ["line"])
     assert "PLANNED DIFF" in text
-    assert "unified" in text.lower() or "diff" in text.lower()
+    assert "unified diff" in text.lower()
 
 
 def test_build_prompt_guid_default():
     text = build_developer_edit_prompt(MODE_GUID, "edit", ["guid-1 | code"])
-    assert "GUID" in text or "line_guid" in text.lower()
+    assert "GUID SLOC" in text or "line_guid" in text.lower()
     assert "START YOUR JSON OUTPUT NOW" in text
+    assert "guid-1 | code" in text  # file content is injected

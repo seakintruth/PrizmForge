@@ -49,9 +49,8 @@ def test_code_block_with_language_tag_stripped():
     # Non-json language tag on first line should be dropped when content is JSON
     raw = '```python\n{"value": 42}\n```'
     r = p.parse(raw)
-    # Either succeeds via code-block strategy after stripping tag, or via raw slice
     assert r.success is True
-    assert r.data.get("value") == 42 or r.data.get("_value") is not None
+    assert r.data["value"] == 42
 
 
 def test_raw_brace_slice_with_preamble():
@@ -72,6 +71,7 @@ def test_raw_array_slice():
     assert "_value" in r.data
     assert isinstance(r.data["_value"], list)
     assert r.data["_value"][0]["id"] == 1
+    assert r.data["_value"][1]["id"] == 2
 
 
 def test_no_json_is_malformed():
@@ -92,11 +92,10 @@ def test_invalid_json_inside_fences():
 def test_prefers_earliest_structure():
     """When both object and array appear, earliest start wins."""
     p = ResponseParser()
-    # Object starts before array
     raw = '{"a": 1} and also [2, 3]'
     r = p.parse(raw)
     assert r.success is True
-    assert r.data.get("a") == 1
+    assert r.data["a"] == 1
 
 
 def test_truncated_object_fails():
