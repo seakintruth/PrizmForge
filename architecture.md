@@ -211,7 +211,7 @@ Source code is stored line-by-line in the `file_lines` table:
 - Hashes are validated before applying changes.
 - After a successful materialization, any other pending proposals that touched the same lines are automatically invalidated.
 
-**✅ Next Batch – Updated Sections**
+**✅ Next Batch - Updated Sections**
 
 Here are the next three sections written in a technical deep-dive style, updated to reflect the current governed editing architecture.
 
@@ -544,7 +544,7 @@ When a proposal is successfully materialized via `materialize_proposal()`:
 
 The orchestrator can explicitly trigger background analysis by returning `next_agent = "background"`. This causes:
 - `force_review_cycle(file_limit=12)` to be called.
-- Temporary disabling of resource throttling for ~30–45 seconds.
+- Temporary disabling of resource throttling for ~30-45 seconds.
 - Both recently modified and randomly selected files to be queued for review.
 
 #### Supported Background Agents
@@ -617,7 +617,7 @@ It **never** touches:
 
 #### Archival Process
 
-The worker runs on a schedule (typically every 5–10 minutes). When triggered:
+The worker runs on a schedule (typically every 5-10 minutes). When triggered:
 
 1. It identifies old, already-read messages older than a configured threshold.
 2. It batches a sufficient number of messages for meaningful compression.
@@ -805,8 +805,8 @@ The controller uses a heuristic model with four operating levels:
 | Level       | Budget Remaining | Behavior |
 |-------------|------------------|----------|
 | `NORMAL`    | > 50%            | All agents active at full capacity |
-| `MODERATE`  | 20–50%           | Top background agents only + some model downgrades |
-| `AGGRESSIVE`| 5–20%            | Only highest-value background agents + stronger throttling |
+| `MODERATE`  | 20-50%           | Top background agents only + some model downgrades |
+| `AGGRESSIVE`| 5-20%            | Only highest-value background agents + stronger throttling |
 | `CRITICAL`  | < 5%             | Only `prioritizer` runs; aggressive model downgrades |
 
 #### Key Features

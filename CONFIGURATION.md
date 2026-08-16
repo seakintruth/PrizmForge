@@ -164,7 +164,7 @@ Map of agent name → model id string. Typical agents:
 | `enabled` | bool | |
 | `check_interval_seconds` | number | |
 | `max_tokens_per_day` | int | |
-| `aggressive_throttling_threshold` | number | 0–1 budget fraction |
+| `aggressive_throttling_threshold` | number | 0-1 budget fraction |
 | `project_goals` | object | Human-owned goals (treat as immutable for agents) |
 
 ### `resource_controller.project_goals`

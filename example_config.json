@@ -15,7 +15,7 @@
       "unattended"
     ],
     "unattended": {
-      "max_duration_hours": 5.5,
+      "max_duration_hours": 1.5,
       "auto_continue": true,
       "checkpoint_interval_minutes": 15,
       "max_iterations_per_task": 50,

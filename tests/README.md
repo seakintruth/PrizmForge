@@ -166,7 +166,7 @@ and contract/snapshot checks. Coverage is a **signal**, not the definition of qu
 
 Prioritized for multi-agent, governed edits, config-only unattended, Advana limits:
 
-1. **Double-loop TDD (preferred)** — Outer: failing acceptance/integration test for a workflow outcome (e.g. seed task materializes files under `test_mode`, MSI `full_replace` rejected, unattended preflight exit). Inner: classic red–green–refactor on pure modules (`content_safety`, `symbol_index`, preflight, mode selection).
+1. **Double-loop TDD (preferred)** — Outer: failing acceptance/integration test for a workflow outcome (e.g. seed task materializes files under `test_mode`, MSI `full_replace` rejected, unattended preflight exit). Inner: classic red-green-refactor on pure modules (`content_safety`, `symbol_index`, preflight, mode selection).
 2. **Classic TDD (inner loop)** — For **new** pure logic only; less natural for the whole task-runner until thinner.
 3. **Integration-first outer tests** — Treat edit pipeline + orchestrator decisions as the product API; write those tests before changing mutation/reviewer/materialize behavior.
 4. **API / contract TDD** — Orchestrator JSON, developer `EditPayload`, reviewer decision, MockLLM queues are the “service API.”
