@@ -10,11 +10,10 @@ Isolation rules:
   Tests that intentionally exercise the pool must opt in and use MockLLM.
 
 Duration tracking:
-- Each call-phase report is appended to a session list (nodeid, duration,
-  outcome, markers).
+- Call-phase reports are recorded via pytest_runtest_logreport (works on
+  the xdist master, not only on workers).
 - On session finish a JSON file is written under the *repo* reports dir
-  (not the isolated temp workspace) so batched runs and CI can analyze
-  slow vs normal classification. Override path with PRIZMFORGE_DURATION_REPORT.
+  (not the isolated temp workspace). Override with PRIZMFORGE_DURATION_REPORT.
 """
 
 from __future__ import annotations
@@ -80,7 +79,7 @@ def _patch_get_config_everywhere(monkeypatch, getter) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _duration_report_path(config) -> Path:
+def _duration_report_path() -> Path:
     """Resolve where to write the duration JSON (repo reports, not temp ws)."""
     env = os.environ.get("PRIZMFORGE_DURATION_REPORT", "").strip()
     if env:
@@ -94,36 +93,57 @@ def _duration_report_path(config) -> Path:
 
 
 def pytest_configure(config) -> None:
-    config._prizmforge_duration_records = []
+    # Only collect on the controller / non-xdist process.
+    worker = getattr(config, "workerinput", None)
+    config._prizmforge_duration_records = [] if worker is None else None
 
 
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):
-    outcome = yield
-    report = outcome.get_result()
+def pytest_runtest_logreport(report) -> None:
+    """Record call-phase durations on the master (xdist-safe)."""
     if report.when != "call":
         return
-    records = getattr(item.config, "_prizmforge_duration_records", None)
+    # Access config via the report's location is awkward; use the global
+    # pytest config from the current session when available.
+    config = getattr(pytest_runtest_logreport, "_config", None)
+    if config is None:
+        return
+    records = getattr(config, "_prizmforge_duration_records", None)
     if records is None:
         return
-    markers = sorted({m.name for m in item.iter_markers()})
+    # Markers are not always on the report under xdist; parse nodeid keywords
+    # is unreliable. Prefer report.keywords (pytest sets marker names True).
+    keywords = getattr(report, "keywords", {}) or {}
+    markers = sorted(
+        name
+        for name, val in keywords.items()
+        if val is True and name not in {"", report.outcome}
+        and not name.startswith("test_")
+        and name not in {"pytestmark", "parametrize"}
+    )
+    # Explicit slow check is what the analyzer cares about most.
+    is_slow = bool(keywords.get("slow")) or "slow" in markers
     records.append(
         {
             "nodeid": report.nodeid,
             "duration_s": round(float(report.duration), 4),
             "outcome": report.outcome,
             "markers": markers,
-            "slow": "slow" in markers,
-            "file": str(getattr(item, "fspath", "") or ""),
+            "slow": is_slow,
+            "file": report.nodeid.split("::", 1)[0],
         }
     )
+
+
+def pytest_sessionstart(session) -> None:
+    # Stash config so logreport can find the record list without item.
+    pytest_runtest_logreport._config = session.config  # type: ignore[attr-defined]
 
 
 def pytest_sessionfinish(session, exitstatus) -> None:
     records = getattr(session.config, "_prizmforge_duration_records", None)
     if not records:
         return
-    path = _duration_report_path(session.config)
+    path = _duration_report_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
@@ -134,15 +154,13 @@ def pytest_sessionfinish(session, exitstatus) -> None:
             "tests": sorted(records, key=lambda r: r["duration_s"], reverse=True),
         }
         path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        # Keep a stable "latest" pointer for the analyzer default path.
+
         latest = path.parent / "test-durations-latest.json"
-        # Merge into latest if it already exists from an earlier batch this run.
         merged_tests = list(payload["tests"])
         if latest.exists():
             try:
                 prev = json.loads(latest.read_text(encoding="utf-8"))
                 if isinstance(prev, dict) and isinstance(prev.get("tests"), list):
-                    # Prefer newer record for same nodeid (last batch wins).
                     by_id = {t["nodeid"]: t for t in prev["tests"] if "nodeid" in t}
                     for t in merged_tests:
                         by_id[t["nodeid"]] = t
@@ -166,8 +184,8 @@ def pytest_sessionfinish(session, exitstatus) -> None:
             + "\n",
             encoding="utf-8",
         )
+        print(f"    duration report: {path}")
     except OSError as e:
-        # Duration reporting must never fail the suite.
         print(f"    ⚠️  duration report write failed: {e}")
 
 
