@@ -7,8 +7,8 @@ import pytest
 
 from main import main
 
-# Runs main() in a thread against process globals → serial only (not duration-slow).
-pytestmark = pytest.mark.serial
+# Runs main() in a thread against process globals; duration report 6.2s.
+pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
 
 def test_unattended_run_with_mock_using_repo_root(tmp_path, mock_openai_chat, monkeypatch):
