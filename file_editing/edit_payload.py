@@ -4,6 +4,22 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
 
+def _validate_target_path(path: str | None, *, field_name: str = "target_file_path") -> str:
+    """Require a clean relative path (no markdown decoration or traversal)."""
+    from workflow.path_targets import sanitize_path_token
+
+    if not isinstance(path, str):
+        raise ValueError(f"{field_name} must be a string")
+    cleaned = sanitize_path_token(path)
+    if not cleaned:
+        raise ValueError(f"{field_name} is not a valid relative path: {path!r}")
+    # Reject if decoration changed the path meaning without producing a clean form match
+    # sanitize already stripped wrappers; require the cleaned form is the canonical one
+    if cleaned != sanitize_path_token(cleaned):
+        raise ValueError(f"{field_name} is not a valid relative path: {path!r}")
+    return cleaned
+
+
 # kw_only=True on all dataclasses to fix inheritance ordering issues
 @dataclass(kw_only=True)
 class BaseOperation:
@@ -22,6 +38,9 @@ class BaseOperation:
 
         if len(self.rationale) > 500:
             raise ValueError(f"rationale must be <= 500 characters (got {len(self.rationale)})")
+
+        if self.target_file_path is not None:
+            self.target_file_path = _validate_target_path(self.target_file_path)
 
 
 @dataclass(kw_only=True)
@@ -80,6 +99,7 @@ class CreateFile(BaseOperation):
 
     def __post_init__(self):
         super().__post_init__()
+        self.target_file_path = _validate_target_path(self.target_file_path)
         if isinstance(self.initial_content, str):
             self.initial_content = [self.initial_content]
 
@@ -149,8 +169,7 @@ class EditPayload:
     rationale: str
 
     def __post_init__(self):
-        if not isinstance(self.target_file_path, str):
-            raise ValueError("target_file_path must be a string")
+        self.target_file_path = _validate_target_path(self.target_file_path)
         if not isinstance(self.summary, str) or len(self.summary) < 5:
             raise ValueError("summary must be a string of at least 5 characters")
         if not isinstance(self.rationale, str) or len(self.rationale) < 10:
