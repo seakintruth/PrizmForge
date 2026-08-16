@@ -3,6 +3,11 @@
 # Test suite runner for PrizmForge
 # Supports quick / normal / full / slow, optional sequential batching for
 # memory-safe full runs on ~16GB hosts.
+#
+# Duration tracking: every pytest invocation writes
+#   .PrizmForge/reports/test-durations-<batch>-<stamp>.json
+# and merges into test-durations-latest.json. Analyze with:
+#   python utils/analyze_test_durations.py
 
 set -euo pipefail
 
@@ -46,6 +51,7 @@ BATCHED=0               # 0 = single pytest invocation; 1 = sequential batches
 BATCH_FILTER=""         # optional: run only this batch name when BATCHED=1
 PER_TEST_TIMEOUT=30     # seconds; requires pytest-timeout
 REPORT_DIR=".PrizmForge/reports"
+DURATIONS_N=50          # pytest --durations=N (0 = all)
 
 # Heavy files: own batch, always serial (-j 1) to avoid SQLite / fixture OOM
 HEAVY_TARGETS=(
@@ -96,6 +102,11 @@ Under --full --batched:
 Each batch writes:
   ${REPORT_DIR}/pytest-batch-<name>-<timestamp>.log
   ${REPORT_DIR}/pytest-full-summary-<timestamp>.txt  (append summary lines)
+  ${REPORT_DIR}/test-durations-<name>-<timestamp>.json
+  ${REPORT_DIR}/test-durations-latest.json           (merged across batches)
+
+After a run, rebalance slow markers with:
+  ${PYTHON_EXEC:-python3} utils/analyze_test_durations.py
 
 Failed batches do not stop later batches; final exit code is non-zero if any
 batch failed.
@@ -104,8 +115,9 @@ Examples:
   # Quick gate (uses .venv automatically after ./utils/setup.sh)
   $0
 
-  # Memory-safe full suite
+  # Memory-safe full suite + duration analysis
   $0 --full --batched -j 2
+  python utils/analyze_test_durations.py
 
   # Override interpreter
   $0 -p /usr/bin/python3.12 --normal
@@ -181,6 +193,10 @@ fi
 mkdir -p "$REPORT_DIR"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 SUMMARY_FILE="${REPORT_DIR}/pytest-full-summary-${STAMP}.txt"
+export PRIZMFORGE_REPORT_STAMP="$STAMP"
+
+# Fresh merge baseline for this run so "latest" only includes this stamp's batches
+rm -f "${REPORT_DIR}/test-durations-latest.json"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -213,6 +229,7 @@ run_pytest_once() {
   local targets=("$@")
 
   local log_file="${REPORT_DIR}/pytest-batch-${batch_name}-${STAMP}.log"
+  local duration_file="${REPORT_DIR}/test-durations-${batch_name}-${STAMP}.json"
   local xdist=()
   if [[ "$jobs" != "1" ]]; then
     xdist=(-n "$jobs" --dist loadfile)
@@ -227,15 +244,20 @@ run_pytest_once() {
   echo "============================================================"
   echo "BATCH: ${batch_name}  jobs=${jobs}  targets=${targets[*]}"
   echo "LOG:   ${log_file}"
+  echo "DUR:   ${duration_file}"
   echo "============================================================"
 
   local start_ts end_ts rc duration
   start_ts="$(date +%s)"
   set +e
+  PRIZMFORGE_BATCH_NAME="$batch_name" \
+  PRIZMFORGE_DURATION_REPORT="$duration_file" \
+  PRIZMFORGE_REPORT_STAMP="$STAMP" \
   "$PYTHON_EXEC" -m pytest \
     "${targets[@]}" \
     "${xdist[@]}" \
     "${timeout_args[@]}" \
+    --durations="$DURATIONS_N" \
     -q --tb=line \
     "${PYTEST_EXTRA_ARGS[@]}" \
     2>&1 | tee "$log_file"
@@ -253,6 +275,7 @@ run_pytest_once() {
   {
     echo "[${STAMP}] batch=${batch_name} status=${status} exit=${rc} duration_s=${duration} jobs=${jobs}"
     echo "  log=${log_file}"
+    echo "  durations=${duration_file}"
     echo "  targets=${targets[*]}"
     [[ -n "$pytest_line" ]] && echo "  result=${pytest_line}"
   } | tee -a "$SUMMARY_FILE"
@@ -300,18 +323,26 @@ run_single_invocation() {
   fi
 
   local log_file="${REPORT_DIR}/pytest-${TEST_MODE}-${STAMP}.log"
+  local duration_file="${REPORT_DIR}/test-durations-${TEST_MODE}-${STAMP}.json"
   echo "Running mode=${TEST_MODE} jobs=${jobs} python=${PYTHON_EXEC} log=${log_file}"
   set +e
+  PRIZMFORGE_BATCH_NAME="$TEST_MODE" \
+  PRIZMFORGE_DURATION_REPORT="$duration_file" \
+  PRIZMFORGE_REPORT_STAMP="$STAMP" \
   "$PYTHON_EXEC" -m pytest \
     "${targets[@]}" \
     "${xdist[@]}" \
     "${timeout_args[@]}" \
+    --durations="$DURATIONS_N" \
     -q --tb=line \
     "${PYTEST_EXTRA_ARGS[@]}" \
     2>&1 | tee "$log_file"
   local rc="${PIPESTATUS[0]}"
   set -e
-  echo "exit=${rc} log=${log_file}" | tee -a "$SUMMARY_FILE"
+  {
+    echo "exit=${rc} log=${log_file}"
+    echo "durations=${duration_file}"
+  } | tee -a "$SUMMARY_FILE"
   return "$rc"
 }
 
@@ -429,6 +460,8 @@ run_batched() {
   echo "============================================================"
   echo "Batched run complete. overall_exit=${overall_rc}"
   echo "Summary: ${SUMMARY_FILE}"
+  echo "Durations: ${REPORT_DIR}/test-durations-latest.json"
+  echo "Analyze:   $PYTHON_EXEC utils/analyze_test_durations.py"
   echo "============================================================"
   return "$overall_rc"
 }
@@ -441,5 +474,7 @@ if [[ "$BATCHED" -eq 1 ]]; then
   exit $?
 else
   run_single_invocation
+  echo "Durations: ${REPORT_DIR}/test-durations-latest.json"
+  echo "Analyze:   $PYTHON_EXEC utils/analyze_test_durations.py"
   exit $?
 fi
