@@ -89,8 +89,9 @@ def test_global_limit_triggers_sleep_with_mocked_time():
 
     assert len(sleeps) >= 1
     assert sleeps[0] > 0
-    # Two old + one new
-    assert len(limiter.calls) == 3
+    # After the time jump past the 60s window the two old entries are evicted;
+    # only the newly recorded call remains.
+    assert len(limiter.calls) == 1
 
 
 def test_old_calls_evicted_from_window():
@@ -144,5 +145,6 @@ def test_per_endpoint_uses_config_limit(monkeypatch):
 
     assert len(sleeps) >= 1
     assert sleeps[0] > 0
-    # Old + new
-    assert len(limiter.endpoint_calls["slow"]) == 2
+    # After the time jump past the 60s window the old entry is evicted;
+    # only the newly recorded call remains.
+    assert len(limiter.endpoint_calls["slow"]) == 1
