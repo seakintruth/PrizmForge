@@ -15,7 +15,6 @@ from core.config import (
     validate_config,
 )
 
-
 # ---------------------------------------------------------------------------
 # normalize_path
 # ---------------------------------------------------------------------------
@@ -110,9 +109,7 @@ def test_get_repo_root_from_config_location(tmp_path, monkeypatch):
 
 def test_ensure_project_directory_creates(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.json").write_text(
-        json.dumps({"project_directory": "./my_proj"})
-    )
+    (tmp_path / "config.json").write_text(json.dumps({"project_directory": "./my_proj"}))
     # Patch get_config to avoid full load_config side effects
     from core import config as cfg_mod
 
