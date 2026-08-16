@@ -4,7 +4,6 @@ import queue
 import random
 import sqlite3
 import threading
-import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
