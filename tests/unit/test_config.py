@@ -49,11 +49,19 @@ def test_normalize_path_home_expand(monkeypatch, tmp_path):
 
 
 def test_normalize_path_mixed_slashes(tmp_path, monkeypatch):
+    """On Windows backslash is a separator; on POSIX it is a literal character.
+    Path() already normalizes forward slashes on every platform."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "b").mkdir()
-    result = normalize_path("a\\b")  # backslash on Unix still works via Path
+    # Forward slash works everywhere
+    result = normalize_path("a/b")
     assert result == (tmp_path / "a" / "b").resolve()
+    # Backslash: on Windows it separates; on POSIX it is part of the name
+    import os
+    if os.name == "nt":
+        result_bs = normalize_path("a\\b")
+        assert result_bs == (tmp_path / "a" / "b").resolve()
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +100,12 @@ def test_find_config_file_defaults_to_cwd_when_missing(tmp_path, monkeypatch):
 
 
 def test_get_repo_root_falls_back_to_cwd(tmp_path, monkeypatch):
+    """When find_config_file cannot locate config.json, get_repo_root returns cwd."""
     monkeypatch.chdir(tmp_path)
-    # No config.json in search path → cwd
+    from core import config as cfg_mod
+
+    # Force the search path to miss so we exercise the cwd fallback
+    monkeypatch.setattr(cfg_mod, "find_config_file", lambda name: tmp_path / name)
     root = get_repo_root()
     assert root == tmp_path.resolve()
 
