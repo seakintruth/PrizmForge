@@ -200,7 +200,7 @@ class TestDeveloperSchemaFile:
 
 # ---------------------------------------------------------------------------
 # Apply contracts (DB) for implemented ops
-# Duration-measured ~0.03–0.04s each — not a slow gate.
+# Duration-measured ~0.03-0.04s each — not a slow gate.
 # ---------------------------------------------------------------------------
 
 
