@@ -83,7 +83,7 @@ class TestPoolLifecycle:
         pool = BackgroundAgentPool()
         pool.force_review_cycle(file_limit=2)
         out = capsys.readouterr().out.lower()
-        assert "not running" in out or "⚠️" in out or True  # soft
+        assert "not running" in out or True  # soft
 
 
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
@@ -121,8 +121,11 @@ class TestActiveAgentControl:
         pool.start(task_id="ctrl3")
         try:
             pool.set_feeder_interval(45)
+            # base must update too — adaptive feeder overwrites from base
+            assert pool.base_feeder_interval == 45
             assert pool.feeder_interval == 45
             pool.set_feeder_interval(15)
+            assert pool.base_feeder_interval == 15
             assert pool.feeder_interval == 15
         finally:
             pool.stop()
@@ -156,7 +159,6 @@ class TestHeuristicOptimizerDecisions:
         from agents.resource_controller_worker import HeuristicOptimizer, ThrottleDecision
 
         opt = HeuristicOptimizer()
-        # Near-zero remaining budget should produce some throttle decision
         decision = opt.optimize(
             self._state(
                 tokens_remaining=1000,
@@ -165,7 +167,6 @@ class TestHeuristicOptimizerDecisions:
                 current_burn_rate=50000.0,
             )
         )
-        # May be ThrottleDecision or None depending on internals; must not raise
         assert decision is None or isinstance(decision, ThrottleDecision)
 
     def test_update_agent_performance(self, temp_db, mock_minimal_config):
@@ -173,7 +174,6 @@ class TestHeuristicOptimizerDecisions:
 
         opt = HeuristicOptimizer()
         opt.update_agent_performance("jr_reviewer", tokens_used=100, duration=1.5, feedback_generated=2)
-        # profiles should exist after update
         assert "jr_reviewer" in opt.agent_profiles or len(opt.agent_profiles) >= 0
 
 

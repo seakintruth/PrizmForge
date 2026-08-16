@@ -73,7 +73,7 @@ class BackgroundAgentPool:
         self._state_lock = threading.Lock()  # protects running/workers/feeder/filter
         self.active_agents_filter = None  # None = all active
 
-        # ✅ Load agent configurations from config
+        # Load agent configurations from config
         config = get_config()
 
         self.agent_configs = config.get("background_agents", {})
@@ -81,7 +81,7 @@ class BackgroundAgentPool:
         self.feeder_interval = self.feeder_config.get("interval_seconds", 30)
         self.base_feeder_interval = self.feeder_interval  # Store original
 
-        # ✅ Categorize agents by behavior
+        # Categorize agents by behavior
         self.modification_agents = []  # Review on every file change
         self.random_review_agents = []  # Periodic random review
 
@@ -113,7 +113,7 @@ class BackgroundAgentPool:
 
             all_agents = set(self.modification_agents + self.random_review_agents)
             if not all_agents:
-                print("    ⚠️  No background agents enabled")
+                print("    Warning: No background agents enabled")
                 return
 
             with self._queue_lock:
@@ -133,10 +133,8 @@ class BackgroundAgentPool:
                 mod_flag = "on_mod" if config.get("on_modification") else ""
                 random_flag = "random" if config.get("random_review") else ""
                 flags = f"[{mod_flag}+{random_flag}]" if mod_flag and random_flag else f"[{mod_flag or random_flag}]"
-                print(f"    🤖 Started {agent_name} worker {flags}")
+                print(f"    Started {agent_name} worker {flags}")
 
-            # Start support workers outside the critical section is fine once
-            # running=True is visible; they have their own lifecycle.
             self._start_support_workers(task_id)
 
             self._queue_all_files_for_initial_review()
@@ -149,7 +147,7 @@ class BackgroundAgentPool:
                     name="file-feeder",
                 )
                 self.feeder_thread.start()
-                print(f"    🔄 Started continuous file feeder for {len(self.random_review_agents)} agent(s)")
+                print(f"    Started continuous file feeder for {len(self.random_review_agents)} agent(s)")
 
     def _join_workers_unlocked(self, timeout: float = 2.0) -> None:
         """Join feeder + analysis workers. Caller must hold _state_lock."""
@@ -161,7 +159,6 @@ class BackgroundAgentPool:
             worker.join(timeout=timeout)
         self.workers.clear()
 
-        # Drain any leftover events so a restart does not reprocess stale work
         try:
             while True:
                 self.event_queue.get_nowait()
@@ -169,11 +166,7 @@ class BackgroundAgentPool:
             pass
 
     def stop(self):
-        """Stop all workers including feeder and support workers.
-
-        Sets running=False first so worker loops exit, then joins threads and
-        drains the queue. Support workers are stopped after analysis workers.
-        """
+        """Stop all workers including feeder and support workers."""
         from agents.resource_controller_worker import get_resource_controller
 
         with self._state_lock:
@@ -183,7 +176,6 @@ class BackgroundAgentPool:
             self.running = False
             self._join_workers_unlocked(timeout=2.0)
 
-        # Support workers outside state lock (they manage their own threads)
         get_archivist_worker().stop()
         get_prioritizer_worker().stop()
         get_reporter_worker().stop()
@@ -192,7 +184,7 @@ class BackgroundAgentPool:
         with self._queue_lock:
             self.recently_queued.clear()
 
-        print("    🛑 Stopped background workers")
+        print("    Stopped background workers")
 
     def _start_support_workers(self, task_id: str):
         """Start archivist, prioritizer, reporter, resource controller"""
@@ -223,22 +215,21 @@ class BackgroundAgentPool:
             conn.close()
 
             if not all_files:
-                print("    ⚠️  No files found for initial review")
+                print("    No files found for initial review")
                 return
 
             queued_count = 0
 
-            # Queue all files for each agent
             for _agent_name in self.modification_agents + self.random_review_agents:
                 for file_data in all_files:
                     event = self._create_file_event(file_data, "initial_review", priority=3)
                     self.event_queue.put(event)
                     queued_count += 1
 
-            print(f"    🔍 Queued {queued_count} files for initial peer review")
+            print(f"    Queued {queued_count} files for initial peer review")
 
         except Exception as e:
-            print(f"    ⚠️  Error queuing files for initial review: {e}")
+            print(f"    Error queuing files for initial review: {e}")
 
     def _queue_modified_files(self):
         """Queue files modified since last review - only to modification_agents"""
@@ -248,7 +239,6 @@ class BackgroundAgentPool:
 
             queued_count = 0
 
-            # Only queue to modification_agents
             for agent_name in self.modification_agents:
                 cursor.execute(
                     """
@@ -285,16 +275,15 @@ class BackgroundAgentPool:
             conn.close()
 
             if queued_count > 0:
-                print(f"    🔥 Queued {queued_count} modified file(s) for {len(self.modification_agents)} agent(s)")
+                print(f"    Queued {queued_count} modified file(s) for {len(self.modification_agents)} agent(s)")
 
         except Exception as e:
-            print(f"    ⚠️  Error queuing modified files: {e}")
+            print(f"    Error queuing modified files: {e}")
 
     def _file_feeder_loop(self):
         """Feed random files to agents that want them"""
         while self.running:
             try:
-                # Dynamic interval based on queue size
                 queue_size = self.event_queue.qsize()
                 self._adjust_feeder_interval(queue_size)
 
@@ -303,11 +292,10 @@ class BackgroundAgentPool:
                 if not self.running:
                     break
 
-                # Only feed to random_review_agents
                 self._feed_random_files()
 
             except Exception as e:
-                print(f"    ⚠️  File feeder error: {e}")
+                print(f"    File feeder error: {e}")
                 time.sleep(60)
 
     def _adjust_feeder_interval(self, queue_size: int):
@@ -321,10 +309,9 @@ class BackgroundAgentPool:
                 self.feeder_interval = self.base_feeder_interval * 3
             else:
                 self.feeder_interval = self.base_feeder_interval * 10
-                interval = self.feeder_interval
             interval = self.feeder_interval
         if queue_size > 150:
-            print(f"    ⚠️  Queue backlog: {queue_size} items. Slowing feeder to {interval}s")
+            print(f"    Queue backlog: {queue_size} items. Slowing feeder to {interval}s")
 
     def _feed_random_files(self):
         """Feed random files to agents with random_review=true"""
@@ -347,7 +334,6 @@ class BackgroundAgentPool:
             if not all_files:
                 return
 
-            # Feed to each random_review agent
             for agent_name in self.random_review_agents:
                 agent_config = self.agent_configs.get(agent_name, {})
                 files_per_cycle = agent_config.get(
@@ -376,10 +362,10 @@ class BackgroundAgentPool:
                         if agent_name in self.recently_queued:
                             self.recently_queued[agent_name].add(file_data[0])
 
-            print(f"    🎲 Fed random files to {len(self.random_review_agents)} agent(s)")
+            print(f"    Fed random files to {len(self.random_review_agents)} agent(s)")
 
         except Exception as e:
-            print(f"    ⚠️  Error feeding random files: {e}")
+            print(f"    Error feeding random files: {e}")
 
     def _create_file_event(self, file_data: tuple, operation: str, priority: int) -> FileChangeEvent:
         """Helper to create file event from database row"""
@@ -451,36 +437,24 @@ class BackgroundAgentPool:
             priority=1,  # HIGHEST priority
         )
 
-        # Only queue to modification_agents
         self.event_queue.put(event)
 
-        # ✅ Use Thread Lock to safely update recently queued
         with self._queue_lock:
             for agent_name in self.modification_agents:
                 if agent_name in self.recently_queued:
                     self.recently_queued[agent_name].add(file_path)
 
-        print(f"    📤 Queued {file_path} for {len(self.modification_agents)} modification agent(s)")
+        print(f"    Queued {file_path} for {len(self.modification_agents)} modification agent(s)")
 
     def _worker_loop(self, agent_name: str):
         """Main worker loop for a FEEDBACK agent"""
         while self.running:
-            # CHECK: Only affects feedback agents in this pool
-            # Support workers run in their own threads, unaffected
-            #
-            # active_agents_filter states:
-            #   None          = no filtering (all run)
-            #   set()         = all paused
-            #   {"agent1"}    = only agent1 runs
-            #
             if self.active_agents_filter is not None:
                 if len(self.active_agents_filter) == 0:
-                    # All FEEDBACK agents paused (support workers still run)
                     time.sleep(5)
                     continue
 
                 if agent_name not in self.active_agents_filter:
-                    # This specific feedback agent paused
                     time.sleep(5)
                     continue
 
@@ -492,8 +466,7 @@ class BackgroundAgentPool:
             if event.content is None:
                 continue
 
-            # ✅ ADD THIS: Small delay before processing to avoid connection storms
-            time.sleep(0.5)  # 500ms between agent calls
+            time.sleep(0.5)
 
             self._process_file(agent_name, event)
 
@@ -534,10 +507,8 @@ class BackgroundAgentPool:
 
             for attempt in range(1, max_attempts + 1):
                 if attempt == 1:
-                    # First try: Normal prompt
                     full_prompt = prompt
                 elif attempt == 2:
-                    # Second try: Add strong JSON enforcement
                     full_prompt = f"""{prompt}
 
     CRITICAL: Your previous response was not valid JSON.
@@ -546,7 +517,6 @@ class BackgroundAgentPool:
 
     Start with {{ and end with }}. Nothing before or after."""
                 else:
-                    # Third try: Ultra-strict prompt
                     full_prompt = """Your previous 2 responses failed JSON validation.
 
     This is your FINAL attempt. Respond with ONLY this structure:
@@ -561,7 +531,7 @@ class BackgroundAgentPool:
     START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
 
                 if attempt > 1:
-                    print(f"    🔄 {agent_name}: Retry {attempt}/{max_attempts} with stricter prompt")
+                    print(f"    {agent_name}: Retry {attempt}/{max_attempts} with stricter prompt")
 
                 response = call_agent(
                     agent_name,
@@ -569,22 +539,19 @@ class BackgroundAgentPool:
                     event.task_id,
                     model_override=model_override,
                     auto_resume=False,
-                )  # Don't auto-resume on retries
+                )
 
                 if not response:
-                    continue  # Try again
+                    continue
 
-                # Clean response
                 cleaned_response = clean_llm_response(response, agent_name)
 
                 if cleaned_response:
-                    # Success!
                     self._parse_and_save_feedback(agent_name, event, cleaned_response)
                     self._update_review_tracking(agent_name, event)
-                    return  # Done
+                    return
 
-            # All attempts failed
-            print(f"    ❌ {agent_name}: Failed after {max_attempts} attempts")
+            print(f"    {agent_name}: Failed after {max_attempts} attempts")
             log_error(
                 "parallel_workers",
                 "json_validation",
@@ -595,7 +562,7 @@ class BackgroundAgentPool:
             )
 
         except Exception as e:
-            print(f"    ⚠️  {agent_name} error on {event.file_path}: {e}")
+            print(f"    {agent_name} error on {event.file_path}: {e}")
             log_error(
                 "parallel_workers",
                 "process_file",
@@ -631,15 +598,15 @@ class BackgroundAgentPool:
             for field_name in array_field_names:
                 if field_name in data and isinstance(data[field_name], list):
                     items = data[field_name]
-                    print(f"    ℹ️  {agent_name}: Found items in '{field_name}' field")
+                    print(f"    {agent_name}: Found items in '{field_name}' field")
                     break
 
             if items is None or len(items) == 0:
                 if any(key in data for key in ["priority", "message", "issue", "finding"]):
                     items = [data]
-                    print(f"    ℹ️  {agent_name}: Treating entire response as single item")
+                    print(f"    {agent_name}: Treating entire response as single item")
                 else:
-                    print(f"    ⚠️  {agent_name}: No actionable items found in response")
+                    print(f"    {agent_name}: No actionable items found in response")
                     return
 
             saved_count = 0
@@ -668,7 +635,6 @@ class BackgroundAgentPool:
 
                 suggestion = item.get("suggestion") or item.get("fix") or item.get("recommendation") or item.get("solution") or ""
 
-                # ✅ REQUIRE: Must have at least a message
                 if not message or len(str(message)) < 10:
                     continue
 
@@ -694,12 +660,12 @@ class BackgroundAgentPool:
                     )
 
             if saved_count > 0:
-                print(f"    ✅ {agent_name} posted {saved_count} feedback item(s)")
+                print(f"    {agent_name} posted {saved_count} feedback item(s)")
             else:
-                print(f"    ℹ️  {agent_name}: Response parsed but no valid items extracted")
+                print(f"    {agent_name}: Response parsed but no valid items extracted")
 
         except Exception as e:
-            print(f"    ⚠️  {agent_name}: Error processing response: {e}")
+            print(f"    {agent_name}: Error processing response: {e}")
 
     def _update_review_tracking(self, agent_name: str, event: FileChangeEvent):
         """Update when this agent last reviewed this file"""
@@ -725,13 +691,19 @@ class BackgroundAgentPool:
             conn.commit()
             conn.close()
         except Exception as e:
-            print(f"    ⚠️  Error updating review tracking: {e}")
+            print(f"    Error updating review tracking: {e}")
 
     def set_feeder_interval(self, interval: int):
-        """Dynamically adjust feeder interval (called by resource controller)."""
+        """Dynamically adjust feeder interval (called by resource controller).
+
+        Updates both the live interval and base_feeder_interval so the
+        adaptive feeder loop (_adjust_feeder_interval) does not immediately
+        overwrite the value from the stale baseline.
+        """
         with self._state_lock:
-            self.feeder_interval = interval
-        print(f"    🎛️  Feeder interval adjusted to {interval}s")
+            self.base_feeder_interval = float(interval)
+            self.feeder_interval = float(interval)
+        print(f"    Feeder interval adjusted to {interval}s")
 
     def set_active_agents(self, active_agents: list[str]):
         """
@@ -751,27 +723,25 @@ class BackgroundAgentPool:
 
         with self._state_lock:
             if not feedback_agents_only:
-                print("    🛑 PAUSING all background feedback agents (backlog too high)")
-                print("    ✅ Support workers (prioritizer, archivist, etc.) still active")
-                self.active_agents_filter = set()  # Empty = no feedback agents
+                print("    PAUSING all background feedback agents (backlog too high)")
+                print("    Support workers (prioritizer, archivist, etc.) still active")
+                self.active_agents_filter = set()
                 return
 
             all_feedback_agents = set(self.modification_agents + self.random_review_agents)
             for agent_name in all_feedback_agents:
                 if agent_name not in feedback_agents_only:
-                    print(f"    🔇 Disabled {agent_name} (backlog management)")
+                    print(f"    Disabled {agent_name} (backlog management)")
             for agent_name in feedback_agents_only:
-                print(f"    🔊 Re-enabled {agent_name}")
+                print(f"    Re-enabled {agent_name}")
 
             self.active_agents_filter = set(feedback_agents_only)
 
     def force_review_cycle(self, file_limit: int = 8):
-        """
-        Force background agents to review files immediately.
-        """
-        print("🔄 Forcing background review cycle...")
+        """Force background agents to review files immediately."""
+        print("Forcing background review cycle...")
         if not self.running:
-            print("    ⚠️  Background agents are not running")
+            print("    Background agents are not running")
             return
         try:
             try:
@@ -779,9 +749,9 @@ class BackgroundAgentPool:
 
                 rc = get_resource_controller()
                 rc.temporarily_disable_throttling(duration_seconds=45)
-                print("    🔓 Resource restrictions temporarily lifted for this cycle")
+                print("    Resource restrictions temporarily lifted for this cycle")
             except Exception as e:
-                print(f"    ⚠️  Exception handled in parallel_workers.py: {e}")
+                print(f"    Exception handled in parallel_workers.py: {e}")
 
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
@@ -813,7 +783,7 @@ class BackgroundAgentPool:
 
             all_files = modified_files + random_files
             if not all_files:
-                print("    ⚠️  No files available to review")
+                print("    No files available to review")
                 return
 
             queued_count = 0
@@ -836,10 +806,10 @@ class BackgroundAgentPool:
                 self.event_queue.put(event)
                 queued_count += 1
 
-            print(f"    ✅ Queued {queued_count} files for forced review by background agents")
-            print("    📤 Background agents will now analyze and post suggestions to the message bus")
+            print(f"    Queued {queued_count} files for forced review by background agents")
+            print("    Background agents will now analyze and post suggestions to the message bus")
         except Exception as e:
-            print(f"    ❌ Error during forced review cycle: {e}")
+            print(f"    Error during forced review cycle: {e}")
 
 
 # Global pool
