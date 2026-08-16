@@ -5,7 +5,6 @@
 # =============================================================================
 
 import json
-import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -18,67 +17,52 @@ _LOG_ERROR_BUSY_TIMEOUT_MS = 500
 def get_db_path() -> str:
     """
     Get database path using centralized core.db configuration.
-    Falls back to legacy path if core.db is unavailable.
+    Falls back to .PrizmForge/prizmforge.db relative to CWD.
     """
     try:
-        from core.db import get_db_path as core_get_db_path
+        from core.db import get_db_path as _core_get_db_path
 
-        return core_get_db_path()
-    except ImportError:
-        # Fallback for standalone usage
-        return os.environ.get(
-            "PRIZMFORGE_DB_PATH",
-            str(Path(__file__).parent.parent / ".PrizmForge" / "agents.db"),
-        )
+        return _core_get_db_path()
+    except Exception:
+        return str(Path(".PrizmForge") / "prizmforge.db")
 
 
 @contextmanager
 def get_db_connection():
-    """Context manager for SQLite connection with proper commit/rollback."""
-    conn = sqlite3.connect(get_db_path(), timeout=60.0)
+    """Context manager for a SQLite connection with row_factory."""
+    path = get_db_path()
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-    except Exception as e:
-        print(f"    ⚠️  Exception handled in db.py: {e}")
-    try:
         yield conn
-        try:
-            conn.commit()
-        except sqlite3.OperationalError as e:
-            # Best-effort commit on flaky mounts
-            print(f"[WARN] file_editing.db commit: {e}")
+        conn.commit()
     except Exception:
-        try:
-            conn.rollback()
-        except Exception as e:
-            print(f"    ⚠️  Exception handled in db.py: {e}")
+        conn.rollback()
         raise
     finally:
-        try:
-            conn.close()
-        except Exception as e:
-            print(f"    ⚠️  Exception handled in db.py: {e}")
+        conn.close()
 
 
 def log_error(
+    severity: str,
     component: str,
     category: str,
-    severity: str,
     message: str,
-    details: str | None = None,
+    *,
+    details: dict | None = None,
+    file_path: str | None = None,
     task_id: str | None = None,
     proposal_id: str | None = None,
-    file_path: str | None = None,
     line_guid: str | None = None,
     stack_trace: str | None = None,
-):
+) -> None:
     """
-    Centralized error logging to stdout + errors table.
+    Best-effort error logging that never blocks the caller.
 
-    Non-blocking: never waits long on a locked database. Stdout is the
-    reliable channel; the INSERT is best-effort and may be skipped under
-    contention so hot paths (proposal create/apply) cannot stall.
+    Always prints to stdout first (the reliable channel); the INSERT is
+    best-effort and may be skipped under contention so hot paths
+    (proposal create/apply) cannot stall.
     """
     print(f"[{severity}] {component}.{category}: {message}")
 
@@ -91,7 +75,7 @@ def log_error(
         )
         try:
             conn.execute(f"PRAGMA busy_timeout={_LOG_ERROR_BUSY_TIMEOUT_MS}")
-        except Exception:
+        except Exception:  # noqa: S110
             pass
 
         conn.execute(
@@ -127,7 +111,7 @@ def log_error(
         if conn is not None:
             try:
                 conn.close()
-            except Exception:
+            except Exception:  # noqa: S110
                 pass
 
 
@@ -140,14 +124,13 @@ def initialize_database(db_path: str | None = None):
 
 
 def reconstruct_file_content(conn: sqlite3.Connection, file_id: int) -> str:
-    """Rebuild file content from DB lines (sorted by sort_order)."""
+    """Reconstruct current file content from line table ordered by line number."""
     cursor = conn.execute(
         """
-        SELECT content
-        FROM file_lines
-        WHERE file_id = ? AND is_deleted = 0
-        ORDER BY sort_order
-    """,
+        SELECT content FROM file_lines
+        WHERE file_id = ? AND is_current = 1
+        ORDER BY line_number
+        """,
         (file_id,),
     )
     lines = []

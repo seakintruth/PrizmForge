@@ -12,12 +12,12 @@ from pathlib import Path
 
 import pytest
 
-# Full proposal→apply lifecycle is DB-heavy; exclude from --normal
-pytestmark = pytest.mark.slow
-
 from core.db import init_db
 from file_editing.editing import apply_edit_proposal
 from workflow.proposal_builder import create_proposal_from_developer_output
+
+# Full proposal→apply lifecycle is DB-heavy; exclude from --normal
+pytestmark = pytest.mark.slow
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
