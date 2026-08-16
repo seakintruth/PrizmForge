@@ -2,7 +2,6 @@
 
 import queue
 import random
-import sqlite3
 import threading
 import uuid
 from collections import OrderedDict
@@ -16,9 +15,8 @@ from agents.reporter_worker import get_reporter_worker
 from agents.response_cleaner import clean_llm_response
 from agents.worker_utils import interruptible_sleep
 from core.config import get_config
-from core.db import get_db_path
 from core.db_helpers import post_message, save_agent_feedback
-from core.file_operations import compute_file_hash, format_file_with_guids
+from core.file_operations import compute_file_hash
 from core.json_parser import parse_json_response
 from file_editing.db import log_error
 
