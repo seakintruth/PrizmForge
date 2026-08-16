@@ -4,17 +4,45 @@
 # Purpose: Database connection, error logging, and reconstruction helpers
 # =============================================================================
 
-from __future__ import annotations
-
 import json
+import os
 import sqlite3
-from typing import Any
+from contextlib import contextmanager
+from pathlib import Path
 
-from core.db import get_db_path
+# log_error must not wait on locks — proposal/apply paths call it on the hot path.
+_LOG_ERROR_CONNECT_TIMEOUT_S = 0.5
+_LOG_ERROR_BUSY_TIMEOUT_MS = 500
 
-# Short timeouts so log_error never blocks proposal create/apply under lock contention.
-_LOG_ERROR_CONNECT_TIMEOUT_S = 0.25
-_LOG_ERROR_BUSY_TIMEOUT_MS = 250
+
+def get_db_path() -> str:
+    """
+    Get database path using centralized core.db configuration.
+    Falls back to .PrizmForge/prizmforge.db relative to CWD.
+    """
+    try:
+        from core.db import get_db_path as _core_get_db_path
+
+        return _core_get_db_path()
+    except Exception:
+        return str(Path(".PrizmForge") / "prizmforge.db")
+
+
+@contextmanager
+def get_db_connection():
+    """Context manager for a SQLite connection with row_factory."""
+    path = get_db_path()
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def log_error(
@@ -23,7 +51,7 @@ def log_error(
     category: str,
     message: str,
     *,
-    details: dict[str, Any] | None = None,
+    details: dict | None = None,
     file_path: str | None = None,
     task_id: str | None = None,
     proposal_id: str | None = None,
@@ -33,7 +61,7 @@ def log_error(
     """
     Best-effort error logging that never blocks the caller.
 
-    Always prints to stdout first (the reliable channel). The INSERT is
+    Always prints to stdout first (the reliable channel); the INSERT is
     best-effort and may be skipped under contention so hot paths
     (proposal create/apply) cannot stall.
     """
@@ -96,19 +124,32 @@ def initialize_database(db_path: str | None = None):
     print("⚠️  file_editing.initialize_database() is deprecated. Call core.db.init_db() instead.")
 
 
-def get_line_hashes_for_file(file_path: str) -> dict[str, str]:
-    """Return {line_guid: content_hash} for all current lines of a file."""
-    conn = sqlite3.connect(get_db_path())
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            """
-            SELECT line_guid, content_hash
-            FROM file_lines
-            WHERE file_path = ? AND is_current = 1
-            """,
-            (file_path,),
-        ).fetchall()
-        return {row["line_guid"]: row["content_hash"] for row in rows}
-    finally:
-        conn.close()
+def reconstruct_file_content(conn: sqlite3.Connection, file_id: int) -> str:
+    """Reconstruct current file content from line table ordered by line number."""
+    cursor = conn.execute(
+        """
+        SELECT content FROM file_lines
+        WHERE file_id = ? AND is_current = 1
+        ORDER BY line_number
+        """,
+        (file_id,),
+    )
+    lines = []
+    for row in cursor.fetchall():
+        if isinstance(row, sqlite3.Row) or (hasattr(row, "keys") and not isinstance(row, tuple)):
+            lines.append(row["content"])
+        else:
+            lines.append(row[0])
+    return "\n".join(lines)
+
+
+def capture_current_hashes(conn: sqlite3.Connection, file_id: int, line_guids: list[str]) -> dict[str, str]:
+    """Return {line_guid: content_hash} for the given guids."""
+    if not line_guids:
+        return {}
+    placeholders = ",".join("?" * len(line_guids))
+    rows = conn.execute(
+        f"SELECT line_guid, content_hash FROM file_lines WHERE line_guid IN ({placeholders})",
+        line_guids,
+    ).fetchall()
+    return {row["line_guid"]: row["content_hash"] for row in rows}
