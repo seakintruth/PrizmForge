@@ -118,7 +118,7 @@ class TestCreateFilePathValidation:
     """EditPayload create_file must reject decorated / traversal paths."""
 
     def test_create_file_clean_path_ok(self):
-        from file_editing.edit_payload import CreateFile, EditPayload
+        from file_editing.edit_payload import EditPayload
 
         payload = EditPayload.model_validate(
             {

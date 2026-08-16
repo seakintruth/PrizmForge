@@ -16,9 +16,7 @@ _SAFE_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 
 _FILES_NEEDED_LINE = re.compile(r"FILES_NEEDED:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 
-_PROSE_FILE = re.compile(
-    r"(?:^|\s|`)([A-Za-z0-9_./\\-]+\.(?:py|json|js|txt|md|html|css|yaml|yml|sh))(?:$|\s|`|[,;])"
-)
+_PROSE_FILE = re.compile(r"(?:^|\s|`)([A-Za-z0-9_./\\-]+\.(?:py|json|js|txt|md|html|css|yaml|yml|sh))(?:$|\s|`|[,;])")
 
 
 def sanitize_path_token(raw: str | None) -> str | None:
@@ -100,7 +98,7 @@ def is_valid_edit_target_path(path: str | None) -> bool:
     if not clean:
         return False
     # Reject if sanitize had to change the semantic path beyond slash normalize
-    normalized_input = str(path).replace("\\", "/").strip()
+    str(path).replace("\\", "/").strip()
     # Allow input that only differed by markdown/wrappers: clean must equal
     # sanitize of itself (always) — compare to a second sanitize of cleaned form
     return clean == sanitize_path_token(clean)
