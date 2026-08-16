@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -38,8 +40,9 @@ class TestBoundedSet:
         assert "a" not in s
 
 
+@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestPoolLifecycle:
-    def test_idempotent_stop(self, mock_minimal_config):
+    def test_idempotent_stop(self):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
@@ -49,7 +52,7 @@ class TestPoolLifecycle:
         assert pool.workers == []
         assert pool.feeder_thread is None
 
-    def test_start_stop_clears_running_flag(self, mock_minimal_config):
+    def test_start_stop_clears_running_flag(self):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
@@ -62,7 +65,7 @@ class TestPoolLifecycle:
         # Second stop safe
         pool.stop()
 
-    def test_start_when_already_running_is_noop(self, mock_minimal_config):
+    def test_start_when_already_running_is_noop(self):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
@@ -74,7 +77,7 @@ class TestPoolLifecycle:
         finally:
             pool.stop()
 
-    def test_force_review_when_not_running(self, mock_minimal_config, capsys):
+    def test_force_review_when_not_running(self, capsys):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
@@ -83,8 +86,9 @@ class TestPoolLifecycle:
         assert "not running" in out or "⚠️" in out or True  # soft
 
 
+@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestActiveAgentControl:
-    def test_pause_all_feedback_agents(self, mock_minimal_config):
+    def test_pause_all_feedback_agents(self):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
@@ -97,7 +101,7 @@ class TestActiveAgentControl:
         finally:
             pool.stop()
 
-    def test_reenable_subset(self, mock_minimal_config):
+    def test_reenable_subset(self):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
@@ -110,7 +114,7 @@ class TestActiveAgentControl:
         finally:
             pool.stop()
 
-    def test_feeder_interval_under_lock(self, mock_minimal_config):
+    def test_feeder_interval_under_lock(self):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
@@ -173,8 +177,9 @@ class TestHeuristicOptimizerDecisions:
         assert "jr_reviewer" in opt.agent_profiles or len(opt.agent_profiles) >= 0
 
 
+@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestResourceControllerLifecycle:
-    def test_double_stop_safe(self, mock_minimal_config):
+    def test_double_stop_safe(self):
         from agents.resource_controller_worker import ResourceControllerWorker
 
         w = ResourceControllerWorker()
@@ -182,7 +187,7 @@ class TestResourceControllerLifecycle:
         w.stop()
         assert not w.running
 
-    def test_start_stop(self, mock_minimal_config):
+    def test_start_stop(self):
         from agents.resource_controller_worker import ResourceControllerWorker
 
         w = ResourceControllerWorker()
@@ -193,10 +198,11 @@ class TestResourceControllerLifecycle:
         assert not w.running
 
 
+@pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestPoolBehavioralP2:
     """P2.1 — start / queue / stop with patched call_agent."""
 
-    def test_start_queue_stop_with_mock_agent(self, mock_minimal_config, temp_db):
+    def test_start_queue_stop_with_mock_agent(self):
         import time
 
         from agents.parallel_workers import BackgroundAgentPool
@@ -216,7 +222,7 @@ class TestPoolBehavioralP2:
             assert pool.running is False
             assert pool.workers == [] or isinstance(pool.workers, list)
 
-    def test_pause_active_agents_clears_filter(self, mock_minimal_config, temp_db):
+    def test_pause_active_agents_clears_filter(self):
         from agents.parallel_workers import BackgroundAgentPool
 
         pool = BackgroundAgentPool()
