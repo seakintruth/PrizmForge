@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from cli import commands as cli_commands
 from core import config as core_config
 
@@ -66,6 +68,7 @@ class TestEndpointsCommands:
 
 
 class TestInitCommand:
+    @pytest.mark.slow
     def test_cmd_init_creates_project_dir(self, tmp_path, monkeypatch, capsys, temp_db):
         from core import config as core_config
 

@@ -6,7 +6,8 @@ import json
 
 import pytest
 
-# Keep with normal suite — fast under MockLLM
+# Measured ~1.9s under MockLLM — keep out of the fast normal parallel path.
+pytestmark = pytest.mark.slow
 
 
 @pytest.fixture
