@@ -12,7 +12,34 @@ REPO_ROOT="$(pwd)"
 # ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
-PYTHON_EXEC="python3"
+# Resolve Python: explicit PYTHON_EXEC env > project .venv > active venv > python3
+resolve_python() {
+  if [[ -n "${PYTHON_EXEC:-}" ]]; then
+    printf '%s\n' "$PYTHON_EXEC"
+    return
+  fi
+  if [[ -x "${REPO_ROOT}/.venv/bin/python" ]]; then
+    printf '%s\n' "${REPO_ROOT}/.venv/bin/python"
+    return
+  fi
+  if [[ -x "${REPO_ROOT}/.venv/Scripts/python.exe" ]]; then
+    printf '%s\n' "${REPO_ROOT}/.venv/Scripts/python.exe"
+    return
+  fi
+  if [[ -n "${VIRTUAL_ENV:-}" ]]; then
+    if [[ -x "${VIRTUAL_ENV}/bin/python" ]]; then
+      printf '%s\n' "${VIRTUAL_ENV}/bin/python"
+      return
+    fi
+    if [[ -x "${VIRTUAL_ENV}/Scripts/python.exe" ]]; then
+      printf '%s\n' "${VIRTUAL_ENV}/Scripts/python.exe"
+      return
+    fi
+  fi
+  printf '%s\n' "python3"
+}
+
+PYTHON_EXEC="$(resolve_python)"
 TEST_MODE="quick"       # quick | normal | full | slow
 PARALLEL_JOBS="auto"    # auto | 1 | N
 BATCHED=0               # 0 = single pytest invocation; 1 = sequential batches
@@ -37,7 +64,8 @@ Usage: $(basename "$0") [OPTIONS] [-- [PYTEST_ARGS]]
 Test suite runner for PrizmForge.
 
 Options:
-  -p, --python PATH     Path to Python executable (default: python3)
+  -p, --python PATH     Path to Python executable
+                        (default: .venv if present, else python3)
   -j, --jobs NUM        xdist workers (default: auto; batched defaults to 2;
                         heavy and slow batches always use 1)
   -q, --quick           Fast-gate subset (default)
@@ -70,11 +98,14 @@ Failed batches do not stop later batches; final exit code is non-zero if any
 batch failed.
 
 Examples:
-  # Quick gate
-  $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe"
+  # Quick gate (uses .venv automatically after ./utils/setup.sh)
+  $0
 
-  # Memory-safe full suite (parallel not-slow + serial heavy + serial slow)
-  $0 -p "\$USERPROFILE/AppData/Local/Python3129/python.exe" --full --batched -j 2
+  # Memory-safe full suite
+  $0 --full --batched -j 2
+
+  # Override interpreter
+  $0 -p /usr/bin/python3.12 --normal
 
   # Only the heavy serial batch
   $0 --full --batched --batch heavy -j 1
@@ -266,7 +297,7 @@ run_single_invocation() {
   fi
 
   local log_file="${REPORT_DIR}/pytest-${TEST_MODE}-${STAMP}.log"
-  echo "Running mode=${TEST_MODE} jobs=${jobs} log=${log_file}"
+  echo "Running mode=${TEST_MODE} jobs=${jobs} python=${PYTHON_EXEC} log=${log_file}"
   set +e
   "$PYTHON_EXEC" -m pytest \
     "${targets[@]}" \
@@ -294,7 +325,7 @@ run_batched() {
   local jobs_small="$PARALLEL_JOBS"
   [[ "$jobs_small" == "auto" ]] && jobs_small=2
 
-  echo "Batched run mode=${TEST_MODE} small_jobs=${jobs_small} heavy_jobs=1 slow_jobs=1"
+  echo "Batched run mode=${TEST_MODE} python=${PYTHON_EXEC} small_jobs=${jobs_small} heavy_jobs=1 slow_jobs=1"
   echo "Summary file: ${SUMMARY_FILE}"
   echo "Batches continue after failure."
   if [[ "$TEST_MODE" == "full" ]]; then
