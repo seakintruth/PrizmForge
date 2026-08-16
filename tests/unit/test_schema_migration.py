@@ -12,8 +12,7 @@ def _create_legacy_edit_proposals_db(path: Path) -> None:
     if path.exists():
         path.unlink()
     conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE edit_proposals (
             proposal_id TEXT PRIMARY KEY,
             target_file_id INTEGER,
@@ -23,8 +22,7 @@ def _create_legacy_edit_proposals_db(path: Path) -> None:
         );
         INSERT INTO edit_proposals (proposal_id, target_file_id, edit_payload, status)
         VALUES ('legacy-prop-1', 1, '{"ops":[]}', 'pending');
-        """
-    )
+        """)
     conn.commit()
     conn.close()
 
@@ -37,10 +35,7 @@ def test_migrate_adds_task_id_and_mode_columns(temp_db, monkeypatch):
     # Replace with legacy shape after temp_db already initialized
     _create_legacy_edit_proposals_db(db_path)
 
-    cols_before = {
-        row[1]
-        for row in sqlite3.connect(str(db_path)).execute("PRAGMA table_info(edit_proposals)").fetchall()
-    }
+    cols_before = {row[1] for row in sqlite3.connect(str(db_path)).execute("PRAGMA table_info(edit_proposals)").fetchall()}
     assert "task_id" not in cols_before
     assert "selected_mode" not in cols_before
     assert "fallback_used" not in cols_before

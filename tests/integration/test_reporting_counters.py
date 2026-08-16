@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -123,10 +122,8 @@ def test_files_modified_matches_applied_proposals(mock_llm, counter_env, temp_db
             assert status in ("applied", "approved", "pending", "rejected")
 
         # No orphan applied proposals missing task_id from this run
-        orphans = conn.execute(
-            """
+        orphans = conn.execute("""
             SELECT COUNT(*) FROM edit_proposals
             WHERE status IN ('applied', 'approved') AND (task_id IS NULL OR task_id = '')
-            """
-        ).fetchone()[0]
+            """).fetchone()[0]
         assert orphans == 0

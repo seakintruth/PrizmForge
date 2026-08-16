@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -106,13 +105,11 @@ def test_fallback_forces_second_developer_call(mock_llm, mutation_env, temp_db):
     from file_editing.db import get_db_connection
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT selected_mode, fallback_used, final_mode, task_id, status
             FROM edit_proposals
             ORDER BY created_at DESC LIMIT 1
-            """
-        ).fetchone()
+            """).fetchone()
         assert row is not None
         selected, fb, final, task_id, status = row
         assert task_id == "fallback_task"
