@@ -162,7 +162,6 @@ def mock_minimal_config(monkeypatch, _isolate_prizmforge_workspace):
     cannot launch live LLM workers unless a test explicitly re-enables them
     and patches call_agent.
     """
-    from core import config as core_config
 
     project_dir = str(_isolate_prizmforge_workspace["project"])
     Path(project_dir).mkdir(parents=True, exist_ok=True)
