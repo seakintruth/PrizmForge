@@ -13,9 +13,9 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# Full task-cycle mocks accumulate DB/agent state; OOM on ~constrained CI/sandboxes.
-# Keep on --full / --only-slow; exclude from --normal.
-pytestmark = pytest.mark.slow
+# Full task-cycle mocks accumulate DB/agent state; OOM under xdist on constrained hosts.
+# slow = duration gate (exclude from --normal); serial = isolation (-j 1).
+pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
 
 def _install_cycle_config(monkeypatch, project_dir: Path) -> None:

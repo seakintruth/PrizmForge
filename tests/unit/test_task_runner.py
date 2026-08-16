@@ -8,6 +8,11 @@ import inspect
 import json
 import re
 
+import pytest
+
+# Task-runner unit helpers can share DB/config state under xdist.
+pytestmark = pytest.mark.serial
+
 
 class TestTaskRunnerSignature:
     def test_run_task_cycle_function_exists(self):

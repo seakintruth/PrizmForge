@@ -12,8 +12,8 @@ import json
 import pytest
 
 # Exercises run_task_cycle (same weight class as test_run_task_cycle.py).
-# Keep on --full / --only-slow; exclude from --normal parallel batches.
-pytestmark = pytest.mark.slow
+# slow = duration gate; serial = isolation (-j 1).
+pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
 
 @pytest.fixture
