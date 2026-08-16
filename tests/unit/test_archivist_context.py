@@ -42,14 +42,12 @@ def test_save_message_archive_inserts_row(temp_db):
         worker._save_message_archive("t_arch", messages, response, conn=conn)
 
     with get_db_connection() as conn:
-        row = conn.execute(
-            """
+        row = conn.execute("""
             SELECT task_id, summary, original_message_count, key_decisions
             FROM archived_context
             WHERE task_id = 't_arch'
             ORDER BY id DESC LIMIT 1
-            """
-        ).fetchone()
+            """).fetchone()
     assert row is not None
     assert row[0] == "t_arch"
     assert "archived" in (row[1] or "").lower() or "handoff" in (row[1] or "").lower() or row[1]
