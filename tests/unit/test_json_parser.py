@@ -116,10 +116,12 @@ def test_brace_matching_ignores_braces_inside_strings():
 
 def test_brace_matching_with_escaped_quotes():
     p = JSONParser()
-    raw = '{"path": "C:\\Users\\test", "done": true}'
+    # Valid JSON with Windows-style path (each backslash escaped)
+    raw = r'{"path": "C:\\Users\\test", "done": true}'
     r = p.parse(raw)
     assert r.success is True
     assert r.data["done"] is True
+    assert "Users" in r.data["path"]
 
 
 def test_malformed_unclosed_object_is_truncated_or_malformed():
