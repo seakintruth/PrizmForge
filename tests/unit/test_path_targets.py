@@ -34,6 +34,8 @@ SANITIZE_CASES = [
     ("whitespace", "   ", None),
     ("traversal", "../../etc/passwd", None),
     ("traversal_nested", "src/../../outside.py", None),
+    # Regression: str.strip('.,;') used to collapse this to secret.py
+    ("traversal_parent_file", "../secret.py", None),
     ("star_only", "****", None),
     ("markdown_bold_ticks_combo", "** `database.py`", "database.py"),
 ]
@@ -107,6 +109,9 @@ class TestIsValidEditTargetPath:
 
     def test_rejects_none(self):
         assert is_valid_edit_target_path(None) is False
+
+    def test_rejects_markdown_wrapper(self):
+        assert is_valid_edit_target_path("`core/db.py`") is False
 
     def test_accepts_after_markdown_only_if_sanitizable(self):
         # Raw markdown is not "already valid"; sanitize first for targets
