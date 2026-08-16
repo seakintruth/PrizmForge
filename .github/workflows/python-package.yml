@@ -13,10 +13,17 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PIP_ROOT_USER_ACTION: ignore
+
 jobs:
+  # Runs alongside lint/test (does not block them). Commits use [skip ci].
   auto-fix-and-push:
     name: Auto-Fix & Push Formatting Changes
     runs-on: ubuntu-latest
+    # Fork PRs cannot push back to the head branch
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
@@ -28,11 +35,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
-      - name: Install Tooling
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff black isort
+      - name: Install formatters
+        run: pip install ruff black isort
 
       - name: Apply Formatters & Auto-Fixes
         run: |
@@ -48,9 +56,9 @@ jobs:
           commit_user_name: "PrizmForge Bot"
           commit_user_email: "bot@prizmforge.internal"
 
+  # Independent of auto-fix and test — parallel gate
   code-quality:
-    name: Code Quality & Security Audit
-    needs: auto-fix-and-push
+    name: Code Quality (ruff)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Repository
@@ -62,19 +70,17 @@ jobs:
           python-version: "3.12"
           cache: "pip"
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff mypy
+      - name: Install ruff
+        run: pip install ruff
 
-      - name: Verify Clean Linter Pass
+      - name: ruff check & format --check
         run: |
           ruff check .
           ruff format --check .
 
+  # Independent of lint — parallel gate
   test-normal:
     name: Normal Test Suite
-    needs: code-quality
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -86,11 +92,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install test dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+        run: pip install -r requirements-dev.txt
 
       - name: Provide config.json for tests
         run: |
@@ -98,11 +105,11 @@ jobs:
             cp example_config.json config.json
           fi
 
-      - name: Run normal tests (exclude @slow)
+      - name: Run normal tests (batched, exclude @slow)
         run: |
           chmod +x utils/run_tests.sh
-          # GHA runners are ~7GB RAM; 4 workers is a safe default
-          ./utils/run_tests.sh --normal -j 4 --timeout 30
+          # --batched keeps @pytest.mark.serial at -j 1; parallel batches use -j 4
+          ./utils/run_tests.sh --normal --batched -j 4 --timeout 30
 
       - name: Upload test reports
         if: always()
