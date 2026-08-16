@@ -9,6 +9,9 @@ import pytest
 
 from agents.parallel_workers import BackgroundAgentPool, FileChangeEvent, get_agent_pool
 
+# Process-global pool / threads → serial; start/stop cases are duration-slow.
+pytestmark = pytest.mark.serial
+
 # Minimal agent set so pool.start() actually launches threads under test.
 # Real config.json agents must never leak in (conftest forces {}).
 _TEST_BG_AGENTS = {
@@ -38,9 +41,10 @@ def pool_env(isolated_project, monkeypatch):
     return cfg
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")
 class TestParallelWorkers:
-    """Tests for the parallel background agent system."""
+    """Pool start/stop + queue cases — 5–9s each on measured hardware."""
 
     def test_file_change_event_creation(self):
         """FileChangeEvent should be constructible with correct fields."""
@@ -155,7 +159,7 @@ class TestParallelWorkers:
 
 
 class TestAgentPoolConfiguration:
-    """Tests for agent pool configuration."""
+    """Tests for agent pool configuration (fast; not slow)."""
 
     def test_agent_configs_loaded(self):
         """Agent pool should load configs from config (empty under isolation)."""
@@ -174,9 +178,10 @@ class TestAgentPoolConfiguration:
         assert isinstance(pool.random_review_agents, list)
 
 
+@pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestAgentPoolActiveControl:
-    """Tests for controlling which agents are active."""
+    """Active-agent control with live pool start (~8s)."""
 
     def test_set_active_agents(self, pool_env):
         with patch(
@@ -203,7 +208,7 @@ class TestAgentPoolActiveControl:
 @pytest.mark.slow
 @pytest.mark.usefixtures("temp_db")
 class TestConcurrentBehavior:
-    """Tests for concurrent behavior (slower tests)."""
+    """Concurrent pool behavior (9–25s)."""
 
     def test_multiple_file_changes_concurrent(self, pool_env):
         with patch(
