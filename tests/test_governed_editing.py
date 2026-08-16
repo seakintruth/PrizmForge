@@ -1,6 +1,6 @@
 # =============================================================================
 # tests/test_governed_editing.py
-# Version: 2.4 - Mark module slow (proposal→apply lifecycle)
+# Version: 2.5 - slow (duration) + serial (DB isolation)
 # =============================================================================
 
 import hashlib
@@ -16,8 +16,8 @@ from core.db import init_db
 from file_editing.editing import apply_edit_proposal
 from workflow.proposal_builder import create_proposal_from_developer_output
 
-# Full proposal→apply lifecycle is DB-heavy; exclude from --normal
-pytestmark = pytest.mark.slow
+# DB-heavy proposal→apply lifecycle: long-running AND must not share xdist workers.
+pytestmark = [pytest.mark.slow, pytest.mark.serial]
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
