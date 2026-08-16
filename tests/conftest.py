@@ -1,11 +1,17 @@
 """
-Pytest fixtures for PrizmForge tests
-Minimal version - no external dependencies beyond pytest
+Pytest fixtures for PrizmForge tests.
+
+Isolation rules:
+- Never write agents.db, reports, or exports into the real repo tree.
+- Every test gets a private temp workspace (project + .PrizmForge).
+- DB schema is initialized only when a test requests temp_db (or via
+  fixtures that depend on it), so pure unit tests stay fast.
 """
+
+from __future__ import annotations
 
 import os
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -14,60 +20,118 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# Repo-local paths that must never be used as test side-effect targets
+_REPO_PRIZMFORGE = PROJECT_ROOT / ".PrizmForge"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
+    """
+    Force all tests into a per-test temp workspace.
+
+    Sets:
+      - PRIZMFORGE_DB_PATH → <tmp>/.PrizmForge/agents.db
+      - core.config.get_config() project_directory → <tmp>/project
+
+    Does NOT call init_db (keeps pure unit tests light). Tests that touch
+    the DB should request the temp_db fixture (or one that depends on it).
+    """
+    base = tmp_path_factory.mktemp("prizmforge_ws")
+    project = base / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    prizm = base / ".PrizmForge"
+    prizm.mkdir(parents=True, exist_ok=True)
+    reports = prizm / "reports"
+    reports.mkdir(parents=True, exist_ok=True)
+    db_path = prizm / "agents.db"
+
+    monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(db_path))
+    monkeypatch.setenv("PRIZMFORGE_TEST_PROJECT_DIR", str(project))
+    monkeypatch.setenv("PRIZMFORGE_TEST_WORKSPACE", str(base))
+
+    from core import config as core_config
+
+    _orig_get_config = core_config.get_config
+
+    def _isolated_get_config():
+        try:
+            cfg = _orig_get_config()
+        except Exception:
+            cfg = {}
+        if not isinstance(cfg, dict):
+            cfg = {}
+        out = dict(cfg)
+        out["project_directory"] = str(project)
+        out.setdefault("git", False)
+        out.setdefault("git_auto_commit", False)
+        out.setdefault("background_agents_enabled", False)
+        return out
+
+    monkeypatch.setattr(core_config, "get_config", _isolated_get_config)
+
+    yield {
+        "base": base,
+        "project": project,
+        "prizmforge": prizm,
+        "db_path": db_path,
+        "reports": reports,
+    }
+
+    if _REPO_PRIZMFORGE.exists():
+        agents = _REPO_PRIZMFORGE / "agents.db"
+        if agents.exists() and agents.stat().st_size == 0:
+            try:
+                agents.unlink()
+            except OSError:
+                pass
+
 
 @pytest.fixture(scope="function")
-def temp_db(monkeypatch):
+def temp_db(monkeypatch, _isolate_prizmforge_workspace):
     """
-    Creates a fresh temporary database for each test.
-    No external dependencies.
+    Fresh temp database with full schema for one test.
+
+    Uses the autouse workspace's PRIZMFORGE_DB_PATH, then runs init_db().
     """
-    import tempfile
-
-    fd, db_path = tempfile.mkstemp(suffix=".db")
-    os.close(fd)
-
-    # Delete if exists (defensive)
-    if os.path.exists(db_path):
-        try:
-            os.unlink(db_path)
-        except OSError:
-            pass
-
-    # Set environment variable so get_db_path() uses our temp DB
+    db_path = str(_isolate_prizmforge_workspace["db_path"])
     monkeypatch.setenv("PRIZMFORGE_DB_PATH", db_path)
 
-    # Initialize schema
+    p = Path(db_path)
+    if p.exists():
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    p.parent.mkdir(parents=True, exist_ok=True)
+
     from core.db import init_db
 
     init_db()
 
     yield db_path
 
-    # Cleanup
     try:
-        if os.path.exists(db_path):
-            os.unlink(db_path)
+        if p.exists():
+            p.unlink()
     except OSError:
         pass
 
 
 @pytest.fixture
-def tmp_path():
-    """Provide a temporary directory (built-in alternative)"""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield Path(tmpdir)
-
-
-@pytest.fixture
-def mock_minimal_config(monkeypatch):
+def mock_minimal_config(monkeypatch, _isolate_prizmforge_workspace):
     """
-    Provides a minimal valid configuration for tests.
-    No external dependencies - uses unittest.mock.
+    Minimal valid configuration pointed at the isolated temp project.
+
+    No shared /tmp/test_project — each test gets its own directory under
+    the autouse workspace.
     """
     from core import config as core_config
 
+    project_dir = str(_isolate_prizmforge_workspace["project"])
+    Path(project_dir).mkdir(parents=True, exist_ok=True)
+
     minimal_config = {
-        "project_directory": tempfile.gettempdir() + "/test_project",
+        "project_directory": project_dir,
         "git": False,
         "git_auto_commit": False,
         "background_agents_enabled": False,
@@ -95,10 +159,28 @@ def mock_minimal_config(monkeypatch):
             "reviewer": "mock-model",
             "orchestrator": "mock-model",
         },
+        "token_budget": {"max_tokens_per_4h": 1_000_000},
+        "default_model": "mock-model",
     }
 
     monkeypatch.setattr(core_config, "get_config", lambda: minimal_config)
     return minimal_config
+
+
+@pytest.fixture
+def isolated_project(mock_minimal_config, temp_db, _isolate_prizmforge_workspace):
+    """
+    Full isolation pack: config + initialized DB + project path.
+
+    Prefer this for worker/lifecycle/integration-style tests.
+    """
+    return {
+        "config": mock_minimal_config,
+        "db_path": temp_db,
+        "project": _isolate_prizmforge_workspace["project"],
+        "workspace": _isolate_prizmforge_workspace["base"],
+        "reports": _isolate_prizmforge_workspace["reports"],
+    }
 
 
 @pytest.fixture
@@ -113,10 +195,6 @@ def mock_openai_chat(monkeypatch):
     Mock OpenAI-compatible chat completion at the HTTP layer (requests.post).
 
     Stdlib-only — does not require pytest-mock or responses.
-
-    Usage:
-        mock_openai_chat(response_text='{"next_agent": "complete"}')
-        # subsequent call_agent / call_endpoint traffic uses this response
     """
     from tests.mocks.openai import make_requests_response
 
@@ -129,7 +207,6 @@ def mock_openai_chat(monkeypatch):
         )
 
     monkeypatch.setattr("agents.base.requests.post", _fake_post)
-    # Also patch the top-level name in case other modules import requests
     try:
         import requests as _requests
 
@@ -149,17 +226,6 @@ def mock_openai_chat(monkeypatch):
 def mock_llm():
     """
     High-level scriptable LLM mock (patches call_agent / call_endpoint).
-
-    Usage:
-        def test_flow(mock_llm):
-            mock_llm.set_response("orchestrator", '{"next_agent": "developer", ...}')
-            mock_llm.set_responses("developer", [
-                "FILES_NEEDED: a.py\\nPLAN: rename",
-                '{"target_file_path": "a.py", "find": "old", "replace": "new"}',
-            ])
-            mock_llm.set_response("reviewer", '{"decision": "APPROVE", "reason": "ok"}')
-            with mock_llm.patch_call_agent():
-                ...
     """
     from tests.mocks.openai import MockLLM
 
@@ -170,7 +236,6 @@ def mock_llm():
 def mock_llm_patched(mock_llm):
     """
     Same as mock_llm, but already patches call_agent for the duration of the test.
-    Yields the MockLLM instance.
     """
     with mock_llm.patch_call_agent():
         yield mock_llm
