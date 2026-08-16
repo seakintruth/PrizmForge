@@ -7,7 +7,6 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -19,14 +18,14 @@ sys.path.insert(0, str(PROJECT_ROOT))
 pytestmark = pytest.mark.slow
 
 
-@pytest.fixture
-def cycle_env(temp_db, tmp_path, monkeypatch):
-    from core import config as config_mod
-    from file_editing.writer import initialize_file_lines
+def _install_cycle_config(monkeypatch, project_dir: Path) -> None:
+    """Replace get_config everywhere it was imported at module level.
 
-    project_dir = tmp_path / "proj"
-    project_dir.mkdir()
-    (project_dir / "app.py").write_text("value = OLD\n", encoding="utf-8")
+    ``from core.config import get_config`` binds a local name; patching only
+    ``core.config.get_config`` leaves ``workflow.task_runner.get_config`` on the
+    original function — which kept background agents enabled and ignored the
+    temp project_directory.
+    """
 
     def fake_config():
         return {
@@ -41,11 +40,61 @@ def cycle_env(temp_db, tmp_path, monkeypatch):
             "git": False,
             "token_budget": {"max_tokens_per_4h": 1_000_000},
             "default_model": "mock-model",
+            "default_iteration_minutes": 1,
+            "min_iterations_before_complete": 1,
+            "background_agents": {},
+            "background_feeder": {},
         }
 
-    monkeypatch.setattr(config_mod, "get_config", fake_config)
+    targets = [
+        "core.config.get_config",
+        "workflow.task_runner.get_config",
+        "workflow.developer_edit.get_config",
+        "workflow.edit_mode_selector.get_config",
+        "agents.orchestrator.get_config",
+        "agents.base.get_config",
+        "agents.parallel_workers.get_config",
+        "agents.reporter_worker.get_config",
+        "agents.resource_controller_worker.get_config",
+        "file_editing.writer.get_config",
+    ]
+    for path in targets:
+        try:
+            monkeypatch.setattr(path, fake_config)
+        except (AttributeError, ImportError):
+            # Module may not import get_config at top level — skip.
+            pass
+
+
+@pytest.fixture
+def cycle_env(temp_db, tmp_path, monkeypatch):
+    from file_editing.writer import initialize_file_lines
+
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "app.py").write_text("value = OLD\n", encoding="utf-8")
+
+    _install_cycle_config(monkeypatch, project_dir)
     initialize_file_lines("app.py", "value = OLD\n")
-    return project_dir
+
+    # Ensure no leftover singleton pool is running from a prior test.
+    try:
+        from agents.parallel_workers import get_agent_pool
+
+        pool = get_agent_pool()
+        if getattr(pool, "running", False):
+            pool.stop()
+    except Exception:
+        pass
+
+    yield project_dir
+
+    try:
+        from agents.parallel_workers import get_agent_pool
+
+        get_agent_pool().stop()
+    except Exception:
+        pass
 
 
 def test_run_task_cycle_find_replace(mock_llm, cycle_env, temp_db):
@@ -95,9 +144,10 @@ def test_run_task_cycle_find_replace(mock_llm, cycle_env, temp_db):
         json.dumps({"decision": "APPROVE", "reason": "safe", "suggestions": []}),
     )
 
+    # Do NOT patch time.sleep — it is the shared stdlib module; mocking it
+    # breaks interruptible_sleep / prioritizer if any worker is alive.
     with mock_llm.patch_call_agent():
-        with patch("workflow.task_runner.time.sleep", return_value=None):
-            run_task_cycle("cycle_test_1", "Rename OLD to NEW in app.py", max_turns=3)
+        run_task_cycle("cycle_test_1", "Rename OLD to NEW in app.py", max_turns=3)
 
     with get_db_connection() as conn:
         row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("app.py",)).fetchone()
@@ -156,8 +206,7 @@ def test_run_task_cycle_multi_turn_then_complete(mock_llm, cycle_env, temp_db):
     )
 
     with mock_llm.patch_call_agent():
-        with patch("workflow.task_runner.time.sleep", return_value=None):
-            run_task_cycle("cycle_multi", "Rename OLD to NEW", max_turns=4)
+        run_task_cycle("cycle_multi", "Rename OLD to NEW", max_turns=4)
 
     with get_db_connection() as conn:
         row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("app.py",)).fetchone()
@@ -216,8 +265,7 @@ def test_run_task_cycle_reviewer_reject(mock_llm, cycle_env, temp_db):
     )
 
     with mock_llm.patch_call_agent():
-        with patch("workflow.task_runner.time.sleep", return_value=None):
-            run_task_cycle("cycle_reject", "Rename OLD to NEW", max_turns=3)
+        run_task_cycle("cycle_reject", "Rename OLD to NEW", max_turns=3)
 
     with get_db_connection() as conn:
         row = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("app.py",)).fetchone()
@@ -227,8 +275,5 @@ def test_run_task_cycle_reviewer_reject(mock_llm, cycle_env, temp_db):
         st = conn.execute("SELECT status FROM edit_proposals ORDER BY created_at DESC LIMIT 1").fetchone()
         if st:
             assert st[0] in ("rejected", "pending", "error", "approved", "applied")
-            # Prefer rejected when pipeline completed review
-            # (status column may vary if proposal flow short-circuits)
     rejected_events = list_events(event_type="proposal.rejected", limit=10)
-    # Soft: event may be present when reject path fully ran
     assert isinstance(rejected_events, list)
