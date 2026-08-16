@@ -124,9 +124,25 @@ mkdir -p "$REPORT_DIR"
 STAMP="$(date +%Y%m%d_%H%M%S)"
 SUMMARY_FILE="${REPORT_DIR}/pytest-full-summary-${STAMP}.txt"
 export PRIZMFORGE_REPORT_STAMP="$STAMP"
+# Unbuffered Python so xdist worker failures flush into the log file under Git Bash.
+export PYTHONUNBUFFERED=1
 rm -f "${REPORT_DIR}/test-durations-latest.json"
 
 path_exists() { [[ -e "$1" ]]; }
+
+# Run pytest with stdout+stderr written to log_file, then echo the log to the
+# terminal. Avoids `cmd | tee` pipe buffering / PIPESTATUS quirks on MSYS.
+run_pytest_capture() {
+  local log_file="$1"
+  shift
+  set +e
+  "$@" >"$log_file" 2>&1
+  local rc=$?
+  set -e
+  # Always surface the log on the controlling terminal (even on failure).
+  cat "$log_file" || true
+  return "$rc"
+}
 
 run_pytest_once() {
   local batch_name="$1"
@@ -151,20 +167,18 @@ run_pytest_once() {
   echo "============================================================"
   local start_ts end_ts rc duration
   start_ts="$(date +%s)"
-  set +e
   PRIZMFORGE_BATCH_NAME="$batch_name" \
   PRIZMFORGE_DURATION_REPORT="$duration_file" \
   PRIZMFORGE_REPORT_STAMP="$STAMP" \
-  "$PYTHON_EXEC" -m pytest \
-    "${targets[@]}" \
-    "${xdist[@]}" \
-    "${timeout_args[@]}" \
-    --durations="$DURATIONS_N" \
-    -q --tb=line \
-    "${PYTEST_EXTRA_ARGS[@]}" \
-    2>&1 | tee "$log_file"
-  rc="${PIPESTATUS[0]}"
-  set -e
+  run_pytest_capture "$log_file" \
+    "$PYTHON_EXEC" -u -m pytest \
+      "${targets[@]}" \
+      "${xdist[@]}" \
+      "${timeout_args[@]}" \
+      --durations="$DURATIONS_N" \
+      -q --tb=short \
+      "${PYTEST_EXTRA_ARGS[@]}"
+  rc=$?
   end_ts="$(date +%s)"
   duration="$((end_ts - start_ts))"
   local status="PASS"
@@ -217,16 +231,15 @@ run_single_invocation() {
   local log_file="${REPORT_DIR}/pytest-${TEST_MODE}-${STAMP}.log"
   local duration_file="${REPORT_DIR}/test-durations-${TEST_MODE}-${STAMP}.json"
   echo "Running mode=${TEST_MODE} jobs=${jobs} python=${PYTHON_EXEC} log=${log_file}"
-  set +e
   PRIZMFORGE_BATCH_NAME="$TEST_MODE" \
   PRIZMFORGE_DURATION_REPORT="$duration_file" \
   PRIZMFORGE_REPORT_STAMP="$STAMP" \
-  "$PYTHON_EXEC" -m pytest \
-    "${targets[@]}" "${xdist[@]}" "${timeout_args[@]}" \
-    --durations="$DURATIONS_N" -q --tb=line \
-    "${PYTEST_EXTRA_ARGS[@]}" 2>&1 | tee "$log_file"
-  local rc="${PIPESTATUS[0]}"
-  set -e
+  run_pytest_capture "$log_file" \
+    "$PYTHON_EXEC" -u -m pytest \
+      "${targets[@]}" "${xdist[@]}" "${timeout_args[@]}" \
+      --durations="$DURATIONS_N" -q --tb=short \
+      "${PYTEST_EXTRA_ARGS[@]}"
+  local rc=$?
   { echo "exit=${rc} log=${log_file}"; echo "durations=${duration_file}"; } | tee -a "$SUMMARY_FILE"
   echo "Durations: ${REPORT_DIR}/test-durations-latest.json"
   echo "Analyze:   $PYTHON_EXEC utils/analyze_test_durations.py"
