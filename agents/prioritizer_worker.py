@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from agents.base import call_agent
+from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.index_context import load_index_text, load_symbol_json_context
-from core.config import get_config
 from core.json_parser import parse_json_response
 
 
@@ -90,8 +90,15 @@ class PrioritizerWorker:
 
     def _filter_low_quality_feedback(self, items: list[FeedbackItem]) -> tuple[list[FeedbackItem], int]:
         low_quality_patterns = [
-            r"^issue here$", r"^fix here$", r"^todo", r"^placeholder",
-            r"^issue$", r"^bug$", r"^error$", r"^.{1,14}$", r"^[a-z_]+$",
+            r"^issue here$",
+            r"^fix here$",
+            r"^todo",
+            r"^placeholder",
+            r"^issue$",
+            r"^bug$",
+            r"^error$",
+            r"^.{1,14}$",
+            r"^[a-z_]+$",
         ]
         valid_items = []
         dismissed_items = []
@@ -176,10 +183,38 @@ class PrioritizerWorker:
             items = []
             for row in feedback_rows:
                 bias = 5.0 if row[1] == "human" else 1.0
-                items.append(FeedbackItem(id=f"fb_{row[0]}", raw_id=row[0], item_type="feedback", from_agent=row[1], file_path=row[2], priority=row[3] or "MEDIUM", category=row[4] or "uncategorized", message=row[5], suggestion=row[6] or "", timestamp=row[7], bias_multiplier=bias))
+                items.append(
+                    FeedbackItem(
+                        id=f"fb_{row[0]}",
+                        raw_id=row[0],
+                        item_type="feedback",
+                        from_agent=row[1],
+                        file_path=row[2],
+                        priority=row[3] or "MEDIUM",
+                        category=row[4] or "uncategorized",
+                        message=row[5],
+                        suggestion=row[6] or "",
+                        timestamp=row[7],
+                        bias_multiplier=bias,
+                    )
+                )
             for row in message_rows:
                 bias = 5.0 if row[1] == "human" else 1.0
-                items.append(FeedbackItem(id=f"msg_{row[0]}", raw_id=row[0], item_type="message", from_agent=row[1], file_path="<message>", priority=row[3] or "MEDIUM", category="message", message=row[2], suggestion="", timestamp=row[4], bias_multiplier=bias))
+                items.append(
+                    FeedbackItem(
+                        id=f"msg_{row[0]}",
+                        raw_id=row[0],
+                        item_type="message",
+                        from_agent=row[1],
+                        file_path="<message>",
+                        priority=row[3] or "MEDIUM",
+                        category="message",
+                        message=row[2],
+                        suggestion="",
+                        timestamp=row[4],
+                        bias_multiplier=bias,
+                    )
+                )
             return items
         except Exception as e:
             print(f"    ❌ Error getting feedback: {e}")
