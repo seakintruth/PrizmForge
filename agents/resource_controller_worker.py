@@ -124,11 +124,7 @@ class HeuristicOptimizer:
         md = self.rc_config.get("model_downgrades") or {}
         tier_map = md.get(tier)
         if isinstance(tier_map, dict):
-            return {
-                str(k): str(v)
-                for k, v in tier_map.items()
-                if isinstance(v, str) and not str(k).startswith("_")
-            }
+            return {str(k): str(v) for k, v in tier_map.items() if isinstance(v, str) and not str(k).startswith("_")}
         return {}
 
     def _get_priority_categories(self) -> list[str]:
@@ -269,12 +265,10 @@ class HeuristicOptimizer:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                cursor.execute(
-                    """
+                cursor.execute("""
                     SELECT COUNT(*) FROM agent_feedback
                     WHERE addressed = 0
-                """
-                )
+                """)
 
                 unaddressed_count = cursor.fetchone()[0]
 
