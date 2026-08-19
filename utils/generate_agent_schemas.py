@@ -235,9 +235,7 @@ SUPPORT_WORKER_SCHEMAS = {
                 "background_feeder_interval": 90,
                 "active_agents": ["jr_reviewer", "jr_researcher", "prioritizer"],
                 "rate_limit_per_minute": 60,
-                "model_downgrades": {
-                    "_note": "agent_name -> model_id from config resource_controller.model_downgrades"
-                },
+                "model_downgrades": {"_note": "agent_name -> model_id from config resource_controller.model_downgrades"},
                 "reasoning": "Budget at 40%, reducing activity to conserve tokens",
             },
         },
