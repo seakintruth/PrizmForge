@@ -44,7 +44,7 @@ class TestModelContextLimits:
         cm = get_context_manager()
 
         # Test with common model names
-        for model in ["gemini-3.1-pro-preview", "gemini-3.6-flash"]:
+        for model in ["gemini-3.1-pro-preview", "gemini-3.7-flash"]:
             limit = cm.get_model_context_limit(model)
             assert isinstance(limit, int)
             assert limit > 0
@@ -130,7 +130,7 @@ class TestBuildOrchestratorContext:
             task_id="test_task",
             user_command="Build a hello world function",
             conversation_history=[],
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
         )
 
         assert isinstance(context_str, str)
@@ -145,7 +145,7 @@ class TestBuildOrchestratorContext:
             task_id="test_task",
             user_command="Test command",
             conversation_history=[],
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
         )
 
         # Check required metadata fields
@@ -166,7 +166,7 @@ class TestBuildOrchestratorContext:
             task_id="test_task",
             user_command="Test",
             conversation_history=[],
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
         )
 
         assert metadata["tokens_used"] <= metadata["context_limit"]
@@ -184,7 +184,7 @@ class TestBuildOrchestratorContext:
             task_id="test_task",
             user_command="Continue",
             conversation_history=history,
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
         )
 
         assert metadata["tokens_used"] > 0
@@ -227,7 +227,7 @@ class TestBuildOrchestratorContext:
             task_id="test_task",
             user_command="Review test.py",
             conversation_history=[],
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
         )
 
         # Should mention files
@@ -357,7 +357,7 @@ class TestPerformance:
             task_id="test_task",
             user_command="Test command",
             conversation_history=[],
-            model="gemini-3.6-flash",
+            model="gemini-3.7-flash",
         )
         duration = time.time() - start
 
@@ -392,7 +392,7 @@ def test_context_manager_counts_files_in_subdirectories_excluding_metadata(
         task_id="t_count",
         user_command="Check files",
         conversation_history=[],
-        model="gemini-3.6-flash",
+        model="gemini-3.7-flash",
     )
 
     # Should count app.py and src/utils/helper.py (2 files)

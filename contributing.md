@@ -467,7 +467,7 @@ Edit `config.json`:
 ```json
 {
   "agent_model_preferences": {
-    "performance_analyzer": "gemini-3.6-flash"
+    "performance_analyzer": "gemini-3.7-flash"
   }
 }
 ```
