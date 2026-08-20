@@ -119,6 +119,14 @@ class HeuristicOptimizer:
             "normal": 1.0,  # >= 50% budget
         }
 
+    def _model_downgrades_for(self, tier: str) -> dict[str, str]:
+        """Load agent->model map for a throttle tier from config (no hardcoded model IDs)."""
+        md = self.rc_config.get("model_downgrades") or {}
+        tier_map = md.get(tier)
+        if isinstance(tier_map, dict):
+            return {str(k): str(v) for k, v in tier_map.items() if isinstance(v, str) and not str(k).startswith("_")}
+        return {}
+
     def _get_priority_categories(self) -> list[str]:
         """Get human-defined priority categories from config"""
         goals = self.rc_config.get("project_goals", {})
@@ -226,7 +234,7 @@ class HeuristicOptimizer:
         4. Apply model downgrades if needed
         """
 
-        # ✅ : Check feedback backlog FIRST
+        # Check feedback backlog FIRST
         backlog_decision = self._check_feedback_backlog(state)
         if backlog_decision:
             return backlog_decision
@@ -271,10 +279,7 @@ class HeuristicOptimizer:
                     background_feeder_interval=9999,  # Effectively disable
                     active_agents=["prioritizer"],  # Only prioritizer
                     rate_limit_per_minute=max(30, int(state.api_rate_limit * 0.5)),
-                    model_downgrades={
-                        "developer": "gemini-3-flash-preview",  # Fast fixes
-                        "prioritizer": "gemini-3.1-pro-preview",  # Keep quality
-                    },
+                    model_downgrades=self._model_downgrades_for("backlog_processing"),
                     reasoning=(
                         f"🚨 FEEDBACK BACKLOG: {unaddressed_count} unaddressed items. "
                         f"Pausing background agents (jr_reviewer, etc.). "
@@ -317,18 +322,11 @@ class HeuristicOptimizer:
             background_feeder_interval=300,  # 5 minutes
             active_agents=["prioritizer"],  # Only prioritizer
             rate_limit_per_minute=max(10, int(state.api_rate_limit * 0.1)),
-            model_downgrades={
-                "prioritizer": "gemini-3-flash-preview",
-                "orchestrator": "gemini-3-flash-preview",
-                "developer": "gemini-3-flash-preview",
-                "jr_reviewer": "gemini-3-flash-preview",
-                "jr_researcher": "gemini-3-flash-preview",
-                "tech_writer": "gemini-3-flash-preview",
-            },
+            model_downgrades=self._model_downgrades_for("critical"),
             reasoning=(
                 f"🚨 CRITICAL: {state.budget_percentage:.1%} budget remaining. "
                 f"Emergency conservation mode. Only prioritizer active. "
-                f"All models downgraded to Flash. "
+                f"Model downgrades from config applied. "
                 f"Rate limit: {max(10, int(state.api_rate_limit * 0.1))} calls/min."
             ),
         )
@@ -350,17 +348,12 @@ class HeuristicOptimizer:
             background_feeder_interval=180,  # 3 minutes
             active_agents=active_agents,
             rate_limit_per_minute=max(20, int(state.api_rate_limit * 0.3)),
-            model_downgrades={
-                "jr_reviewer": "gemini-3-flash-preview",
-                "jr_researcher": "gemini-3-flash-preview",
-                "tech_writer": "gemini-3-flash-preview",
-                "archivist": "gemini-3-flash-preview",
-            },
+            model_downgrades=self._model_downgrades_for("aggressive"),
             reasoning=(
                 f"⚠️  AGGRESSIVE: {state.budget_percentage:.1%} budget remaining. "
                 f"Conserving resources aggressively. "
                 f"Active agents: {', '.join(active_agents)}. "
-                f"Background agents use Flash models. "
+                f"Background agents use configured downgrade models. "
                 f"Rate limit: {max(20, int(state.api_rate_limit * 0.3))} calls/min."
             ),
         )
@@ -386,15 +379,12 @@ class HeuristicOptimizer:
             background_feeder_interval=90,  # 1.5 minutes
             active_agents=active_agents,
             rate_limit_per_minute=max(40, int(state.api_rate_limit * 0.6)),
-            model_downgrades={
-                "tech_writer": "gemini-3-flash-preview",
-                "archivist": "gemini-3-flash-preview",
-            },
+            model_downgrades=self._model_downgrades_for("moderate"),
             reasoning=(
                 f"⚡ MODERATE: {state.budget_percentage:.1%} budget remaining. "
                 f"Reducing activity to conserve budget. "
                 f"Active agents: {', '.join(active_agents)}. "
-                f"Some agents using Flash models. "
+                f"Some agents using configured downgrade models. "
                 f"Rate limit: {max(40, int(state.api_rate_limit * 0.6))} calls/min."
             ),
         )

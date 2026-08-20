@@ -8,10 +8,29 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from agents.base import call_agent
+from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.index_context import load_index_text, load_symbol_json_context
 from core.json_parser import parse_json_response
+
+
+def _phase_model_override(phase: str) -> str | None:
+    """Model id for prioritizer phases from config (never hardcode provider names).
+
+    batch: categorizing / scoring batches → resource_controller.model_downgrades.prioritizer_batch
+           (falls back to default_model).
+    rank:  cross-category ranking → agent_model_preferences.prioritizer
+           (falls back to default_model).
+    """
+    cfg = get_config()
+    md = (cfg.get("resource_controller") or {}).get("model_downgrades") or {}
+    if phase == "batch":
+        return md.get("prioritizer_batch") or md.get("default_model")
+    if phase == "rank":
+        prefs = cfg.get("agent_model_preferences") or {}
+        return prefs.get("prioritizer") or md.get("default_model")
+    return None
 
 
 @dataclass
@@ -365,7 +384,6 @@ class PrioritizerWorker:
         except Exception as e:
             print(f"    ⚠️  Exception handled in prioritizer_worker.py: {e}")
         prompt = f"{index_snip}Categorize these {len(batch)} feedback items:\n\n"
-
         for idx, item in enumerate(batch, 1):
             prompt += f"#{idx} (ID: {item.id})\n"
             prompt += f"From: {item.from_agent}\n"
@@ -393,7 +411,7 @@ Respond with JSON ONLY:
                 "prioritizer",
                 prompt,
                 self.current_task_id,
-                model_override="gemini-3-flash-preview",
+                model_override=_phase_model_override("batch"),
             )
 
             if not response:
@@ -456,11 +474,9 @@ Respond with JSON ONLY:
         """Score items within a category"""
         # Build scoring request
         prompt = f"Score these {len(items)} {category} items (0-100):\n\n"
-
         for item in items:
             prompt += f"ID: {item.id} | Priority: {item.priority} | From: {item.from_agent}\n"
             prompt += f"Message: {item.message[:150]}\n\n"
-
         prompt += """
 Consider:
 - Severity/Impact
@@ -480,7 +496,7 @@ Respond with JSON ONLY:
                 "prioritizer",
                 prompt,
                 self.current_task_id,
-                model_override="gemini-3-flash-preview",
+                model_override=_phase_model_override("batch"),
             )
 
             if not response:
@@ -543,7 +559,7 @@ Respond with JSON ONLY:
                 "prioritizer",
                 prompt,
                 self.current_task_id,
-                model_override="gemini-3.1-pro-preview",
+                model_override=_phase_model_override("rank"),
             )
 
             # Empty / None response: same deterministic fallback as exception path

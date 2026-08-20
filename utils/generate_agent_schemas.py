@@ -111,7 +111,7 @@ CORE_AGENT_SCHEMAS = {
             "reasoning": "Why this decision was made and what the current priorities are",
             "files_needed": ["path/to/file1.py", "path/to/file2.py"],
             "addressing_feedback_ids": [123, 456],
-            "model": "gemini-3.1-pro-preview",
+            "_model_note": "Model selection comes from config agent_model_preferences / resource overrides — not this schema.",
         },
     },
     "reviewer": {
@@ -235,7 +235,7 @@ SUPPORT_WORKER_SCHEMAS = {
                 "background_feeder_interval": 90,
                 "active_agents": ["jr_reviewer", "jr_researcher", "prioritizer"],
                 "rate_limit_per_minute": 60,
-                "model_downgrades": {"tech_writer": "gemini-3-flash-preview"},
+                "model_downgrades": {"_note": "agent_name -> model_id from config resource_controller.model_downgrades"},
                 "reasoning": "Budget at 40%, reducing activity to conserve tokens",
             },
         },

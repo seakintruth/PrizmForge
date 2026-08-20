@@ -10,7 +10,7 @@
     ],
     "rate_limit_per_minute": 60,
     "model_downgrades": {
-      "tech_writer": "gemini-3-flash-preview"
+      "_note": "agent_name -> model_id from config resource_controller.model_downgrades"
     },
     "reasoning": "Budget at 40%, reducing activity to conserve tokens"
   }

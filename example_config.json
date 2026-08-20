@@ -84,13 +84,7 @@
       "max_context_tokens": 1000000,
       "description": "Most capable Gemini, best for complex reasoning"
     },
-    "gemini-2.5-pro": {
-      "endpoint": "gemini",
-      "max_output_tokens": 16384,
-      "temperature": 0.5,
-      "description": "Strong reasoning, good balance"
-    },
-    "gemini-3-flash-preview": {
+    "gemini-3.7-flash": {
       "endpoint": "gemini",
       "max_output_tokens": 16384,
       "temperature": 0.7,
@@ -107,17 +101,17 @@
     "orchestrator": "gemini-3.1-pro-preview",
     "developer": "gemini-3.1-pro-preview",
     "reviewer": "gemini-3.1-pro-preview",
-    "researcher": "gemini-3-flash-preview",
+    "researcher": "gemini-3.7-flash",
     "prioritizer": "gemini-3.1-pro-preview",
-    "jr_reviewer": "gemini-3-flash-preview",
-    "jr_researcher": "gemini-3-flash-preview",
-    "tech_writer": "gemini-3-flash-preview",
+    "jr_reviewer": "gemini-3.7-flash",
+    "jr_researcher": "gemini-3.7-flash",
+    "tech_writer": "gemini-3.7-flash",
     "file_manager": "gemini-3.1-pro-preview",
     "archivist": "gemini-3.1-pro-preview",
-    "project_reporter": "gemini-3-flash-preview",
+    "project_reporter": "gemini-3.7-flash",
     "resource_controller": "gemini-3.1-pro-preview",
     "deployment_validator": "gemini-3.1-pro-preview",
-    "security_reviewer": "gemini-3-flash-preview"
+    "security_reviewer": "gemini-3.7-flash"
   },
   "proxy": {
     "http": "",
@@ -150,6 +144,33 @@
       ],
       "human_only_adjust": true,
       "notes": "ONLY HUMANS may edit this section. Agents must treat it as immutable."
+    },
+    "_model_downgrades_note": "Model IDs for budget/backlog throttling. Must match keys under models{}. Empty map = no overrides for that tier.",
+    "model_downgrades": {
+      "default_model": "gemini-3.7-flash",
+      "critical": {
+        "prioritizer": "gemini-3.7-flash",
+        "orchestrator": "gemini-3.7-flash",
+        "developer": "gemini-3.7-flash",
+        "jr_reviewer": "gemini-3.7-flash",
+        "jr_researcher": "gemini-3.7-flash",
+        "tech_writer": "gemini-3.7-flash"
+      },
+      "aggressive": {
+        "jr_reviewer": "gemini-3.7-flash",
+        "jr_researcher": "gemini-3.7-flash",
+        "tech_writer": "gemini-3.7-flash",
+        "archivist": "gemini-3.7-flash"
+      },
+      "moderate": {
+        "tech_writer": "gemini-3.7-flash",
+        "archivist": "gemini-3.7-flash"
+      },
+      "backlog_processing": {
+        "developer": "gemini-3.7-flash",
+        "prioritizer": "gemini-3.1-pro-preview"
+      },
+      "prioritizer_batch": "gemini-3.7-flash"
     }
   },
   "background_agents": {
