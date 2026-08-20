@@ -57,25 +57,29 @@ class ContextManager:
         self.default_context_limit = 100_000
 
     def get_model_context_limit(self, model: str) -> int:
-        """Get context limit for model from config-driven limits"""
+        """
+        Get the usable context window for a model.
 
-        # Try model-specific limit
-        if model in self.model_limits:
-            return self.model_limits[model]
+        Uses the new endpoint-scoped model configuration.
+        Falls back to a conservative default for unknown models.
+        """
+        from core.endpoint_manager import get_endpoint_manager
 
-        # Try to compute from config on-the-fly
-        models_config = self.config.get("models", {})
-        if model in models_config:
-            model_config = models_config[model]
+        endpoint_mgr = get_endpoint_manager()
+        model_config = endpoint_mgr.get_model_config(model)
+
+        if model_config:
             max_context = model_config.get("max_context_tokens")
             max_output = model_config.get("max_output_tokens", 16384)
 
             if max_context:
-                return int((max_context - max_output) * 0.8)
+                # Reserve headroom for output tokens + system prompt + conversation history
+                usable_context = int((max_context - max_output) * 0.85)
+                return max(usable_context, 4096)  # Enforce a reasonable minimum
 
-        # Conservative default for unknown models
+        # Fallback for unknown models
         print(f"⚠️  Unknown model '{model}', using default context limit")
-        return self.default_context_limit
+        return getattr(self, "default_context_limit", 128_000)
 
     def build_orchestrator_context(
         self,

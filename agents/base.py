@@ -590,19 +590,32 @@ def call_agent(  # noqa: C901
 
     endpoint_mgr = get_endpoint_manager()
 
-    # ============= Resource controller model override check =============
-    if model_override is None:
-        try:
-            from agents.resource_controller_worker import get_resource_controller
+    # ============= MODEL + ENDPOINT RESOLUTION =============
+    if model_override:
+        if "/" in model_override:
+            parts = model_override.split("/", 1)
+            if len(parts) == 2:
+                override_endpoint, override_model = parts
+                if override_endpoint in endpoint_mgr.endpoints:
+                    endpoint = endpoint_mgr.endpoints[override_endpoint]
+                    model = override_model
+                else:
+                    model = override_model
+                    endpoint = endpoint_mgr.get_endpoint_for_model(model)
+            else:
+                model = model_override
+                endpoint = endpoint_mgr.get_endpoint_for_model(model)
+        else:
+            model = model_override
+            endpoint = endpoint_mgr.get_endpoint_for_model(model)
+    else:
+        choice = endpoint_mgr.resolve_agent_model(agent_name)
+        model = choice.model_name
+        endpoint = endpoint_mgr.get_endpoint_for_model(model)
 
-            rc = get_resource_controller()
-            rc_override = rc.get_model_override(agent_name)
-            if rc_override:
-                model_override = rc_override
-                print(f"  🎛️  Resource controller: using {rc_override} for {agent_name}")
-        except Exception as e:
-            print(f"  ⚠️  Resource controller model override check failed: {e}")
-    # ====================================================================
+    model = endpoint_mgr.validate_model(model)
+    endpoint_name = endpoint.name if endpoint else "default"
+    # ============================================================
 
     # Load agent prompts
     try:
@@ -617,6 +630,14 @@ def call_agent(  # noqa: C901
         return None
 
     system_prompt = prompts[agent_name]["system_prompt"]
+
+    # Log prompt size
+    full_prompt_length = len(system_prompt) + len(prompt)
+    if context:
+        full_prompt_length += sum(len(m.get("content", "")) for m in context[-10:])
+
+    print(f"  🤖 Calling {agent_name} via {endpoint_name}/{model or 'default'}...")
+    print(f"     Prompt: {full_prompt_length} chars, Context: {len(context) if context else 0} msgs")
 
     # Only inject schemas for JSON-outputting agents
     if agent_name not in TEXT_OUTPUT_AGENTS:
@@ -648,19 +669,6 @@ If you cannot analyze the file, return:
         messages.extend(context[-10:])
 
     messages.append({"role": "user", "content": prompt})
-
-    # Get and validate model
-    model = model_override or config.get("agent_model_preferences", {}).get(agent_name)
-    model = endpoint_mgr.validate_model(model)
-
-    # Get endpoint info for display
-    endpoint = endpoint_mgr.get_endpoint_for_model(model)
-    endpoint_name = endpoint.name if endpoint else "default"
-
-    # Log prompt size
-    full_prompt_length = len(system_prompt) + len(prompt)
-    if context:
-        full_prompt_length += sum(len(m.get("content", "")) for m in context[-10:])
 
     print(f"  🤖 Calling {agent_name} via {endpoint_name}/{model or 'default'}...")
     print(f"     Prompt: {full_prompt_length} chars, Context: {len(context) if context else 0} msgs")

@@ -130,6 +130,33 @@ rm -f "${REPORT_DIR}/test-durations-latest.json"
 
 path_exists() { [[ -e "$1" ]]; }
 
+# =============================================================================
+# Ensure required pytest plugins are installed
+# =============================================================================
+ensure_pytest_plugins() {
+    local script_path
+    script_path="$(readlink -f "${BASH_SOURCE[0]}")"
+    local script_dir
+    script_dir="$(dirname "$script_path")"
+
+    local setup_script="${script_dir}/setup.sh"
+
+    if ! python -c "import xdist, pytest_timeout" 2>/dev/null; then
+        echo "⚠️  Missing required pytest plugins (pytest-xdist, pytest-timeout)."
+        echo "    Running setup.sh to install dependencies..."
+
+        if [[ -x "$setup_script" ]]; then
+            "$setup_script"
+        else
+            echo "❌ Could not execute setup script: $setup_script"
+            exit 1
+        fi
+    fi
+}
+
+# Call this early in the script
+ensure_pytest_plugins
+
 # Run pytest with stdout+stderr written to log_file, then echo the log to the
 # terminal. Avoids `cmd | tee` pipe buffering / PIPESTATUS quirks on MSYS.
 run_pytest_capture() {

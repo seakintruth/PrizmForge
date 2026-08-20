@@ -2,6 +2,7 @@
 # =============================================================================
 # utils/setup.sh
 # Create / reuse project-root .venv and install runtime + dev dependencies.
+# Supports corporate environments by adding public PyPI as extra index.
 # =============================================================================
 
 set -euo pipefail
@@ -12,6 +13,23 @@ VENV_DIR="${REPO_ROOT}/.venv"
 
 PYTHON_EXEC="${PYTHON_EXEC:-python3}"
 FORCE_RECREATE=0
+
+# =============================================================================
+# PyPI Configuration (for corporate mirrors)
+# =============================================================================
+
+# Always include the public PyPI as an extra index.
+# This allows installation of packages that may not exist in internal mirrors.
+PYPI_EXTRA_INDEX="--extra-index-url https://pypi.org/simple --trusted-host pypi.org --trusted-host files.pythonhosted.org"
+
+# Helper to ensure all pip installs use the extra index
+pip_install() {
+    "${VENV_PYTHON}" -m pip install $PYPI_EXTRA_INDEX "$@"
+}
+
+# =============================================================================
+# Help
+# =============================================================================
 
 show_help() {
   cat << EOF
@@ -24,20 +42,12 @@ Options:
   -p, --python PATH   Python interpreter used to create the venv (default: python3)
   -f, --force         Remove existing .venv and recreate it
   -h, --help          Show this help
-
-Environment:
-  PYTHON_EXEC         Same as --python (overridden by the flag when present)
-
-After a successful run:
-  source .venv/bin/activate          # Linux / macOS
-  # or
-  .venv\\Scripts\\activate           # Windows
-
-Then use the suite as usual, e.g.:
-  ./utils/run_tests.sh --normal
-  python main.py
 EOF
 }
+
+# =============================================================================
+# Argument Parsing
+# =============================================================================
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -62,9 +72,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# ---------------------------------------------------------------------------
+# =============================================================================
 # Preconditions
-# ---------------------------------------------------------------------------
+# =============================================================================
+
 if ! command -v "$PYTHON_EXEC" >/dev/null 2>&1; then
   echo "Error: Python interpreter not found: ${PYTHON_EXEC}" >&2
   exit 1
@@ -80,9 +91,10 @@ if [[ ! -f "${REPO_ROOT}/requirements-dev.txt" ]]; then
   exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Create or recreate venv
-# ---------------------------------------------------------------------------
+# =============================================================================
+# Create or Recreate Virtual Environment
+# =============================================================================
+
 if [[ "$FORCE_RECREATE" -eq 1 && -d "$VENV_DIR" ]]; then
   echo "Removing existing virtual environment: ${VENV_DIR}"
   rm -rf "$VENV_DIR"
@@ -95,7 +107,7 @@ else
   echo "Reusing existing virtual environment: ${VENV_DIR}"
 fi
 
-# Resolve venv Python / pip (POSIX first, then Windows layout)
+# Resolve venv Python binary (POSIX vs Windows)
 if [[ -x "${VENV_DIR}/bin/python" ]]; then
   VENV_PYTHON="${VENV_DIR}/bin/python"
 elif [[ -x "${VENV_DIR}/Scripts/python.exe" ]]; then
@@ -106,22 +118,26 @@ else
 fi
 
 echo "Using venv Python: ${VENV_PYTHON}"
-"${VENV_PYTHON}" -c "import sys; print(f'  {sys.version.split()[0]} ({sys.executable})')"
+
+"${VENV_PYTHON}" -c '
+import sys
+ver = sys.version.split()[0]
+print(f"  Python {ver} at {sys.executable}")
+'
 
 # ---------------------------------------------------------------------------
 # Install dependencies
 # ---------------------------------------------------------------------------
 echo "Upgrading pip..."
-"${VENV_PYTHON}" -m pip install --upgrade pip
+pip_install --upgrade pip
 
-echo "Installing runtime dependencies (requirements.txt)..."
-"${VENV_PYTHON}" -m pip install -r "${REPO_ROOT}/requirements.txt"
-
-echo "Installing development / test dependencies (requirements-dev.txt)..."
-"${VENV_PYTHON}" -m pip install -r "${REPO_ROOT}/requirements-dev.txt"
+echo "Installing runtime dependencies..."
+pip_install -r "${REPO_ROOT}/requirements.txt"
+echo "Installing development dependencies..."
+pip_install -r "${REPO_ROOT}/requirements-dev.txt"
 
 echo ""
-echo "============================================================"
+echo "=============================================================="
 echo "Setup complete."
 echo "  venv:   ${VENV_DIR}"
 echo "  python: ${VENV_PYTHON}"
@@ -132,4 +148,7 @@ if [[ -f "${VENV_DIR}/bin/activate" ]]; then
 else
   echo "  ${VENV_DIR}\\Scripts\\activate"
 fi
-echo "============================================================"
+echo ""
+echo "To install the project in editable mode later, run:"
+echo "  pip install -e ."
+echo "=============================================================="
