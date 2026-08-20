@@ -266,7 +266,7 @@ class EndpointManager:
 
         # Full reference
         if "/" in model_name:
-            ep_name, bare = model_name.split("/", 1)
+            _ep_name, bare = model_name.split("/", 1)
             if model_name in self.models:
                 return self.models[model_name]["endpoint"]
             # Fall through using bare name
@@ -409,9 +409,7 @@ class EndpointManager:
             return None
 
         choice = self.normalize_model_reference(model_name)
-        if choice.model_name and self.model_reference_exists(
-            f"{choice.endpoint_name}/{choice.model_name}" if choice.endpoint_name else choice.model_name
-        ):
+        if choice.model_name and self.model_reference_exists(f"{choice.endpoint_name}/{choice.model_name}" if choice.endpoint_name else choice.model_name):
             return choice.model_name
 
         if self.model_reference_exists(model_name):
