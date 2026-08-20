@@ -620,9 +620,7 @@ def call_agent(  # noqa: C901
         endpoint = endpoint_mgr.get_endpoint_for_model(model)
 
     # validate_model returns bare model name for API payloads
-    model = endpoint_mgr.validate_model(
-        f"{choice.endpoint_name}/{model}" if choice.endpoint_name and model else model
-    )
+    model = endpoint_mgr.validate_model(f"{choice.endpoint_name}/{model}" if choice.endpoint_name and model else model)
     endpoint_name = endpoint.name if endpoint else "default"
     # ============================================================
 
