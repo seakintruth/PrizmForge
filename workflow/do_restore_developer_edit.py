@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Restore developer_edit.py from known-good blob and apply PR83 fixes."""
-from pathlib import Path
+
 import subprocess
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1] if (Path(__file__).parent.name == "workflow") else Path.cwd()
 target = ROOT / "workflow" / "developer_edit.py"
@@ -15,6 +16,7 @@ try:
     )
 except Exception:
     import urllib.request
+
     url = "https://raw.githubusercontent.com/seakintruth/PrizmForge/7cdabba2834bc1404503f0299b824a5d365b1e37/workflow/developer_edit.py"
     content = urllib.request.urlopen(url, timeout=30).read().decode()
 
