@@ -9,6 +9,8 @@
   "min_iterations_before_complete": 3,
   "background_agents_enabled": true,
 
+  "default_model": "gemini/gemini-3.1-pro-preview",
+
   "cli_mode": {
     "mode": "unattended",
     "unattended": {
