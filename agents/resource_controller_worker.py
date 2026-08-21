@@ -82,7 +82,7 @@ class ThrottleDecision:
     background_feeder_interval: int  # seconds between random file feeds
     active_agents: list[str]  # Which background agents to run
     rate_limit_per_minute: int  # Override global rate limit
-    model_downgrades: dict[str, str]  # agent_name -> faster_model
+    model_downgrades: dict[str, str]  # agent_name -> "endpoint/model_name"
     reasoning: str  # Human-readable explanation
 
     def to_dict(self) -> dict:
@@ -120,12 +120,24 @@ class HeuristicOptimizer:
         }
 
     def _model_downgrades_for(self, tier: str) -> dict[str, str]:
-        """Load agent->model map for a throttle tier from config (no hardcoded model IDs)."""
+        """
+        Load agent -> model downgrade map for a throttle tier.
+        Values are now in "endpoint/model" format (e.g. "gemini/gemini-3.7-flash").
+        """
         md = self.rc_config.get("model_downgrades") or {}
         tier_map = md.get(tier)
-        if isinstance(tier_map, dict):
-            return {str(k): str(v) for k, v in tier_map.items() if isinstance(v, str) and not str(k).startswith("_")}
-        return {}
+
+        if not isinstance(tier_map, dict):
+            return {}
+
+        downgrades = {}
+        for agent, model_ref in tier_map.items():
+            if str(agent).startswith("_"):
+                continue
+            if isinstance(model_ref, str) and model_ref.strip():
+                downgrades[str(agent)] = model_ref.strip()
+
+        return downgrades
 
     def _get_priority_categories(self) -> list[str]:
         """Get human-defined priority categories from config"""
@@ -747,12 +759,7 @@ class ResourceControllerWorker:
 
         # 2. Adjust rate limiter
         try:
-            get_config()
-
-            # Get the appropriate endpoint's rate limiter
-            # (You'll need to modify get_rate_limiter to accept endpoint parameter)
-            rate_limiter = get_rate_limiter(None)  # Global for now
-
+            rate_limiter = get_rate_limiter(None)
             if hasattr(rate_limiter, "set_max_calls"):
                 rate_limiter.set_max_calls(decision.rate_limit_per_minute)
         except Exception as e:
@@ -769,23 +776,24 @@ class ResourceControllerWorker:
         self._log_decision(decision, state)
 
     def _store_model_overrides(self, downgrades: dict[str, str]):
-        """Store model override preferences for agents to check"""
+        """Store model override preferences for agents"""
+        if not downgrades:
+            return
+
         try:
             with get_db_connection() as conn:
-                # Clear old overrides
                 conn.execute("DELETE FROM resource_model_overrides")
 
-                # Insert new overrides
-                for agent, model in downgrades.items():
-                    conn.execute(
-                        """
-                        INSERT INTO resource_model_overrides
-                        (agent_name, override_model, applied_at)
-                        VALUES (?, ?, ?)
-                    """,
-                        (agent, model, datetime.now().isoformat()),
-                    )
-
+                for agent, model_ref in downgrades.items():
+                    if model_ref:  # only store non-empty
+                        conn.execute(
+                            """
+                            INSERT INTO resource_model_overrides
+                            (agent_name, override_model, applied_at)
+                            VALUES (?, ?, ?)
+                            """,
+                            (agent, model_ref, datetime.now().isoformat()),
+                        )
         except Exception as e:
             print(f"    ⚠️  Failed to store model overrides: {e}")
 
@@ -897,28 +905,24 @@ Recommendation: {self._get_recommendation(decision)}"""
 
     def get_model_override(self, agent_name: str) -> str | None:
         """
-        Get model override for an agent (if any)
-
-        Agents should call this before selecting a model
-        Allows resource controller to downgrade models under budget pressure
+        Get model override for an agent.
+        Returns value in "endpoint/model" format if present.
         """
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-
                 cursor.execute(
                     """
                     SELECT override_model
                     FROM resource_model_overrides
                     WHERE agent_name = ?
-                """,
+                    ORDER BY applied_at DESC
+                    LIMIT 1
+                    """,
                     (agent_name,),
                 )
-
                 result = cursor.fetchone()
-
             return result[0] if result else None
-
         except Exception:
             return None
 
