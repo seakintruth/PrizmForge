@@ -1,283 +1,161 @@
 {
-  "_readme": "Template for config.json. Copy to config.json and replace placeholders. Keys with leading _ are documentation only and ignored by the app.",
+  "_readme": "Template for config.json. Copy this file and fill in your values. Keys starting with _ are for documentation only.",
+
   "project_directory": "../ExampleProject",
   "git": false,
   "git_auto_commit": false,
+
   "default_iteration_minutes": 5,
   "min_iterations_before_complete": 3,
   "background_agents_enabled": true,
-  "default_model": "gemini/gemini-3.1-pro-preview",
+
   "cli_mode": {
     "mode": "unattended",
-    "_mode_options": [
-      "interactive",
-      "semi_attended",
-      "unattended"
-    ],
     "unattended": {
-      "max_duration_hours": 1.5,
+      "max_duration_hours": 2,
       "auto_continue": true,
       "checkpoint_interval_minutes": 15,
-      "max_iterations_per_task": 50,
-      "min_idle_minutes": 30,
+      "max_iterations_per_task": 30,
       "auto_generate_tasks": true,
-      "prioritize_critical_issues": true,
-      "auto_init_on_start": true,
-      "seed_task": "Perform a careful peer review of the governed editing path and identify concrete, low-risk improvements.",
-        "seed_tasks": [
-          "Review workflow/developer_edit.py and file_editing/writer.py for remaining edge cases in mode fallback and materialization. Propose only small, surgical improvements.",
-          "Add or improve unit tests specifically for the edit mode fallback logic and for recording entries in the file_modifications table.",
-          "Examine the reviewer prompt and the information it receives. Suggest precise improvements that keep the change small and safe."
-        ],
-      "stop_when_backlog_empty": true,
-      "exit_on_preflight_failure": true
+      "stop_when_backlog_empty": true
     }
   },
+
   "endpoints": {
     "gemini": {
-      "base_url": "https://example.com/v1/chat/completions",
+      "base_url": "https://api.genai.mil/v1/chat/completions",
       "api_key_name": "gemini_api_key",
-      "key_management_url": "https://genai.mil/stark/user-ui/keys",
       "include_model_in_payload": true,
-      "response_path": [
-        "choices",
-        0,
-        "message",
-        "content"
-      ],
-      "description": "Enterprise Gemini-compatible OpenAI-style endpoint",
-      "priority": 20,
-      "rate_limit_per_minute": 118,
+      "response_path": ["choices", 0, "message", "content"],
+      "description": "Primary Gemini endpoint",
+      "priority": 10,
+      "rate_limit_per_minute": 100,
       "models": {
-        "gemini-3.1-pro-preview": {
-          "max_output_tokens": 16384,
-          "temperature": 0.5,
-          "max_context_tokens": 1000000,
-          "description": "Most capable Gemini, best for complex reasoning"
-        },
         "gemini-3.7-flash": {
-          "max_output_tokens": 16384,
+          "max_output_tokens": 65536,
+          "max_context_tokens": 1048576,
           "temperature": 0.7,
-          "description": "Fast and cost-effective"
+          "description": "Fast default model"
+        },
+        "gemini-3.1-pro-preview": {
+          "max_output_tokens": 65536,
+          "max_context_tokens": 1048576,
+          "temperature": 0.5,
+          "description": "Higher capability model"
         }
       }
     },
-    "databricks": {
-      "base_url": "https://databricks.example.com/serving-endpoints/claude-sonnet/invocations",
-      "api_key_name": "databricks_token",
-      "key_management_url": "https://docs.databricks.com/en/dev-tools/auth/pat.html",
-      "include_model_in_payload": false,
-      "response_path": [
-        "choices",
-        0,
-        "message",
-        "content"
-      ],
-      "description": "Enterprise Databricks endpoint",
-      "priority": 10,
-      "rate_limit_per_minute": 60,
+    "beta_genai": {
+      "base_url": "https://api-beta.genai.mil/v1/chat/completions",
+      "api_key_name": "beta_genai_api_key",
+      "include_model_in_payload": true,
+      "response_path": ["choices", 0, "message", "content"],
+      "description": "Beta endpoint for future models (Grok, GPT, etc.)",
+      "priority": 20,
+      "rate_limit_per_minute": 80,
       "models": {
-        "databricks-claude-sonnet-4-5": {
-          "endpoint": "databricks",
-          "max_output_tokens": 16384,
-          "temperature": 0.5,
-          "description": "Claude Sonnet via Databricks"
+        "grok-4.3-fast": {
+          "max_output_tokens": 32768,
+          "max_context_tokens": 128000,
+          "temperature": 0.7,
+          "description": "Fast Grok model (placeholder)"
+        },
+        "gpt-5.4": {
+          "max_output_tokens": 65536,
+          "max_context_tokens": 200000,
+          "temperature": 0.6,
+          "description": "GPT model (placeholder)"
         }
       }
     }
   },
+
   "default_endpoint": "gemini",
+
   "fallback_settings": {
-    "enabled": false,
-    "max_fallback_attempts": 2,
-    "cooldown_on_exhaustion_minutes": 5,
-    "cooldown_on_lock_minutes": 1,
-    "cooldown_on_rate_limit_minutes": 1,
-    "cooldown_on_error_minutes": 5,
-    "prefer_same_provider": false,
-    "log_fallbacks": true
+    "enabled": true,
+    "max_fallback_attempts": 2
   },
+
   "agent_model_preferences": {
     "orchestrator": "gemini/gemini-3.1-pro-preview",
-    "developer": "databricks/databricks-claude-sonnet-4-5",
+    "developer": "gemini/gemini-3.1-pro-preview",
     "reviewer": "gemini/gemini-3.1-pro-preview",
-    "researcher": "gemini/gemini-3.7-flash",
+    "researcher": "gemini/gemini-3.1-pro-preview",
     "prioritizer": "gemini/gemini-3.1-pro-preview",
+    "security_reviewer": "gemini/gemini-3.1-pro-preview",
+    "deployment_validator": "gemini/gemini-3.1-pro-preview",
+
     "jr_reviewer": "gemini/gemini-3.7-flash",
     "jr_researcher": "gemini/gemini-3.7-flash",
     "tech_writer": "gemini/gemini-3.7-flash",
-    "file_manager": "gemini/gemini-3.1-pro-preview",
-    "archivist": "gemini/gemini-3.1-pro-preview",
+    "file_manager": "gemini/gemini-3.7-flash",
+    "archivist": "gemini/gemini-3.7-flash",
     "project_reporter": "gemini/gemini-3.7-flash",
-    "resource_controller": "gemini/gemini-3.1-pro-preview",
-    "deployment_validator": "gemini/gemini-3.1-pro-preview",
-    "security_reviewer": "gemini/gemini-3.7-flash"
+    "resource_controller": "gemini/gemini-3.7-flash"
   },
+
   "proxy": {
     "http": "",
     "https": "",
-    "_note": "Leave empty strings to disable. Example: http://proxy.example.com:8080"
+    "_note": "Leave empty to disable proxy"
   },
+
   "token_budget": {
-    "max_tokens_per_4h": 250000
+    "max_tokens_per_4h": 500000
   },
+
   "reporter": {
     "enabled": true,
-    "interval_minutes": 10,
-    "change_threshold_percent": 5.0,
-    "change_threshold_lines": 2000,
-    "include_git_commits": true,
-    "include_agent_activity": true,
-    "max_reports_to_keep": 3000,
-    "report_trigger_cooldown_minutes": 5
+    "interval_minutes": 10
   },
+
   "resource_controller": {
     "enabled": true,
-    "check_interval_seconds": 5,
-    "max_tokens_per_day": 50000000,
-    "aggressive_throttling_threshold": 0.75,
-    "project_goals": {
-      "max_daily_cost_usd": 200,
-      "priority_focus": [
-        "security",
-        "performance"
-      ],
-      "human_only_adjust": true,
-      "notes": "ONLY HUMANS may edit this section. Agents must treat it as immutable."
-    },
-    "_model_downgrades_note": "Model IDs for budget/backlog throttling. Values must be full endpoint/model references matching keys under endpoints.*.models. Empty map = no overrides for that tier.",
+    "max_tokens_per_day": 2000000,
     "model_downgrades": {
       "default_model": "gemini/gemini-3.7-flash",
       "critical": {
-        "prioritizer": "gemini/gemini-3.7-flash",
-        "orchestrator": "gemini/gemini-3.7-flash",
-        "developer": "databricks/databricks-claude-sonnet-4-5",
-        "jr_reviewer": "gemini/gemini-3.7-flash",
-        "jr_researcher": "gemini/gemini-3.7-flash",
-        "tech_writer": "gemini/gemini-3.7-flash"
+        "orchestrator": "gemini/gemini-3.1-pro-preview",
+        "developer": "gemini/gemini-3.1-pro-preview",
+        "prioritizer": "gemini/gemini-3.1-pro-preview",
+        "security_reviewer": "gemini/gemini-3.1-pro-preview"
       },
       "aggressive": {
         "jr_reviewer": "gemini/gemini-3.7-flash",
         "jr_researcher": "gemini/gemini-3.7-flash",
-        "tech_writer": "gemini/gemini-3.7-flash",
-        "archivist": "gemini/gemini-3.7-flash"
-      },
-      "moderate": {
-        "tech_writer": "gemini/gemini-3.7-flash",
-        "archivist": "gemini/gemini-3.7-flash"
-      },
-      "backlog_processing": {
-        "developer": "gemini/gemini-3.7-flash",
-        "prioritizer": "gemini/gemini-3.1-pro-preview"
-      },
-      "prioritizer_batch": "gemini/gemini-3.7-flash"
+        "tech_writer": "gemini/gemini-3.7-flash"
+      }
     }
   },
+
   "background_agents": {
     "jr_reviewer": {
       "enabled": true,
       "on_modification": true,
-      "random_review": true,
-      "random_files_per_cycle": 3
-    },
-    "jr_researcher": {
-      "enabled": true,
-      "on_modification": false,
-      "random_review": true,
-      "random_files_per_cycle": 2
-    },
-    "tech_writer": {
-      "enabled": true,
-      "on_modification": false,
-      "random_review": true,
-      "random_files_per_cycle": 2
+      "random_review": true
     },
     "security_reviewer": {
       "enabled": true,
-      "on_modification": true,
-      "random_review": true,
-      "random_files_per_cycle": 2
-    },
-    "deployment_validator": {
-      "enabled": true,
-      "on_modification": true,
-      "random_review": false,
-      "confidence_threshold": 0.7
+      "on_modification": true
     }
   },
-  "background_feeder": {
-    "interval_seconds": 30,
-    "files_per_agent_default": 3
-  },
-  "file_operations": {
-    "max_file_size_kb": 1000,
-    "ignore_patterns": [
-      "*.pyc",
-      "__pycache__",
-      ".git",
-      "node_modules",
-      ".env",
-      "*.db",
-      "venv",
-      ".venv",
-      ".PrizmForge"
-    ]
-  },
+
   "file_editing": {
-    "method": "full_replace",
-    "_method_options": [
-      "guid",
-      "find_replace",
-      "full_replace",
-      "diff"
-    ],
-    "_note": "method is a soft legacy preference. preferred_modes + fallback_order drive selection.",
-    "preferred_modes": [
-      "guid",
-      "find_replace",
-      "full_replace"
-    ],
-    "fallback_order": [
-      "guid",
-      "diff",
-      "find_replace",
-      "full_replace"
-    ],
+    "preferred_modes": ["guid", "find_replace", "full_replace"],
+    "fallback_order": ["guid", "diff", "find_replace", "full_replace"],
     "small_file_threshold_lines": 180
   },
-  "feedback": {
-    "max_age_days_low": 7,
-    "max_unaddressed": 200,
-    "_note": "Backlog aging for unattended runs"
-  },
+
   "content_safety": {
     "disallow_binary_content": true,
     "blocked_extensions": [
-      ".appx",
-      ".appxbundle",
-      ".bin",
-      ".cab",
-      ".com",
-      ".cpl",
-      ".dll",
-      ".dmg",
-      ".drv",
-      ".exe",
-      ".img",
-      ".iso",
-      ".msi",
-      ".msix",
-      ".msm",
-      ".msp",
-      ".msu",
-      ".ocx",
-      ".scr",
-      ".sys"
+      ".exe", ".dll", ".bin", ".iso", ".msi", ".dmg", ".appx"
     ]
   },
+
   "llm": {
     "test_mode": false,
-    "mock_responses": {},
-    "_note": "Set test_mode true or PRIZMFORGE_TEST_MODE=1 to skip real API calls."
+    "_note": "Set to true or use PRIZMFORGE_TEST_MODE=1 to disable real API calls"
   }
 }

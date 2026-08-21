@@ -1,0 +1,26 @@
+{
+  "description": "Exploratory list of models to test on GenAI.mil endpoints",
+  "models": [
+    "gemini-2.5-flash",
+    "gemini-2.5-pro",
+    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.8-flash",
+    "gemini-3-flash-preview",
+    "gemini-4.0-flash",
+    "grok-4.3",
+    "grok-4.3-fast",
+    "grok-4.3-expert",
+    "grok-4.3-fast-expert",
+    "grok-4",
+    "grok",
+    "gpt-5.4",
+    "gpt-5.4-fast",
+    "gpt-5",
+    "o3",
+    "o1",
+    "o1-mini"
+  ]
+}

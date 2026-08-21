@@ -2,150 +2,231 @@
 """
 utils/list_endpoint_models.py
 
-Diagnostic tool to:
-- List configured endpoints from config.json
-- Try to discover available models (/v1/models)
-- Fall back to testing the actual chat completions endpoint
-- Continue on errors and test every endpoint
+Exploratory model discovery tool for GenAI.mil endpoints.
+Reads endpoints from config.json and models to test from list_models_to_test.json.
 """
 
 import json
-import urllib.error
-import urllib.request
+import sys
+import time
 from pathlib import Path
-from urllib.parse import urlparse
+from typing import Any
 
-CONFIG_FILE = Path("config.json")
-API_KEY_FILE = Path("api_key.json")
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from core.config import get_config
+from core.http_client import post_json
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+RETRYABLE_STATUS_CODES = {429, 503, 504}
+MAX_RETRIES = 3
+BASE_DELAY = 1.0  # seconds
 
 
-def load_json(path: Path) -> dict:
+def load_test_models() -> list[str]:
+    """Load the exploratory list of models to test."""
+    path = Path("utils/list_models_to_test.json")
     if not path.exists():
-        return {}
+        print(f"⚠️  {path} not found. Using minimal fallback list.")
+        return ["gemini-2.5-pro", "gemini-3.7-flash"]
+
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        models = data.get("models", [])
+        # Deduplicate while preserving order
+        seen = set()
+        unique_models = []
+        for m in models:
+            if m not in seen:
+                seen.add(m)
+                unique_models.append(m)
+        print(f"Loaded {len(unique_models)} unique models from {path.name}")
+        return unique_models
     except Exception as e:
-        print(f"⚠️  Failed to parse {path}: {e}")
-        return {}
+        print(f"⚠️  Failed to load {path}: {e}")
+        return ["gemini-2.5-pro", "gemini-3.7-flash"]
 
 
-def get_api_key(config: dict, api_key_name: str) -> str | None:
-    # Prefer api_key.json
-    keys = load_json(API_KEY_FILE)
-    if api_key_name in keys:
-        return keys[api_key_name]
+def _post_with_retry(
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: dict[str, Any] | None,
+    proxies: dict[str, str] | None,
+    timeout: float = 25,
+) -> Any:
+    """POST with simple exponential backoff for retryable errors."""
+    last_exception = None
 
-    # Fallback to config.json
-    return config.get(api_key_name)
+    for attempt in range(MAX_RETRIES):
+        try:
+            resp = post_json(
+                url=url,
+                headers=headers,
+                json_body=json_body,
+                timeout=timeout,
+                proxies=proxies,
+                prefer_requests=True,
+            )
+            if resp.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_RETRIES - 1:
+                delay = BASE_DELAY * (2**attempt)
+                print(f"     (Retryable {resp.status_code}, waiting {delay:.1f}s...)")
+                time.sleep(delay)
+                continue
+            return resp
+        except Exception as e:
+            last_exception = e
+            if attempt < MAX_RETRIES - 1:
+                delay = BASE_DELAY * (2**attempt)
+                print(f"     (Transient error, retrying in {delay:.1f}s...)")
+                time.sleep(delay)
+            else:
+                raise  # <-- was: raise last_exception   (this was the B904 violation)
+
+    raise last_exception  # type: ignore
 
 
-def derive_models_url(base_url: str) -> str:
-    """Convert chat completions URL to models URL."""
-    parsed = urlparse(base_url)
-    # Remove everything after /v1
-    if "/v1/" in base_url:
-        root = base_url.split("/v1/")[0] + "/v1"
-    else:
-        root = f"{parsed.scheme}://{parsed.netloc}/v1"
-    return f"{root}/models"
+def test_models_endpoint(base_url: str, api_key: str, proxies: dict, endpoint_name: str) -> None:
+    """Test the standard OpenAI-compatible /v1/models endpoint."""
+    models_url = base_url.replace("/chat/completions", "/models")
+    print(f"\n📋 [{endpoint_name}] Testing /v1/models")
+    print(f"   URL: {models_url}")
 
+    headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
 
-def test_models_endpoint(url: str, api_key: str) -> tuple[bool, str]:
-    """Try to fetch /v1/models."""
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    req = urllib.request.Request(url, headers=headers, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=20) as response:
-            data = json.loads(response.read().decode())
-            if "data" in data:
-                models = [m.get("id", "unknown") for m in data.get("data", [])]
-                return True, f"✅ Found {len(models)} models: {models[:8]}..."
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="ignore")[:300]
-        return False, f"HTTP {e.code}: {body}"
+        resp = _post_with_retry(
+            url=models_url,
+            headers=headers,
+            json_body=None,
+            proxies=proxies,
+            timeout=20,
+        )
+        print(f"   Status: {resp.status_code}")
+
+        if resp.status_code == 200:
+            data = resp.json()
+            models = [m.get("id") for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+            print(f"   ✅ SUCCESS — Found {len(models)} models")
+            for m in sorted(models)[:30]:
+                print(f"      • {m}")
+            if len(models) > 30:
+                print(f"      ... and {len(models) - 30} more")
+        else:
+            body = resp.text[:300] if resp.text else "(empty body)"
+            print(f"   Body: {body}")
     except Exception as e:
-        return False, str(e)[:200]
-    return False, "No valid model list returned"
+        print(f"   Exception: {type(e).__name__}: {e}")
 
 
-def test_chat_endpoint(base_url: str, api_key: str) -> tuple[bool, str]:
-    """Send a minimal test message to the chat endpoint."""
+def test_model(base_url: str, api_key: str, model: str, proxies: dict, endpoint_name: str) -> bool:
+    """Test a single model via the chat completions endpoint."""
+    print(f"   Testing: {model:<30}", end=" ")
+
     payload = {
-        "messages": [{"role": "user", "content": "Reply with exactly: TEST_OK"}],
-        "max_tokens": 8,
-        "temperature": 0,
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with exactly: OK"}],
+        "max_tokens": 20,
+        "temperature": 0.0,
     }
-    data = json.dumps(payload).encode("utf-8")
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    req = urllib.request.Request(base_url, data=data, headers=headers, method="POST")
+
     try:
-        with urllib.request.urlopen(req, timeout=25) as response:
-            body = response.read().decode()
-            if "content" in body.lower() or "message" in body.lower() or "choices" in body.lower():
-                return True, "✅ Chat endpoint responded successfully"
-            return False, f"Unexpected response: {body[:200]}"
-    except urllib.error.HTTPError as e:
-        body = e.read().decode(errors="ignore")[:300]
-        return False, f"HTTP {e.code}: {body}"
+        resp = _post_with_retry(
+            url=base_url,
+            headers=headers,
+            json_body=payload,
+            proxies=proxies,
+            timeout=25,
+        )
+
+        if resp.status_code != 200:
+            print(f"❌ {resp.status_code}")
+            return False
+
+        # Try to extract the model's reply
+        try:
+            data = resp.json()
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+        except Exception:
+            content = resp.text[:80] if resp.text else ""
+
+        # Accept "OK" anywhere in the response (case-insensitive)
+        if content and "ok" in content.lower():
+            print("✅ WORKING")
+            return True
+        else:
+            print(f'⚠️  REPLIED → "{content[:60]}"')
+            return True  # Still counts as the model worked
+
     except Exception as e:
-        return False, str(e)[:200]
+        print(f"❌ {type(e).__name__}")
+        return False
 
 
-def main():
-    config = load_json(CONFIG_FILE)
+def main() -> None:
+    config = get_config()
+    proxy = config.get("proxy")
     endpoints = config.get("endpoints", {})
 
-    if not endpoints:
-        print("⚠️  No 'endpoints' section found in config.json")
-        return
+    test_models = load_test_models()
 
-    print("🔍 PrizmForge Endpoint Discovery & Health Check")
-    print("=" * 60)
+    print("\n🔍 GenAI.mil Exploratory Model Discovery")
+    print("=" * 100)
+    print(f"Proxy configured : {bool(proxy)}")
+    print(f"Endpoints        : {list(endpoints.keys())}")
+    print(f"Models to test   : {len(test_models)}")
+    print("=" * 100)
 
-    for name, ep_config in endpoints.items():
-        print(f"\n{'=' * 60}")
-        print(f"🔌 Endpoint: {name}")
-        print(f"{'=' * 60}")
+    results: dict[str, list[str]] = {}
 
+    for ep_name, ep_config in endpoints.items():
         base_url = ep_config.get("base_url")
-        if not base_url:
-            print("   ⚠️  No base_url configured — skipping")
+        api_key = config.get(ep_config.get("api_key_name"))
+
+        if not base_url or not api_key:
+            print(f"\n⚠️  Skipping {ep_name} — missing base_url or API key")
             continue
 
-        print(f"   Base URL : {base_url}")
+        print(f"\n{'█' * 100}")
+        print(f"🔌 ENDPOINT: {ep_name.upper()} | {base_url}")
+        print(f"{'█' * 100}")
 
-        api_key_name = ep_config.get("api_key_name", "api_key")
-        api_key = get_api_key(config, api_key_name)
+        test_models_endpoint(base_url, api_key, proxy, ep_name)
 
-        if not api_key or "YOUR_" in api_key or len(api_key) < 10:
-            print(f"   ❌ No valid API key found for '{api_key_name}'")
-            continue
+        print("\n🧪 Testing individual models:")
+        working_models: list[str] = []
+        for model in test_models:
+            if test_model(base_url, api_key, model, proxy, ep_name):
+                working_models.append(model)
 
-        print(f"   ✅ API key found for: {api_key_name}")
+        results[ep_name] = working_models
 
-        # 1. Try models endpoint
-        models_url = derive_models_url(base_url)
-        print(f"   Testing models: {models_url}")
-        success, msg = test_models_endpoint(models_url, api_key)
-        print(f"   {msg}")
+        if working_models:
+            print(f"\n✅ WORKING MODELS on {ep_name} ({len(working_models)}):")
+            for m in sorted(set(working_models)):
+                print(f"     • {m}")
+        else:
+            print("   No working models found on this endpoint.")
 
-        if success:
-            continue
-
-        # 2. Fallback to testing chat endpoint
-        print("   Testing chat endpoint reachability...")
-        _chat_ok, chat_msg = test_chat_endpoint(base_url, api_key)
-        print(f"   {chat_msg}")
-
-    print("\n" + "=" * 60)
-    print("✅ All endpoints processed.")
-    print("=" * 60)
+    # -------------------------------------------------------------------------
+    # Final Summary
+    # -------------------------------------------------------------------------
+    print("\n" + "=" * 100)
+    print("SUMMARY")
+    print("=" * 100)
+    for ep_name, models in results.items():
+        print(f"{ep_name:15} → {len(models)} working model(s)")
+        if models:
+            print(f"                 {', '.join(sorted(set(models)))}")
+    print("=" * 100)
+    print("Exploratory discovery complete.\n")
 
 
 if __name__ == "__main__":
