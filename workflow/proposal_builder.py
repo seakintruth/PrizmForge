@@ -59,21 +59,26 @@ def _get_affected_guids_from_operation(op) -> list[str]:
 def _capture_hashes_for_operations(conn: sqlite3.Connection, file_id: int, payload: EditPayload) -> tuple[list[str], dict]:
     """Capture current hashes for optimistic concurrency validation."""
     affected_guids: list[str] = []
-    expected_hashes: dict = {}
+    expected_hashes: dict[str, str] = {}
 
     for op in payload.operations:
         guids = _get_affected_guids_from_operation(op)
         if guids:
             affected_guids.extend(guids)
-            for guid in guids:
-                row = conn.execute(
-                    "SELECT content_hash FROM file_lines WHERE line_guid = ? AND is_deleted = 0",
-                    (guid,),
-                ).fetchone()
-                if row:
-                    expected_hashes[guid] = row[0]
 
-    return list(set(affected_guids)), expected_hashes
+    unique_guids = list(set(affected_guids))
+    if not unique_guids:
+        return unique_guids, expected_hashes
+
+    placeholders = ",".join(["?"] * len(unique_guids))
+    query = f"SELECT line_guid, content_hash FROM file_lines WHERE file_id = ? AND is_deleted = 0 AND line_guid IN ({placeholders})"  # noqa: S608
+
+    rows = conn.execute(query, (file_id, *unique_guids)).fetchall()
+
+    for guid, content_hash in rows:
+        expected_hashes[guid] = content_hash
+
+    return unique_guids, expected_hashes
 
 
 def create_proposal_from_developer_output(
@@ -98,18 +103,6 @@ def create_proposal_from_developer_output(
             affected_guids, expected_hashes = _capture_hashes_for_operations(conn, file_id, payload)
 
             proposal_id = str(uuid4())
-
-            # Best-effort: ensure metadata columns exist (safe for existing DBs)
-            for col, coltype in (
-                ("selected_mode", "TEXT"),
-                ("fallback_used", "INTEGER DEFAULT 0"),
-                ("final_mode", "TEXT"),
-                ("task_id", "TEXT"),
-            ):
-                try:
-                    conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
-                except Exception as e:
-                    print(f"   ℹ️ Column {col} already exists or skipped: {e}")
 
             # Embed mode info in rationale prefix for auditability even without columns
             base_rationale = rationale or payload.rationale or ""
