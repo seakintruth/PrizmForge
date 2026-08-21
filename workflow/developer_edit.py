@@ -10,22 +10,7 @@ Primary entry: run_developer_mutation(...)
 
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from typing import Any
-
-from agents.base import call_agent
 from core.db_connection import get_db_connection
-from core.db_helpers import post_message
-from core.edit_response_validator import validate_developer_edit_response
-from core.events import publish_event
-from core.file_operations import format_file_with_guids, get_file_content_from_db
-from core.index_context import load_symbol_json_context
-from core.json_parser import parse_json_response
-from file_editing.undo import snapshot_before_apply
-from file_editing.writer import materialize_proposal
-from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER, MODE_DIFF, MODE_FULL_REPLACE, MODE_GUID, next_fallback_mode, select_edit_mode
-from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 
 
 # =========================================================================
