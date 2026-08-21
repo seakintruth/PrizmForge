@@ -461,18 +461,18 @@ def run_developer_mutation(  # noqa: C901
 
     reviewer_response = call_agent("reviewer", reviewer_prompt, task_id)
 
-    decision_result = "APPROVE"
-    reason = ""
+    decision_result = "REJECT"
+    reason = "No response from reviewer; failing closed to REJECT"
     suggestions: list[str] = []
     if reviewer_response:
         try:
             decision_data = json.loads(reviewer_response)
-            decision_result = str(decision_data.get("decision", "APPROVE")).upper()
+            decision_result = str(decision_data.get("decision", "REJECT")).upper()
             reason = decision_data.get("reason", "")
             suggestions = decision_data.get("suggestions") or []
         except Exception:
-            decision_result = "APPROVE"
-            reason = "reviewer response not JSON; defaulting to APPROVE"
+            decision_result = "REJECT"
+            reason = "reviewer response not JSON; failing closed to REJECT"
 
     if suggestions:
         suggestion_text = "\n".join([f"- {s}" for s in suggestions])
