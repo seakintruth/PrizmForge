@@ -9,33 +9,46 @@ materialization results, errors, and events.
 from __future__ import annotations
 
 import argparse
-import csv
 import sys
-import traceback
 from pathlib import Path
-from typing import Any
 
-# Project root must be on sys.path before package imports.
-# Required when invoking this file directly (not only via `python -m utils...`).
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+try:
+    import sqlite3
+except ImportError:
+    sqlite3 = None  # type: ignore
 
-from cli.commands import cmd_export_db  # noqa: E402
-from core.db import get_db_path  # noqa: E402
-from core.db_connection import get_db_connection  # noqa: E402
+try:
+    from core.db import get_db_path
+except ImportError:
 
-# ---------------------------------------------------------------------------
-# Original helper functions (kept intact)
-# ---------------------------------------------------------------------------
+    def get_db_path():
+        return str(Path.cwd() / ".PrizmForge" / "agents.db")
+
+
+try:
+    from core.db_connection import get_db_connection
+except ImportError:
+    from contextlib import contextmanager
+
+    @contextmanager
+    def get_db_connection():
+        """Fallback for environments without core.db_connection."""
+        import sqlite3
+
+        conn = sqlite3.connect(get_db_path())
+        conn.row_factory = sqlite3.Row
+        try:
+            yield conn
+        finally:
+            conn.close()
 
 
 def list_recent_developer_responses(
-    task_id=None,
-    limit=10,
-    agent_name="developer",
-    file_filter=None,
-    modified_only=False,
+    task_id: str | None = None,
+    limit: int = 10,
+    agent_name: str = "developer",
+    file_filter: str | None = None,
+    modified_only: bool = False,
 ):
     """List recent developer responses with summary info, file filtering, and exact Reviewer approval matching."""
     with get_db_connection() as conn:
@@ -46,7 +59,7 @@ def list_recent_developer_responses(
 
         if task_id:
             query_conditions.append("r.task_id = ?")
-            params.append(task_id)
+            params.append(str(task_id))
 
         if file_filter:
             query_conditions.append("(r.prompt LIKE ? OR r.response LIKE ? OR p.target_file_path LIKE ?)")
@@ -89,373 +102,163 @@ def list_recent_developer_responses(
         cursor.execute(query, params)
         responses = cursor.fetchall()
 
+    file_msg = f" mentioning '{file_filter}'" if file_filter else ""
+    mod_msg = " that resulted in file changes" if modified_only else ""
+
     if not responses:
-        file_msg = f" mentioning '{file_filter}'" if file_filter else ""
-        mod_msg = " that resulted in file changes" if modified_only else ""
-        print(f"\n❌ No {agent_name} responses found{file_msg}{mod_msg}")
+        print(f"No {agent_name} responses found{file_msg}{mod_msg}.")
         return []
 
     print(f"\n{'=' * 80}")
-    filter_msgs = []
-    if file_filter:
-        filter_msgs.append(f"Filtered by file: '{file_filter}'")
-    if modified_only:
-        filter_msgs.append("Modified Files Only")
-
-    filter_str = f" ({', '.join(filter_msgs)})" if filter_msgs else ""
-    print(f"📋 Recent {agent_name.upper()} Responses ({len(responses)} found){filter_str}")
+    print(f"📋 Recent {agent_name} responses{file_msg}{mod_msg} — {len(responses)} rows")
     print(f"{'=' * 80}\n")
 
-    for row in responses:
-        resp_id, timestamp, _agent, task, parse_ok, prompt_len, resp_len, mod_file = row
-        status = "✅ Parsed" if parse_ok else "❌ Parse Failed"
-        if mod_file:
-            status += f" (File Modified: {mod_file})"
-
-        print(f"ID: {resp_id}")
-        print(f"   Time: {timestamp}")
-        print(f"   Task: {task}")
-        print(f"   Status: {status}")
-        print(f"   Prompt: {prompt_len:,} chars")
-        print(f"   Response: {resp_len:,} chars")
-        print()
-
-    return [r[0] for r in responses]
-
-
-def show_response_detail(response_id, show_full=False, max_chars=2000):
-    """Show detailed view of a specific response."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-
-        cursor.execute(
-            """
-            SELECT timestamp, agent_name, task_id, prompt, response,
-                   parse_success, parse_error
-            FROM agent_responses_archive
-            WHERE id = ?
-        """,
-            (response_id,),
+    headers = ["id", "timestamp", "agent", "task_id", "parse_ok", "prompt_len", "resp_len", "modified_file"]
+    table_rows = []
+    for r in responses:
+        table_rows.append(
+            [
+                r["id"],
+                r["timestamp"],
+                r["agent_name"],
+                r["task_id"],
+                "✓" if r["parse_success"] else "✗",
+                r["prompt_len"],
+                r["response_len"],
+                r["modified_file"] or "",
+            ]
         )
 
-        row = cursor.fetchone()
+    _print_table(headers, table_rows)
 
-    if not row:
-        print(f"\n❌ Response ID {response_id} not found\n")
-        return
-
-    timestamp, agent, task, prompt, response, parse_ok, parse_error = row
-
-    print(f"\n{'=' * 80}")
-    print(f"📄 Response Detail - ID: {response_id}")
-    print(f"{'=' * 80}")
-    print(f"Time: {timestamp}")
-    print(f"Agent: {agent}")
-    print(f"Task: {task}")
-    print(f"Parse Success: {'✅ Yes' if parse_ok else '❌ No'}")
-    if parse_error:
-        print(f"Parse Error: {parse_error}")
-    print(f"{'=' * 80}\n")
-
-    # PROMPT
-    print(f"📥 PROMPT ({len(prompt):,} chars):")
-    print("-" * 80)
-    if show_full or len(prompt) <= max_chars:
-        print(prompt)
-    else:
-        print(prompt[:max_chars])
-        print(f"\n... +{len(prompt) - max_chars:,} more chars (use --full to see all)")
-    print()
-
-    # RESPONSE
-    print(f"📤 RESPONSE ({len(response):,} chars):")
-    print("-" * 80)
-
-    if not response or response.strip() == "":
-        print("⚠️  EMPTY RESPONSE - This is the source of the JSON parse error!")
-    elif show_full or len(response) <= max_chars:
-        print(response)
-    else:
-        half = max_chars // 2
-        print(response[:half])
-        print(f"\n... +{len(response) - max_chars:,} more chars ...\n")
-        print(response[-half:])
-        print(f"\n(use --full to see all {len(response):,} chars)")
-
-    print("\n" + "=" * 80 + "\n")
-
-    # Diagnostic info
-    if not parse_ok:
-        print("🔍 DIAGNOSTIC INFO:")
-        print("-" * 80)
-
-        if not response or response.strip() == "":
-            print("❌ Response is empty or whitespace only")
-            print("   → This causes 'Expecting value: line 1 column 1' error")
-            print("\n💡 Possible causes:")
-            print("   1. LLM returned nothing (timeout, content filter, error)")
-            print("   2. Network/API error (check endpoint_health table)")
-            print("   3. Response was lost in transmission")
-        elif not response.strip().startswith("{") and not response.strip().startswith("["):
-            print(f"⚠️  Response doesn't start with '{{' or '[' (starts with: {response.strip()[:50]})")
-            print("   → Response may be wrapped in markdown or conversational text")
-        elif response.count("{") != response.count("}") or response.count("[") != response.count("]"):
-            print("⚠️  Unmatched brackets or braces in JSON")
-            print("   → Response may be truncated")
-        else:
-            print("⚠️  Response looks like JSON but parser failed")
-            print("   → May have syntax errors inside the JSON")
-
-        print()
+    return [r["id"] for r in responses]
 
 
-def show_failed_parses(task_id=None, limit=10, file_filter=None):
-    """Show only responses that failed to parse with optional file filtering."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-
-        query_conditions = ["parse_success = 0"]
-        params = []
-
-        if task_id:
-            query_conditions.append("task_id = ?")
-            params.append(task_id)
-
-        if file_filter:
-            query_conditions.append("(prompt LIKE ? OR response LIKE ?)")
-            file_pattern = f"%{file_filter}%"
-            params.extend([file_pattern, file_pattern])
-
-        where_clause = " AND ".join(query_conditions)
-        query = f"""
-            SELECT id, timestamp, agent_name, task_id, parse_error,
-                   LENGTH(prompt) as prompt_len,
-                   LENGTH(response) as response_len
-            FROM agent_responses_archive
-            WHERE {where_clause}
-            ORDER BY timestamp DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        cursor.execute(query, params)
-        failures = cursor.fetchall()
-
-    if not failures:
-        file_msg = f" mentioning '{file_filter}'" if file_filter else ""
-        print(f"\n✅ No parse failures found{file_msg}!\n")
-        return
-
-    filter_msg = f" (Filtered by file: '{file_filter}')" if file_filter else ""
-    print(f"\n{'=' * 80}")
-    print(f"❌ Parse Failures ({len(failures)} found){filter_msg}")
-    print(f"{'=' * 80}\n")
-
-    for row in failures:
-        resp_id, timestamp, agent, task, error, _prompt_len, resp_len = row
-
-        print(f"ID: {resp_id} | {timestamp}")
-        print(f"   Agent: {agent} | Task: {task}")
-        print(f"   Response: {resp_len:,} chars")
-        print(f"   Error: {error}")
-        print()
-
-
-# ---------------------------------------------------------------------------
-# New diagnostic helpers
-# ---------------------------------------------------------------------------
-
-
-def _print_table(headers: list[str], rows: list[tuple], max_col_width: int = 60):
-    """Simple pretty-printer for query results."""
+def _print_table(headers, rows):
+    """Print a simple aligned table to stdout."""
     if not rows:
         print("  (no rows)")
         return
 
-    # Truncate long cells for readability
-    def trunc(val, width=max_col_width):
-        s = str(val) if val is not None else ""
-        return s if len(s) <= width else s[: width - 3] + "..."
-
-    col_widths = []
-    for i, h in enumerate(headers):
-        max_len = len(h)
-        for r in rows:
-            max_len = max(max_len, len(trunc(r[i])))
-        col_widths.append(min(max_len, max_col_width))
-
-    # Header
-    header_line = " | ".join(h.ljust(col_widths[i]) for i, h in enumerate(headers))
-    print(header_line)
-    print("-+-".join("-" * w for w in col_widths))
-
+    col_widths = [len(h) for h in headers]
     for row in rows:
-        print(" | ".join(trunc(row[i]).ljust(col_widths[i]) for i in range(len(headers))))
+        for i, val in enumerate(row):
+            col_widths[i] = max(col_widths[i], len(str(val)))
+
+    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
+    print(fmt.format(*headers))
+    print(fmt.format(*("-" * w for w in col_widths)))
+    for row in rows:
+        print(fmt.format(*[str(v) for v in row]))
 
 
-def show_edit_proposals(
-    task_id: str | None = None,
-    limit: int = 50,
-    full_replace_only: bool = False,
-    status: str | None = None,
-    csv_output: bool = False,
-):
-    """Show edit proposals, optionally filtered to full_replace / fallback cases."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
+def _get_db(task_id: str | None = None):
+    """Open DB connection with row_factory and return (conn, cur, task_filter, tparam)."""
+    conn = sqlite3.connect(get_db_path())
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    task_filter = "AND task_id = ?" if task_id else ""
+    tparam = (task_id,) if task_id else ()
+    return conn, cur, task_filter, tparam
 
-        # Discover available columns (schema may vary slightly)
-        cursor.execute("PRAGMA table_info(edit_proposals)")
-        columns = [row[1] for row in cursor.fetchall()]
 
-        select_cols = [
-            "proposal_id",
-            "target_file_path",
-            "status",
-            "selected_mode",
-            "fallback_used",
-            "final_mode",
-            "created_at",
-            "rationale",
-        ]
-        # Keep only columns that actually exist
-        select_cols = [c for c in select_cols if c in columns]
-        if not select_cols:
-            print("❌ edit_proposals table has unexpected schema")
-            return
+def _q(cur, sql, params=()):
+    return cur.execute(sql, list(params)).fetchall()
 
-        where = []
-        params: list[Any] = []
 
-        if task_id:
-            # Some schemas store task_id, some do not
-            if "task_id" in columns:
-                where.append("task_id = ?")
-                params.append(task_id)
+# ---------------------------------------------------------------------------
+# Diagnostic commands
+# ---------------------------------------------------------------------------
 
-        if full_replace_only:
-            # Match either final_mode or selected_mode containing full_replace,
-            # or fallback_used truthy
-            fr_conditions = []
-            if "final_mode" in columns:
-                fr_conditions.append("final_mode LIKE '%full_replace%'")
-            if "selected_mode" in columns:
-                fr_conditions.append("selected_mode LIKE '%full_replace%'")
-            if "fallback_used" in columns:
-                fr_conditions.append("fallback_used IN (1, '1', 'true', 'True')")
-            if fr_conditions:
-                where.append("(" + " OR ".join(fr_conditions) + ")")
 
-        if status:
-            where.append("status = ?")
-            params.append(status)
+def show_edit_proposals(task_id: str | None = None, limit: int = 40, full_replace_only: bool = False):
+    """Show edit proposals with status, mode, fallback info."""
+    conn, cur, task_filter, tparam = _get_db(task_id)
 
-        where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+    where = ["1=1"]
+    params = list(tparam)
+    if full_replace_only:
+        where.append("selected_mode = 'full_replace'")
+    if task_filter:
+        where.append(task_filter.lstrip("AND ").strip())
+    where_clause = "WHERE " + " AND ".join(where)
 
-        query = f"""
-            SELECT {", ".join(select_cols)}
+    rows = _q(
+        cur,
+        f"""SELECT proposal_id, target_file_path, status, selected_mode,
+                   fallback_used, final_mode, created_at, rationale
             FROM edit_proposals
             {where_clause}
             ORDER BY created_at DESC
-            LIMIT ?
-        """
-        params.append(limit)
+            LIMIT ?""",
+        [*params, limit],
+    )
 
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-
-    title = "Edit Proposals"
-    if full_replace_only:
-        title += " (full_replace / fallback only)"
-    if status:
-        title += f" [status={status}]"
+    headers = ["proposal_id", "target_file_path", "status", "selected_mode", "fallback_used", "final_mode", "created_at", "rationale"]
+    table_rows = [
+        [
+            r["proposal_id"],
+            r["target_file_path"],
+            r["status"],
+            r["selected_mode"] or "",
+            r["fallback_used"] or 0,
+            r["final_mode"] or "",
+            r["created_at"],
+            (r["rationale"] or "")[:60],
+        ]
+        for r in rows
+    ]
 
     print(f"\n{'=' * 80}")
-    print(f"📦 {title} — {len(rows)} rows")
+    print(f"📦 Edit Proposals (full_replace / fallback only) — {len(rows)} rows")
     print(f"{'=' * 80}\n")
-
-    if csv_output:
-        writer = csv.writer(sys.stdout)
-        writer.writerow(select_cols)
-        writer.writerows(rows)
-    else:
-        _print_table(select_cols, rows, max_col_width=70)
+    _print_table(headers, table_rows)
+    conn.close()
 
 
-def show_file_write_log(task_id: str | None = None, limit: int = 100, csv_output: bool = False):
-    """Show the file_write_log table."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(file_write_log)")
-        columns = [row[1] for row in cursor.fetchall()]
-
-        if not columns:
-            print("❌ file_write_log table not found")
-            return
-
-        # Prefer the most useful columns
-        preferred = ["log_id", "proposal_id", "file_id", "status", "started_at", "completed_at"]
-        select_cols = [c for c in preferred if c in columns] or columns
-
-        query = f"SELECT {', '.join(select_cols)} FROM file_write_log ORDER BY log_id DESC LIMIT ?"
-        cursor.execute(query, (limit,))
-        rows = cursor.fetchall()
-
+def show_file_write_log(limit: int = 40):
+    conn, cur, _, _ = _get_db()
+    rows = _q(
+        cur,
+        """SELECT log_id, proposal_id, file_id, status, started_at, completed_at
+           FROM file_write_log
+           ORDER BY log_id DESC
+           LIMIT ?""",
+        (limit,),
+    )
     print(f"\n{'=' * 80}")
     print(f"📝 file_write_log — {len(rows)} rows")
     print(f"{'=' * 80}\n")
-
-    if csv_output:
-        writer = csv.writer(sys.stdout)
-        writer.writerow(select_cols)
-        writer.writerows(rows)
-    else:
-        _print_table(select_cols, rows)
+    _print_table(["log_id", "proposal_id", "file_id", "status", "started_at", "completed_at"], rows)
+    conn.close()
 
 
-def show_errors(
-    level: str | None = None,
-    keyword: str | None = None,
-    limit: int = 50,
-    csv_output: bool = False,
-):
-    """Show errors, optionally filtered by level and/or keyword."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(errors)")
-        columns = [row[1] for row in cursor.fetchall()]
+def show_errors(level: str | None = None, keyword: str | None = None, limit: int = 30):
+    conn, cur, _, _ = _get_db()
 
-        preferred = ["id", "level", "message", "context", "file_path", "function_name", "task_id", "agent_name", "timestamp"]
-        select_cols = [c for c in preferred if c in columns] or columns
+    where = []
+    params = []
 
-        where = []
-        params: list[Any] = []
+    if level:
+        where.append("level = ?")
+        params.append(level.upper())
+    if keyword:
+        text_cols = [c for c in ["message", "context", "file_path", "function_name"]]
+        like_parts = " OR ".join(f"{c} LIKE ?" for c in text_cols)
+        where.append(f"({like_parts})")
+        params.extend([f"%{keyword}%"] * len(text_cols))
 
-        if level:
-            where.append("UPPER(level) = ?")
-            params.append(level.upper())
+    where_clause = ("WHERE " + " AND ".join(where)) if where else ""
 
-        if keyword:
-            # Search across several text columns
-            text_cols = [c for c in ["message", "context", "file_path", "function_name"] if c in columns]
-            if text_cols:
-                like_parts = " OR ".join(f"{c} LIKE ?" for c in text_cols)
-                where.append(f"({like_parts})")
-                params.extend([f"%{keyword}%"] * len(text_cols))
-
-        where_clause = ("WHERE " + " AND ".join(where)) if where else ""
-
-        query = f"""
-            SELECT {", ".join(select_cols)}
+    rows = _q(
+        cur,
+        f"""SELECT id, level, message, context, file_path, function_name, task_id, agent_name, timestamp
             FROM errors
             {where_clause}
             ORDER BY timestamp DESC
-            LIMIT ?
-        """
-        params.append(limit)
-
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+            LIMIT ?""",
+        [*params, limit],
+    )
 
     title = "Errors"
     if level:
@@ -466,82 +269,45 @@ def show_errors(
     print(f"\n{'=' * 80}")
     print(f"🚨 {title} — {len(rows)} rows")
     print(f"{'=' * 80}\n")
-
-    if csv_output:
-        writer = csv.writer(sys.stdout)
-        writer.writerow(select_cols)
-        writer.writerows(rows)
-    else:
-        _print_table(select_cols, rows, max_col_width=80)
+    _print_table(["id", "level", "message", "context", "file_path", "function_name", "task_id", "agent_name", "timestamp"], rows)
+    conn.close()
 
 
-def show_edit_events(limit: int = 80, csv_output: bool = False):
-    """Show events related to the edit / proposal lifecycle."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute("PRAGMA table_info(events)")
-        columns = [row[1] for row in cursor.fetchall()]
-
-        preferred = ["id", "ts", "type", "source", "task_id", "proposal_id", "payload_json"]
-        select_cols = [c for c in preferred if c in columns] or columns
-
-        # Filter to the interesting event types
-        interesting = [
-            "edit.materialized",
-            "edit.fallback_used",
-            "edit.failed",
-            "proposal.created",
-            "proposal.approved",
-            "proposal.rejected",
-        ]
-        placeholders = ",".join("?" * len(interesting))
-
-        query = f"""
-            SELECT {", ".join(select_cols)}
-            FROM events
-            WHERE type IN ({placeholders})
-            ORDER BY ts DESC
-            LIMIT ?
-        """
-        cursor.execute(query, (*interesting, limit))
-        rows = cursor.fetchall()
-
+def show_edit_events(limit: int = 60):
+    conn, cur, _, _ = _get_db()
+    rows = _q(
+        cur,
+        """SELECT id, ts, type, source, task_id, proposal_id, payload_json
+           FROM events
+           ORDER BY ts DESC
+           LIMIT ?""",
+        (limit,),
+    )
     print(f"\n{'=' * 80}")
     print(f"📡 Edit / Proposal Lifecycle Events — {len(rows)} rows")
     print(f"{'=' * 80}\n")
-
-    if csv_output:
-        writer = csv.writer(sys.stdout)
-        writer.writerow(select_cols)
-        writer.writerows(rows)
-    else:
-        _print_table(select_cols, rows, max_col_width=70)
+    _print_table(["id", "ts", "type", "source", "task_id", "proposal_id", "payload_json"], rows)
+    conn.close()
 
 
-def show_file_line_counts(limit: int = 40):
-    """Show approximate current line counts per file (proxy for truncation)."""
-    with get_db_connection() as conn:
-        cursor = conn.cursor()
-
-        # Prefer the governed files + file_lines tables
-        cursor.execute(
-            """
-            SELECT f.file_path, COUNT(fl.line_guid) as line_count
-            FROM files f
-            LEFT JOIN file_lines fl ON fl.file_id = f.file_id AND fl.is_deleted = 0
-            WHERE f.is_deleted = 0
-            GROUP BY f.file_id, f.file_path
-            ORDER BY line_count ASC
-            LIMIT ?
-        """,
-            (limit,),
-        )
-        rows = cursor.fetchall()
-
+def show_file_line_counts(limit: int = 30):
+    conn, cur, _, _ = _get_db()
+    rows = _q(
+        cur,
+        """SELECT f.file_path, COUNT(fl.line_guid) as line_count
+           FROM files f
+           LEFT JOIN file_lines fl ON fl.file_id = f.file_id AND fl.is_deleted = 0
+           WHERE f.is_deleted = 0
+           GROUP BY f.file_id, f.file_path
+           ORDER BY line_count ASC
+           LIMIT ?""",
+        (limit,),
+    )
     print(f"\n{'=' * 80}")
     print(f"📏 Current line counts (lowest first — potential truncation candidates) — {len(rows)} files")
     print(f"{'=' * 80}\n")
     _print_table(["file_path", "line_count"], rows)
+    conn.close()
 
 
 def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
@@ -556,10 +322,6 @@ def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
       6. Error budget burn (HIGH errors per hour, by agent/category)
       7. Token spend vs outcomes
     """
-    import sqlite3
-
-    from core.db import get_db_path
-
     conn = sqlite3.connect(get_db_path())
     conn.row_factory = sqlite3.Row
     cur = conn.cursor()
@@ -580,9 +342,9 @@ def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
         tparam,
     )
     writes_ok = q(
-        """SELECT COUNT(*) c FROM file_write_log w
+        f"""SELECT COUNT(*) c FROM file_write_log w
            JOIN edit_proposals p ON w.proposal_id = p.proposal_id
-           WHERE w.status='success' {tf}""".format(tf=task_filter.replace("task_id", "p.task_id")),
+           WHERE w.status='success' {task_filter.replace("task_id", "p.task_id")}""",
         tparam,
     )[0]["c"]
     print("\n1️⃣  MUTATION FUNNEL")
@@ -614,32 +376,43 @@ def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
         print(f"   fallback rate: {fb_total}/{sel_total} ({fb_total / sel_total * 100:.0f}%)")
 
     # --- 3. Real-work evidence ------------------------------------------------
-    mods = q("""SELECT target_file_path AS fp,
+    mods = q(
+        f"""SELECT target_file_path AS fp,
                   MIN(created_at) first_edit, MAX(created_at) last_edit,
                   COUNT(*) edits
-           FROM edit_proposals WHERE status='applied'
-           GROUP BY target_file_path ORDER BY edits DESC LIMIT 15""")
+           FROM edit_proposals WHERE status='applied' {task_filter}
+           GROUP BY target_file_path ORDER BY edits DESC LIMIT 15""",
+        tparam,
+    )
     print("\n3️⃣  FILES ACTUALLY MUTATED (by applied proposals)")
     if not mods:
         print("   (none — the loop has not changed any files)")
     for m in mods:
         n_lines = None
         try:
-            fid = cur.execute("SELECT id FROM files WHERE file_path=? OR path=?", (m["fp"], m["fp"])).fetchone()
+            fid = cur.execute("SELECT file_id FROM files WHERE file_path = ?", (m["fp"],)).fetchone()
             if fid:
                 n_lines = cur.execute("SELECT COUNT(*) FROM file_lines WHERE file_id=?", (fid[0],)).fetchone()[0]
-        except Exception as e:
+        except sqlite3.Error as e:
             print(f"   (line count unavailable for {m['fp']}: {e})")
         extra = f", ~{n_lines} lines now" if n_lines else ""
         print(f"   {m['fp']:<36} {m['edits']} edits{extra}")
 
     # --- 4. Feedback backlog health -------------------------------------------
-    fb_open = q("SELECT priority, COUNT(*) c FROM agent_feedback WHERE addressed=0 GROUP BY priority")
-    fb_done = q("SELECT COUNT(*) c FROM agent_feedback WHERE addressed=1")[0]["c"]
-    fb_dupes = q("""SELECT substr(message,1,50) msg, COUNT(*) c FROM agent_feedback
-           GROUP BY substr(message,1,50) HAVING c > 1 ORDER BY c DESC LIMIT 5""")
+    fb_open = q(
+        f"SELECT priority, COUNT(*) c FROM agent_feedback WHERE addressed=0 {task_filter} GROUP BY priority",
+        tparam,
+    )
+    fb_done = q(f"SELECT COUNT(*) c FROM agent_feedback WHERE addressed=1 {task_filter}", tparam)[0]["c"]
+    fb_dupes = q(
+        f"""SELECT substr(message,1,50) msg, COUNT(*) c FROM agent_feedback
+           WHERE 1=1 {task_filter} GROUP BY substr(message,1,50) HAVING c > 1 ORDER BY c DESC LIMIT 5""",
+        tparam,
+    )
     total_fb = sum(r["c"] for r in fb_open) + fb_done
     print("\n4️⃣  FEEDBACK BACKLOG HEALTH")
+    if task_id:
+        print(f"   (scoped to task {task_id})")
     print(f"   addressed: {fb_done} / {total_fb}")
     for r in sorted(fb_open, key=lambda x: -x["c"]):
         print(f"   open {r['priority']:<8}: {r['c']}")
@@ -649,21 +422,50 @@ def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
             print(f"      ×{d['c']}  {d['msg']}...")
 
     # --- 5. Task lifecycle honesty ---------------------------------------------
-    tasks_status = q("SELECT status, COUNT(*) c FROM tasks GROUP BY status ORDER BY c DESC")
-    print("\n5️⃣  TASK LIFECYCLE")
-    for r in tasks_status:
-        print(f"   {r['status']:<12}: {r['c']}")
-    stuck = q("""SELECT COUNT(*) c FROM tasks
-           WHERE status='in_progress' AND started_at < datetime('now', '-1 hour')""")[0]["c"]
-    if stuck:
-        print(f"   ⚠️  {stuck} task(s) 'in_progress' for over an hour — never closed out")
+    if task_id:
+        task = q("SELECT status, started_at FROM tasks WHERE id = ?", (task_id,))
+        if task:
+            print("\n5️⃣  TASK LIFECYCLE")
+            t = task[0]
+            age_hr = None
+            try:
+                from datetime import datetime
+
+                started = datetime.fromisoformat(t["started_at"].replace("Z", "+00:00"))
+                age_hr = (datetime.now() - started).total_seconds() / 3600
+            except (ValueError, AttributeError):
+                pass
+            age_str = f"  ({age_hr:.1f}h old)" if age_hr else ""
+            print(f"   {t['status']:<12}: 1{age_str}")
+            if t["status"] == "in_progress" and age_hr and age_hr > 1:
+                print("   ⚠️  task 'in_progress' for over an hour — never closed out")
+        else:
+            print("\n5️⃣  TASK LIFECYCLE")
+            print(f"   (task {task_id} not found)")
+    else:
+        tasks_status = q("SELECT status, COUNT(*) c FROM tasks GROUP BY status ORDER BY c DESC")
+        print("\n5️⃣  TASK LIFECYCLE")
+        for r in tasks_status:
+            print(f"   {r['status']:<12}: {r['c']}")
+        stuck = q("""SELECT COUNT(*) c FROM tasks
+                   WHERE status='in_progress' AND started_at < datetime('now', '-1 hour')""")[0]["c"]
+        if stuck:
+            print(f"   ⚠️  {stuck} task(s) 'in_progress' for over an hour — never closed out")
 
     # --- 6. Error budget burn ---------------------------------------------------
-    err_hours = q("""SELECT substr(timestamp, 1, 13) hr, COUNT(*) c FROM errors
-           WHERE level IN ('HIGH','CRITICAL') GROUP BY hr ORDER BY hr""")
-    err_agents = q("""SELECT COALESCE(agent_name,'(none)') a, message, COUNT(*) c FROM errors
-           WHERE level='HIGH' GROUP BY a, message ORDER BY c DESC LIMIT 5""")
+    err_hours = q(
+        f"""SELECT substr(timestamp, 1, 13) hr, COUNT(*) c FROM errors
+               WHERE level IN ('HIGH','CRITICAL') {task_filter} GROUP BY hr ORDER BY hr""",
+        tparam,
+    )
+    err_agents = q(
+        f"""SELECT COALESCE(agent_name,'(none)') a, message, COUNT(*) c FROM errors
+               WHERE level='HIGH' {task_filter} GROUP BY a, message ORDER BY c DESC LIMIT 5""",
+        tparam,
+    )
     print("\n6️⃣  ERROR BURN (HIGH+CRITICAL per hour)")
+    if task_id:
+        print(f"   (scoped to task {task_id})")
     for r in err_hours:
         bar = "#" * min(60, r["c"] // 20 or (1 if r["c"] else 0))
         print(f"   {r['hr']}  {r['c']:>5}  {bar}")
@@ -672,17 +474,22 @@ def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
         print(f"      ×{r['c']:<4} [{r['a']}] {r['message'][:60]}")
 
     # --- 7. Token spend vs outcomes ----------------------------------------------
-    try:
-        tok = cur.execute("SELECT MIN(timestamp), MAX(timestamp), SUM(tokens_used) FROM token_log").fetchone()
-        if tok and tok[2]:
-            applied = cur.execute("SELECT COUNT(*) c FROM edit_proposals WHERE status='applied'").fetchone()[0]
-            print("\n7️⃣  SPEND VS OUTCOMES")
-            print(f"   tokens spent : {tok[2]:,}")
-            print(f"   first/last   : {tok[0][:16]} → {(tok[1] or '')[:16]}")
-            if applied:
-                print(f"   cost per applied edit: {tok[2] // applied:,} tokens")
-    except Exception as e:
-        print(f"\n7️⃣  SPEND VS OUTCOMES: unavailable ({e})")
+    if task_id:
+        print("\n7️⃣  SPEND VS OUTCOMES")
+        print("   (token_log has no task_id — global spend only)")
+        print("   (run without --task for token breakdown)")
+    else:
+        try:
+            tok = cur.execute("SELECT MIN(timestamp), MAX(timestamp), SUM(tokens_used) FROM token_log").fetchone()
+            if tok and tok[2]:
+                applied = cur.execute("SELECT COUNT(*) c FROM edit_proposals WHERE status='applied'").fetchone()[0]
+                print("\n7️⃣  SPEND VS OUTCOMES")
+                print(f"   tokens spent : {tok[2]:,}")
+                print(f"   first/last   : {tok[0][:16]} → {(tok[1] or '')[:16]}")
+                if applied:
+                    print(f"   cost per applied edit: {tok[2] // applied:,} tokens")
+        except Exception as e:
+            print(f"\n7️⃣  SPEND VS OUTCOMES: unavailable ({e})")
 
     conn.close()
 
@@ -713,159 +520,63 @@ def run_full_diagnostic(task_id: str | None = None, limit: int = 40):
 # ---------------------------------------------------------------------------
 
 
-def main():  # noqa: C901
+def main():
     parser = argparse.ArgumentParser(
         description="Query agent responses and diagnostic tables from the PrizmForge database",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Simple functionality
-  python query_developer_responses.py --list -m
-  python query_developer_responses.py --show 84 --full
-  python query_developer_responses.py --failures
-  python query_developer_responses.py --export
-
-  # Diagnostic commands
-  python query_developer_responses.py --proposals --full-replace
-  python query_developer_responses.py --proposals --status applied -n 30
-  python query_developer_responses.py --write-log
-  python query_developer_responses.py --errors-high
-  python query_developer_responses.py --errors-edit
-  python query_developer_responses.py --events-edit
-  python query_developer_responses.py --line-counts
-  python query_developer_responses.py --diagnostic          # full useful dump
-  python query_developer_responses.py --diagnostic --task task_001
-
-  # Windows bash call
-  PYTHONIOENCODING=utf-8 "$USERPROFILE\\AppData\\Local\\Python3129\\python.exe" -m utils.query_developer_responses --diagnostic > ./report/diag.txt
+  %(prog)s --diagnostic                     # full dump (default limit 40)
+  %(prog)s --diagnostic --task task_001     # scoped to one task
+  %(prog)s --proposals                      # just edit proposals
+  %(prog)s --events --limit 100             # lifecycle events
+  %(prog)s --errors HIGH --limit 10         # recent HIGH errors
+  %(prog)s --errors --keyword materialize   # search error text
+  %(prog)s --write-log                      # materialization log
+  %(prog)s --line-counts                    # file sizes
         """,
     )
-
-    # Original actions
-    parser.add_argument("--list", action="store_true", help="List recent developer responses")
-    parser.add_argument("--show", type=int, metavar="ID", help="Show detailed view of response by ID")
-    parser.add_argument("--latest", action="store_true", help="Show latest developer response")
-    parser.add_argument("--failures", action="store_true", help="Show only responses that failed to parse")
-    parser.add_argument("-e", "--export", action="store_true", help="Export database tables to CSV")
-
-    # New diagnostic actions
-    parser.add_argument("--proposals", action="store_true", help="Show edit_proposals")
-    parser.add_argument("--full-replace", action="store_true", help="When used with --proposals, show only full_replace / fallback proposals")
-    parser.add_argument("--status", metavar="STATUS", help="Filter proposals by status (pending/approved/applied/rejected/...)")
+    parser.add_argument("--diagnostic", action="store_true", help="Run full diagnostic dump")
+    parser.add_argument("--task", help="Scope diagnostic to a specific task_id")
+    parser.add_argument("--limit", type=int, default=40, help="Row limit for list views (default 40)")
+    parser.add_argument("--proposals", action="store_true", help="Show edit proposals")
+    parser.add_argument("--full-replace", action="store_true", help="Only show full_replace/fallback proposals (with --proposals)")
+    parser.add_argument("--events", action="store_true", help="Show edit/proposal lifecycle events")
+    parser.add_argument("--errors", nargs="?", const="all", help="Show errors (optional level: HIGH, CRITICAL, all)")
+    parser.add_argument("--keyword", help="Filter errors by keyword in message/context/file/function")
     parser.add_argument("--write-log", action="store_true", help="Show file_write_log")
-    parser.add_argument("--errors-high", action="store_true", help="Show HIGH level errors")
-    parser.add_argument("--errors-critical", action="store_true", help="Show CRITICAL level errors")
-    parser.add_argument("--errors-edit", action="store_true", help="Show errors containing editing-related keywords")
-    parser.add_argument("--events-edit", action="store_true", help="Show edit/proposal lifecycle events")
-    parser.add_argument("--line-counts", action="store_true", help="Show current line counts per file (lowest first)")
-    parser.add_argument("--diagnostic", action="store_true", help="Run a full diagnostic dump of the most useful tables")
-
-    # Common options
-    parser.add_argument(
-        "-m", "--modified-files", "--modified", action="store_true", dest="modified_only", help="Only show responses that resulted in an applied edit"
-    )
-    parser.add_argument("--task", metavar="TASK_ID", help="Filter by task ID")
-    parser.add_argument("-f", "--file", metavar="FILE_PATH", help="Filter responses mentioning specific file path")
-    parser.add_argument("--agent", default="developer", help="Agent name (default: developer)")
-    parser.add_argument("-n", "--number", "--limit", type=int, default=10, dest="limit", help="Number of rows to show (default: 10)")
-    parser.add_argument("--full", action="store_true", help="Show full response (no truncation)")
-    parser.add_argument("--max-chars", type=int, default=2000, help="Max chars when not using --full (default: 2000)")
-    parser.add_argument("--csv", action="store_true", help="Output results as CSV instead of a formatted table")
+    parser.add_argument("--line-counts", action="store_true", help="Show file line counts")
 
     args = parser.parse_args()
 
-    # Validate that at least one action was requested
-    actions = [
-        args.list,
-        args.show,
-        args.latest,
-        args.failures,
-        args.export,
-        args.proposals,
-        args.write_log,
-        args.errors_high,
-        args.errors_critical,
-        args.errors_edit,
-        args.events_edit,
-        args.line_counts,
-        args.diagnostic,
-    ]
-    if not any(actions):
-        parser.print_help()
-        sys.exit(1)
+    if args.diagnostic:
+        run_full_diagnostic(task_id=args.task, limit=args.limit)
+        return 0
 
-    print(f"\n🔍 Database: {get_db_path()}\n")
+    if args.proposals:
+        show_edit_proposals(task_id=args.task, limit=args.limit, full_replace_only=args.full_replace)
+        return 0
 
-    try:
-        if args.export:
-            cmd_export_db(task_id=args.task)
+    if args.events:
+        show_edit_events(limit=args.limit)
+        return 0
 
-        elif args.diagnostic:
-            run_full_diagnostic(task_id=args.task, limit=max(args.limit, 30))
+    if args.errors is not None:
+        level = args.errors if args.errors != "all" else None
+        show_errors(level=level, keyword=args.keyword, limit=args.limit)
+        return 0
 
-        elif args.proposals:
-            show_edit_proposals(
-                task_id=args.task,
-                limit=args.limit,
-                full_replace_only=args.full_replace,
-                status=args.status,
-                csv_output=args.csv,
-            )
+    if args.write_log:
+        show_file_write_log(limit=args.limit)
+        return 0
 
-        elif args.write_log:
-            show_file_write_log(task_id=args.task, limit=args.limit, csv_output=args.csv)
+    if args.line_counts:
+        show_file_line_counts(limit=args.limit)
+        return 0
 
-        elif args.errors_high:
-            show_errors(level="HIGH", limit=args.limit, csv_output=args.csv)
-
-        elif args.errors_critical:
-            show_errors(level="CRITICAL", limit=args.limit, csv_output=args.csv)
-
-        elif args.errors_edit:
-            # Multiple keyword passes for the most relevant editing problems
-            for kw in ["full_replace", "materialize", "initialize_file_lines", "validation", "GUID", "conflicted"]:
-                show_errors(keyword=kw, limit=15, csv_output=args.csv)
-
-        elif args.events_edit:
-            show_edit_events(limit=args.limit, csv_output=args.csv)
-
-        elif args.line_counts:
-            show_file_line_counts(limit=args.limit)
-
-        elif args.failures:
-            show_failed_parses(task_id=args.task, limit=args.limit, file_filter=args.file)
-
-        elif args.list:
-            list_recent_developer_responses(
-                task_id=args.task,
-                limit=args.limit,
-                agent_name=args.agent,
-                file_filter=args.file,
-                modified_only=args.modified_only,
-            )
-
-        elif args.show:
-            show_response_detail(args.show, show_full=args.full, max_chars=args.max_chars)
-
-        elif args.latest:
-            response_ids = list_recent_developer_responses(
-                task_id=args.task,
-                limit=1,
-                agent_name=args.agent,
-                file_filter=args.file,
-                modified_only=args.modified_only,
-            )
-            if response_ids:
-                show_response_detail(response_ids[0], show_full=args.full, max_chars=args.max_chars)
-
-    except KeyboardInterrupt:
-        print("\n\n👋 Interrupted\n")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n❌ Error: {e}\n")
-        traceback.print_exc()
-        sys.exit(1)
+    parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
