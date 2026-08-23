@@ -1,1 +1,2 @@
-PLACEHOLDER_WILL_FAIL
+#!/usr/bin/env bash
+# RESTORE_IN_PROGRESS
