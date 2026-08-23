@@ -233,7 +233,7 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
                     errors.append("content_safety.blocked_extensions must be a list of strings")
 
     # ------------------------------------------------------------------
-    # Endpoints & models: N endpoints × M models per endpoint (dict form).
+    # Endpoints & models: N endpoints x M models per endpoint (dict form).
     # Every reference elsewhere (default_model, agent_model_preferences,
     # resource_controller.model_downgrades) uses 'endpoint/model'.
     # ------------------------------------------------------------------
