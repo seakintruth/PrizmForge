@@ -462,21 +462,21 @@ data = {"_comment": "API keys per endpoint. See example_api_key.json.", "keys": 
 json.dump(data, open("api_key.json", "w"), indent=2)
 PYEOF
 
-    # Enumerate endpoints from the freshly copied config.json
-    mapfile -t ENDPOINTS < <(python3 -c "
-import json
-cfg = json.load(open('$CONFIG_FILE'))
-for name in (cfg.get('endpoints') or {}):
-    print(name)
-")
+    echo "Enter endpoints one at a time. Type 'end' (or press Enter on the"
+    echo "endpoint name) when you are done."
+    echo ""
 
-    if [[ ${#ENDPOINTS[@]} -eq 0 ]]; then
-      ENDPOINTS=("gemini")
-    fi
+    while true; do
+      echo ""
+      read -r -p "API endpoint name (type 'end' to finish): " EP || EP=""
+      # EOF / empty / 'end' all terminate the loop
+      [[ -z "$EP" || "$EP" == "end" || "$EP" == "End" || "$EP" == "END" ]] && break
 
-    for EP in "${ENDPOINTS[@]}"; do
-      read -r -p "API key for endpoint '${EP}' [placeholder]: " KEYVAL || KEYVAL=""
-      if [[ -z "$KEYVAL" ]]; then KEYVAL="YOUR_${EP^^}_KEY"; fi
+      read -r -p "API key for '${EP}': " KEYVAL || KEYVAL=""
+      if [[ -z "$KEYVAL" ]]; then
+        KEYVAL="YOUR_${EP^^}_KEY"
+        echo "  (no key entered — placeholder ${KEYVAL} written)"
+      fi
       python3 - "$API_KEY_FILE" "$EP" "$KEYVAL" <<'PYEOF'
 import json, sys
 path, ep, val = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -486,6 +486,13 @@ json.dump(data, open(path, "w"), indent=2)
 PYEOF
       echo "  ✅ keys.${EP} set"
     done
+
+    # Never leave a keys-less skeleton behind — fall back to the template shape.
+    HAS_KEYS=$(python3 -c "import json,sys;print(1 if json.load(open(sys.argv[1])).get('keys') else 0)" "$API_KEY_FILE")
+    if [[ "$HAS_KEYS" != "1" ]]; then
+      cp example_api_key.json "$API_KEY_FILE"
+      echo "No endpoints entered — wrote example_api_key.json template instead."
+    fi
 
     chmod 600 "$API_KEY_FILE" 2>/dev/null || true
     echo "✅ Created ${API_KEY_FILE}"
