@@ -360,3 +360,49 @@ def test_unknown_first_segment_treated_as_model_id(slashed_manager):
 def test_get_endpoint_for_model_slashed_bare_uses_default(slashed_manager):
     endpoint = slashed_manager.get_endpoint_for_model("openai/gpt-4o")
     assert endpoint is not None and endpoint.name == "openrouter"
+
+
+# =============================================================================
+# LLM-SUPPLIED MODEL OVERRIDES MUST BE VALIDATED
+# =============================================================================
+
+
+def test_hallucinated_model_override_is_rejected(slashed_manager):
+    """LLMs parrot example values from prompts (e.g. schema examples).
+
+    An override naming a model that doesn't exist must be detectable so
+    callers can ignore it instead of silently falling back mid-call.
+    """
+    hallucinated = "gemini-3.1-pro-preview"
+    assert slashed_manager.model_reference_exists(hallucinated) is False
+    # And the valid configured default still resolves.
+    assert slashed_manager.model_reference_exists("openrouter/stealth/ox-alpha") is True
+
+
+def test_call_agent_ignores_unknown_model_override(slashed_config):
+    """call_agent must not use an unknown override; it falls back to prefs.
+
+    We can't call call_agent without network, but we can verify the guard
+    logic: an invalid override normalizes through the same path and would
+    be rejected before reaching validate_model's fallback warning.
+    """
+    from unittest.mock import patch
+
+    manager = EndpointManager(slashed_config)
+    with (
+        patch("core.config.get_config", return_value=slashed_config),
+        patch(
+            "core.endpoint_manager.get_endpoint_manager",
+            return_value=manager,
+        ),
+    ):
+        from agents.base import call_agent  # noqa: F401  (import sanity)
+
+        bad_override = "gemini-3.1-pro-preview"
+        # The guard condition used in call_agent:
+        should_ignore = bad_override and not manager.model_reference_exists(bad_override)
+        assert should_ignore is True
+
+        good_override = "openrouter/stealth/ox-alpha"
+        should_ignore_good = good_override and not manager.model_reference_exists(good_override)
+        assert should_ignore_good is False

@@ -608,6 +608,14 @@ def call_agent(  # noqa: C901
         except Exception as e:
             print(f"  ⚠️  Resource controller model override check failed: {e}")
 
+    # LLM-supplied overrides (orchestrator decision "model" field) are NOT
+    # trusted blindly — models hallucinate names from prompt examples. Only
+    # accept an override that actually resolves; otherwise fall through to
+    # the configured agent preferences.
+    if model_override and not endpoint_mgr.model_reference_exists(model_override):
+        print(f"  ⚠️  Ignoring unknown model override '{model_override}' for {agent_name} (not in endpoints/models); using configured preference instead")
+        model_override = None
+
     if model_override:
         choice = endpoint_mgr.normalize_model_reference(model_override)
     else:

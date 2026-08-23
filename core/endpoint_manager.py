@@ -178,17 +178,18 @@ class EndpointManager:
             self.endpoints[name] = EndpointConfig(name, endpoint_config)
             logger.info(f"Loaded endpoint: {name}")
 
-        # Load models from nested structure
-        self._load_models(config)
-
-        # Validate references in other config sections
-        self._validate_model_references()
-
         default_name = config.get("default_endpoint")
         self.default_endpoint = self.endpoints.get(default_name)
 
         if default_name and not self.default_endpoint:
             logger.warning(f"Default endpoint '{default_name}' not found in config")
+
+        # Load models from nested structure (reference validation uses
+        # default_endpoint, so this must come after it is set)
+        self._load_models(config)
+
+        # Validate references in other config sections
+        self._validate_model_references()
 
     def _load_models(self, config: dict[str, Any]):
         """Load models defined under endpoints.<name>.models"""
