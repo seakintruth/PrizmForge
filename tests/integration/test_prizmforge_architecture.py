@@ -166,19 +166,27 @@ def test_sql_response_exact_matching(memory_db):
     cursor.execute("INSERT INTO edit_proposals (proposal_id, task_id, target_file_path, status) VALUES ('p1', 'task_001', 'app.py', 'applied')")
 
     # Developer Attempt 1 -> Rejected
-    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (1, 'developer', 'task_001', 'p1', 'r1')")
     cursor.execute(
         "INSERT INTO agent_responses_archive "
-        "(id, agent_name, task_id, prompt, response) "
-        "VALUES (2, 'reviewer', 'task_001', 'p2', '{\"decision\": \"REJECT\"}')"
+        "(id, agent_name, task_id, prompt, response, parse_success, timestamp) "
+        "VALUES (1, 'developer', 'task_001', 'p1', 'r1', 1, 'now')"
+    )
+    cursor.execute(
+        "INSERT INTO agent_responses_archive "
+        "(id, agent_name, task_id, prompt, response, parse_success, timestamp) "
+        "VALUES (2, 'reviewer', 'task_001', 'p2', '{\"decision\": \"REJECT\"}', 1, 'now')"
     )
 
     # Developer Attempt 2 -> Approved
-    cursor.execute("INSERT INTO agent_responses_archive (id, agent_name, task_id, prompt, response) VALUES (3, 'developer', 'task_001', 'p3', 'r3')")
     cursor.execute(
         "INSERT INTO agent_responses_archive "
-        "(id, agent_name, task_id, prompt, response) "
-        "VALUES (4, 'reviewer', 'task_001', 'p4', '{\"decision\": \"APPROVE\"}')"
+        "(id, agent_name, task_id, prompt, response, parse_success, timestamp) "
+        "VALUES (3, 'developer', 'task_001', 'p3', 'r3', 1, 'now')"
+    )
+    cursor.execute(
+        "INSERT INTO agent_responses_archive "
+        "(id, agent_name, task_id, prompt, response, parse_success, timestamp) "
+        "VALUES (4, 'reviewer', 'task_001', 'p4', '{\"decision\": \"APPROVE\"}', 1, 'now')"
     )
     memory_db.commit()
 
