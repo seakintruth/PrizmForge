@@ -105,11 +105,7 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
         if isinstance(structured, dict):
             config["_api_keys"] = structured
         else:
-            raise ValueError(
-                "api_key.json must use the structured form: "
-                '{"keys": {"<endpoint_name>": {"api_key": "..."}}}. '
-                "See example_api_key.json."
-            )
+            raise ValueError('api_key.json must use the structured form: {"keys": {"<endpoint_name>": {"api_key": "..."}}}. See example_api_key.json.')
     except FileNotFoundError:
         # Try alternate location
         alt_api_key = find_config_file("api_key.json")
@@ -121,9 +117,7 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
                 config["_api_keys"] = structured
             else:
                 raise ValueError(
-                    "api_key.json must use the structured form: "
-                    '{"keys": {"<endpoint_name>": {"api_key": "..."}}}. '
-                    "See example_api_key.json."
+                    'api_key.json must use the structured form: {"keys": {"<endpoint_name>": {"api_key": "..."}}}. See example_api_key.json.'
                 ) from None
         else:
             config["_api_keys"] = {}
@@ -285,16 +279,12 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
         if dm:
             if "/" in dm:
                 if dm not in model_keys:
-                    errors.append(
-                        f"default_model '{dm}' is not a known model. "
-                        f"Known: {sorted(model_keys)[:20]}{'…' if len(model_keys) > 20 else ''}"
-                    )
+                    errors.append(f"default_model '{dm}' is not a known model. Known: {sorted(model_keys)[:20]}{'…' if len(model_keys) > 20 else ''}")
             elif dm not in bare_model_names:
                 errors.append(f"default_model '{dm}' does not exist under any endpoint")
             elif len(bare_model_names[dm]) > 1:
                 errors.append(
-                    f"default_model '{dm}' is ambiguous — it exists on multiple endpoints "
-                    f"({bare_model_names[dm]}). Use the full 'endpoint/model' form."
+                    f"default_model '{dm}' is ambiguous — it exists on multiple endpoints ({bare_model_names[dm]}). Use the full 'endpoint/model' form."
                 )
 
         # agent_model_preferences values follow the same rule
@@ -310,9 +300,7 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
                 else:
                     ok = len(bare_model_names.get(ref, [])) == 1
                 if not ok:
-                    errors.append(
-                        f"agent_model_preferences.{agent}: unknown or ambiguous model reference '{ref}'"
-                    )
+                    errors.append(f"agent_model_preferences.{agent}: unknown or ambiguous model reference '{ref}'")
 
         # resource_controller.model_downgrades values too
         downgrades = ((config.get("resource_controller") or {}).get("model_downgrades")) or {}
@@ -320,7 +308,7 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
         while stack:
             node = stack.pop()
             if isinstance(node, dict):
-                for k, v in node.items():
+                for _k, v in node.items():
                     stack.append(v)
             elif isinstance(node, str) and node:
                 if "/" in node:

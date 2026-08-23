@@ -68,9 +68,7 @@ def preflight_unattended(config: dict[str, Any]) -> tuple[bool, list[str]]:
                 valid += 1
             else:
                 errors.append(
-                    f"Endpoint '{_name}': no API key found. Add to api_key.json: "
-                    f'{{"keys": {{"{_name}": {{"api_key": "..."}}}}}} '
-                    f"or enable llm.test_mode."
+                    f'Endpoint \'{_name}\': no API key found. Add to api_key.json: {{"keys": {{"{_name}": {{"api_key": "..."}}}}}} or enable llm.test_mode.'
                 )
         if valid == 0 and endpoints:
             errors.append("No valid API keys for configured endpoints (set keys or enable llm.test_mode / PRIZMFORGE_TEST_MODE=1)")

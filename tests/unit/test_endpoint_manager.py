@@ -175,9 +175,7 @@ def test_get_api_key_specific_name(manager):
     """Custom api_key_name field inside the endpoint's key entry wins."""
     ep = manager.endpoints["primary"]
     # primary has api_key_name="primary_key" in config; entry provides it
-    manager.config.setdefault("_api_keys", {}).setdefault("primary", {})[
-        "primary_key"
-    ] = "named-field-secret"
+    manager.config.setdefault("_api_keys", {}).setdefault("primary", {})["primary_key"] = "named-field-secret"
     assert manager.get_api_key(ep) == "named-field-secret"
 
 

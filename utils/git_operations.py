@@ -40,17 +40,22 @@ def git_commit(file_path: str, message: str) -> dict:
     """
     config = get_config()
     if not config.get("git") or not config.get("git_auto_commit"):
-        return {"ok": False, "attempted": False, "code": None, "stage": "disabled",
-                "stdout": "", "stderr": "", "file_path": file_path, "commit_hash": None}
+        return {"ok": False, "attempted": False, "code": None, "stage": "disabled", "stdout": "", "stderr": "", "file_path": file_path, "commit_hash": None}
 
     project_dir = Path(config.get("project_directory", "./project"))
 
     def _failure(stage: str, code=None, stdout="", stderr="") -> dict:
-        print(f"\n⚠️  GIT {stage.upper()} FAILED for {file_path}\n"
-              f"  stderr: {stderr[:500]}\n")
-        return {"ok": False, "attempted": True, "code": code, "stage": stage,
-                "stdout": stdout or "", "stderr": stderr or "",
-                "file_path": file_path, "commit_hash": None}
+        print(f"\n⚠️  GIT {stage.upper()} FAILED for {file_path}\n  stderr: {stderr[:500]}\n")
+        return {
+            "ok": False,
+            "attempted": True,
+            "code": code,
+            "stage": stage,
+            "stdout": stdout or "",
+            "stderr": stderr or "",
+            "file_path": file_path,
+            "commit_hash": None,
+        }
 
     try:
         # Add file
@@ -64,8 +69,7 @@ def git_commit(file_path: str, message: str) -> dict:
                 check=True,
             )
         except subprocess.CalledProcessError as e:
-            return _failure("add", e.returncode,
-                            getattr(e, "stdout", "") or "", getattr(e, "stderr", "") or "")
+            return _failure("add", e.returncode, getattr(e, "stdout", "") or "", getattr(e, "stderr", "") or "")
         except subprocess.TimeoutExpired:
             return _failure("timeout", None)
 
@@ -92,9 +96,16 @@ def git_commit(file_path: str, message: str) -> dict:
         )
         commit_hash = hash_result.stdout.strip()
         print(f"  📦 Git commit: {commit_hash[:7]}")
-        return {"ok": True, "attempted": True, "code": 0, "stage": "commit",
-                "stdout": result.stdout or "", "stderr": result.stderr or "",
-                "file_path": file_path, "commit_hash": commit_hash}
+        return {
+            "ok": True,
+            "attempted": True,
+            "code": 0,
+            "stage": "commit",
+            "stdout": result.stdout or "",
+            "stderr": result.stderr or "",
+            "file_path": file_path,
+            "commit_hash": commit_hash,
+        }
 
     except subprocess.TimeoutExpired:
         return _failure("timeout", None)

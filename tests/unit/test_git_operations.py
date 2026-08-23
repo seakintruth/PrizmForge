@@ -116,4 +116,3 @@ class TestGitCommitStructuredOutcome:
         assert isinstance(result, dict)
         assert result["ok"] is False
         assert result.get("attempted") is False
-
