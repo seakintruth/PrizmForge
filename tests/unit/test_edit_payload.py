@@ -59,9 +59,24 @@ def test_rationale_auto_expand_when_short():
     assert "applied as specified" in op.rationale
 
 
-def test_rationale_rejects_too_long():
-    with pytest.raises(ValueError, match="500"):
-        DeleteLines(start_line_guid="g1", rationale="x" * 501)
+def test_rationale_auto_truncate_when_too_long():
+    """Long LLM rationales truncate instead of killing the whole proposal."""
+    op = DeleteLines(start_line_guid="g1", rationale="x" * 724)
+    assert len(op.rationale) == 500
+    assert op.rationale.endswith("...")
+
+
+def test_edit_payload_rationale_auto_truncate_when_too_long():
+    data = {
+        "target_file_path": "a.py",
+        "summary": "rename symbol",
+        "rationale": "y" * 600,
+        "operations": [{"type": "find_replace", "find": "OLD", "replace": "NEW", "rationale": "z" * 724}],
+    }
+    payload = EditPayload.model_validate(data)
+    assert len(payload.rationale) == 500
+    assert len(payload.operations[0].rationale) == 500
+    assert payload.rationale.endswith("...")
 
 
 def test_edit_payload_model_validate_find_replace():
