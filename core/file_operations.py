@@ -3,6 +3,7 @@
 import fnmatch
 import hashlib
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
+from core.gitignore import should_ignore_by_gitignore
 from core.token_estimator import estimate_tokens
 
 # Known binary extensions (for fast rejection)
@@ -290,7 +292,7 @@ def get_project_directory() -> Path:
 
 
 def should_ignore_file(file_path: str) -> bool:
-    """Check if file should be ignored"""
+    """Check if file should be ignored (config patterns + hardcoded + .gitignore)"""
 
     config = get_config()
     ignore_patterns = config.get("file_operations", {}).get("ignore_patterns", [])
@@ -298,6 +300,34 @@ def should_ignore_file(file_path: str) -> bool:
     for pattern in ignore_patterns:
         if fnmatch.fnmatch(file_path, pattern) or fnmatch.fnmatch(Path(file_path).name, pattern):
             return True
+
+    # Hardcoded safety ignores (always applied)
+    p = Path(file_path)
+    hardcoded = {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "venv",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".tox",
+        "node_modules",
+        "build",
+        "dist",
+        ".PrizmForge",
+        "reports",
+    }
+    if any(part in hardcoded for part in p.parts):
+        return True
+
+    # Respect .gitignore (fail open on any error)
+    try:
+        if should_ignore_by_gitignore(file_path):
+            return True
+    except Exception as e:
+        logging.getLogger(__name__).debug("gitignore check failed for %s: %s", file_path, e)
+
     return False
 
 
@@ -306,6 +336,8 @@ def sync_file_to_database(file_path: str, content: str) -> bool:
     Sync file content to database
     COMPUTE TOKEN ESTIMATE HERE (write-time)
     """
+    if should_ignore_file(file_path):
+        return False
     try:
         content_hash = compute_file_hash(content)
         file_type = Path(file_path).suffix or "unknown"

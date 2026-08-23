@@ -1,6 +1,7 @@
 # Unattended Closed-Loop Hardening Plan
 
 **Status:** planning capture (2026-08-16; updated with diagnostic dump)  
+**Progress tracker:** no workstream has shipped yet — all acceptance criteria in §3–§8 are unchecked/open. Update this header and tick the §16 checklist items as phases land.  
 **Context:** Self-edit unattended runs on a *copy* of PrizmForge (Gemini; multi-hour soaks)  
 **Goal:** Turn observed failure modes into durable product workstreams so future development does not rediscover them ad hoc.
 

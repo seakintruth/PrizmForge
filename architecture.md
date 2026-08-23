@@ -470,6 +470,7 @@ The multi-endpoint and automatic fallback system provides resilience across mult
 - `EndpointConfig` — Configuration per provider (base URL, priority, rate limits).
 - `EndpointHealth` — Persistent health tracking with cooldowns.
 - `EndpointManager` — Handles endpoint selection, health checks, and fallback logic.
+- Model resolution is unified through `EndpointManager.normalize_model_reference()`: any reference (bare model id or full `endpoint/model`) resolves to an `(endpoint, model)` pair. This is the single entry point for all call paths, including top-level `default_model`, `agent_model_preferences`, and RC overrides.
 
 #### Health Status Values
 

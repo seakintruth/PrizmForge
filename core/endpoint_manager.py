@@ -369,12 +369,28 @@ class EndpointManager:
     # =====================================================================
 
     def get_api_key(self, endpoint: EndpointConfig) -> str:
-        api_key = self.config.get(endpoint.api_key_name)
-        if not api_key:
-            api_key = self.config.get("api_key")
+        api_key = self._lookup_structured_api_key(endpoint)
         if not api_key or "YOUR_" in str(api_key):
             raise ValueError(f"API key not configured for endpoint: {endpoint.name}")
         return api_key
+
+    def _lookup_structured_api_key(self, endpoint: EndpointConfig) -> str | None:
+        """Look up key under keys.<endpoint_name> in the loaded api key data.
+
+        Resolution order within an endpoint entry:
+          1. explicit field named by endpoint.api_key_name (if customized)
+          2. default "api_key" field
+        """
+        structured = self.config.get("_api_keys") or {}
+        entry = structured.get(endpoint.name)
+        if not isinstance(entry, dict):
+            return None
+        value = None
+        if endpoint.api_key_name and endpoint.api_key_name != "api_key":
+            value = entry.get(endpoint.api_key_name)
+        if not value:
+            value = entry.get("api_key")
+        return str(value) if value else None
 
     def build_payload(
         self,

@@ -26,7 +26,6 @@ Edit `config.json`:
   "endpoints": {
     "openai": {
       "base_url": "https://api.openai.com/v1/chat/completions",
-      "api_key_name": "openai_api_key",
       "include_model_in_payload": true,
       "response_path": ["choices", 0, "message", "content"],
       "description": "OpenAI GPT endpoint",
@@ -38,7 +37,6 @@ Edit `config.json`:
 
 **Configuration fields:**
 - `base_url` - Full API endpoint URL
-- `api_key_name` - Key name in api_key.json
 - `include_model_in_payload` - Whether to send model in request body
 - `response_path` - JSON path to extract response text
 - `description` - Human-readable description
@@ -46,13 +44,16 @@ Edit `config.json`:
 
 ### Step 2: Add API Key
 
-Edit `api_key.json`:
+Keys are keyed by **endpoint name** in `api_key.json`. Edit:
 
 ```json
 {
-  "openai_api_key": "sk-..."
+  "keys": {
+    "openai": { "api_key": "sk-..." }
+  }
 }
 ```
+(The endpoint entry above needs no `api_key_name`; it defaults to `"api_key"`.)
 
 ### Step 3: Test Endpoint
 

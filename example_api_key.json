@@ -1,7 +1,12 @@
 {
-  "_readme": "Copy to api_key.json. Keys are referenced by endpoints[].api_key_name in config.json.",
-  "gemini_api_key": "YOUR_GEMINI_OR_OPENAI_COMPAT_KEY",
-  "databricks_token": "YOUR_DATABRICKS_PAT",
-  "openai_api_key": "OPTIONAL_OPENAI_KEY",
-  "anthropic_api_key": "OPTIONAL_ANTHROPIC_KEY"
+  "_comment": "API keys for PrizmForge endpoints. This file is gitignored.",
+  "_how_it_works": "Each entry under 'keys' is named after an endpoint in config.json:endpoints. Inside an entry, 'api_key' is the default field; a custom field name only matters if that endpoint sets api_key_name in config.json. Add as many endpoints as you like — no other file needs to change.",
+  "keys": {
+    "gemini": {
+      "api_key": "YOUR_GEMINI_OR_OPENAI_COMPAT_KEY"
+    },
+    "beta_genai": {
+      "api_key": "YOUR_BETA_ENDPOINT_KEY"
+    }
+  }
 }

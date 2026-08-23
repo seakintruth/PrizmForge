@@ -66,11 +66,13 @@ Please edit api_key.json with your API key
 
 **Solutions:**
 
-1. **Create api_key.json:**
+1. **Add the key to `api_key.json`** under `keys.<endpoint_name>` (endpoint
+   name must match an entry in `config.json:endpoints`):
 ```json
 {
-  "gemini_api_key": "your-actual-key-here",
-  "databricks_token": "your-actual-token-here"
+  "keys": {
+    "gemini": { "api_key": "your-actual-key-here" }
+  }
 }
 ```
 

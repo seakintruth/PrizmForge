@@ -1,16 +1,12 @@
 {
   "_readme": "Template for config.json. Copy this file and fill in your values. Keys starting with _ are for documentation only.",
-
   "project_directory": "../ExampleProject",
   "git": false,
   "git_auto_commit": false,
-
   "default_iteration_minutes": 5,
   "min_iterations_before_complete": 3,
   "background_agents_enabled": true,
-
   "default_model": "gemini/gemini-3.1-pro-preview",
-
   "cli_mode": {
     "mode": "unattended",
     "unattended": {
@@ -22,13 +18,16 @@
       "stop_when_backlog_empty": true
     }
   },
-
   "endpoints": {
     "gemini": {
       "base_url": "https://api.genai.mil/v1/chat/completions",
-      "api_key_name": "gemini_api_key",
       "include_model_in_payload": true,
-      "response_path": ["choices", 0, "message", "content"],
+      "response_path": [
+        "choices",
+        0,
+        "message",
+        "content"
+      ],
       "description": "Primary Gemini endpoint",
       "priority": 10,
       "rate_limit_per_minute": 100,
@@ -49,9 +48,13 @@
     },
     "beta_genai": {
       "base_url": "https://api-beta.genai.mil/v1/chat/completions",
-      "api_key_name": "beta_genai_api_key",
       "include_model_in_payload": true,
-      "response_path": ["choices", 0, "message", "content"],
+      "response_path": [
+        "choices",
+        0,
+        "message",
+        "content"
+      ],
       "description": "Beta endpoint for future models (Grok, GPT, etc.)",
       "priority": 20,
       "rate_limit_per_minute": 80,
@@ -71,14 +74,11 @@
       }
     }
   },
-
   "default_endpoint": "gemini",
-
   "fallback_settings": {
     "enabled": true,
     "max_fallback_attempts": 2
   },
-
   "agent_model_preferences": {
     "orchestrator": "gemini/gemini-3.1-pro-preview",
     "developer": "gemini/gemini-3.1-pro-preview",
@@ -87,7 +87,6 @@
     "prioritizer": "gemini/gemini-3.1-pro-preview",
     "security_reviewer": "gemini/gemini-3.1-pro-preview",
     "deployment_validator": "gemini/gemini-3.1-pro-preview",
-
     "jr_reviewer": "gemini/gemini-3.7-flash",
     "jr_researcher": "gemini/gemini-3.7-flash",
     "tech_writer": "gemini/gemini-3.7-flash",
@@ -96,22 +95,18 @@
     "project_reporter": "gemini/gemini-3.7-flash",
     "resource_controller": "gemini/gemini-3.7-flash"
   },
-
   "proxy": {
     "http": "",
     "https": "",
     "_note": "Leave empty to disable proxy"
   },
-
   "token_budget": {
     "max_tokens_per_4h": 500000
   },
-
   "reporter": {
     "enabled": true,
     "interval_minutes": 10
   },
-
   "resource_controller": {
     "enabled": true,
     "max_tokens_per_day": 2000000,
@@ -130,7 +125,6 @@
       }
     }
   },
-
   "background_agents": {
     "jr_reviewer": {
       "enabled": true,
@@ -142,20 +136,32 @@
       "on_modification": true
     }
   },
-
   "file_editing": {
-    "preferred_modes": ["guid", "find_replace", "full_replace"],
-    "fallback_order": ["guid", "diff", "find_replace", "full_replace"],
+    "preferred_modes": [
+      "guid",
+      "find_replace",
+      "full_replace"
+    ],
+    "fallback_order": [
+      "guid",
+      "diff",
+      "find_replace",
+      "full_replace"
+    ],
     "small_file_threshold_lines": 180
   },
-
   "content_safety": {
     "disallow_binary_content": true,
     "blocked_extensions": [
-      ".exe", ".dll", ".bin", ".iso", ".msi", ".dmg", ".appx"
+      ".exe",
+      ".dll",
+      ".bin",
+      ".iso",
+      ".msi",
+      ".dmg",
+      ".appx"
     ]
   },
-
   "llm": {
     "test_mode": false,
     "_note": "Set to true or use PRIZMFORGE_TEST_MODE=1 to disable real API calls"

@@ -75,20 +75,29 @@ def main():  # noqa: C901
             if getattr(unattended_config, "exit_on_preflight_failure", True):
                 sys.exit(2)
 
-    # Check API keys for configured endpoints
+    # Check API keys for configured endpoints (structured api_key.json form)
     endpoints_config = config.get("endpoints", {})
+    api_keys_map = config.get("_api_keys", {})
     missing_keys = []
     placeholder_keys = []
     valid_endpoints = []
 
+    def _key_for(endpoint_name: str, endpoint_config: dict) -> str:
+        """Resolve key from api_key.json keys.<endpoint> entry."""
+        entry = api_keys_map.get(endpoint_name) or {}
+        custom = endpoint_config.get("api_key_name", "api_key")
+        val = entry.get(custom) or entry.get("api_key") or ""
+        return str(val)
+
     for endpoint_name, endpoint_config in endpoints_config.items():
-        api_key_name = endpoint_config.get("api_key_name", "api_key")
-        api_key_value = config.get(api_key_name, "")
+        if not isinstance(endpoint_config, dict):
+            continue
+        api_key_value = _key_for(endpoint_name, endpoint_config)
 
         if not api_key_value:
-            missing_keys.append(f"{endpoint_name} (needs '{api_key_name}')")
+            missing_keys.append(f"{endpoint_name} (add keys.{endpoint_name} to api_key.json)")
         elif "YOUR_" in api_key_value.upper():
-            placeholder_keys.append(f"{endpoint_name} ('{api_key_name}' = placeholder)")
+            placeholder_keys.append(f"{endpoint_name} (placeholder in keys.{endpoint_name})")
         else:
             valid_endpoints.append(endpoint_name)
 
@@ -114,15 +123,19 @@ def main():  # noqa: C901
             for key in placeholder_keys:
                 print(f"  • {key}")
 
-        print("\nPlease edit api_key.json with actual API keys:")
-        print("  Example api_key.json:")
+        print("\nPlease edit api_key.json with actual API keys (structured form):")
         print("  {")
-        for endpoint_config in endpoints_config.values():
-            api_key_name = endpoint_config.get("api_key_name", "api_key")
-            print(f'    "{api_key_name}": "your-actual-key-here",')
+        print('    "keys": {')
+        for endpoint_name, endpoint_config in endpoints_config.items():
+            if not isinstance(endpoint_config, dict):
+                continue
+            print(f'      "{endpoint_name}": {{"api_key": "your-actual-key-here"}},')
+        print("    }")
         print("  }")
         print("\n🔑 Get your keys:")
         for ep_name, ep_config in endpoints_config.items():
+            if not isinstance(ep_config, dict):
+                continue
             key_url = ep_config.get("key_management_url", "Contact system administrator")
             print(f"  • {ep_name.title()}: {key_url}")
         print()

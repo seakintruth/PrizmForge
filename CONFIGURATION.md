@@ -16,8 +16,8 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 |------|------|
 | `config.json` | Runtime settings (this schema) |
 | `example_config.json` | Checked-in template with sample values |
-| `api_key.json` | Secrets keyed by `endpoints.*.api_key_name` |
-| `example_api_key.json` | Placeholder secret names |
+| `api_key.json` | Secrets keyed by **endpoint name** (`keys.<endpoint>.api_key`) |
+| `example_api_key.json` | Placeholder template in the same shape |
 | `agent_prompts.json` | Agent system prompts (not covered here) |
 
 ---
@@ -32,13 +32,13 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | `default_iteration_minutes` | number | `5` | Time box per orchestrator iteration |
 | `min_iterations_before_complete` | int | `3` | Orchestrator should not complete before this many turns |
 | `background_agents_enabled` | bool | `true` | Product default: background analysis pool on |
-| `default_model` | string | optional | Fallback model id when agent preference missing |
+| `default_model` | string | optional | Fallback model reference (bare model id or `endpoint/model`) when no agent preference applies |
 | `default_endpoint` | string | optional | Name of default entry in `endpoints` |
 | `cli_mode` | object | optional | Interactive / unattended mode (see below) |
 | `endpoints` | object | optional | Named HTTP LLM backends |
 | `fallback_settings` | object | optional | Cross-endpoint fallback policy |
 | `models` | object | optional | Model id → endpoint + generation params |
-| `agent_model_preferences` | object | optional | Agent name → model id |
+| `agent_model_preferences` | object | optional | Agent name → model reference (bare id or `endpoint/model`; resolved via `normalize_model_reference`) |
 | `proxy` | object | optional | HTTP(S) proxy URLs |
 | `token_budget` | object | optional | Spend limits |
 | `reporter` | object | optional | Project reporter worker |
@@ -78,7 +78,7 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | Key | Type | Description |
 |-----|------|-------------|
 | `base_url` | string | Chat-completions URL |
-| `api_key_name` | string | Key into `api_key.json` |
+| `api_key_name` | string | Optional field name inside this endpoint's entry in `api_key.json:keys` (default `api_key`) |
 | `key_management_url` | string | Human unlock / key UI (optional) |
 | `include_model_in_payload` | bool | Send `model` field in body |
 | `response_path` | array | Path to assistant text (e.g. `["choices",0,"message","content"]`) |
@@ -255,14 +255,25 @@ To allow an MSI **path**, remove `.msi` from `blocked_extensions`. Real MSI **by
 
 ## `api_key.json` schema
 
-Map of string → string. Names must match `endpoints.*.api_key_name`.
+Structured form, keyed by **endpoint name** (must match an entry in `config.json:endpoints`).
+Supports any number of endpoints; no per-provider variable names.
 
 ```json
 {
-  "gemini_api_key": "...",
-  "databricks_token": "..."
+  "_comment": "Secrets per endpoint. This file is gitignored.",
+  "keys": {
+    "gemini":     { "api_key": "..." },
+    "beta_genai": { "api_key": "...", "custom_field": "..." }
+  }
 }
 ```
+
+Resolution (`EndpointManager.get_api_key`):
+1. `keys.<endpoint_name>.<endpoint.api_key_name>` when the endpoint sets a custom `api_key_name`
+2. otherwise `keys.<endpoint_name>.api_key`
+
+Legacy flat form (`{"gemini_api_key": "..."}`) is **rejected at load** with a
+pointer to `example_api_key.json`.
 
 ---
 
