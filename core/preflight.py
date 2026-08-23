@@ -4,6 +4,7 @@ Unattended preflight checks (config-only runs).
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -44,25 +45,33 @@ def preflight_unattended(config: dict[str, Any]) -> tuple[bool, list[str]]:
     if not test_mode_enabled(config):
         endpoints = config.get("endpoints") or {}
         valid = 0
+        # Load structured keys once: {"keys": {"<endpoint_name>": {...}}}
+        structured_keys: dict = {}
+        try:
+            import json
+
+            from core.config import find_config_file
+
+            key_file = find_config_file("api_key.json")
+            _data = json.loads(key_file.read_text(encoding="utf-8"))
+            structured_keys = _data.get("keys") or {}
+        except Exception as e:
+            logging.getLogger(__name__).debug("api_key.json not loaded: %s", e)
         for _name, ep in endpoints.items():
             if not isinstance(ep, dict):
                 continue
             key_name = ep.get("api_key_name", "api_key")
-            # keys may live in api_key.json merged into config or separate
-            val = config.get(key_name) or ""
-            if not val:
-                try:
-                    import json
-
-                    from core.config import find_config_file
-
-                    key_file = find_config_file("api_key.json")
-                    keys = json.loads(key_file.read_text(encoding="utf-8"))
-                    val = keys.get(key_name, "")
-                except Exception:
-                    val = ""
+            # Structured form: api_key.json keys.<endpoint>.<key_name|api_key>
+            entry = structured_keys.get(_name) or {}
+            val = entry.get(key_name) or entry.get("api_key") or ""
             if val and "YOUR_" not in str(val).upper():
                 valid += 1
+            else:
+                errors.append(
+                    f"Endpoint '{_name}': no API key found. Add to api_key.json: "
+                    f'{{"keys": {{"{_name}": {{"api_key": "..."}}}}}} '
+                    f"or enable llm.test_mode."
+                )
         if valid == 0 and endpoints:
             errors.append("No valid API keys for configured endpoints (set keys or enable llm.test_mode / PRIZMFORGE_TEST_MODE=1)")
 

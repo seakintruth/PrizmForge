@@ -17,8 +17,10 @@ def ep_config() -> dict:
     """Minimal multi-endpoint config using the new nested model structure."""
     return {
         "default_endpoint": "primary",
-        "api_key": "test-key-not-placeholder",
-        "primary_key": "primary-secret",
+        "_api_keys": {
+            "primary": {"api_key": "primary-secret"},
+            "secondary": {"api_key": "secondary-secret"},
+        },
         "endpoints": {
             "primary": {
                 "base_url": "http://primary.example/v1/chat/completions",
@@ -170,13 +172,19 @@ def test_get_model_config(manager):
 
 
 def test_get_api_key_specific_name(manager):
+    """Custom api_key_name field inside the endpoint's key entry wins."""
     ep = manager.endpoints["primary"]
-    assert manager.get_api_key(ep) == "primary-secret"
+    # primary has api_key_name="primary_key" in config; entry provides it
+    manager.config.setdefault("_api_keys", {}).setdefault("primary", {})[
+        "primary_key"
+    ] = "named-field-secret"
+    assert manager.get_api_key(ep) == "named-field-secret"
 
 
 def test_get_api_key_falls_back_to_generic(manager):
+    """Falls back to 'api_key' field when custom field is absent."""
     ep = manager.endpoints["secondary"]
-    assert manager.get_api_key(ep) == "test-key-not-placeholder"
+    assert manager.get_api_key(ep) == "secondary-secret"
 
 
 def test_build_payload_includes_model_when_configured(manager):

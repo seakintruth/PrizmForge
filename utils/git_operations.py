@@ -25,23 +25,49 @@ def git_init():
     return False
 
 
-def git_commit(file_path: str, message: str) -> str:
-    """Commit a file"""
+def git_commit(file_path: str, message: str) -> dict:
+    """
+    Commit a file, returning a structured outcome.
+
+    Returns dict with:
+        ok (bool)         — True only if add+commit+rev-parse all succeeded
+        attempted (bool)  — False when git is disabled (distinct from failure)
+        code (int|None)   — failing command's return code
+        stage (str)       — which git step failed: add | commit | rev-parse | timeout
+        stdout / stderr   — captured output (hook excerpts for feedback)
+        file_path (str)
+        commit_hash (str|None) — on success
+    """
     config = get_config()
     if not config.get("git") or not config.get("git_auto_commit"):
-        return None
+        return {"ok": False, "attempted": False, "code": None, "stage": "disabled",
+                "stdout": "", "stderr": "", "file_path": file_path, "commit_hash": None}
 
     project_dir = Path(config.get("project_directory", "./project"))
 
+    def _failure(stage: str, code=None, stdout="", stderr="") -> dict:
+        print(f"\n⚠️  GIT {stage.upper()} FAILED for {file_path}\n"
+              f"  stderr: {stderr[:500]}\n")
+        return {"ok": False, "attempted": True, "code": code, "stage": stage,
+                "stdout": stdout or "", "stderr": stderr or "",
+                "file_path": file_path, "commit_hash": None}
+
     try:
         # Add file
-        subprocess.run(
-            ["git", "add", file_path],
-            cwd=project_dir,
-            capture_output=True,
-            check=True,
-            timeout=10,
-        )
+        try:
+            subprocess.run(
+                ["git", "add", file_path],
+                cwd=project_dir,
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            return _failure("add", e.returncode,
+                            getattr(e, "stdout", "") or "", getattr(e, "stderr", "") or "")
+        except subprocess.TimeoutExpired:
+            return _failure("timeout", None)
 
         # Commit
         result = subprocess.run(
@@ -52,36 +78,28 @@ def git_commit(file_path: str, message: str) -> str:
             timeout=10,
         )
 
-        if result.returncode == 0:
-            # Get commit hash
-            hash_result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=project_dir,
-                capture_output=True,
-                text=True,
-                check=True,
-                timeout=5,
-            )
-            commit_hash = hash_result.stdout.strip()
-            print(f"  📦 Git commit: {commit_hash[:7]}")
-            return commit_hash
-        else:
-            # ✅ FIX: Make commit failures more visible
-            print(f"\n{'=' * 60}")
-            print(f"⚠️  GIT COMMIT FAILED for {file_path}")
-            print(f"{'=' * 60}")
-            print(f"Error: {result.stderr}")
-            print(f"Stdout: {result.stdout}")
-            print("File will be modified but NOT version controlled!")
-            print(f"{'=' * 60}\n")
-            return None
+        if result.returncode != 0:
+            return _failure("commit", result.returncode, result.stdout, result.stderr)
+
+        # Get commit hash
+        hash_result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=5,
+        )
+        commit_hash = hash_result.stdout.strip()
+        print(f"  📦 Git commit: {commit_hash[:7]}")
+        return {"ok": True, "attempted": True, "code": 0, "stage": "commit",
+                "stdout": result.stdout or "", "stderr": result.stderr or "",
+                "file_path": file_path, "commit_hash": commit_hash}
 
     except subprocess.TimeoutExpired:
-        print(f"\n⚠️  GIT TIMEOUT: {file_path} - git command took too long\n")
-        return None
+        return _failure("timeout", None)
     except Exception as e:
-        print(f"\n⚠️  GIT ERROR: {file_path} - {e}\n")
-        return None
+        return _failure("error", None, stderr=str(e))
 
 
 def ensure_git_initialized() -> bool:

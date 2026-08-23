@@ -94,32 +94,39 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     config_dir = config_file.parent
     api_key_file = config_dir / "api_key.json"
 
+    # api_key.json uses the structured form:
+    #   {"keys": {"<endpoint_name>": {"api_key": "...", ...}}}
+    # Secrets are NOT merged into the config namespace; EndpointManager
+    # resolves them per-endpoint via get_api_key().
     try:
         with open(api_key_file, encoding="utf-8") as f:
             api_data = json.load(f)
-
-            # Load ALL keys from api_key.json into config
-            for key_name, key_value in api_data.items():
-                config[key_name] = key_value
-
-            # Set default "api_key" if not present
-            if "api_key" not in config and api_data:
-                config["api_key"] = next(iter(api_data.values()))
-
+        structured = api_data.get("keys")
+        if isinstance(structured, dict):
+            config["_api_keys"] = structured
+        else:
+            raise ValueError(
+                "api_key.json must use the structured form: "
+                '{"keys": {"<endpoint_name>": {"api_key": "..."}}}. '
+                "See example_api_key.json."
+            )
     except FileNotFoundError:
         # Try alternate location
         alt_api_key = find_config_file("api_key.json")
         if alt_api_key.exists():
             with open(alt_api_key, encoding="utf-8") as f:
                 api_data = json.load(f)
-
-                for key_name, key_value in api_data.items():
-                    config[key_name] = key_value
-
-                if "api_key" not in config and api_data:
-                    config["api_key"] = next(iter(api_data.values()))
+            structured = api_data.get("keys")
+            if isinstance(structured, dict):
+                config["_api_keys"] = structured
+            else:
+                raise ValueError(
+                    "api_key.json must use the structured form: "
+                    '{"keys": {"<endpoint_name>": {"api_key": "..."}}}. '
+                    "See example_api_key.json."
+                ) from None
         else:
-            config["api_key"] = ""
+            config["_api_keys"] = {}
 
     # Store config directory for reference
     config["_config_dir"] = str(config_dir)
@@ -230,6 +237,98 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
             if be is not None:
                 if not isinstance(be, list) or not all(isinstance(x, str) for x in be):
                     errors.append("content_safety.blocked_extensions must be a list of strings")
+
+    # ------------------------------------------------------------------
+    # Endpoints & models: N endpoints × M models per endpoint (dict form).
+    # Every reference elsewhere (default_model, agent_model_preferences,
+    # resource_controller.model_downgrades) uses 'endpoint/model'.
+    # ------------------------------------------------------------------
+    endpoints = config.get("endpoints")
+    endpoint_names: set[str] = set()
+    model_keys: set[str] = set()  # full "endpoint/model" refs
+    bare_model_names: dict[str, list[str]] = {}  # model -> owning endpoints
+
+    if endpoints is not None and not isinstance(endpoints, dict):
+        errors.append("endpoints must be an object/dict mapping name → endpoint settings")
+    elif isinstance(endpoints, dict):
+        for ep_name, ep_cfg in endpoints.items():
+            endpoint_names.add(ep_name)
+            if not isinstance(ep_cfg, dict):
+                errors.append(f"endpoints.{ep_name} must be an object")
+                continue
+            base_url = ep_cfg.get("base_url")
+            if not base_url or not isinstance(base_url, str):
+                errors.append(f"endpoints.{ep_name}.base_url is required (string)")
+            priority = ep_cfg.get("priority", 50)
+            if not isinstance(priority, int):
+                errors.append(f"endpoints.{ep_name}.priority must be an integer")
+
+            models = ep_cfg.get("models", {})
+            if models is None:
+                models = {}
+            if not isinstance(models, dict):
+                errors.append(f"endpoints.{ep_name}.models must be an object mapping model id → settings")
+                continue
+            for m_name, m_cfg in models.items():
+                model_keys.add(f"{ep_name}/{m_name}")
+                bare_model_names.setdefault(m_name, []).append(ep_name)
+                if m_cfg is not None and not isinstance(m_cfg, dict):
+                    errors.append(f"endpoints.{ep_name}.models.{m_name} must be an object when present")
+
+        # default_endpoint must point at a real endpoint
+        de = config.get("default_endpoint")
+        if de and de not in endpoint_names:
+            errors.append(f"default_endpoint '{de}' does not match any entry in endpoints ({sorted(endpoint_names)})")
+
+        # default_model: accept full ref or bare name; bare must resolve unambiguously
+        dm = config.get("default_model")
+        if dm:
+            if "/" in dm:
+                if dm not in model_keys:
+                    errors.append(
+                        f"default_model '{dm}' is not a known model. "
+                        f"Known: {sorted(model_keys)[:20]}{'…' if len(model_keys) > 20 else ''}"
+                    )
+            elif dm not in bare_model_names:
+                errors.append(f"default_model '{dm}' does not exist under any endpoint")
+            elif len(bare_model_names[dm]) > 1:
+                errors.append(
+                    f"default_model '{dm}' is ambiguous — it exists on multiple endpoints "
+                    f"({bare_model_names[dm]}). Use the full 'endpoint/model' form."
+                )
+
+        # agent_model_preferences values follow the same rule
+        prefs = config.get("agent_model_preferences") or {}
+        if not isinstance(prefs, dict):
+            errors.append("agent_model_preferences must be an object/dict when present")
+        else:
+            for agent, ref in prefs.items():
+                if str(ref).startswith("_"):
+                    continue
+                if "/" in ref:
+                    ok = ref in model_keys
+                else:
+                    ok = len(bare_model_names.get(ref, [])) == 1
+                if not ok:
+                    errors.append(
+                        f"agent_model_preferences.{agent}: unknown or ambiguous model reference '{ref}'"
+                    )
+
+        # resource_controller.model_downgrades values too
+        downgrades = ((config.get("resource_controller") or {}).get("model_downgrades")) or {}
+        stack = [downgrades]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    stack.append(v)
+            elif isinstance(node, str) and node:
+                if "/" in node:
+                    ok = node in model_keys
+                else:
+                    ok = len(bare_model_names.get(node, [])) == 1
+                if not ok:
+                    errors.append(f"resource_controller.model_downgrades: unknown model reference '{node}'")
 
     if errors:
         raise ValueError("config.json validation failed:\n  - " + "\n  - ".join(errors))
