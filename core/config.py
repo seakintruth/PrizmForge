@@ -274,15 +274,25 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
         if de and de not in endpoint_names:
             errors.append(f"default_endpoint '{de}' does not match any entry in endpoints ({sorted(endpoint_names)})")
 
-        # default_model: accept full ref or bare name; bare must resolve unambiguously
+        # Model reference helper: a leading 'endpoint/' prefix only counts when
+        # it names a real endpoint — model IDs may themselves contain slashes.
+        def _ref_ok(ref: str) -> bool:
+            if "/" in ref:
+                head, _rest = ref.split("/", 1)
+                if head in endpoint_names:
+                    return ref in model_keys
+                # No known endpoint prefix: treat the whole string as an ID.
+                # It matches if any registered key ends with '/<ref>'.
+                return any(k.endswith(f"/{ref}") for k in model_keys)
+            return len(bare_model_names.get(ref, [])) >= 1
+
+        # default_model: accept full ref or bare ID; bare must resolve unambiguously
         dm = config.get("default_model")
         if dm:
-            if "/" in dm:
-                if dm not in model_keys:
-                    errors.append(f"default_model '{dm}' is not a known model. Known: {sorted(model_keys)[:20]}{'…' if len(model_keys) > 20 else ''}")
-            elif dm not in bare_model_names:
-                errors.append(f"default_model '{dm}' does not exist under any endpoint")
-            elif len(bare_model_names[dm]) > 1:
+            dm_head = dm.split("/", 1)[0] if "/" in dm else None
+            if not _ref_ok(dm):
+                errors.append(f"default_model '{dm}' is not a known model. Known: {sorted(model_keys)[:20]}{'…' if len(model_keys) > 20 else ''}")
+            elif dm_head is None and len(bare_model_names[dm]) > 1:
                 errors.append(
                     f"default_model '{dm}' is ambiguous — it exists on multiple endpoints ({bare_model_names[dm]}). Use the full 'endpoint/model' form."
                 )
@@ -295,11 +305,7 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
             for agent, ref in prefs.items():
                 if str(ref).startswith("_"):
                     continue
-                if "/" in ref:
-                    ok = ref in model_keys
-                else:
-                    ok = len(bare_model_names.get(ref, [])) == 1
-                if not ok:
+                if not _ref_ok(ref):
                     errors.append(f"agent_model_preferences.{agent}: unknown or ambiguous model reference '{ref}'")
 
         # resource_controller.model_downgrades values too
@@ -311,11 +317,7 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
                 for _k, v in node.items():
                     stack.append(v)
             elif isinstance(node, str) and node:
-                if "/" in node:
-                    ok = node in model_keys
-                else:
-                    ok = len(bare_model_names.get(node, [])) == 1
-                if not ok:
+                if not _ref_ok(node):
                     errors.append(f"resource_controller.model_downgrades: unknown model reference '{node}'")
 
     if errors:
