@@ -11,5 +11,5 @@
     123,
     456
   ],
-  "model": "gemini-3.1-pro-preview"
+  "model": "optional-model-override"
 }

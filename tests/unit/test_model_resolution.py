@@ -226,3 +226,183 @@ def test_full_model_resolution_flow(manager):
 
     bare = manager.validate_model(f"{choice.endpoint_name}/{choice.model_name}")
     assert bare == "gemini-3.1-pro-preview"
+
+
+# =============================================================================
+# SLASHED MODEL-ID TESTS (model IDs that themselves contain '/')
+# =============================================================================
+
+
+@pytest.fixture
+def slashed_config() -> dict:
+    """Config where model IDs contain slashes, as with OpenRouter-style IDs."""
+    return {
+        "default_endpoint": "openrouter",
+        "default_model": "openrouter/stealth/ox-alpha",
+        "_api_keys": {"openrouter": {"api_key": "or-secret"}},
+        "endpoints": {
+            "openrouter": {
+                "base_url": "https://openrouter.example/v1/chat/completions",
+                "priority": 10,
+                "include_model_in_payload": True,
+                "models": {
+                    "stealth/ox-alpha": {},
+                    "openai/gpt-4o": {"max_output_tokens": 4096},
+                    "nvidia/nemotron-3-ultra-550b-a55b:free": {},
+                },
+            },
+            # Second endpoint hosting an IDENTICAL slashed model ID
+            "backup": {
+                "base_url": "https://backup.example/v1/chat/completions",
+                "priority": 20,
+                "include_model_in_payload": True,
+                "models": {
+                    "openai/gpt-4o": {"max_output_tokens": 1024},
+                },
+            },
+        },
+        "agent_model_preferences": {
+            "orchestrator": "openrouter/stealth/ox-alpha",
+            "developer": "backup/openai/gpt-4o",
+        },
+        "fallback_settings": {"enabled": True},
+    }
+
+
+@pytest.fixture
+def slashed_manager(slashed_config) -> EndpointManager:
+    return EndpointManager(slashed_config)
+
+
+def test_slashed_id_full_reference_parses_endpoint_and_full_id(slashed_manager):
+    """'endpoint/vendor/model' must split into endpoint + FULL model ID."""
+    choice = slashed_manager.normalize_model_reference("openrouter/stealth/ox-alpha")
+    assert choice.endpoint_name == "openrouter"
+    assert choice.model_name == "stealth/ox-alpha"  # NOT 'stealth'
+
+
+def test_slashed_id_bare_reference_resolves_via_default_endpoint(slashed_manager):
+    """A bare slashed ID resolves against the default endpoint."""
+    choice = slashed_manager.normalize_model_reference("stealth/ox-alpha")
+    assert choice.endpoint_name == "openrouter"
+    assert choice.model_name == "stealth/ox-alpha"
+
+
+def test_validate_model_preserves_slashed_id(slashed_manager):
+    """validate_model must return the FULL ID for API payloads — not the last segment."""
+    assert slashed_manager.validate_model("openrouter/stealth/ox-alpha") == "stealth/ox-alpha"
+    assert slashed_manager.validate_model("stealth/ox-alpha") == "stealth/ox-alpha"
+    assert slashed_manager.validate_model("nvidia/nemotron-3-ultra-550b-a55b:free") == ("nvidia/nemotron-3-ultra-550b-a55b:free")
+
+
+def test_build_payload_sends_full_slashed_id(slashed_manager):
+    """Regression: payload previously sent only the LAST path segment ('ox-alpha')."""
+    ep = slashed_manager.endpoints["openrouter"]
+    payload = slashed_manager.build_payload(
+        ep,
+        "openrouter/stealth/ox-alpha",
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert payload["model"] == "stealth/ox-alpha"
+
+
+def test_build_payload_bare_slashed_id_keeps_whole_id(slashed_manager):
+    ep = slashed_manager.endpoints["openrouter"]
+    payload = slashed_manager.build_payload(
+        ep,
+        "openai/gpt-4o",  # bare (no known endpoint prefix)
+        messages=[{"role": "user", "content": "hi"}],
+    )
+    assert payload["model"] == "openai/gpt-4o"
+
+
+def test_identical_slashed_ids_on_two_endpoints_differentiate(slashed_manager):
+    """Same model ID on two endpoints: explicit prefix picks the right one."""
+    orch = slashed_manager.resolve_agent_model("orchestrator")
+    assert (orch.endpoint_name, orch.model_name) == ("openrouter", "stealth/ox-alpha")
+
+    dev = slashed_manager.resolve_agent_model("developer")
+    assert (dev.endpoint_name, dev.model_name) == ("backup", "openai/gpt-4o")
+
+    # Endpoint lookup honors each explicit prefix
+    assert slashed_manager.get_endpoint_for_model("openrouter/openai/gpt-4o").name == "openrouter"
+    assert slashed_manager.get_endpoint_for_model("backup/openai/gpt-4o").name == "backup"
+
+
+def test_identical_slashed_ids_scoped_config_lookup(slashed_manager):
+    """get_model_config with explicit endpoint_name wins over default endpoint."""
+    default_copy = slashed_manager.get_model_config("openai/gpt-4o")
+    assert default_copy.get("max_output_tokens") == 4096  # openrouter (default)
+
+    backup_copy = slashed_manager.get_model_config("backup/openai/gpt-4o")
+    assert backup_copy.get("max_output_tokens") == 1024
+
+    scoped = slashed_manager.get_model_config("openai/gpt-4o", endpoint_name="backup")
+    assert scoped.get("max_output_tokens") == 1024
+
+
+def test_slashed_id_model_reference_exists(slashed_manager):
+    assert slashed_manager.model_reference_exists("openrouter/stealth/ox-alpha")
+    assert slashed_manager.model_reference_exists("stealth/ox-alpha")
+    assert slashed_manager.model_reference_exists("backup/openai/gpt-4o")
+    # First segment looks like a vendor, not a real endpoint → whole string is the ID
+    assert slashed_manager.model_reference_exists("vendor/nonexistent-model") is False
+
+
+def test_unknown_first_segment_treated_as_model_id(slashed_manager):
+    """'vendor/model' where 'vendor' is NOT a configured endpoint must not error."""
+    choice = slashed_manager.normalize_model_reference("some-vendor/some-model")
+    assert choice.endpoint_name in (None, "openrouter")  # unresolved or default
+    # It must NOT be truncated to endpoint='some-vendor'
+    assert choice.endpoint_name != "some-vendor"
+
+
+def test_get_endpoint_for_model_slashed_bare_uses_default(slashed_manager):
+    endpoint = slashed_manager.get_endpoint_for_model("openai/gpt-4o")
+    assert endpoint is not None and endpoint.name == "openrouter"
+
+
+# =============================================================================
+# LLM-SUPPLIED MODEL OVERRIDES MUST BE VALIDATED
+# =============================================================================
+
+
+def test_hallucinated_model_override_is_rejected(slashed_manager):
+    """LLMs parrot example values from prompts (e.g. schema examples).
+
+    An override naming a model that doesn't exist must be detectable so
+    callers can ignore it instead of silently falling back mid-call.
+    """
+    hallucinated = "gemini-3.1-pro-preview"
+    assert slashed_manager.model_reference_exists(hallucinated) is False
+    # And the valid configured default still resolves.
+    assert slashed_manager.model_reference_exists("openrouter/stealth/ox-alpha") is True
+
+
+def test_call_agent_ignores_unknown_model_override(slashed_config):
+    """call_agent must not use an unknown override; it falls back to prefs.
+
+    We can't call call_agent without network, but we can verify the guard
+    logic: an invalid override normalizes through the same path and would
+    be rejected before reaching validate_model's fallback warning.
+    """
+    from unittest.mock import patch
+
+    manager = EndpointManager(slashed_config)
+    with (
+        patch("core.config.get_config", return_value=slashed_config),
+        patch(
+            "core.endpoint_manager.get_endpoint_manager",
+            return_value=manager,
+        ),
+    ):
+        from agents.base import call_agent  # noqa: F401  (import sanity)
+
+        bad_override = "gemini-3.1-pro-preview"
+        # The guard condition used in call_agent:
+        should_ignore = bad_override and not manager.model_reference_exists(bad_override)
+        assert should_ignore is True
+
+        good_override = "openrouter/stealth/ox-alpha"
+        should_ignore_good = good_override and not manager.model_reference_exists(good_override)
+        assert should_ignore_good is False

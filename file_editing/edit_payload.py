@@ -41,8 +41,11 @@ class BaseOperation:
         if len(self.rationale) < 10:
             self.rationale = f"{self.rationale} (applied as specified in task)"
 
-        if len(self.rationale) > 500:
-            raise ValueError(f"rationale must be <= 500 characters (got {len(self.rationale)})")
+        # Auto-truncate overly long rationales instead of rejecting the whole
+        # edit: rationale is audit metadata, not load-bearing content. LLMs
+        # routinely exceed soft limits and a hard error here kills valid edits.
+        if len(self.rationale) > 3200:
+            self.rationale = self.rationale[:3197] + "..."
 
         if self.target_file_path is not None:
             self.target_file_path = _validate_target_path(self.target_file_path)
@@ -177,8 +180,14 @@ class EditPayload:
         self.target_file_path = _validate_target_path(self.target_file_path)
         if not isinstance(self.summary, str) or len(self.summary) < 5:
             raise ValueError("summary must be a string of at least 5 characters")
-        if not isinstance(self.rationale, str) or len(self.rationale) < 10:
+        if not isinstance(self.rationale, str):
+            raise ValueError("rationale must be a string")
+        if len(self.rationale) < 10:
             raise ValueError("rationale must be a string of at least 10 characters")
+        # Same auto-truncate policy as BaseOperation: audit metadata, not
+        # load-bearing content — never reject the whole edit over it.
+        if len(self.rationale) > 3200:
+            self.rationale = self.rationale[:3197] + "..."
         if not isinstance(self.operations, list):
             raise ValueError("operations must be a list")
 

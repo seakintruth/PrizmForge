@@ -178,17 +178,18 @@ class EndpointManager:
             self.endpoints[name] = EndpointConfig(name, endpoint_config)
             logger.info(f"Loaded endpoint: {name}")
 
-        # Load models from nested structure
-        self._load_models(config)
-
-        # Validate references in other config sections
-        self._validate_model_references()
-
         default_name = config.get("default_endpoint")
         self.default_endpoint = self.endpoints.get(default_name)
 
         if default_name and not self.default_endpoint:
             logger.warning(f"Default endpoint '{default_name}' not found in config")
+
+        # Load models from nested structure (reference validation uses
+        # default_endpoint, so this must come after it is set)
+        self._load_models(config)
+
+        # Validate references in other config sections
+        self._validate_model_references()
 
     def _load_models(self, config: dict[str, Any]):
         """Load models defined under endpoints.<name>.models"""
@@ -233,6 +234,48 @@ class EndpointManager:
     # Public Model Resolution API
     # =====================================================================
 
+    def _split_endpoint_prefix(self, reference: str) -> tuple[str | None, str]:
+        """Split 'endpoint/model' ONLY when the first segment is a known endpoint.
+
+        Model IDs may themselves contain slashes (e.g. 'stealth/ox-alpha'),
+        so a reference like 'openrouter/stealth/ox-alpha' must resolve to
+        ('openrouter', 'stealth/ox-alpha') — not ('openrouter', 'stealth') +
+        leftover. When the first segment is NOT a known endpoint, the whole
+        string is treated as a bare model ID.
+        """
+        if "/" in reference:
+            head, rest = reference.split("/", 1)
+            if head in self.endpoints:
+                return head, rest
+        return None, reference
+
+    def _resolve_key(self, reference: str) -> str | None:
+        """Resolve any model reference to its full 'endpoint/model' key."""
+        if not reference:
+            return None
+
+        # Exact full key
+        if reference in self.models:
+            return reference
+
+        # Known endpoint prefix: 'openrouter/stealth/ox-alpha'
+        ep, mid = self._split_endpoint_prefix(reference)
+        if ep and f"{ep}/{mid}" in self.models:
+            return f"{ep}/{mid}"
+
+        # Bare model ID (possibly containing slashes): prefer default endpoint
+        if self.default_endpoint:
+            default_key = f"{self.default_endpoint.name}/{reference}"
+            if default_key in self.models:
+                return default_key
+
+        # Any endpoint hosting this exact model ID
+        for key in self.models:
+            if key.endswith(f"/{reference}"):
+                return key
+
+        return None
+
     def list_all_model_references(self) -> list[str]:
         """Returns all available models in 'endpoint/model' format."""
         return list(self.models.keys())
@@ -247,69 +290,38 @@ class EndpointManager:
         return result
 
     def model_reference_exists(self, reference: str) -> bool:
-        """Check if a model reference exists (supports both 'model' and 'endpoint/model')."""
+        """Check if a model reference exists (bare ID or 'endpoint/model')."""
         if not reference:
             return False
-        if "/" in reference:
-            return reference in self.models
-        else:
-            return reference in self._model_to_endpoints
+        return self._resolve_key(reference) is not None
 
     def get_endpoint_for_model(self, model_name: str | None = None) -> EndpointConfig | None:
         """
         Get endpoint for a model.
-        Accepts bare model name or full 'endpoint/model' reference.
+        Accepts bare model ID or full 'endpoint/model' reference.
         When a model exists on multiple endpoints, prefers the default_endpoint.
         """
         if not model_name:
             return self.default_endpoint
 
-        # Full reference
-        if "/" in model_name:
-            _ep_name, bare = model_name.split("/", 1)
-            if model_name in self.models:
-                return self.models[model_name]["endpoint"]
-            # Fall through using bare name
-            model_name = bare
-
-        # Try to find match under default endpoint first
-        if self.default_endpoint:
-            default_key = f"{self.default_endpoint.name}/{model_name}"
-            if default_key in self.models:
-                return self.models[default_key]["endpoint"]
-
-        # Fallback to first registered endpoint
-        endpoints = self._model_to_endpoints.get(model_name, [])
-        if endpoints:
-            return self.endpoints.get(endpoints[0])
-
+        key = self._resolve_key(model_name)
+        if key:
+            return self.models[key]["endpoint"]
         return self.default_endpoint
 
     def get_model_config(self, model_name: str, endpoint_name: str | None = None) -> dict[str, Any]:
-        """Get model configuration. Accepts bare name or full 'endpoint/model' ref."""
+        """Get model configuration. Accepts bare ID or full 'endpoint/model' ref."""
         if not model_name:
             return {}
 
-        # Full reference takes precedence
-        if "/" in model_name:
-            if model_name in self.models:
-                return self.models[model_name]["config"]
-            # Split and continue
-            ep, bare = model_name.split("/", 1)
-            if endpoint_name is None:
-                endpoint_name = ep
-            model_name = bare
-
+        key = self._resolve_key(model_name)
         if endpoint_name:
-            key = f"{endpoint_name}/{model_name}"
-            if key in self.models:
-                return self.models[key]["config"]
-
-        # Find any matching model
-        for key, data in self.models.items():
-            if key.endswith(f"/{model_name}"):
-                return data["config"]
-
+            # Explicit endpoint scope wins over default-endpoint resolution.
+            candidate = f"{endpoint_name}/{model_name}"
+            if candidate in self.models:
+                return self.models[candidate]["config"]
+        if key:
+            return self.models[key]["config"]
         return {}
 
     # =====================================================================
@@ -343,26 +355,27 @@ class EndpointManager:
         return self._parse_model_reference(reference)
 
     def _parse_model_reference(self, reference: str) -> AgentModelChoice:
-        """Parse 'endpoint/model' or plain 'model' format."""
+        """Parse 'endpoint/model' or plain 'model' format.
+
+        The endpoint prefix is only recognized when it matches a known
+        endpoint name — model IDs may themselves contain slashes.
+        """
         if not reference:
             return AgentModelChoice(None, None)
 
-        if "/" in reference:
-            parts = reference.split("/", 1)
-            if len(parts) == 2:
-                endpoint_name, model_name = parts
-                if endpoint_name in self.endpoints:
-                    return AgentModelChoice(endpoint_name, model_name)
-                else:
-                    logger.warning(f"Unknown endpoint '{endpoint_name}' in model reference '{reference}'")
-                    return AgentModelChoice(None, model_name)
+        ep, mid = self._split_endpoint_prefix(reference)
+        if ep and f"{ep}/{mid}" in self.models:
+            return AgentModelChoice(ep, mid)
 
-        # Plain model name - resolve to an endpoint
-        endpoint = self.get_endpoint_for_model(reference)
-        if endpoint:
-            return AgentModelChoice(endpoint.name, reference)
+        # Bare model ID (possibly containing slashes) - resolve to an endpoint
+        key = self._resolve_key(reference)
+        if key and not ep:
+            bare_id = key.split("/", 1)[1]
+            return AgentModelChoice(self.models[key]["endpoint"].name, bare_id)
+        if key and ep:
+            return AgentModelChoice(ep, mid)
 
-        return AgentModelChoice(None, reference)
+        return AgentModelChoice(ep, mid if ep else reference)
 
     # =====================================================================
     # Existing Methods (kept for compatibility)
@@ -401,8 +414,20 @@ class EndpointManager:
         temperature: float | None = None,
     ) -> dict[str, Any]:
 
-        # model_name may be full ref; strip to bare for payload
-        bare = model_name.split("/")[-1] if model_name and "/" in model_name else model_name
+        # model_name may be a bare ID containing slashes ('stealth/ox-alpha')
+        # or a full 'endpoint/model' ref; strip ONLY a known endpoint prefix.
+        ep, mid = self._split_endpoint_prefix(model_name or "")
+        if model_name:
+            key = self._resolve_key(model_name)
+            if key:
+                # The registered model ID is everything after "endpoint/".
+                bare = key.split("/", 1)[1]
+            elif ep:
+                bare = mid
+            else:
+                bare = model_name
+        else:
+            bare = None
         model_config = self.get_model_config(model_name) if model_name else {}
 
         payload = {
@@ -418,19 +443,16 @@ class EndpointManager:
 
     def validate_model(self, model_name: str) -> str | None:
         """
-        Validate a model reference and return the bare model name suitable
-        for API payloads. Accepts full 'endpoint/model' or bare name.
+        Validate a model reference and return the bare model ID suitable
+        for API payloads. Accepts full 'endpoint/model' or bare name —
+        model IDs may themselves contain slashes (e.g. 'stealth/ox-alpha').
         """
         if not model_name:
             return None
 
-        choice = self.normalize_model_reference(model_name)
-        if choice.model_name and self.model_reference_exists(f"{choice.endpoint_name}/{choice.model_name}" if choice.endpoint_name else choice.model_name):
-            return choice.model_name
-
-        if self.model_reference_exists(model_name):
-            # bare name existed
-            return model_name.split("/")[-1] if "/" in model_name else model_name
+        key = self._resolve_key(model_name)
+        if key:
+            return key.split("/", 1)[1]
 
         available = list(self._model_to_endpoints.keys())
         if available:

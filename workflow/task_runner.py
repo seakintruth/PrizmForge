@@ -152,6 +152,49 @@ def run_task_cycle(  # noqa: C901
                     )
                     time.sleep(2)
 
+            # All retries exhausted without a parseable decision — fail safe
+            # instead of crashing the unattended loop. If the token budget is
+            # exhausted (the usual cause), stop the cycle cleanly: retrying
+            # would just burn the remaining time on guaranteed failures.
+            if decision is None:
+                budget_exhausted = False
+                try:
+                    from agents.base import get_token_budget
+
+                    budget_exhausted = not get_token_budget().can_spend(1)
+                except Exception as e:
+                    print(f"   ⚠️  Token budget check failed: {e}")
+
+                if budget_exhausted:
+                    print(f"   🛑 Orchestrator failed after {max_orchestrator_retries} attempts AND token budget is exhausted — ending task cycle cleanly.")
+                    post_message(
+                        "system",
+                        "orchestrator",
+                        "Task cycle ended: orchestrator unresponsive and token budget exhausted. Checkpoint saved; resume when budget resets.",
+                        task_id,
+                        "HIGH",
+                    )
+                    return progress
+
+                print(
+                    f"   ❌ Orchestrator failed to produce a valid decision after "
+                    f"{max_orchestrator_retries} attempts — using fail-safe "
+                    f"'background' dispatch and continuing."
+                )
+                post_message(
+                    "system",
+                    "orchestrator",
+                    "Orchestrator repeatedly returned unparseable output. Continuing with background discovery while the loop retries.",
+                    task_id,
+                    "HIGH",
+                )
+                decision = {
+                    "next_agent": "background",
+                    "instructions": user_command,
+                    "files_needed": [],
+                    "reasoning": "FAILSAFE: orchestrator returned no parseable decision; background discovery dispatched to keep the cycle productive.",
+                }
+
             next_agent = decision.get("next_agent", "complete")
             instructions = decision.get("instructions", "")
             files_needed = decision.get("files_needed", [])
