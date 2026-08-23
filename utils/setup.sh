@@ -719,6 +719,24 @@ if [[ -n "${VIRTUAL_ENV:-}" ]]; then
   echo "✅ Virtual environment activated: ${VIRTUAL_ENV}"
 fi
 
+# -----------------------------------------------------------------------------
+# Install / re-sync the git pre-commit hook via utils/pre_commit.sh
+# -----------------------------------------------------------------------------
+# pre_commit.sh auto-generates .git/hooks/pre-commit (a stub that invokes
+# ./utils/pre_commit.sh) and then runs the full check suite once. Only run it
+# here when the venv is ready and we're in a real checkout; skip on --no-sudo-
+# style non-interactive setups is not needed since it never needs root.
+if [[ -f "${REPO_ROOT}/utils/pre_commit.sh" && -d "${REPO_ROOT}/.git" ]]; then
+  echo ""
+  echo "Installing pre-commit hook (runs ruff + tests before each commit)..."
+  if bash "${REPO_ROOT}/utils/pre_commit.sh"; then
+    echo "✅ Pre-commit hook installed at .git/hooks/pre-commit"
+  else
+    echo "⚠️  pre_commit.sh reported check failures — the hook itself IS installed."
+    echo "   Re-run 'bash utils/pre_commit.sh' any time to see details or re-sync."
+  fi
+fi
+
 echo ""
 echo "=============================================================="
 echo "Setup complete."
