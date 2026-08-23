@@ -32,13 +32,13 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | `default_iteration_minutes` | number | `5` | Time box per orchestrator iteration |
 | `min_iterations_before_complete` | int | `3` | Orchestrator should not complete before this many turns |
 | `background_agents_enabled` | bool | `true` | Product default: background analysis pool on |
-| `default_model` | string | optional | Fallback model id when agent preference missing |
+| `default_model` | string | optional | Fallback model reference (bare model id or `endpoint/model`) when no agent preference applies |
 | `default_endpoint` | string | optional | Name of default entry in `endpoints` |
 | `cli_mode` | object | optional | Interactive / unattended mode (see below) |
 | `endpoints` | object | optional | Named HTTP LLM backends |
 | `fallback_settings` | object | optional | Cross-endpoint fallback policy |
 | `models` | object | optional | Model id → endpoint + generation params |
-| `agent_model_preferences` | object | optional | Agent name → model id |
+| `agent_model_preferences` | object | optional | Agent name → model reference (bare id or `endpoint/model`; resolved via `normalize_model_reference`) |
 | `proxy` | object | optional | HTTP(S) proxy URLs |
 | `token_budget` | object | optional | Spend limits |
 | `reporter` | object | optional | Project reporter worker |

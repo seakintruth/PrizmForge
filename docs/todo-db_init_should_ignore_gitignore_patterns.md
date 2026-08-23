@@ -1,5 +1,12 @@
+# TODO: db init should ignore gitignore patterns
 
----
+**Status:** tracked in `docs/ROADMAP_TODO.md` §1 (open).
+Full design spec below.
+
+Related: `docs/UNATTENDED_CLOSED_LOOP_PLAN.md` §7 Workstream E
+(Repo policy awareness — gitignore, hooks, secrets).
+
+## Proposed design
 
 ### 1. New file: `core/gitignore.py`
 
@@ -213,14 +220,6 @@ Add to both `requirements.txt` and `requirements-dev.txt`:
 pathspec>=0.12.1
 ```
 
-Then run:
-
-```bash
-pip install pathspec
-# or
-python -m pip install -r requirements.txt -r requirements-dev.txt
-```
-
 ---
 
 ### Verification
@@ -243,4 +242,6 @@ You should see `.github` and `.pytest_cache` correctly ignored, while normal sou
 
 ---
 
-Would you like me to also generate a small test for this new functionality (`tests/unit/test_gitignore.py`)?
+### Follow-up
+
+Generate a small unit test for this functionality (`tests/unit/test_gitignore.py`) when the design is implemented.

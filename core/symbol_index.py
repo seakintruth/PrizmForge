@@ -8,6 +8,7 @@ Markdown INDEX remains an optional export view.
 from __future__ import annotations
 
 import ast
+import logging
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -141,6 +142,14 @@ def rebuild_project_symbols(
                 continue
             if should_ignore_file(rel):
                 continue
+            # Respect .gitignore on the absolute path (fail open)
+            try:
+                from core.gitignore import should_ignore_by_gitignore
+
+                if should_ignore_by_gitignore(full, root):
+                    continue
+            except Exception as e:
+                logging.getLogger(__name__).debug("gitignore check failed for %s: %s", full, e)
             if not is_text_file(rel):
                 continue
             # skip tests path classification optional — still index tests for prioritizer

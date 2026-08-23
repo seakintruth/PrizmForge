@@ -4,3 +4,6 @@
 # Runtime surface is intentionally minimal for hardened environments.
 
 requests>=2.34.2
+
+# gitignore-aware file filtering (core/gitignore.py)
+pathspec>=0.12.1

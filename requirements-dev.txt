@@ -31,3 +31,6 @@ coverage>=7.15.4
 
 # for Utils/run_codemodes.py
 libcst>=1.9.0
+
+# tests/unit/test_gitignore.py
+pathspec>=0.12.1

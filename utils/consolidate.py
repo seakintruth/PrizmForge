@@ -216,6 +216,18 @@ def _is_ignored_file(name: str) -> bool:
     return any(pat in lower for pat in IGNORED_BASENAME_PATTERNS)
 
 
+def _is_ignored_path(path: Path, project_root: Path) -> bool:
+    """Check hardcoded ignores and .gitignore for a full path."""
+    if _is_ignored_file(path.name):
+        return True
+    try:
+        from core.gitignore import should_ignore_by_gitignore
+
+        return should_ignore_by_gitignore(path, project_root)
+    except Exception:
+        return False
+
+
 def collect_indexes(root_dir: str) -> dict[str, list[FileIndex]]:
     buckets: dict[str, list[FileIndex]] = {
         "production": [],
@@ -231,6 +243,8 @@ def collect_indexes(root_dir: str) -> dict[str, list[FileIndex]]:
             if _is_ignored_file(name):
                 continue
             path = Path(dirpath) / name
+            if _is_ignored_path(path, root):
+                continue
             rel = str(path.relative_to(root)).replace("\\", "/")
             if rel == "report/project_review.md":
                 continue
@@ -485,6 +499,8 @@ def consolidate_project(  # noqa: C901
                     continue
 
                 file_path = os.path.join(root, file)
+                if _is_ignored_path(Path(file_path), Path(root_dir)):
+                    continue
                 relative_path = os.path.relpath(file_path, root_dir).replace("\\", "/")
                 if relative_path.endswith("report/project_review.md"):
                     continue

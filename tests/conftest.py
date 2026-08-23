@@ -48,6 +48,8 @@ def _force_test_safe_config(cfg: dict, project_dir: str) -> dict:
     out["background_agents_enabled"] = False
     out["background_agents"] = {}
     out["background_feeder"] = {}
+    # Minimal safe defaults so tests never KeyError on absent keys
+    out.setdefault("token_budget", {"max_tokens_per_4h": 1_000_000})
     return out
 
 
@@ -55,11 +57,25 @@ def _force_test_safe_config(cfg: dict, project_dir: str) -> dict:
 # Patching only core.config.get_config is NOT enough for these sites.
 _GET_CONFIG_PATCH_TARGETS = (
     "core.config.get_config",
-    "agents.parallel_workers.get_config",
-    "agents.resource_controller_worker.get_config",
-    "agents.reporter_worker.get_config",
+    "core.content_safety.get_config",
+    "core.context_manager.get_config",
+    "core.db.get_config",
+    "core.endpoint_manager.get_config",
+    "core.file_operations.get_config",
+    "core.file_retrieval.get_config",
+    "core.index_context.get_config",
+    "core.llm_test_mode.get_config",
+    "core.rate_limiter.get_config",
+    "core.symbol_index.get_config",
+    "agents.base.get_config",
     "agents.orchestrator.get_config",
+    "agents.parallel_workers.get_config",
+    "agents.prioritizer_worker.get_config",
+    "agents.reporter_worker.get_config",
+    "agents.resource_controller_worker.get_config",
     "workflow.task_runner.get_config",
+    "cli.commands.get_config",
+    "interactive.get_config",
 )
 
 
@@ -211,6 +227,14 @@ def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(db_path))
     monkeypatch.setenv("PRIZMFORGE_TEST_PROJECT_DIR", str(project))
     monkeypatch.setenv("PRIZMFORGE_TEST_WORKSPACE", str(base))
+
+    # Reset interactive.py's shutdown global — other tests may have flipped it
+    try:
+        import interactive as _interactive
+
+        monkeypatch.setattr(_interactive, "_shutdown_requested", False)
+    except ImportError:
+        pass
 
     from core import config as core_config
 
