@@ -443,7 +443,17 @@ else
   DO_CONFIG=0
 fi
 
+# --- config.json (created FIRST so endpoints can be registered below) ---------
+NEW_CONFIG=0
+if [[ ! -f "$CONFIG_FILE" ]]; then
+  cp example_config.json "$CONFIG_FILE"
+  NEW_CONFIG=1
+fi
+
 # --- api_key.json ------------------------------------------------------------
+# Endpoints + keys are captured TOGETHER here: each endpoint entered is written
+# to BOTH api_key.json (keys.<endpoint>.api_key) and config.json (a matching
+# endpooints[] entry) in the same step, so the two files never drift.
 if [[ ! -f "$API_KEY_FILE" ]]; then
   if [[ "$DO_CONFIG" -eq 1 ]]; then
     echo ""
@@ -464,8 +474,12 @@ PYEOF
 
     echo "Enter endpoints one at a time. Type 'end' (or press Enter on the"
     echo "endpoint name) when you are done."
+    echo "Each endpoint is added to BOTH config.json:endpoints and api_key.json:keys."
+    echo "The FIRST endpoint entered becomes default_endpoint, and its first model"
+    echo "becomes default_model."
     echo ""
 
+    FIRST_EP_DONE=0
     while true; do
       echo ""
       read -r -p "API endpoint name (type 'end' to finish): " EP || EP=""
@@ -477,14 +491,66 @@ PYEOF
         KEYVAL="YOUR_${EP^^}_KEY"
         echo "  (no key entered — placeholder ${KEYVAL} written)"
       fi
-      python3 - "$API_KEY_FILE" "$EP" "$KEYVAL" <<'PYEOF'
+      read -r -p "Base URL for '${EP}' [https://api.example.com/v1/chat/completions]: " BASEURL || BASEURL=""
+      if [[ -z "$BASEURL" ]]; then BASEURL="https://api.example.com/v1/chat/completions"; fi
+
+      # Model names for this endpoint — loop until 'end' or empty.
+      mapfile -t MODELS < <(
+        while true; do
+          read -r -p "Model name for '${EP}' (type 'end' or Enter to finish): " M || M=""
+          [[ -z "$M" || "$M" == "end" || "$M" == "End" || "$M" == "END" ]] && break
+          echo "$M"
+        done
+      )
+
+      python3 - "$API_KEY_FILE" "$CONFIG_FILE" "$EP" "$KEYVAL" "$BASEURL" "${MODELS[@]}" <<'PYEOF'
 import json, sys
-path, ep, val = sys.argv[1], sys.argv[2], sys.argv[3]
-data = json.load(open(path))
-data.setdefault("keys", {})[ep] = {"api_key": val}
-json.dump(data, open(path, "w"), indent=2)
+key_path, cfg_path, ep, val, base_url = sys.argv[1:6]
+models = sys.argv[6:]
+
+# api_key.json: secrets only
+kdata = json.load(open(key_path))
+kdata.setdefault("keys", {})[ep] = {"api_key": val}
+json.dump(kdata, open(key_path, "w"), indent=2)
+
+# config.json: endpoint registration (skip if the endpoint already exists)
+cfg = json.load(open(cfg_path))
+if ep not in (cfg.get("endpoints") or {}):
+    cfg.setdefault("endpoints", {})[ep] = {
+        "base_url": base_url,
+        "include_model_in_payload": True,
+        "response_path": ["choices", 0, "message", "content"],
+        "description": f"{ep} endpoint (added by setup)",
+        "priority": 50,
+        "rate_limit_per_minute": 60,
+        "models": {m: {} for m in models},
+    }
+json.dump(cfg, open(cfg_path, "w"), indent=2)
+
+# First endpoint entered: seed its models into the endpoint entry.
+ep_cfg = cfg["endpoints"][ep]
+if models:
+    ep_cfg["models"] = {m: {} for m in models}
+json.dump(cfg, open(cfg_path, "w"), indent=2)
 PYEOF
-      echo "  ✅ keys.${EP} set"
+
+      if [[ "$FIRST_EP_DONE" -eq 0 ]]; then
+        # First endpoint wins: it becomes default_endpoint + default_model and
+        # gets the lowest priority number — overriding any template values.
+        python3 - "$CONFIG_FILE" "$EP" "${MODELS[0]:-}" <<'PYEOF'
+import json, sys
+cfg_path, ep, first_model = sys.argv[1], sys.argv[2], sys.argv[3]
+cfg = json.load(open(cfg_path))
+cfg["default_endpoint"] = ep
+if first_model:
+    cfg["default_model"] = f"{ep}/{first_model}"
+cfg["endpoints"][ep]["priority"] = 10
+json.dump(cfg, open(cfg_path, "w"), indent=2)
+PYEOF
+        FIRST_EP_DONE=1
+        echo "  ⭐ '${EP}' set as default_endpoint (priority 10)"
+      fi
+      echo "  ✅ keys.${EP} set in api_key.json + endpoints.${EP} ensured in config.json (${#MODELS[@]} models)"
     done
 
     # Never leave a keys-less skeleton behind — fall back to the template shape.
@@ -505,11 +571,12 @@ else
 fi
 
 # --- config.json --------------------------------------------------------------
-if [[ ! -f "$CONFIG_FILE" ]]; then
-  cp example_config.json "$CONFIG_FILE"
+if [[ "$NEW_CONFIG" -eq 1 ]]; then
   echo "✅ Created ${CONFIG_FILE} from template."
 
   if [[ "$DO_CONFIG" -eq 1 ]]; then
+    # If the endpoint loop above already registered endpoints, skip redundant
+    # questions only when nothing was customized; otherwise run the essentials.
     echo ""
     echo "=============================================================="
     echo "config.json walkthrough"
@@ -550,6 +617,10 @@ PYEOF
     fi
 
     # 3. CLI mode
+    echo "Modes:"
+    echo "  interactive    - you drive; agent responds in a session"
+    echo "  semi_attended  - agent works, pauses for your approval at gates"
+    echo "  unattended     - agent runs continuously for N hours on seed tasks"
     ask "CLI mode: interactive / semi_attended / unattended" "interactive" CLIMODE
     python3 - "$CONFIG_FILE" "$CLIMODE" <<'PYEOF'
 import json, sys
@@ -559,9 +630,69 @@ cfg.setdefault("cli_mode", {})["mode"] = val
 json.dump(cfg, open(path, "w"), indent=2)
 PYEOF
 
+    # 3b. Unattended mode: prompt for seed tasks (the work queue it drains).
+    if [[ "$CLIMODE" == "unattended" ]]; then
+      echo ""
+      echo "Unattended mode needs at least one SEED TASK to work on."
+      echo "Enter tasks one at a time (short imperative descriptions)."
+      echo "Type 'end' or press Enter when done."
+      echo ""
+
+      mapfile -t SEED_TASKS < <(
+        while true; do
+          read -r -p "Seed task (type 'end' or Enter to finish): " T || T=""
+          [[ -z "$T" || "$T" == "end" || "$T" == "End" || "$T" == "END" ]] && break
+          echo "$T"
+        done
+      )
+
+      if [[ ${#SEED_TASKS[@]} -eq 0 ]]; then
+        # No seeds entered: keep the run from immediately exiting on an empty
+        # backlog by disabling stop_when_backlog_empty and letting the agent
+        # auto-generate its own task list.
+        python3 - "$CONFIG_FILE" <<'PYEOF'
+import json, sys
+path = sys.argv[1]
+cfg = json.load(open(path))
+u = cfg.setdefault("cli_mode", {}).setdefault("unattended", {})
+u["stop_when_backlog_empty"] = False
+u["auto_generate_tasks"] = True
+json.dump(cfg, open(path, "w"), indent=2)
+PYEOF
+        echo "  ⚠️  No seed tasks entered — auto_generate_tasks=ON and"
+        echo "     stop_when_backlog_empty=OFF so the agent can self-direct."
+      else
+        TASKS_FILE="$(mktemp "${TMPDIR:-/tmp}/seedtasks.XXXXXX")"
+        printf '%s\n' "${SEED_TASKS[@]}" > "$TASKS_FILE"
+        python3 - "$CONFIG_FILE" "$TASKS_FILE" <<'PYEOF'
+import json, sys
+path, tasks_file = sys.argv[1], sys.argv[2]
+with open(tasks_file) as f:
+    tasks = [line.strip() for line in f if line.strip()]
+cfg = json.load(open(path))
+u = cfg.setdefault("cli_mode", {}).setdefault("unattended", {})
+u["seed_tasks"] = tasks
+u["stop_when_backlog_empty"] = True
+json.dump(cfg, open(path, "w"), indent=2)
+PYEOF
+        rm -f "$TASKS_FILE"
+        echo "  ✅ ${#SEED_TASKS[@]} seed task(s) written to cli_mode.unattended.seed_tasks"
+      fi
+
+      DEF_HOURS="$(python3 -c "import json;print(json.load(open('$CONFIG_FILE'))['cli_mode'].get('unattended',{}).get('max_duration_hours',2))")"
+      ask "Max duration in hours for the unattended run" "$DEF_HOURS" MAXHOURS
+      python3 - "$CONFIG_FILE" "$MAXHOURS" <<'PYEOF'
+import json, sys
+path, val = sys.argv[1], float(sys.argv[2])
+cfg = json.load(open(path))
+cfg["cli_mode"]["unattended"]["max_duration_hours"] = val
+json.dump(cfg, open(path, "w"), indent=2)
+PYEOF
+    fi
+
     echo ""
-    echo "Everything else (endpoints, models, budgets, background agents)"
-    echo "is set to the documented defaults from example_config.json."
+    echo "Everything else (budgets, background agents, fallbacks) is set to"
+    echo "the documented defaults from example_config.json."
     echo "See CONFIGURATION.md for the complete schema."
   fi
 else
