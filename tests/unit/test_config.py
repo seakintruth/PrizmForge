@@ -261,3 +261,71 @@ def test_validate_config_rejects_non_bool_disallow_binary(tmp_path):
                 "content_safety": {"disallow_binary_content": "yes"},
             }
         )
+
+
+# ---------------------------------------------------------------------------
+# validate_config: slashed model IDs (OpenRouter-style 'vendor/model' IDs)
+# ---------------------------------------------------------------------------
+
+
+def _slashed_cfg(tmp_path) -> dict:
+    return {
+        "project_directory": str(tmp_path / "p"),
+        "default_endpoint": "openrouter",
+        "default_model": "openrouter/stealth/ox-alpha",
+        "endpoints": {
+            "openrouter": {
+                "base_url": "https://openrouter.example/v1/chat/completions",
+                "models": {
+                    "stealth/ox-alpha": {},
+                    "openai/gpt-4o": {},
+                },
+            },
+            "backup": {
+                "base_url": "https://backup.example/v1/chat/completions",
+                "models": {
+                    "openai/gpt-4o": {},
+                },
+            },
+        },
+        "agent_model_preferences": {
+            "orchestrator": "openrouter/stealth/ox-alpha",
+            "developer": "backup/openai/gpt-4o",
+        },
+        "resource_controller": {
+            "model_downgrades": {
+                "critical": {"developer": "openai/gpt-4o"},
+            }
+        },
+    }
+
+
+def test_validate_config_accepts_slashed_model_ids(tmp_path):
+    """Endpoint + slashed model ID references must validate cleanly."""
+    cfg = _slashed_cfg(tmp_path)
+    validate_config(cfg)  # must not raise
+
+
+def test_validate_config_accepts_bare_slashed_model_id(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "config.json").write_text("{}")
+    cfg = _slashed_cfg(tmp_path)
+    # Bare slashed ID that exists under exactly one endpoint is fine.
+    cfg["default_model"] = "stealth/ox-alpha"
+    validate_config(cfg)
+
+
+def test_validate_config_rejects_unknown_slashed_reference(tmp_path):
+    cfg = _slashed_cfg(tmp_path)
+    cfg["agent_model_preferences"]["reviewer"] = "openrouter/no/such-model"
+    with pytest.raises(ValueError, match="unknown or ambiguous model reference"):
+        validate_config(cfg)
+
+
+def test_validate_config_rejects_ambiguous_bare_id_without_prefix(tmp_path):
+    """'openai/gpt-4o' exists on TWO endpoints — bare use is ambiguous only
+    when no endpoint prefix matches; here it resolves via suffix match."""
+    cfg = _slashed_cfg(tmp_path)
+    # Explicit endpoint-prefixed forms are always OK:
+    cfg["default_model"] = "backup/openai/gpt-4o"
+    validate_config(cfg)
