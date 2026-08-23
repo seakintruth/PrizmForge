@@ -61,21 +61,28 @@ def test_rationale_auto_expand_when_short():
 
 def test_rationale_auto_truncate_when_too_long():
     """Long LLM rationales truncate instead of killing the whole proposal."""
-    op = DeleteLines(start_line_guid="g1", rationale="x" * 724)
-    assert len(op.rationale) == 500
+    op = DeleteLines(start_line_guid="g1", rationale="x" * 3300)
+    assert len(op.rationale) == 3200
     assert op.rationale.endswith("...")
+
+
+def test_rationale_up_to_limit_passes_through_untouched():
+    """Rationales within 3200 chars must not be modified at all."""
+    text = "x" * 3200
+    op = DeleteLines(start_line_guid="g1", rationale=text)
+    assert op.rationale == text
 
 
 def test_edit_payload_rationale_auto_truncate_when_too_long():
     data = {
         "target_file_path": "a.py",
         "summary": "rename symbol",
-        "rationale": "y" * 600,
-        "operations": [{"type": "find_replace", "find": "OLD", "replace": "NEW", "rationale": "z" * 724}],
+        "rationale": "y" * 3400,
+        "operations": [{"type": "find_replace", "find": "OLD", "replace": "NEW", "rationale": "z" * 3300}],
     }
     payload = EditPayload.model_validate(data)
-    assert len(payload.rationale) == 500
-    assert len(payload.operations[0].rationale) == 500
+    assert len(payload.rationale) == 3200
+    assert len(payload.operations[0].rationale) == 3200
     assert payload.rationale.endswith("...")
 
 
