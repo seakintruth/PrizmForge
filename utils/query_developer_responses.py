@@ -544,12 +544,156 @@ def show_file_line_counts(limit: int = 40):
     _print_table(["file_path", "line_count"], rows)
 
 
+def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
+    """Answer: is the loop making real progress, or just churning?
+
+    Sections:
+      1. Mutation pipeline funnel (proposals -> approved -> materialized)
+      2. Edit mode effectiveness (selected vs final, fallback rate)
+      3. Real-work evidence (files changed, line-count deltas)
+      4. Feedback backlog health (addressed vs open, dupes, aging)
+      5. Task lifecycle honesty (in_progress accumulation)
+      6. Error budget burn (HIGH errors per hour, by agent/category)
+      7. Token spend vs outcomes
+    """
+    import sqlite3
+
+    from core.db import get_db_path
+
+    conn = sqlite3.connect(get_db_path())
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    task_filter = "AND task_id = ?" if task_id else ""
+    tparam = (task_id,) if task_id else ()
+
+    def q(sql, params=()):
+        return cur.execute(sql, list(params)).fetchall()
+
+    print(f"\n{'=' * 80}")
+    print("📊 RUN EFFECTIVENESS")
+    print("=" * 80)
+
+    # --- 1. Mutation funnel -------------------------------------------------
+    total_proposals = q(f"SELECT COUNT(*) c FROM edit_proposals WHERE 1=1 {task_filter}", tparam)[0]["c"]
+    by_status = q(
+        f"SELECT status, COUNT(*) c FROM edit_proposals WHERE 1=1 {task_filter} GROUP BY status ORDER BY c DESC",
+        tparam,
+    )
+    writes_ok = q(
+        """SELECT COUNT(*) c FROM file_write_log w
+           JOIN edit_proposals p ON w.proposal_id = p.proposal_id
+           WHERE w.status='success' {tf}""".format(tf=task_filter.replace("task_id", "p.task_id")),
+        tparam,
+    )[0]["c"]
+    print("\n1️⃣  MUTATION FUNNEL")
+    print(f"   proposals created : {total_proposals}")
+    for row in by_status:
+        print(f"   ├─ {row['status']:<12}: {row['c']}")
+    print(f"   writes succeeded  : {writes_ok}")
+    if total_proposals:
+        rate = writes_ok / total_proposals * 100
+        print(f"   proposal→applied conversion: {rate:.0f}%")
+
+    # --- 2. Edit mode effectiveness ------------------------------------------
+    modes = q(
+        f"""SELECT selected_mode, final_mode, fallback_used, COUNT(*) c
+            FROM edit_proposals WHERE selected_mode IS NOT NULL {task_filter}
+            GROUP BY selected_mode, final_mode, fallback_used ORDER BY c DESC""",
+        tparam,
+    )
+    print("\n2️⃣  EDIT MODE EFFECTIVENESS (selected → final, count)")
+    if not modes:
+        print("   (no proposals with mode data)")
+    sel_total = sum(m["c"] for m in modes)
+    fb_total = sum(m["c"] for m in modes if m["fallback_used"])
+    for m in modes:
+        arrow = f"{m['selected_mode']} → {m['final_mode']}"
+        flag = "  ⚠️ FALLBACK" if m["fallback_used"] and m["selected_mode"] != m["final_mode"] else ""
+        print(f"   {arrow:<40} {m['c']}{flag}")
+    if sel_total:
+        print(f"   fallback rate: {fb_total}/{sel_total} ({fb_total / sel_total * 100:.0f}%)")
+
+    # --- 3. Real-work evidence ------------------------------------------------
+    mods = q("""SELECT target_file_path AS fp,
+                  MIN(created_at) first_edit, MAX(created_at) last_edit,
+                  COUNT(*) edits
+           FROM edit_proposals WHERE status='applied'
+           GROUP BY target_file_path ORDER BY edits DESC LIMIT 15""")
+    print("\n3️⃣  FILES ACTUALLY MUTATED (by applied proposals)")
+    if not mods:
+        print("   (none — the loop has not changed any files)")
+    for m in mods:
+        n_lines = None
+        try:
+            fid = cur.execute("SELECT id FROM files WHERE file_path=? OR path=?", (m["fp"], m["fp"])).fetchone()
+            if fid:
+                n_lines = cur.execute("SELECT COUNT(*) FROM file_lines WHERE file_id=?", (fid[0],)).fetchone()[0]
+        except Exception as e:
+            print(f"   (line count unavailable for {m['fp']}: {e})")
+        extra = f", ~{n_lines} lines now" if n_lines else ""
+        print(f"   {m['fp']:<36} {m['edits']} edits{extra}")
+
+    # --- 4. Feedback backlog health -------------------------------------------
+    fb_open = q("SELECT priority, COUNT(*) c FROM agent_feedback WHERE addressed=0 GROUP BY priority")
+    fb_done = q("SELECT COUNT(*) c FROM agent_feedback WHERE addressed=1")[0]["c"]
+    fb_dupes = q("""SELECT substr(message,1,50) msg, COUNT(*) c FROM agent_feedback
+           GROUP BY substr(message,1,50) HAVING c > 1 ORDER BY c DESC LIMIT 5""")
+    total_fb = sum(r["c"] for r in fb_open) + fb_done
+    print("\n4️⃣  FEEDBACK BACKLOG HEALTH")
+    print(f"   addressed: {fb_done} / {total_fb}")
+    for r in sorted(fb_open, key=lambda x: -x["c"]):
+        print(f"   open {r['priority']:<8}: {r['c']}")
+    if fb_dupes:
+        print("   ⚠️  possible duplicate findings (agents re-reporting):")
+        for d in fb_dupes:
+            print(f"      ×{d['c']}  {d['msg']}...")
+
+    # --- 5. Task lifecycle honesty ---------------------------------------------
+    tasks_status = q("SELECT status, COUNT(*) c FROM tasks GROUP BY status ORDER BY c DESC")
+    print("\n5️⃣  TASK LIFECYCLE")
+    for r in tasks_status:
+        print(f"   {r['status']:<12}: {r['c']}")
+    stuck = q("""SELECT COUNT(*) c FROM tasks
+           WHERE status='in_progress' AND started_at < datetime('now', '-1 hour')""")[0]["c"]
+    if stuck:
+        print(f"   ⚠️  {stuck} task(s) 'in_progress' for over an hour — never closed out")
+
+    # --- 6. Error budget burn ---------------------------------------------------
+    err_hours = q("""SELECT substr(timestamp, 1, 13) hr, COUNT(*) c FROM errors
+           WHERE level IN ('HIGH','CRITICAL') GROUP BY hr ORDER BY hr""")
+    err_agents = q("""SELECT COALESCE(agent_name,'(none)') a, message, COUNT(*) c FROM errors
+           WHERE level='HIGH' GROUP BY a, message ORDER BY c DESC LIMIT 5""")
+    print("\n6️⃣  ERROR BURN (HIGH+CRITICAL per hour)")
+    for r in err_hours:
+        bar = "#" * min(60, r["c"] // 20 or (1 if r["c"] else 0))
+        print(f"   {r['hr']}  {r['c']:>5}  {bar}")
+    print("   top error signatures:")
+    for r in err_agents:
+        print(f"      ×{r['c']:<4} [{r['a']}] {r['message'][:60]}")
+
+    # --- 7. Token spend vs outcomes ----------------------------------------------
+    try:
+        tok = cur.execute("SELECT MIN(timestamp), MAX(timestamp), SUM(tokens_used) FROM token_log").fetchone()
+        if tok and tok[2]:
+            applied = cur.execute("SELECT COUNT(*) c FROM edit_proposals WHERE status='applied'").fetchone()[0]
+            print("\n7️⃣  SPEND VS OUTCOMES")
+            print(f"   tokens spent : {tok[2]:,}")
+            print(f"   first/last   : {tok[0][:16]} → {(tok[1] or '')[:16]}")
+            if applied:
+                print(f"   cost per applied edit: {tok[2] // applied:,} tokens")
+    except Exception as e:
+        print(f"\n7️⃣  SPEND VS OUTCOMES: unavailable ({e})")
+
+    conn.close()
+
+
 def run_full_diagnostic(task_id: str | None = None, limit: int = 40):
     """Convenience command that dumps the most useful diagnostic views."""
     print("\n" + "=" * 80)
     print("🔬 FULL DIAGNOSTIC DUMP")
     print("=" * 80)
 
+    show_run_effectiveness(task_id=task_id)
     show_edit_proposals(task_id=task_id, limit=limit, full_replace_only=True)
     show_file_write_log(limit=limit)
     show_errors(level="HIGH", limit=30)
