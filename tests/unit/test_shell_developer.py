@@ -129,16 +129,17 @@ def shell_env(isolated_project, monkeypatch):
     subprocess.run(["git", "add", "-A"], cwd=str(project), capture_output=True)
     subprocess.run(["git", "commit", "-qm", "init"], cwd=str(project), capture_output=True)
 
-    state = {"llm_calls": 0, "reviewer_prompts": []}
-    llm_script = [
+    state = {"llm_calls": 0, "reviewer_prompts": [], "llm_script": None}
+    default_llm_script = [
         "```bash\nprintf 'VALUE = 42\\n' > app.py\n```",
         f"Done editing.\n{sd.FINISH_TOKEN}\nBumped VALUE to 42.",
     ]
 
     def fake_call_endpoint(messages, **kwargs):
-        idx = min(state["llm_calls"], len(llm_script) - 1)
+        script = state["llm_script"] or default_llm_script
+        idx = min(state["llm_calls"], len(script) - 1)
         state["llm_calls"] += 1
-        return llm_script[idx], 10
+        return script[idx], 10
 
     def fake_call_agent(agent_name, prompt, task_id, *args, **kwargs):
         state["reviewer_prompts"].append((agent_name, prompt))
@@ -192,3 +193,264 @@ def test_turn_rejection_reports_rejected_status(shell_env, monkeypatch):
 
     assert result["status"] == "rejected"
     assert progress.get("files_modified", 0) == 0
+
+
+# =========================================================================
+# Reviewer gate fail-closed behavior (review fix #1)
+# =========================================================================
+def test_turn_fails_closed_when_reviewer_unavailable(shell_env, monkeypatch):
+    monkeypatch.setattr(sd, "call_agent", lambda *a, **k: None)
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-shell-dead",
+        instructions="Set VALUE to 42",
+        user_command="Set VALUE to 42",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    assert result["status"] == "rejected"
+    assert progress.get("files_modified", 0) == 0
+
+
+def test_turn_fails_closed_on_non_json_verdict(shell_env, monkeypatch):
+    def sloppy_reviewer(agent_name, prompt, task_id, *args, **kwargs):
+        return "Looks good to me, approving!"
+
+    monkeypatch.setattr(sd, "call_agent", sloppy_reviewer)
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-shell-garbage",
+        instructions="Set VALUE to 42",
+        user_command="Set VALUE to 42",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    assert result["status"] == "rejected"
+    assert progress.get("files_modified", 0) == 0
+
+
+def test_turn_fails_closed_on_invalid_decision_value(shell_env, monkeypatch):
+    def odd_reviewer(agent_name, prompt, task_id, *args, **kwargs):
+        return json.dumps({"decision": "MAYBE", "reason": "unclear"})
+
+    monkeypatch.setattr(sd, "call_agent", odd_reviewer)
+
+    result = sd.run_shell_developer_turn(
+        task_id="T-shell-maybe",
+        instructions="Set VALUE to 42",
+        user_command="Set VALUE to 42",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+    assert result["status"] == "rejected"
+
+
+# =========================================================================
+# Finish/command precedence (review fix #6)
+# =========================================================================
+def test_finish_with_final_command_defers_then_finishes(shell_env, isolated_project):
+    shell_env["state"]["llm_script"] = [
+        f"Running final check.\n```bash\nprintf 'VALUE = 42\\n' > app.py\n```\n{sd.FINISH_TOKEN}\nAll done.",
+        f"{sd.FINISH_TOKEN}\nBumped VALUE to 42 after final check.",
+    ]
+
+    result = sd.run_shell_developer_turn(
+        task_id="T-shell-defer",
+        instructions="Set VALUE to 42",
+        user_command="Set VALUE to 42",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+
+    # First reply must NOT finish: its bash command runs first (2 LLM calls total).
+    assert shell_env["state"]["llm_calls"] == 2, result
+    assert result["status"] == "success", result
+    assert result.get("session_exit") == "Finished"
+
+
+# =========================================================================
+# Worktree base fidelity + collection guards (review fixes #2/#4/#5)
+# =========================================================================
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _FakeConn:
+    """Minimal stand-in for get_db_connection(): read-only rows, no-op writes."""
+
+    def __init__(self, select_rows):
+        self._select_rows = select_rows
+
+    def execute(self, _sql, params=None):
+        return _FakeCursor(self._select_rows)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_worktree_syncs_governed_db_state(git_project, tmp_path, monkeypatch):
+    """Uncommitted governed content must be visible in the session worktree."""
+    import core.file_operations
+
+    monkeypatch.setattr(
+        core.file_operations,
+        "get_file_content_from_db",
+        lambda p: "VALUE = 42\n" if p == "app.py" else None,
+    )
+    monkeypatch.setattr(sd, "get_db_connection", lambda **kw: _FakeConn([("app.py", 0), ("gone.py", 1)]))
+
+    wt = sd.ShellWorktree(git_project, parent_dir=str(tmp_path / "scratch"))
+    try:
+        cwd = wt.create()
+        # HEAD holds VALUE = 1; governed DB says 42 — the overlay must win.
+        assert (cwd / "app.py").read_text() == "VALUE = 42\n"
+    finally:
+        wt.cleanup()
+
+
+def test_collect_changes_exclude_sync_drift(git_project, tmp_path, monkeypatch):
+    """Pre-existing DB/HEAD drift must not be re-proposed as agent work."""
+    import core.file_operations
+
+    monkeypatch.setattr(
+        core.file_operations,
+        "get_file_content_from_db",
+        lambda p: "VALUE = 42\n" if p == "app.py" else None,
+    )
+    monkeypatch.setattr(sd, "get_db_connection", lambda **kw: _FakeConn([("app.py", 0)]))
+
+    wt = sd.ShellWorktree(git_project, parent_dir=str(tmp_path / "scratch"))
+    try:
+        cwd = wt.create()
+        # Sync overwrote app.py (DB drift vs HEAD); agent only adds a new file.
+        assert (cwd / "app.py").read_text() == "VALUE = 42\n"
+        (cwd / "brand_new.py").write_text("print('hi')\n")
+
+        changes = wt.collect_changes()
+        assert [c["path"] for c in changes] == ["brand_new.py"]
+        # Drifted file keeps its governed content on disk (not reverted to HEAD).
+        assert (cwd / "app.py").read_text() == "VALUE = 42\n"
+    finally:
+        wt.cleanup()
+
+
+def test_max_file_bytes_config_respected(git_project, tmp_path, capsys):
+    wt = sd.ShellWorktree(git_project, parent_dir=str(tmp_path / "scratch"), max_file_bytes=10)
+    try:
+        cwd = wt.create()
+        (cwd / "big.txt").write_text("x" * 100)
+        changes = wt.collect_changes()
+        assert len(changes) == 1 and changes[0]["status"] == "S"
+        assert changes[0]["new_content"] == ""
+        assert "oversize" in capsys.readouterr().out
+    finally:
+        wt.cleanup()
+
+
+def test_out_of_scope_changes_warned_and_excluded(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    sub = repo / "sub"
+    sub.mkdir(parents=True)
+    (sub / "app.py").write_text("A = 1\n")
+    (repo / "outside.py").write_text("O = 1\n")
+    for args in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "Tester"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "init"],
+    ):
+        subprocess.run(args, cwd=str(repo), capture_output=True, timeout=30)
+
+    wt = sd.ShellWorktree(sub, parent_dir=str(tmp_path / "scratch"))
+    try:
+        cwd = wt.create()
+        (cwd / "app.py").write_text("A = 2\n")
+        (wt.path / "outside.py").write_text("O = 2\n")
+
+        changes = wt.collect_changes()
+        assert [c["path"] for c in changes] == ["app.py"]
+        out = capsys.readouterr().out
+        assert "outside the project directory" in out
+        assert "outside.py" in out
+    finally:
+        wt.cleanup()
+
+
+def test_from_config_validates_on_test_failure(monkeypatch, capsys):
+    monkeypatch.setattr(
+        sd,
+        "get_config",
+        lambda: {"shell_developer": {"on_test_failure": "propose"}},
+    )
+    cfg = sd.ShellDeveloperConfig.from_config()
+    assert cfg.on_test_failure == "discard"
+    assert "invalid" in capsys.readouterr().out
+
+    monkeypatch.setattr(
+        sd,
+        "get_config",
+        lambda: {"shell_developer": {"on_test_failure": "propose_anyway"}},
+    )
+    assert sd.ShellDeveloperConfig.from_config().on_test_failure == "propose_anyway"
+
+
+# =========================================================================
+# Feedback addressing maps to materialized files only (review fix #3)
+# =========================================================================
+def test_feedback_addressed_only_for_materialized_files(shell_env, isolated_project):
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        cur = conn.execute("""
+            INSERT INTO agent_feedback (agent_name, file_path, priority, category, message, addressed)
+            VALUES ('critic', 'app.py', 'HIGH', 'style', 'fix app.py', 0)
+            """)
+        fb_app = cur.lastrowid
+        cur = conn.execute("""
+            INSERT INTO agent_feedback (agent_name, file_path, priority, category, message, addressed)
+            VALUES ('critic', 'other.py', 'LOW', 'style', 'fix other.py', 0)
+            """)
+        fb_other = cur.lastrowid
+
+    result = sd.run_shell_developer_turn(
+        task_id="T-shell-fb",
+        instructions="Set VALUE to 42",
+        user_command="Set VALUE to 42",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        # "not-a-number" simulates orchestrator hallucination; must be skipped
+        # without breaking the addressing pass.
+        decision={"addressing_feedback_ids": [fb_app, "not-a-number", fb_other]},
+        current_turn=1,
+    )
+    assert result["status"] == "success", result
+
+    with get_db_connection() as conn:
+        rows = {r[0]: r[1] for r in conn.execute("SELECT id, addressed FROM agent_feedback").fetchall()}
+    assert rows[fb_app] == 1
+    assert rows[fb_other] == 0

@@ -104,6 +104,83 @@ natively inside PrizmForge.
 
 ---
 
+## Review Round (external review of this implementation)
+
+An external review confirmed all 5 plan items were covered but identified gaps
+between the plan's safety claims and the code. All items below are now addressed
+in `workflow/shell_developer.py` unless noted:
+
+### High — fixed
+
+1. **Reviewer gate failed open twice** (None response or non-JSON → APPROVE).
+   Now **fails closed**: missing/empty/unparseable verdicts, and any `decision`
+   value other than APPROVE/REJECT, REJECT the proposal. Shell-session diffs
+   originate from arbitrary bash execution, so gate authority must not depend on
+   endpoint health.
+2. **Worktree base could be stale vs governed state** (branch from HEAD while
+   materialized proposals may be uncommitted). `ShellWorktree.create()` now runs
+   `sync_governed_state()`: every tracked non-deleted governed file is rewritten
+   from the DB and DB-deleted files removed, so the agent edits governed content
+   and the Reviewer's diff base matches what would actually be replaced.
+
+### Medium — fixed
+
+3. **Feedback marked addressed too broadly**: only feedback whose `file_path`
+   maps to a change that actually materialized (gate == success) is marked
+   addressed; skipped/rejected changes keep their feedback open.
+4. **`max_file_bytes` was dead config**: wired through to the oversize check in
+   `collect_changes()` and added to the CONFIGURATION.md table.
+5. **Silent drop of out-of-scope changes**: `_strip_sub()` misses now log a
+   warning naming the skipped path; oversize skips also log file sizes.
+6. **Finish-token precedence swallowed a final command**: a reply containing both
+   a bash block and `FINISH_EDIT_SESSION` now executes the command first, asks
+   for confirmation, and force-finishes after 3 deferrals.
+
+### Low — fixed / documented
+
+7. `selected_mode="shell_session"` shows as an unknown mode in
+   run-effectiveness grouping. Accepted: attribution beats grouping; no change.
+8. Limits were only checked before each LLM call: each bash command's timeout is
+   now capped by the remaining wall-clock budget, and CONFIGURATION.md documents
+   the residual behavior.
+9. `on_test_failure` values are validated in `from_config()`; typos fall back to
+   `discard` (fail closed) with a warning.
+
+### Verification after the review round
+
+| Gate | Result |
+|------|--------|
+| Shell developer tests (incl. 9 new regression tests) | 18 passed |
+| Full normal gate (`bash utils/run_tests.sh --normal -j 4`) | **615 passed** |
+| ruff / mypy | clean / zero new errors |
+
+---
+
+## Post-Validation Round
+
+A follow-up validation confirmed all review-round fixes but caught one gap the
+base-sync fix itself introduced, plus two nits. All addressed:
+
+1. **Sync drift polluted the change set**: `sync_governed_state()` writes DB
+   content that may differ from HEAD (uncommitted materializations — the exact
+   scenario the sync exists for), but `collect_changes()` diffed against HEAD,
+   so drifted files were re-proposed as agent work. Fix: `create()` now stages
+   the post-sync worktree and records its tree
+   (`git add -A` + `git write-tree`, stored as `_baseline_tree`);
+   `collect_changes()` diffs against that baseline instead of HEAD. Only
+   agent-authored work is collected; drifted files keep their governed content.
+   Regression test: `test_collect_changes_exclude_sync_drift`.
+2. **Nit — prefix stripping**: `lstrip("./")` (character-set strip) replaced with
+   precise `removeprefix("./")`.
+3. **Nit — non-numeric feedback IDs**: `int()` conversion failures from
+   orchestrator hallucination are skipped with a warning instead of raising;
+   covered by extending the feedback-mapping test.
+
+Verification after this round: 19/19 shell-developer tests,
+**616 passed** full normal gate, ruff clean, mypy baseline unchanged.
+
+---
+
 ## Known Limitations / Follow-ups
 
 1. **Shell escape**: agent bash runs with `cwd=worktree` but is not confined to it;
@@ -112,14 +189,17 @@ natively inside PrizmForge.
 2. **Reviewer sees evidence, not independent execution**: gate reviews the unified
    diff plus the session's own test run. A future hardening step could re-run
    `test_command` after materialize as a deployment-validator trigger.
-3. **File deletions unsupported**: no governed delete op exists; deletions are
+3. **Legacy developer path still fails open**: `developer_edit.py` defaults to
+   APPROVE on missing/unparseable reviewer verdicts (pre-existing behavior,
+   unchanged in this round). Fold into the gate-consolidation item below.
+4. **File deletions unsupported**: no governed delete op exists; deletions are
    logged and skipped.
-4. **Consolidation opportunity**: reviewer-gate logic is duplicated between
+5. **Consolidation opportunity**: reviewer-gate logic is duplicated between
    `developer_edit.py` and `shell_developer.py`; extract a shared helper once both
-   paths stabilize.
-5. **Real-model validation**: end-to-end runs against live endpoints (and tuning of
+   paths stabilize — and make the legacy path fail closed at the same time.
+6. **Real-model validation**: end-to-end runs against live endpoints (and tuning of
    prompts/limits) have not been performed yet.
-6. **EndpointManager overlap**: if verification/model routing moves toward a
+7. **EndpointManager overlap**: if verification/model routing moves toward a
    LiteLLM-style layer someday, revisit overlap with `EndpointManager`.
 
 ---

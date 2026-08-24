@@ -66,7 +66,7 @@ class ShellDeveloperConfig:
     @classmethod
     def from_config(cls) -> ShellDeveloperConfig:
         cfg = get_config().get("shell_developer", {}) or {}
-        return cls(
+        instance = cls(
             step_limit=int(cfg.get("step_limit", 30)),
             wall_time_limit_minutes=int(cfg.get("wall_time_limit_minutes", 20)),
             command_timeout_seconds=int(cfg.get("command_timeout_seconds", 120)),
@@ -79,6 +79,10 @@ class ShellDeveloperConfig:
             model=cfg.get("model") or None,
             worktree_parent=str(cfg.get("worktree_parent", "") or ""),
         )
+        if instance.on_test_failure not in ("discard", "propose_anyway"):
+            print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
+            instance.on_test_failure = "discard"
+        return instance
 
 
 # =========================================================================
@@ -131,13 +135,18 @@ def extract_finish(response: str) -> str | None:
 class ShellWorktree:
     """Disposable git worktree of the project for one developer session."""
 
-    def __init__(self, project_directory: Path, parent_dir: str = ""):
+    def __init__(self, project_directory: Path, parent_dir: str = "", max_file_bytes: int = 512_000):
         self.project_directory = project_directory.resolve()
         self._parent = Path(parent_dir) if parent_dir else Path(tempfile.gettempdir())
+        self.max_file_bytes = max_file_bytes
         self.path: Path | None = None
         self.repo_root: Path | None = None
         self._sub_rel: Path = Path(".")
         self._added = False
+        # Tree recorded right after the governed-state overlay; collect_changes()
+        # diffs against it so pre-existing DB/HEAD drift is not re-proposed as
+        # agent work.
+        self._baseline_tree: str | None = None
 
     def _git(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -169,7 +178,72 @@ class ShellWorktree:
 
         cwd = self.working_dir()
         cwd.mkdir(parents=True, exist_ok=True)
+        self.sync_governed_state()
+        self._snapshot_baseline()
         return cwd
+
+    def _snapshot_baseline(self) -> None:
+        """Stage the post-sync worktree and record its tree as the change baseline.
+
+        sync_governed_state() may write DB content that differs from HEAD (uncommitted
+        materializations from earlier turns). Diffing against HEAD would surface that
+        drift as agent-authored changes and re-propose files the model never touched,
+        so collect_changes() compares against this baseline instead.
+        """
+        assert self.path is not None
+        add = self._git("add", "-A", cwd=self.path)
+        if add.returncode != 0:
+            print(f"   ⚠️ Could not stage baseline snapshot: {add.stderr.strip()}")
+            return
+        tree = self._git("write-tree", cwd=self.path)
+        if tree.returncode == 0 and tree.stdout.strip():
+            self._baseline_tree = tree.stdout.strip()
+
+    def sync_governed_state(self) -> int:
+        """Overlay governed DB content onto the fresh HEAD worktree.
+
+        Materialized proposals live in the governed DB / working tree and are not
+        guaranteed to be committed; branching from HEAD alone could hand the agent
+        stale file versions, so its full_replace payloads would carry stale-base
+        content while the Reviewer compares against DB content. This rewrites every
+        tracked non-deleted governed file with its DB content and removes
+        DB-deleted files, making the session base match governed state exactly.
+        """
+        from core.file_operations import get_file_content_from_db
+
+        try:
+            with get_db_connection() as conn:
+                rows = conn.execute("SELECT file_path, is_deleted FROM files WHERE has_been_written_to_disk = 1").fetchall()
+        except Exception as e:
+            print(f"   ⚠️ Shell developer: could not read governed state for base sync: {e}")
+            return 0
+
+        base = self.working_dir()
+        synced = removed = failed = 0
+        for file_path, is_deleted in rows:
+            rel = str(file_path)
+            if is_deleted:
+                target = base / rel
+                if target.exists():
+                    try:
+                        target.unlink()
+                        removed += 1
+                    except OSError:
+                        failed += 1
+                continue
+            content = get_file_content_from_db(rel)
+            if content is None:
+                continue
+            target = base / rel
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                synced += 1
+            except OSError:
+                failed += 1
+        if synced or removed or failed:
+            print(f"   🔄 Governed base sync: {synced} written, {removed} removed, {failed} failed")
+        return synced
 
     def working_dir(self) -> Path:
         assert self.path is not None
@@ -214,15 +288,19 @@ class ShellWorktree:
         """Return [{path, status, new_content, diff}] for tracked+untracked changes.
 
         Paths are relative to the project directory (repo subdirectory aware).
-        Deleted files are reported so the caller can warn; there is currently no
-        governed delete operation, so deletions are skipped at proposal time.
+        Changes are collected against the post-sync baseline tree (falling back to
+        HEAD when no baseline was recorded), so only agent-authored work is
+        reported. Deleted files are reported so the caller can warn; there is
+        currently no governed delete operation, so deletions are skipped at
+        proposal time.
         """
         assert self.path is not None
         add = self._git("add", "-A", cwd=self.path)
         if add.returncode != 0:
             raise RuntimeError(f"failed to stage worktree changes: {add.stderr.strip()}")
 
-        status = self._git("diff", "--cached", "--name-status", "-z", cwd=self.path)
+        base = self._baseline_tree or "HEAD"
+        status = self._git("diff", "--cached", "--name-status", "-z", base, cwd=self.path)
         if status.returncode != 0:
             raise RuntimeError(f"failed to diff worktree: {status.stderr.strip()}")
 
@@ -244,6 +322,7 @@ class ShellWorktree:
 
             rel = self._strip_sub(effective)
             if rel is None:
+                print(f"   ⚠️ Skipping change outside the project directory ({self.project_directory}): {effective}")
                 continue
 
             item: dict[str, Any] = {"path": rel, "status": "A" if code.startswith("R") else code, "new_content": "", "diff": ""}
@@ -254,11 +333,12 @@ class ShellWorktree:
                 target = self.path / effective
                 try:
                     raw = target.read_bytes()
-                    if len(raw) > 5_000_000:
+                    if len(raw) > self.max_file_bytes:
+                        print(f"   ⚠️ Skipping oversize file ({len(raw)} bytes > {self.max_file_bytes}): {rel}")
                         changes.append({**item, "status": "S"})
                         continue
                     item["new_content"] = raw.decode("utf-8", errors="replace")
-                    diff_p = self._git("diff", "--cached", "--", effective, cwd=self.path)
+                    diff_p = self._git("diff", "--cached", base, "--", effective, cwd=self.path)
                     item["diff"] = (diff_p.stdout or "")[:20_000]
                 except OSError:
                     changes.append({**item, "status": "S"})
@@ -324,6 +404,7 @@ class ShellDeveloperSession:
         self.messages: list[dict] = []
         self.result = SessionResult()
         self._start = time.time()
+        self._deferred_finish_count = 0
 
     def _llm(self) -> str | None:
         text, _tokens = call_endpoint(
@@ -343,6 +424,19 @@ class ShellDeveloperSession:
             "role": "user",
             "content": f"[exit code {exit_code}]\n{trimmed}" if trimmed else f"[exit code {exit_code}, no output]",
         }
+
+    def _effective_command_timeout(self) -> int:
+        """Cap one bash command by the remaining wall-clock budget.
+
+        Limits are otherwise only checked before each LLM call; without this a
+        single long command could blow past wall_time_limit_minutes.
+        """
+        timeout = self.cfg.command_timeout_seconds
+        if self.cfg.wall_time_limit_minutes > 0:
+            remaining_s = int(self.cfg.wall_time_limit_minutes * 60 - (time.time() - self._start))
+            if remaining_s < timeout:
+                return max(remaining_s, 1)
+        return timeout
 
     def run(self, task_text: str) -> SessionResult:
         r = self.result
@@ -371,12 +465,37 @@ class ShellDeveloperSession:
             self.messages.append({"role": "assistant", "content": response})
 
             summary = extract_finish(response)
+            command = extract_bash_command(response)
+
+            if summary is not None and command is not None:
+                # The model tried to run a final command AND finish in one reply
+                # (e.g. "run tests, then FINISH"). Since verification depends on the
+                # worktree state the command produces, execute it first and defer the
+                # finish; force-finish if the model keeps pairing them.
+                self._deferred_finish_count += 1
+                exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
+                self.messages.append(self._observation(exit_code, output))
+                if self._deferred_finish_count >= 3:
+                    r.exit_status = "Finished"
+                    r.summary = f"[finish forced after {self._deferred_finish_count} deferred finishes] {summary}"
+                    break
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Your previous reply contained both a bash command and {FINISH_TOKEN}. "
+                            "The command has been executed (result above). If the task is now "
+                            f"complete, reply again with only {FINISH_TOKEN} and a summary."
+                        ),
+                    }
+                )
+                continue
+
             if summary is not None:
                 r.exit_status = "Finished"
                 r.summary = summary
                 break
 
-            command = extract_bash_command(response)
             if command is None:
                 consecutive_format_errors += 1
                 if self.cfg.max_consecutive_format_errors > 0 and consecutive_format_errors >= self.cfg.max_consecutive_format_errors:
@@ -392,7 +511,7 @@ class ShellDeveloperSession:
                 continue
 
             consecutive_format_errors = 0
-            exit_code, output = self.wt.run_command(command, self.cfg.command_timeout_seconds)
+            exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
             self.messages.append(self._observation(exit_code, output))
 
         # Optional post-session verification against the edited worktree.
@@ -516,18 +635,29 @@ Rules:
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
     reviewer_response = call_agent("reviewer", reviewer_prompt, task_id)
 
-    decision_result = "APPROVE"
-    reason = ""
-    suggestions: list[str] = []
-    if reviewer_response:
+    # Fail closed: shell-session diffs originate from arbitrary bash execution,
+    # so a missing or unparseable verdict must REJECT, never auto-approve.
+    decision_result: str
+    reason: str
+    suggestions: list[Any]
+    if not reviewer_response or not str(reviewer_response).strip():
+        decision_result = "REJECT"
+        reason = "Reviewer unavailable (empty response) - failing closed"
+        suggestions = []
+        print("   ⚠️ Reviewer returned no response; rejecting proposal (fail closed)")
+    else:
         try:
             decision_data = json.loads(reviewer_response)
-            decision_result = str(decision_data.get("decision", "APPROVE")).upper()
+            decision_result = str(decision_data.get("decision", "")).upper()
             reason = decision_data.get("reason", "")
             suggestions = decision_data.get("suggestions") or []
-        except Exception:
-            decision_result = "APPROVE"
-            reason = "reviewer response not JSON; defaulting to APPROVE"
+            if decision_result not in ("APPROVE", "REJECT"):
+                raise ValueError(f"invalid decision value {decision_result!r}")
+        except Exception as e:
+            decision_result = "REJECT"
+            reason = f"Reviewer returned an unparseable verdict ({e}) - failing closed"
+            suggestions = []
+            print("   ⚠️ Reviewer response was not valid JSON; rejecting proposal (fail closed)")
 
     if suggestions:
         suggestion_text = "\n".join([f"- {s}" for s in suggestions])
@@ -651,7 +781,7 @@ def run_shell_developer_turn(
     config = get_config()
     project_dir = Path(config.get("project_directory", ".")).resolve()
 
-    worktree = ShellWorktree(project_dir, parent_dir=cfg.worktree_parent)
+    worktree = ShellWorktree(project_dir, parent_dir=cfg.worktree_parent, max_file_bytes=cfg.max_file_bytes)
     session = ShellDeveloperSession(cfg, worktree, task_id)
 
     try:
@@ -707,6 +837,7 @@ def run_shell_developer_turn(
 
         statuses: list[str] = []
         proposal_ids: list[str] = []
+        gates_by_path: dict[str, str] = {}
 
         for change in changes:
             op = change_to_operation(change)
@@ -748,18 +879,12 @@ def run_shell_developer_turn(
                 current_turn=current_turn,
             )
             statuses.append(gate)
+            gates_by_path[change["path"]] = gate
 
-        if addressing_ids and "success" in statuses:
-            with get_db_connection() as conn:
-                for fb_id in addressing_ids:
-                    conn.execute(
-                        """
-                        UPDATE agent_feedback
-                        SET addressed = 1, addressed_by = 'developer', addressed_at = ?
-                        WHERE id = ?
-                        """,
-                        (datetime.now(timezone.utc).isoformat(), fb_id),
-                    )
+        # Only mark feedback addressed when the file it targets actually landed;
+        # skipped (deletion/oversize) or rejected changes must stay open.
+        materialized_paths = {p for p, s in gates_by_path.items() if s == "success"}
+        _mark_feedback_addressed(addressing_ids, materialized_paths)
 
         overall = "success" if "success" in statuses else ("rejected" if "rejected" in statuses else "error")
         return {
@@ -770,6 +895,42 @@ def run_shell_developer_turn(
         }
     finally:
         worktree.cleanup()
+
+
+def _mark_feedback_addressed(addressing_ids: list[Any], materialized_paths: set[str]) -> None:
+    """Mark agent_feedback rows addressed only when their file actually materialized.
+
+    Non-numeric IDs (orchestrator hallucination) are skipped with a warning instead
+    of aborting the addressing pass.
+    """
+    if not addressing_ids or not materialized_paths:
+        return
+    valid_ids: list[int] = []
+    for raw_id in addressing_ids:
+        try:
+            valid_ids.append(int(raw_id))
+        except (TypeError, ValueError):
+            print(f"   ⚠️ Ignoring non-numeric feedback id from orchestrator: {raw_id!r}")
+            continue
+    if not valid_ids:
+        return
+    placeholders = ",".join("?" * len(valid_ids))
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            f"SELECT id, file_path FROM agent_feedback WHERE id IN ({placeholders})",
+            valid_ids,
+        ).fetchall()
+        for fb_id, fb_file_path in rows:
+            fb_path = str(fb_file_path or "").removeprefix("./")
+            if fb_path in materialized_paths:
+                conn.execute(
+                    """
+                    UPDATE agent_feedback
+                    SET addressed = 1, addressed_by = 'developer', addressed_at = ?
+                    WHERE id = ?
+                    """,
+                    (datetime.now(timezone.utc).isoformat(), fb_id),
+                )
 
 
 def _save_trajectory(task_id: str, current_turn: int, session: ShellDeveloperSession) -> None:

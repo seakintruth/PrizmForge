@@ -244,15 +244,31 @@ Settings for `developer.implementation = "shell"`.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `step_limit` | int | 30 | Max model calls per session |
-| `wall_time_limit_minutes` | int | 20 | Wall-clock session cap |
+| `wall_time_limit_minutes` | int | 20 | Wall-clock session cap; also caps each bash command's timeout to the remaining budget |
 | `command_timeout_seconds` | int | 120 | Per-bash-command timeout |
 | `test_timeout_seconds` | int | 600 | Timeout for `test_command` |
 | `max_output_chars` | int | 6000 | Truncation of command output fed back to the model |
+| `max_file_bytes` | int | 512000 | Files larger than this are skipped at proposal time (status S) |
 | `max_consecutive_format_errors` | int | 3 | Abort after N replies without a bash block or finish token |
 | `test_command` | string | "" | Post-session verification, e.g. `python -m pytest tests/ -x -q`. Empty disables verification |
-| `on_test_failure` | string | `discard` | `discard` (fail closed) or `propose_anyway` when verification exits non-zero |
+| `on_test_failure` | string | `discard` | `discard` (fail closed) or `propose_anyway` when verification exits non-zero; invalid values fall back to `discard` with a warning |
 | `model` | string\|null | null | Model override; falls back to orchestrator decision then `default_model` |
 | `worktree_parent` | string | "" | Parent dir for worktree scratch (default: system temp) |
+
+Behavior notes:
+
+- The worktree base is synced from the governed DB before the session starts
+  (`files WHERE has_been_written_to_disk = 1`), so the agent edits governed
+  content even when materializations are not yet committed to git. A change
+  baseline is snapshotted right after the sync, so only agent-authored work is
+  collected and re-proposed — pre-existing DB/HEAD drift is never attributed to
+  the model.
+- The Reviewer gate **fails closed**: a missing or unparseable reviewer verdict
+  REJECTs the proposal instead of auto-approving.
+- Step/wall limits are checked before each model call; long-running commands can
+  still consume budget mid-loop (each command is capped by remaining wall time).
+- A reply containing both a bash command and the finish token executes the command
+  first and asks the model to confirm finishing (forced finish after 3 deferrals).
 
 ---
 

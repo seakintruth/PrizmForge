@@ -71,8 +71,9 @@ ignore = ["S101", "S105","RUF001"] # Allow assert in tests, ignore hardcoded moc
 "file_editing/writer.py" = ["S603", "S607"]
 
 # Shell developer agent (executes model-authored bash inside disposable worktree;
-# S602 is intentional — arbitrary shell commands are the feature)
-"workflow/shell_developer.py" = ["S602", "S603", "S607"]
+# S602 is intentional — arbitrary shell commands are the feature; S608 is the
+# IN(?) placeholder list built from count, values stay bound parameters)
+"workflow/shell_developer.py" = ["S602", "S603", "S607", "S608"]
 
 # Database helpers & queries (parameterized string query false-positives)
 "core/db_helpers.py" = ["S608"]
