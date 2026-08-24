@@ -74,6 +74,7 @@ _GET_CONFIG_PATCH_TARGETS = (
     "agents.reporter_worker.get_config",
     "agents.resource_controller_worker.get_config",
     "workflow.task_runner.get_config",
+    "workflow.shell_developer.get_config",
     "cli.commands.get_config",
     "interactive.get_config",
     "utils.git_operations.get_config",

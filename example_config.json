@@ -150,6 +150,24 @@
     ],
     "small_file_threshold_lines": 180
   },
+  "developer": {
+    "implementation": "shell",
+    "_note": "shell = worktree + bash loop (workflow/shell_developer.py); edit_payload = legacy structured EditPayload flow"
+  },
+  "shell_developer": {
+    "step_limit": 30,
+    "wall_time_limit_minutes": 20,
+    "command_timeout_seconds": 120,
+    "test_timeout_seconds": 600,
+    "max_output_chars": 6000,
+    "max_consecutive_format_errors": 3,
+    "test_command": "",
+    "_note_test_command": "e.g. 'python -m pytest tests/ -x -q'. Non-zero exit discards the session unless on_test_failure=propose_anyway",
+    "on_test_failure": "discard",
+    "model": null,
+    "_note_model": "null uses the orchestrator decision model, then default_model",
+    "worktree_parent": ""
+  },
   "content_safety": {
     "disallow_binary_content": true,
     "blocked_extensions": [

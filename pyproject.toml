@@ -59,7 +59,7 @@ ignore = ["S101", "S105","RUF001"] # Allow assert in tests, ignore hardcoded moc
 [tool.ruff.lint.per-file-ignores]
 # Test suite ignores
 "utils/*" = ["S310"]
-"tests/*" = ["S101", "S106", "S110", "S310", "S324"]
+"tests/*" = ["S101", "S106", "S110", "S310", "S324", "S603", "S607"]
 
 # Agent worker ignores
 "agents/parallel_workers.py" = ["E402", "PLC0415"]
@@ -69,6 +69,11 @@ ignore = ["S101", "S105","RUF001"] # Allow assert in tests, ignore hardcoded moc
 
 # File editing & CLI
 "file_editing/writer.py" = ["S603", "S607"]
+
+# Shell developer agent (executes model-authored bash inside disposable worktree;
+# S602 is intentional — arbitrary shell commands are the feature; S608 is the
+# IN(?) placeholder list built from count, values stay bound parameters)
+"workflow/shell_developer.py" = ["S602", "S603", "S607", "S608"]
 
 # Database helpers & queries (parameterized string query false-positives)
 "core/db_helpers.py" = ["S608"]

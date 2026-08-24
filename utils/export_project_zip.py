@@ -74,11 +74,18 @@ SKIP_DIR_NAMES = {
     "dist",
     "build",
     "exports",
+    # Runtime state: governed DB (full source + prompt history), trajectories,
+    # and worktree scratch must never leak into a distribution package.
+    ".PrizmForge",
+    "shell_trajectories",
 }
 
 SKIP_SUFFIXES = {
     ".pyc",
     ".pyo",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
     ".db-journal",
     ".db-wal",
     ".db-shm",

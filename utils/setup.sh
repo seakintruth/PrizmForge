@@ -419,6 +419,7 @@ fi
 # ---------------------------------------------------------------------------
 # Install dependencies
 # ---------------------------------------------------------------------------
+SETUP_WARNINGS=0
 echo "Upgrading pip..."
 pip_install --upgrade pip
 
@@ -426,6 +427,20 @@ echo "Installing runtime dependencies..."
 pip_install -r "${REPO_ROOT}/requirements.txt"
 echo "Installing development dependencies..."
 pip_install -r "${REPO_ROOT}/requirements-dev.txt"
+
+# ---------------------------------------------------------------------------
+# Git check (required by the shell developer's worktree isolation)
+# ---------------------------------------------------------------------------
+if ! command -v git >/dev/null 2>&1; then
+  echo "" >&2
+  echo "WARNING: git was not found on PATH." >&2
+  echo "The shell developer (config: developer.implementation=\"shell\") creates" >&2
+  echo "isolated git worktrees for safe autonomous editing and REQUIRES git." >&2
+  echo "Install git, then re-run this script." >&2
+  SETUP_WARNINGS=$((SETUP_WARNINGS + 1))
+else
+  echo "✅ git found: $(git --version)"
+fi
 
 # =============================================================================
 # Configuration files: config.json + api_key.json
@@ -742,6 +757,9 @@ echo "=============================================================="
 echo "Setup complete."
 echo "  venv:   ${VENV_DIR}"
 echo "  python: ${VENV_PYTHON}"
+if [[ "${SETUP_WARNINGS:-0}" -gt 0 ]]; then
+  echo "  ⚠️  ${SETUP_WARNINGS} warning(s) above — review before production runs."
+fi
 echo ""
 if [[ -n "${VIRTUAL_ENV:-}" && "${BASH_SOURCE[0]}" != "$0" ]]; then
   echo "The venv is ACTIVE in your current shell (script was sourced)."
