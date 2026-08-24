@@ -248,6 +248,27 @@ def run_task_cycle(  # noqa: C901
             # DEVELOPER PATH
             # =====================================================
             if next_agent == "developer":
+                # Implementation switch: "shell" (worktree + bash loop, default
+                # via example config) or legacy structured EditPayload flow.
+                dev_impl = (config.get("developer", {}) or {}).get("implementation", "edit_payload")
+                if dev_impl == "shell":
+                    from workflow.shell_developer import run_shell_developer_turn
+
+                    mut = run_shell_developer_turn(
+                        task_id=task_id,
+                        instructions=instructions or user_command,
+                        user_command=user_command,
+                        conversation_context=conversation_context,
+                        model_choice=model_choice,
+                        progress=progress,
+                        decision=decision,
+                        current_turn=current_turn,
+                    )
+                    if mut.get("status") not in ("success", "rejected"):
+                        print(f"   ⚠️  Shell developer status: {mut.get('status')} {mut.get('message', '')}")
+                    conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
+                    continue
+
                 #  === PHASE 1: UNDERSTANDING (Conditional - skip if backlog override) ===
                 understanding_prompt = f"""{instructions}
 
