@@ -279,3 +279,27 @@ Seed-task duplication seen in soak is already fixed by the cold-start round
   finalization, prioritizer circuit breaker, reviewer empty-response discipline.
 - Full gate green; ruff clean; mypy: zero new errors.
 
+
+### Rotation follow-up (same round)
+
+P2 originally parked the prioritizer for 5 minutes when the circuit opened.
+Per review, idle parking was replaced with active resilience:
+
+- **Per-model down windows**: after `down_streak` (2) consecutive failures a
+  model is marked down for `down_base_seconds` (300 s), doubling per extra
+  failure up to `down_max_seconds` (1800 s); any success clears it
+  (`model_down_until`, `core/model_health.py`).
+- **Enforced ranking tiers**: fallback/rotation ordering is now
+  healthy → demoted → down; down models are skipped entirely while any
+  healthy candidate exists and become the automatic recovery probe when all
+  candidates are down.
+- **Round-robin rotation**: on batch failure the categorizer advances to the
+  next healthy `endpoint/model` (`_rr_next_model`) instead of re-dialing the
+  same one — wrapping back to the original endpoint lands on its sibling
+  model because the failed one is marked down.
+- **Probe mode**: an open circuit no longer idles; each cycle runs exactly one
+  batch through the rotation. A successful probe reopens the circuit; a
+  failed one leaves it armed.
+
+Verified: 9 new/updated unit tests; full gate 693 passed; ruff clean; mypy
+zero new errors.

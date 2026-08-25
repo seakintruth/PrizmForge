@@ -1,5 +1,6 @@
 """Prioritizer worker - intelligent multi-phase feedback processing"""
 
+import logging
 import re
 import threading
 import time
@@ -13,6 +14,8 @@ from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.index_context import load_index_text, load_symbol_json_context
 from core.json_parser import parse_json_response
+
+logger = logging.getLogger(__name__)
 
 
 def _phase_model_override(phase: str) -> str | None:
@@ -70,11 +73,18 @@ class PrioritizerWorker:
         self.processing_cycle_time = 0  # Time of last full cycle
 
         # Circuit breaker (soak P2: endpoint outages turned each cycle into a
-        # burst of failing batch calls, ~1,071 errors in 12h).
+        # burst of failing batch calls, ~1,071 errors in 12h). The breaker is
+        # a backstop only: per-model down windows + round-robin rotation do
+        # the real resilience work, so cooldown stays short.
         self.consecutive_batch_failures = 0
         self.max_consecutive_batch_failures = 3
         self.circuit_open_until = 0.0
-        self.circuit_cooldown_seconds = 300
+        self.circuit_cooldown_seconds = 120
+
+        # Round-robin model rotation: on batch failure advance to the next
+        # healthy candidate (any endpoint) instead of re-dialing the same one.
+        self._rr_index = 0
+        self._rr_override: str | None = None
 
     def start(self, task_id: str):
         """Start the prioritizer worker"""
@@ -232,12 +242,12 @@ class PrioritizerWorker:
         Phase 4: Cross-category ranking
         Phase 5: Post to orchestrator
         """
-        # Circuit breaker: skip the whole cycle while cooling down after
-        # repeated batch failures (endpoint outage).
-        if time.time() < self.circuit_open_until:
+        # Circuit breaker: while cooling down after repeated batch failures,
+        # don't fully idle — the cycle continues in probe mode (one batch).
+        probe_mode = time.time() < self.circuit_open_until
+        if probe_mode:
             remaining = int(self.circuit_open_until - time.time())
-            print(f"    ⚡ Prioritizer circuit open — cooldown {remaining}s remaining")
-            return
+            print(f"    ⚡ Prioritizer circuit open — cooldown {remaining}s remaining (probe mode)")
 
         # Get all feedback
         all_feedback = self._get_all_feedback()
@@ -260,7 +270,7 @@ class PrioritizerWorker:
             return
 
         # Phase 2: Categorize uncategorized (batches of 30)
-        categorized = self._categorize_feedback(valid_feedback)
+        categorized = self._categorize_feedback(valid_feedback, probe_mode=probe_mode)
 
         if not categorized:
             print("    ✓ Phase 2: All items categorized")
@@ -359,7 +369,7 @@ class PrioritizerWorker:
             print(f"    ❌ Error getting feedback: {e}")
             return []
 
-    def _categorize_feedback(self, items: list[FeedbackItem]) -> list[FeedbackItem]:
+    def _categorize_feedback(self, items: list[FeedbackItem], probe_mode: bool = False) -> list[FeedbackItem]:
         """Phase 1: Categorize uncategorized items in batches of 30"""
         uncategorized = [item for item in items if item.category == "uncategorized"]
 
@@ -369,6 +379,13 @@ class PrioritizerWorker:
 
         print(f"    → Phase 1: Categorizing {len(uncategorized)} items (batches of 30)")
 
+        # While the circuit is open we don't idle: run a single probe batch
+        # (round-robin may land on a recovered model). A successful probe
+        # resets the failure counter and reopens the gate for later cycles.
+        probe_only = probe_mode
+        if probe_only:
+            print("    ⚡ Circuit open — probing with a single batch")
+
         # Process in batches of 30, with a circuit breaker: after N
         # consecutive failed batches (endpoint outage), stop hammering and
         # open a cooldown before the next cycle may retry.
@@ -377,8 +394,18 @@ class PrioritizerWorker:
             ok = self._categorize_batch(batch)
             if ok:
                 self.consecutive_batch_failures = 0
+                self.circuit_open_until = 0.0
+                self._rr_override = None  # healthy again → default phase model
+                if probe_only:
+                    break
             else:
                 self.consecutive_batch_failures += 1
+                # Rotate to the next candidate instead of re-dialing the same
+                # model; per-model down windows make the skip authoritative.
+                nxt = self._rr_next_model()
+                if nxt and nxt != self._rr_override:
+                    print(f"    🔄 Rotating categorization model → {nxt}")
+                    self._rr_override = nxt
                 backoff = min(5 * (2 ** (self.consecutive_batch_failures - 1)), 60)
                 print(
                     f"    ⚡ Categorization failed ({self.consecutive_batch_failures}"
@@ -391,11 +418,49 @@ class PrioritizerWorker:
                     print(f"    ⚡ Circuit OPEN for {self.circuit_cooldown_seconds}s — aborting {remaining_batches} remaining batch(es)")
                     break
 
-        print("    ✓ Phase 1: Complete")
+            if probe_only:
+                break  # failed or succeeded: a probe is exactly one batch        print("    ✓ Phase 1: Complete")
         return items
 
+    def _rr_next_model(self) -> str | None:
+        """Advance the round-robin cursor and return an "endpoint/model" override.
+
+        Candidates are all configured models across available endpoints,
+        ordered by model-health (healthy first, demoted next, down last), so
+        after a failure the next attempt lands on a *different* model — and
+        when rotation wraps back to the original endpoint, its sibling model
+        is picked because the failed one is marked down.
+        """
+        try:
+            from core.endpoint_manager import get_endpoint_manager
+
+            mgr = get_endpoint_manager()
+            candidates: list[tuple[str, int]] = []
+            for ep in sorted(mgr.get_available_endpoints(), key=lambda e: e.priority):
+                for key in mgr.models:
+                    if key.startswith(f"{ep.name}/"):
+                        candidates.append((key, ep.priority or 0))
+            if not candidates:
+                return None
+            try:
+                from core.model_health import model_down_until, rank_candidates
+
+                candidates = rank_candidates(candidates)
+                # Skip currently-down models while any healthy one exists;
+                # if ALL are down, keep the list so rotation can probe.
+                live = [c for c in candidates if not model_down_until(c[0])]
+                candidates = live or candidates
+            except Exception:
+                candidates.sort(key=lambda c: c[1])
+            ref = candidates[self._rr_index % len(candidates)][0]
+            self._rr_index += 1
+            return ref
+        except Exception as e:
+            logger.debug(f"round-robin candidate selection skipped: {e}")
+            return None
+
     def _categorize_batch(self, batch: list[FeedbackItem]):
-        """Categorize a batch of items"""
+        """Categorize a batch of items. Returns True on success."""
         # Build prompt with message and suggestion context
         index_snip = ""
         try:
@@ -442,7 +507,7 @@ Respond with JSON ONLY:
                 "prioritizer",
                 prompt,
                 self.current_task_id,
-                model_override=_phase_model_override("batch"),
+                model_override=self._rr_override or _phase_model_override("batch"),
             )
 
             if not response:

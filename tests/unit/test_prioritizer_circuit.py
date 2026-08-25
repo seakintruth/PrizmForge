@@ -73,10 +73,24 @@ def test_successful_batches_do_not_trip_breaker(temp_db, monkeypatch):
     assert w.circuit_open_until == 0
 
 
-def test_open_circuit_blocks_next_cycle(temp_db, monkeypatch):
+def test_open_circuit_probes_single_batch(temp_db, monkeypatch):
+    """Open circuit no longer idles: the next cycle runs exactly ONE probe batch."""
     import agents.prioritizer_worker as pw
 
-    w, calls = _make_worker(monkeypatch, fail_batches=True)
+    w, calls = _make_worker(monkeypatch, fail_batches=False)  # False == failing
     w.circuit_open_until = pw.time.time() + 9999
     w._run_full_prioritization_cycle()
-    assert calls["n"] == 0  # cycle skipped entirely
+    assert calls["n"] == 1  # probe, not full cycle (would be 3)
+    # a single failed probe does not clear the armed circuit
+    assert w.circuit_open_until > pw.time.time()
+
+
+def test_successful_probe_reopens_circuit(temp_db, monkeypatch):
+    import agents.prioritizer_worker as pw
+
+    w, _calls = _make_worker(monkeypatch, fail_batches=True)
+    w.circuit_open_until = pw.time.time() + 9999
+    monkeypatch.setattr(w, "_categorize_batch", lambda b: True)  # probe succeeds
+    w._run_full_prioritization_cycle()
+    assert w.circuit_open_until == 0.0
+    assert w.consecutive_batch_failures == 0

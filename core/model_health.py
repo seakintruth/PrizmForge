@@ -9,13 +9,19 @@ lightweight, SQLite-backed event log of per-model outcomes and derives:
 
 - a recency-weighted failure ratio (exponential decay, configurable half-life),
 - the current consecutive-failure streak,
-- an automatic demotion verdict with a growing-but-capped cooldown.
+- an automatic demotion verdict with a growing-but-capped cooldown,
+- a short "down" window: after ``down_streak`` consecutive failures a model is
+  treated as unavailable for ~``down_base_seconds`` (doubling per extra
+  failure, capped) so rotation skips it instead of re-dialing the same dead
+  model. Unlike endpoint cooldowns this is per-model, and unlike demotion it
+  is enforced: down models are only attempted when no healthy candidate exists.
 
 Demotion is advisory ordering, not exclusion: ``rank_candidates`` sorts
-candidates so healthy models are tried first and demoted ones last. A demoted
-model is still usable (explicit requests always go through) and automatically
-recovers once its recent window looks healthy again — the verdict is recomputed
-from events on demand, so there is no sticky state to reset.
+candidates so healthy models are tried first, demoted ones next, and currently
+-down ones last. A demoted model is still usable (explicit requests always go
+through) and automatically recovers once its recent window looks healthy again
+— the verdict is recomputed from events on demand, so there is no sticky state
+to reset.
 
 All DB access is best-effort: any failure degrades to "no history" and never
 breaks an LLM call.
@@ -30,6 +36,9 @@ Config (all optional, under ``model_health``)::
       "consecutive_failure_threshold": 4,
       "base_cooldown_minutes": 15,
       "max_cooldown_minutes": 240,
+      "down_streak": 2,
+      "down_base_seconds": 300,
+      "down_max_seconds": 1800,
       "event_retention_hours": 72
     }
 """
@@ -75,6 +84,9 @@ DEFAULTS = {
     "consecutive_failure_threshold": 4,
     "base_cooldown_minutes": 15,
     "max_cooldown_minutes": 240,
+    "down_streak": 2,
+    "down_base_seconds": 300,
+    "down_max_seconds": 1800,
     "event_retention_hours": 72,
 }
 
@@ -259,21 +271,54 @@ def model_verdict(model_ref: str, now: datetime | None = None) -> dict:
     return {"model_ref": model_ref, **stats, "demotion": demotion}
 
 
+def model_down_until(model_ref: str, now: datetime | None = None) -> datetime | None:
+    """Short enforced down-window after repeated consecutive failures.
+
+    After ``down_streak`` trailing failures a model is considered down until
+    ``last_failure + down_base_seconds``, doubling per extra failure and
+    capped at ``down_max_seconds``. Any success clears it (streak resets).
+    Returns None while the model is up.
+    """
+    now = now or datetime.now()
+    streak_thr = int(_setting("down_streak"))
+    base_s = float(_setting("down_base_seconds"))
+    max_s = float(_setting("down_max_seconds"))
+
+    stats = compute_stats(load_events(model_ref), now=now)
+    streak = int(stats.get("consecutive_failures", 0))
+    if streak < streak_thr or not stats.get("last_error_ts"):
+        return None
+
+    last_fail = _parse(str(stats["last_error_ts"]))
+    if last_fail is None:
+        return None
+    extra = streak - streak_thr
+    seconds = min(base_s * (2**extra), max_s)
+    until = last_fail + timedelta(seconds=seconds)
+    return until if until > now else None
+
+
 def rank_candidates(candidates: list[tuple[str, int]], now: datetime | None = None) -> list[tuple[str, int]]:
-    """Order ``(model_ref, priority)`` pairs: healthy first, demoted last.
+    """Order ``(model_ref, priority)`` pairs: healthy → demoted → down.
 
     Healthy candidates sort by weighted failure_ratio ascending, then by the
     caller's priority ascending. Demoted candidates keep their relative order
-    behind all healthy ones — they remain reachable, just deprioritized.
+    behind all healthy ones. Currently-down models (recent failure streak)
+    sink behind even those — they are only reached when nothing healthier
+    exists, which doubles as the automatic recovery probe during full outages.
     """
     now = now or datetime.now()
     scored: list[tuple[int, float, int, str]] = []
     for model_ref, priority in candidates:
         stats = compute_stats(load_events(model_ref), now=now)
-        demoted = 1 if evaluate_demotion(stats, now=now) else 0
-        scored.append((demoted, float(stats["failure_ratio"]), int(priority or 0), model_ref))
+        tier = 0
+        if evaluate_demotion(stats, now=now):
+            tier = 1
+        if model_down_until(model_ref, now=now):
+            tier = 2
+        scored.append((tier, float(stats["failure_ratio"]), int(priority or 0), model_ref))
     scored.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
-    return [(m, p) for (_d, _r, p, m) in scored]
+    return [(m, p) for (_t, _r, p, m) in scored]
 
 
 def health_report(limit: int = 30, now: datetime | None = None) -> list[dict]:
