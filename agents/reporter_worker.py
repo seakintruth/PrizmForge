@@ -75,8 +75,6 @@ class ProjectReporterWorker:
                         self.last_line_delta,
                     ),
                 )
-                conn.commit()
-                conn.close()
         except Exception as e:
             print(f"    ⚠️  Failed to save reporter state: {e}")
 

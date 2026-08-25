@@ -4,7 +4,7 @@ import json
 import time
 from datetime import datetime
 
-from agents.base import call_agent
+from agents.base import _last_call_http_latency, call_agent
 from agents.orchestrator import call_orchestrator
 from agents.parallel_workers import get_agent_pool
 from core.config import get_config
@@ -17,6 +17,11 @@ from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER
 from workflow.path_targets import extract_files_needed_from_text, sanitize_path_token
 
 # Governed editing imports
+
+# Active-work tracking: accumulates HTTP latency (seconds) across call_agent
+# invocations within a single iteration. Rate-limit sleeps and DB lock
+# backoffs are excluded so iteration timeouts count only real work.
+_active_work_seconds: float = 0.0
 
 
 def _edit_mode_settings(config: dict) -> tuple[list | None, list, int]:
@@ -238,15 +243,20 @@ def run_task_cycle(  # noqa: C901
             current_turn += 1
             iteration_start = time.time()
             iteration_end = iteration_start + (time_box_minutes * 60)
+            active_budget = time_box_minutes * 60
 
             orchestrator_attempts = 0
             decision = None
+
+            # Reset active-work counter for this iteration
+            global _active_work_seconds
+            _active_work_seconds = 0.0
 
             elapsed_total = (time.time() - start_time) / 60
             time_remaining = (iteration_end - time.time()) / 60
 
             print(f"\n{'=' * 60}")
-            print(f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m")
+            print(f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m | Work: {_active_work_seconds:.1f}s")
             print(f"{'=' * 60}\n")
 
             while orchestrator_attempts < max_orchestrator_retries and not decision:
@@ -262,6 +272,7 @@ def run_task_cycle(  # noqa: C901
                     max_turns,
                     time_remaining,
                 )
+                _active_work_seconds += _last_call_http_latency
 
                 try:
                     with get_db_connection() as conn:
@@ -423,6 +434,7 @@ def run_task_cycle(  # noqa: C901
                         progress=progress,
                         current_turn=current_turn,
                     )
+                    _active_work_seconds += _last_call_http_latency
                     conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
                     continue
 
@@ -450,6 +462,7 @@ PLAN: [brief explanation]"""
                     conversation_context,
                     model_choice,
                 )
+                _active_work_seconds += _last_call_http_latency
 
                 if not understanding:
                     print("   ❌ Developer failed to respond")
@@ -520,6 +533,7 @@ PLAN: [brief explanation]"""
                     current_turn=current_turn,
                     requested_files=requested_files,
                 )
+                _active_work_seconds += _last_call_http_latency
 
             # BACKGROUND AGENTS - Yield control
             # =====================================================
@@ -647,6 +661,7 @@ PLAN: [brief explanation]"""
                                 current_turn=current_turn,
                                 requested_files=[file_path] if file_path else [],
                             )
+                            _active_work_seconds += _last_call_http_latency
                             conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
 
                     else:
@@ -712,8 +727,8 @@ PLAN: [brief explanation]"""
             else:
                 print(f"⚠️  Unknown or unsupported agent decision: {next_agent}")
 
-            if time.time() >= iteration_end:
-                print("\n⏰ Iteration timeout")
+            if _active_work_seconds >= active_budget:
+                print(f"\n⏰ Iteration timeout (active work: {_active_work_seconds:.1f}s >= {active_budget}s)")
 
             time.sleep(0.5)
 

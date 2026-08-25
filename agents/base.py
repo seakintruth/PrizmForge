@@ -24,6 +24,11 @@ from file_editing.db import log_error
 _rate_limiter = None
 _token_budget = None
 
+# Active-work tracking: HTTP latency (seconds) of the most recent call_endpoint
+# invocation. Rate-limit sleeps and DB lock backoffs are excluded so iteration
+# timeouts count only real work, not idle waits.
+_last_call_http_latency: float = 0.0
+
 # Agents that are allowed to return free-form text / markdown
 TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
 
@@ -79,6 +84,10 @@ def call_endpoint(  # noqa: C901
     # Per-endpoint rate limiting
     rate_limiter = get_rate_limiter(endpoint)
     rate_limiter.wait_if_needed()
+
+    # Track HTTP latency only (rate-limit sleeps and DB lock backoffs excluded)
+    global _last_call_http_latency
+    _last_call_http_latency = 0.0
 
     # Check if endpoint is available
     if not endpoint.health.is_available():
@@ -194,6 +203,7 @@ def call_endpoint(  # noqa: C901
                 timeout=120,
                 proxies=proxies,
             )
+            _last_call_http_latency += time.time() - _req_t0
 
             # Attempt to extract error JSON safely
             error_data = {}
@@ -228,6 +238,7 @@ def call_endpoint(  # noqa: C901
                             timeout=120,
                             proxies=proxies,
                         )
+                        _last_call_http_latency += time.time() - _req_t0
 
                         retry_error_data = {}
                         try:

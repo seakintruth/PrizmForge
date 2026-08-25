@@ -86,6 +86,12 @@ class PrioritizerWorker:
         self._rr_index = 0
         self._rr_override: str | None = None
 
+        # Per-cycle batch cap: limit API calls per prioritization cycle to
+        # avoid monopolizing the rate limit. Soak evidence: 267 items → 9
+        # batches = 9 API calls + 8 scoring calls = 17+ per cycle, all
+        # competing with the developer. Items beyond the cap carry over.
+        self.max_batches_per_cycle = 3
+
     def start(self, task_id: str):
         """Start the prioritizer worker"""
         if self.running:
@@ -389,7 +395,13 @@ class PrioritizerWorker:
         # Process in batches of 30, with a circuit breaker: after N
         # consecutive failed batches (endpoint outage), stop hammering and
         # open a cooldown before the next cycle may retry.
+        batch_count = 0
         for i in range(0, len(uncategorized), 30):
+            batch_count += 1
+            if batch_count > self.max_batches_per_cycle and not probe_only:
+                remaining = len(uncategorized) - i
+                print(f"    ⚡ Batch cap reached ({self.max_batches_per_cycle}/cycle) — {remaining} items carry over")
+                break
             batch = uncategorized[i : i + 30]
             ok = self._categorize_batch(batch)
             if ok:
