@@ -236,6 +236,28 @@ def test_get_fallback_model_disabled(ep_config):
     assert m.get_fallback_model(m.endpoints["primary"]) is None
 
 
+def test_get_fallback_model_prefers_healthy_over_higher_priority(temp_db, ep_config, monkeypatch):
+    """A flaky high-priority model loses to a healthy lower-priority one."""
+    from core import model_health as mh
+
+    monkeypatch.setattr(mh, "_db_file", lambda: temp_db)
+    for _ in range(8):
+        mh.record_model_outcome("secondary/model-b", "secondary", ok=False, kind="rate_limited")
+
+    m = EndpointManager(ep_config)
+    result = m.get_fallback_model(m.endpoints["primary"])
+    assert result is not None
+    model_name, ep = result
+    assert (model_name, ep.name) == ("model-b", "secondary")  # only candidate besides primary
+
+    # Now give secondary a second, healthy model: it must outrank the flaky one.
+    ep_config["endpoints"]["secondary"]["models"]["model-c"] = {"max_output_tokens": 512}
+    m2 = EndpointManager(ep_config)
+    result2 = m2.get_fallback_model(m2.endpoints["primary"])
+    assert result2 is not None
+    assert (result2[0], result2[1].name) == ("model-c", "secondary")
+
+
 def test_get_health_summary_shape(manager):
     summary = manager.get_health_summary()
     assert "primary" in summary

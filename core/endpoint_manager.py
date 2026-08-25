@@ -470,14 +470,29 @@ class EndpointManager:
         if not available:
             return None
 
-        fallback_endpoint = available[0]
+        # Gather every concrete candidate (model, endpoint) across the available
+        # endpoints, then let the recency-weighted model-health tracker order
+        # them: healthy models first, flaky/demoted ones last.
+        candidates: list[tuple[str, EndpointConfig]] = []
+        for ep in sorted(available, key=lambda e: e.priority):
+            for key in self.models:
+                if key.startswith(f"{ep.name}/"):
+                    candidates.append((key.split("/", 1)[1], ep))
 
-        for key in self.models:
-            if key.startswith(f"{fallback_endpoint.name}/"):
-                model_name = key.split("/", 1)[1]
-                return model_name, fallback_endpoint
+        if not candidates:
+            return None
 
-        return None
+        try:
+            from core.model_health import rank_candidates
+
+            pairs = [(f"{ep.name}/{m}", ep.priority or 0) for m, ep in candidates]
+            ranked_refs = {ref: i for i, (ref, _p) in enumerate(rank_candidates(pairs))}
+            candidates.sort(key=lambda c: ranked_refs.get(f"{c[1].name}/{c[0]}", len(ranked_refs)))
+        except Exception as e:
+            logger.debug(f"model-health ranking unavailable ({e}); using static priority")
+
+        model_name, fallback_endpoint = candidates[0]
+        return model_name, fallback_endpoint
 
     def get_available_endpoints(self) -> list[EndpointConfig]:
         available = [ep for ep in self.endpoints.values() if ep.health.is_available()]
