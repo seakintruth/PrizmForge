@@ -267,6 +267,17 @@ def _isolate_prizmforge_workspace(tmp_path_factory, monkeypatch):
             except OSError:
                 pass
 
+    # Sweep stray scratch databases that tests/tools sometimes leave in the
+    # repo root. Real databases live under a target project's .PrizmForge/
+    # directory — never loose at the repository top level.
+    for stray in ("agents_test.db", "test.db", "test_agents.db", "agents.db"):
+        candidate = PROJECT_ROOT / stray
+        if candidate.exists():
+            try:
+                candidate.unlink()
+            except OSError:
+                pass
+
 
 @pytest.fixture(scope="function")
 def temp_db(monkeypatch, _isolate_prizmforge_workspace):

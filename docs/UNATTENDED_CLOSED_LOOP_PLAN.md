@@ -356,7 +356,7 @@ Make unattended runs diagnosable without reading a 50k-line console scroll.
 
 1. Gitignore-aware targeting; exclude secrets/cache from agent file lists.
 2. Fill `file_write_log` timestamps; reporter metrics; dump sections.
-3. Docs in `architecture.md` (short subsection + link here).
+3. Docs in `docs/architecture.md` (short subsection + link here).
 
 ---
 
@@ -413,7 +413,7 @@ Path sanitization is **orthogonal** and should stay green throughout.
 }
 ```
 
-Names illustrative — align with `CONFIGURATION.md` when implementing.
+Names illustrative — align with `docs/CONFIGURATION.md` when implementing.
 
 ---
 
@@ -465,5 +465,5 @@ Default recommendations if undecided:
 
 - Update this file when a phase ships (checkboxes + “Done in PR #…”).
 - Fold new FULL DIAGNOSTIC DUMP takeaways into §1.1 (date the snapshot).
-- Link short pointers from `architecture.md` (Error/Observability or new “Unattended verification” bullet) and `tests/LLM_CONTEXT.md` gap matrix when behavior lands.
+- Link short pointers from `docs/architecture.md` (Error/Observability or new “Unattended verification” bullet) and `tests/LLM_CONTEXT.md` gap matrix when behavior lands.
 - Do not duplicate operational test commands here — those stay in `tests/README.md`.

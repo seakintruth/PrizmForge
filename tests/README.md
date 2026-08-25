@@ -260,4 +260,4 @@ The suite already goes past "unit + coverage %": workflow integration, agent/LLM
 - New features: prefer **outer failing test first**, then inner units.
 - When generating tests with an agent: inject focal signatures, fixture inventory, and forbidden hollow patterns; fill bodies inside a fixed skeleton; reject soft asserts in post-process.
 
-Related: repo-level **RMF / RAISE / STIG** expectations live in [`COMPLIANCE.md`](../COMPLIANCE.md) (authorization artifacts are separate from the pytest suite).
+Related: repo-level **RMF / RAISE / STIG** expectations live in [`COMPLIANCE.md`](../docs/COMPLIANCE.md) (authorization artifacts are separate from the pytest suite).

@@ -727,7 +727,7 @@ PYEOF
     echo ""
     echo "Everything else (budgets, background agents, fallbacks) is set to"
     echo "the documented defaults from example_config.json."
-    echo "See CONFIGURATION.md for the complete schema."
+    echo "See docs/CONFIGURATION.md for the complete schema."
   fi
 else
   echo "✅ ${CONFIG_FILE} already exists — keeping it."

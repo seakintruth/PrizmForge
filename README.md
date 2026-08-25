@@ -35,7 +35,7 @@ python main.py
 
 `utils/setup.sh` creates (or reuses) a project-root `.venv` and installs both runtime (`requirements.txt`) and development (`requirements-dev.txt`) dependencies. Use `--force` to recreate the venv or `--python /path/to/python` to select a specific interpreter.
 
-For detailed configuration options see **[CONFIGURATION.md](CONFIGURATION.md)**.  
+For detailed configuration options see **[CONFIGURATION.md](docs/CONFIGURATION.md)**.  
 For the test suite see **[tests/README.md](tests/README.md)** (and the architectural context in **[tests/LLM_CONTEXT.md](tests/LLM_CONTEXT.md)**).
 
 ## Architecture
@@ -305,7 +305,7 @@ High-priority pure modules that gate the governed edit path are listed in `tests
 
 ## Compliance & authorization
 
-Program RMF / Navy RAISE / DISA ASD STIG-oriented requirements and artifact expectations: **[COMPLIANCE.md](COMPLIANCE.md)**.
+Program RMF / Navy RAISE / DISA ASD STIG-oriented requirements and artifact expectations: **[COMPLIANCE.md](docs/COMPLIANCE.md)**.
 
 
 ## Project export & indexes
@@ -334,7 +334,7 @@ Does **not** run tests. For the normal gate use `./utils/run_tests.sh --normal -
 
 ## Configuration
 
-See **[CONFIGURATION.md](CONFIGURATION.md)** for the full `config.json` schema. Template: `example_config.json`.
+See **[CONFIGURATION.md](docs/CONFIGURATION.md)** for the full `config.json` schema. Template: `example_config.json`.
 
 
 ## CLI usage examples
@@ -422,7 +422,7 @@ Mock responses can be scripted under `llm.mock_responses` (string or list queue 
 
 PrizmForge is under active development. The governed editing system represents the current production methodology for safe autonomous modifications.
 
-For detailed architecture, see **[architecture.md](architecture.md)**.
+For detailed architecture, see **[architecture.md](docs/architecture.md)**.
 
 ## License
 

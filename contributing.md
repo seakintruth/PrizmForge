@@ -1165,7 +1165,7 @@ Check out example extensions:
 ### Resources
 
 - **Architecture details**: See [ARCHITECTURE.md](ARCHITECTURE.md)
-- **Configuration help**: See [CONFIGURATION.md](CONFIGURATION.md)
+- **Configuration help**: See [CONFIGURATION.md](docs/CONFIGURATION.md)
 - **Debugging help**: See [TROUBLESHOOTING.md](TROUBLESHOOTING.md)
 
 ### Community
