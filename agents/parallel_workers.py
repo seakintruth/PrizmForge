@@ -4,6 +4,7 @@ import queue
 import random
 import sqlite3
 import threading
+import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -544,6 +545,9 @@ class BackgroundAgentPool:
                 if attempt > 1:
                     print(f"    {agent_name}: Retry {attempt}/{max_attempts} with stricter prompt")
 
+                if attempt > 1:
+                    time.sleep(2)  # Brief backoff between format-retries
+
                 response = call_agent(
                     agent_name,
                     full_prompt,
@@ -553,7 +557,12 @@ class BackgroundAgentPool:
                 )
 
                 if not response:
-                    continue
+                    # Empty response = endpoint/transport problem, not a JSON
+                    # formatting problem. Stricter prompts cannot help — soak
+                    # data showed 147 events burning all 3 attempts this way.
+                    print(f"    {agent_name}: Empty response (endpoint issue) — skipping format retries")
+                    time.sleep(20)
+                    break
 
                 cleaned_response = clean_llm_response(response, agent_name)
 

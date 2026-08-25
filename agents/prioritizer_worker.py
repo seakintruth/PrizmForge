@@ -69,6 +69,13 @@ class PrioritizerWorker:
         self.prioritization_interval = 20  # Check every 20s
         self.processing_cycle_time = 0  # Time of last full cycle
 
+        # Circuit breaker (soak P2: endpoint outages turned each cycle into a
+        # burst of failing batch calls, ~1,071 errors in 12h).
+        self.consecutive_batch_failures = 0
+        self.max_consecutive_batch_failures = 3
+        self.circuit_open_until = 0.0
+        self.circuit_cooldown_seconds = 300
+
     def start(self, task_id: str):
         """Start the prioritizer worker"""
         if self.running:
@@ -225,6 +232,13 @@ class PrioritizerWorker:
         Phase 4: Cross-category ranking
         Phase 5: Post to orchestrator
         """
+        # Circuit breaker: skip the whole cycle while cooling down after
+        # repeated batch failures (endpoint outage).
+        if time.time() < self.circuit_open_until:
+            remaining = int(self.circuit_open_until - time.time())
+            print(f"    ⚡ Prioritizer circuit open — cooldown {remaining}s remaining")
+            return
+
         # Get all feedback
         all_feedback = self._get_all_feedback()
 
@@ -355,10 +369,27 @@ class PrioritizerWorker:
 
         print(f"    → Phase 1: Categorizing {len(uncategorized)} items (batches of 30)")
 
-        # Process in batches of 30
+        # Process in batches of 30, with a circuit breaker: after N
+        # consecutive failed batches (endpoint outage), stop hammering and
+        # open a cooldown before the next cycle may retry.
         for i in range(0, len(uncategorized), 30):
             batch = uncategorized[i : i + 30]
-            self._categorize_batch(batch)
+            ok = self._categorize_batch(batch)
+            if ok:
+                self.consecutive_batch_failures = 0
+            else:
+                self.consecutive_batch_failures += 1
+                backoff = min(5 * (2 ** (self.consecutive_batch_failures - 1)), 60)
+                print(
+                    f"    ⚡ Categorization failed ({self.consecutive_batch_failures}"
+                    f"/{self.max_consecutive_batch_failures} consecutive) — backing off {backoff}s"
+                )
+                time.sleep(backoff)
+                if self.consecutive_batch_failures >= self.max_consecutive_batch_failures:
+                    self.circuit_open_until = time.time() + self.circuit_cooldown_seconds
+                    remaining_batches = (len(uncategorized) - i - 30) // 30 + (1 if (len(uncategorized) - i - 30) % 30 else 0)
+                    print(f"    ⚡ Circuit OPEN for {self.circuit_cooldown_seconds}s — aborting {remaining_batches} remaining batch(es)")
+                    break
 
         print("    ✓ Phase 1: Complete")
         return items
@@ -415,7 +446,7 @@ Respond with JSON ONLY:
             )
 
             if not response:
-                return
+                return False
 
             data = parse_json_response(
                 response,
@@ -425,9 +456,13 @@ Respond with JSON ONLY:
 
             if data and "categorized" in data:
                 self._update_categories(data["categorized"])
+                return True
+
+            return False
 
         except Exception as e:
             print(f"    ⚠️  Categorization batch error: {e}")
+            return False
 
     def _update_categories(self, categorized: list[dict]):
         """Update categories in database (feedback rows only)."""

@@ -5,6 +5,9 @@
   "git_auto_commit": false,
   "default_iteration_minutes": 5,
   "min_iterations_before_complete": 3,
+  "finish_gate": {
+    "high_grace_iterations": 3
+  },
   "background_agents_enabled": true,
   "default_model": "gemini/gemini-3.1-pro-preview",
   "cli_mode": {

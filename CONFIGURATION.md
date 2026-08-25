@@ -31,6 +31,7 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | `git_auto_commit` | bool | `false` | Auto-commit after successful materialize (use with care) |
 | `default_iteration_minutes` | number | `5` | Time box per orchestrator iteration |
 | `min_iterations_before_complete` | int | `3` | Orchestrator should not complete before this many turns |
+| `finish_gate` | object | `{"high_grace_iterations": 3}` | Completion gating. CRITICAL feedback always blocks task completion; HIGH items stop blocking after the orchestrator has requested completion this many consecutive turns with HIGHs still pending (background reviewers keep the HIGH backlog non-empty indefinitely otherwise). |
 | `background_agents_enabled` | bool | `true` | Product default: background analysis pool on |
 | `default_model` | string | optional | Fallback model reference (bare model id or `endpoint/model`) when no agent preference applies |
 | `default_endpoint` | string | optional | Name of default entry in `endpoints` |
@@ -85,6 +86,13 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | `description` | string | Label |
 | `priority` | int | Lower = preferred on ties (convention) |
 | `rate_limit_per_minute` | number | Soft client-side limit |
+| `models` | map of model id → spec | Per-model settings: `max_context_tokens`, `max_output_tokens`, `temperature`, `description` |
+
+Models without `max_context_tokens` use a 100k default (applied silently when the
+model reference is known — e.g. entries created by `utils/setup.sh`); the value
+caps how much conversation/file context agents receive. Genuinely unknown model
+references log an `Unknown model` warning every lookup, which usually means a
+config typo.
 
 ---
 
