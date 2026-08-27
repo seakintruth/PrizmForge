@@ -24,6 +24,10 @@ try:
 except ImportError:
     sqlite3 = None  # type: ignore
 
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 # Set by --db; when empty, fall back to core.db.get_db_path() or CWD/.PrizmForge.
 _DB_PATH_OVERRIDE: str | None = None
 
@@ -43,6 +47,8 @@ def _db_file() -> str:
 def _connect_ro() -> sqlite3.Connection:
     """Open the DB read-only (WAL-aware); never writes or blocks the live loop."""
     path = _db_file()
+    if not Path(path).is_file():
+        raise SystemExit(f"❌ Database not found: {path}\n   Pass --db /path/to/project/.PrizmForge/agents.db")
     conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
     conn.row_factory = sqlite3.Row
     return conn
