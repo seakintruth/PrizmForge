@@ -23,56 +23,90 @@ def _compute_hash(content: str) -> str:
     return hashlib.md5(content.encode(), usedforsecurity=False).hexdigest()
 
 
-def initialize_file_lines(file_path: str, content: str) -> dict[str, Any]:
+def _get_or_create_file_id_short(conn, target_file_path: str) -> int:
+    """File-id lookup that never turns the caller's connection into a writer.
+
+    ``materialize_proposal`` captures before-state on its main connection and
+    then calls ``apply_edit_proposal`` (which writes on its own connection).
+    If this lookup INSERTs on the main connection it holds a RESERVED lock
+    during the apply phase, and the second writer busy-waits ~30s before
+    dying with SQLITE_BUSY. Allocate any missing row on a short-lived
+    connection (committed immediately) so the main connection stays read-only.
+    """
+    row = conn.execute(
+        "SELECT file_id FROM files WHERE file_path = ? AND is_deleted = 0",
+        (target_file_path,),
+    ).fetchone()
+    if row:
+        return row[0]
+    with get_db_connection() as short:
+        cursor = short.execute(
+            """INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
+               VALUES (?, 1, 0, 0)""",
+            (target_file_path,),
+        )
+        return cursor.lastrowid
+
+
+def initialize_file_lines(file_path: str, content: str, conn=None) -> dict[str, Any]:
     """
     Initialize a file in the governed editing system with line-level GUIDs.
 
     This should be called during project indexing to populate the files + file_lines tables.
+
+    Pass the caller's open connection via ``conn`` when the caller is already
+    inside a write transaction: opening a second writer connection while one
+    already holds a RESERVED lock busy-waits ~30s then dies with SQLITE_BUSY.
     """
     try:
+        if conn is not None:
+            return _initialize_lines_impl(conn, file_path, content)
         with get_db_connection() as conn:
-            # 1. Get or create file record
-            cursor = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,))
-            row = cursor.fetchone()
-
-            if row:
-                file_id = row["file_id"] if hasattr(row, "keys") else row[0]
-                # Delete existing lines (we're re-initializing)
-                conn.execute("DELETE FROM file_lines WHERE file_id = ?", (file_id,))
-            else:
-                # Create new file record
-                cursor = conn.execute(
-                    """
-                    INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
-                    VALUES (?, 1, 0, 1)
-                """,
-                    (file_path,),
-                )
-                file_id = cursor.lastrowid
-
-            # 2. Split content into lines and create line records
-            lines = content.split("\n")
-            initial_gap = 1024.0
-
-            for i, line_content in enumerate(lines):
-                line_guid = str(uuid4())
-                sort_order = (i + 1) * initial_gap
-                content_hash = _compute_hash(line_content)
-
-                conn.execute(
-                    """
-                    INSERT INTO file_lines
-                    (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
-                    VALUES (?, ?, ?, ?, ?, 1, 0)
-                """,
-                    (line_guid, file_id, sort_order, line_content, content_hash),
-                )
-
-            return {"status": "success", "file_id": file_id, "line_count": len(lines)}
-
+            return _initialize_lines_impl(conn, file_path, content)
     except Exception as e:
         log_error("file_editing", "initialize", "HIGH", str(e), file_path=file_path)
         return {"status": "error", "message": str(e)}
+
+
+def _initialize_lines_impl(conn, file_path: str, content: str) -> dict[str, Any]:
+    # 1. Get or create file record
+    cursor = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,))
+    row = cursor.fetchone()
+
+    if row:
+        file_id = row["file_id"] if hasattr(row, "keys") else row[0]
+        # Delete existing lines (we're re-initializing)
+        conn.execute("DELETE FROM file_lines WHERE file_id = ?", (file_id,))
+    else:
+        # Create new file record
+        cursor = conn.execute(
+            """
+            INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
+            VALUES (?, 1, 0, 1)
+        """,
+            (file_path,),
+        )
+        file_id = cursor.lastrowid
+
+    # 2. Split content into lines and create line records
+    lines = content.split("\n")
+    initial_gap = 1024.0
+
+    for i, line_content in enumerate(lines):
+        line_guid = str(uuid4())
+        sort_order = (i + 1) * initial_gap
+        content_hash = _compute_hash(line_content)
+
+        conn.execute(
+            """
+            INSERT INTO file_lines
+            (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
+            VALUES (?, ?, ?, ?, ?, 1, 0)
+        """,
+            (line_guid, file_id, sort_order, line_content, content_hash),
+        )
+
+    return {"status": "success", "file_id": file_id, "line_count": len(lines)}
 
 
 def _resolve_contained_path(file_path: str, project_dir: Path) -> Path:
@@ -196,7 +230,6 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     """
     from core.config import get_config
     from file_editing.edit_payload import EditPayload
-    from workflow.proposal_builder import _get_or_create_file_id
 
     with get_db_connection() as conn:
         proposal = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
@@ -225,7 +258,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
 
         before_state: dict[str, dict] = {}
         for path in affected_paths:
-            fid = _get_or_create_file_id(conn, path)
+            fid = _get_or_create_file_id_short(conn, path)
             content = reconstruct_file_content(conn, fid) or ""
             before_state[path] = {
                 "file_id": fid,
@@ -353,18 +386,11 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                         f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
                     )
                     if not git_result.get("ok") and git_result.get("attempted"):
-                        git_failed = git_result
-                        log_error(
-                            "file_editing",
-                            "git_commit",
-                            "HIGH",
-                            f"git {git_result.get('stage', '?')} failed (code={git_result.get('code')}): " + (git_result.get("stderr") or "")[:500],
-                            proposal_id=proposal_id,
-                            file_path=rel_path,
-                            task_id=task_id,
-                        )
-                    else:
-                        git_failed = None
+                        # Keep the FIRST failure: a later file's success must
+                        # never clear an earlier hook failure (multi-file
+                        # proposals carry the failure to the caller).
+                        if git_failed is None:
+                            git_failed = git_result
             else:
                 conn.execute(
                     "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
@@ -381,10 +407,31 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         invalidate_other_proposals(conn, proposal_id, affected)
 
         overall_success = all(r.get("status") == "success" for r in write_results)
-        return {
-            "status": "success" if overall_success else "error",
-            "proposal_id": proposal_id,
-            "materialized_files": list(affected_paths),
-            "results": write_results,
-            "git_failed": git_failed,
-        }
+        if not overall_success:
+            status = "error"
+        elif git_failed is not None:
+            status = "git_failed"
+        else:
+            status = "success"
+
+    # Log the hook failure AFTER the write transaction has committed: a
+    # log_error inside the open transaction hits "database is locked" and its
+    # errors row is silently dropped, breaking the closed loop.
+    if git_failed is not None:
+        log_error(
+            "CRITICAL",
+            "file_editing",
+            "git_commit",
+            f"git {git_failed.get('stage', '?')} failed (code={git_failed.get('code')}): " + (git_failed.get("stderr") or "")[:500],
+            proposal_id=proposal_id,
+            file_path=git_failed.get("file_path"),
+            task_id=task_id,
+        )
+
+    return {
+        "status": status,
+        "proposal_id": proposal_id,
+        "materialized_files": list(affected_paths),
+        "results": write_results,
+        "git_failed": git_failed,
+    }

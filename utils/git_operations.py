@@ -5,6 +5,13 @@ from pathlib import Path
 
 from core.config import get_config
 
+# Hook budget: this repo's own pre-commit (black/isort/ruff/flake8/mypy)
+# routinely exceeds a 10s shell default. A short timeout would make every
+# real hook run report stage=timeout with empty stderr and hide the cause.
+_GIT_ADD_TIMEOUT_S = 120
+_GIT_COMMIT_TIMEOUT_S = 120
+_GIT_HASH_TIMEOUT_S = 5
+
 
 def git_init():
     """Initialize git repo"""
@@ -58,14 +65,14 @@ def git_commit(file_path: str, message: str) -> dict:
         }
 
     try:
-        # Add file
+        # Add file (-- guards against a path that begins with a flag)
         try:
             subprocess.run(
-                ["git", "add", file_path],
+                ["git", "add", "--", file_path],
                 cwd=project_dir,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=_GIT_ADD_TIMEOUT_S,
                 check=True,
             )
         except subprocess.CalledProcessError as e:
@@ -73,13 +80,13 @@ def git_commit(file_path: str, message: str) -> dict:
         except subprocess.TimeoutExpired:
             return _failure("timeout", None)
 
-        # Commit
+        # Commit (pre-commit hooks run inside this step)
         result = subprocess.run(
             ["git", "commit", "-m", message],
             cwd=project_dir,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=_GIT_COMMIT_TIMEOUT_S,
         )
 
         if result.returncode != 0:
@@ -92,7 +99,7 @@ def git_commit(file_path: str, message: str) -> dict:
             capture_output=True,
             text=True,
             check=True,
-            timeout=5,
+            timeout=_GIT_HASH_TIMEOUT_S,
         )
         commit_hash = hash_result.stdout.strip()
         print(f"  📦 Git commit: {commit_hash[:7]}")

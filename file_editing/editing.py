@@ -410,7 +410,7 @@ def apply_find_replace(conn: sqlite3.Connection, file_id: int, op) -> dict[str, 
             }
 
         # Re-initialize line storage with the new content
-        init_result = initialize_file_lines(file_path, new_content)
+        init_result = initialize_file_lines(file_path, new_content, conn=conn)
         if init_result.get("status") != "success":
             return {
                 "status": "error",
@@ -451,7 +451,7 @@ def apply_full_replace(conn: sqlite3.Connection, file_id: int, op) -> dict[str, 
     if not safety.get("ok"):
         return {"status": "error", "message": safety.get("message", "content rejected")}
 
-    init_result = initialize_file_lines(file_path, new_content)
+    init_result = initialize_file_lines(file_path, new_content, conn=conn)
     if init_result.get("status") != "success":
         return {
             "status": "error",
@@ -502,7 +502,7 @@ def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
         if original.endswith("\n") and not new_content.endswith("\n"):
             new_content += "\n"
 
-        init_result = initialize_file_lines(file_path, new_content)
+        init_result = initialize_file_lines(file_path, new_content, conn=conn)
         if init_result.get("status") != "success":
             return {
                 "status": "error",
@@ -661,7 +661,7 @@ def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> dict[str, A
     if not safety.get("ok"):
         return {"status": "error", "message": safety.get("message", "content rejected")}
 
-    init_result = initialize_file_lines(file_path, content if content is not None else "")
+    init_result = initialize_file_lines(file_path, content if content is not None else "", conn=conn)
     if init_result.get("status") != "success":
         return {
             "status": "error",
