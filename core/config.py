@@ -9,29 +9,33 @@ _config_cache = None
 _prompts_cache = None
 
 
-def normalize_path(path_str: str) -> Path:
+def get_package_root() -> Path:
+    """PrizmForge repository root: the directory that contains the ``core`` package."""
+    return Path(__file__).resolve().parent.parent
+
+
+def normalize_path(path_str: str, base: Path | None = None) -> Path:
     """
     Normalize a path string to a Path object, handling:
     - Absolute paths (Windows and Unix)
     - Relative paths
     - Forward and backslashes
     - User home expansion (~)
+
+    Relative paths resolve against ``base`` when given, otherwise against
+    the PrizmForge package root — never against the process cwd.
     """
     if not path_str:
         return Path(".")
 
-    # Expand user home directory
     path_str = os.path.expanduser(path_str)
-
-    # Convert to Path object (handles forward/backslashes automatically)
     path = Path(path_str)
 
-    # If absolute, use as-is
     if path.is_absolute():
         return path.resolve()
 
-    # If relative, resolve relative to current working directory
-    return path.resolve()
+    anchor = Path(base) if base is not None else get_package_root()
+    return (anchor / path).resolve()
 
 
 def find_config_file(filename: str) -> Path:
@@ -39,32 +43,27 @@ def find_config_file(filename: str) -> Path:
     Find config file by searching:
     1. Current working directory
     2. Parent directory (one level up)
-    3. Script's directory
-    4. Script's parent directory
+    3. PrizmForge package root (parent of core/)
+    4. Package root's parent
     """
-    # Try current working directory
     cwd_path = Path.cwd() / filename
     if cwd_path.exists():
         return cwd_path
 
-    # Try parent of current working directory
     parent_path = Path.cwd().parent / filename
     if parent_path.exists():
         return parent_path
 
-    # Try script's directory (go up from core/ to root)
-    script_dir = Path(__file__).parent.parent
+    script_dir = get_package_root()
     script_path = script_dir / filename
     if script_path.exists():
         return script_path
 
-    # Try one level up from script
     script_parent = script_dir.parent / filename
     if script_parent.exists():
         return script_parent
 
-    # Default to current directory
-    return Path.cwd() / filename
+    return script_dir / filename
 
 
 def load_config(config_path: str | None = None) -> dict[str, Any]:
@@ -79,25 +78,21 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
             f"config.json not found. Searched:\n"
             f"  - {Path.cwd() / 'config.json'}\n"
             f"  - {Path.cwd().parent / 'config.json'}\n"
-            f"  - {Path(__file__).parent.parent / 'config.json'}\n"
+            f"  - {get_package_root() / 'config.json'}\n"
             f"\nPlease create config.json in the root directory."
         )
 
     with open(config_file, encoding="utf-8") as f:
         config = json.load(f)
 
-    # Normalize project_directory path
-    if "project_directory" in config:
-        config["project_directory"] = str(normalize_path(config["project_directory"]))
+    config_dir = config_file.parent.resolve()
 
-    # Load API keys from same directory as config
-    config_dir = config_file.parent
+    # Relative project_directory is anchored to the config file, not cwd.
+    if "project_directory" in config:
+        config["project_directory"] = str(normalize_path(config["project_directory"], base=config_dir))
+
     api_key_file = config_dir / "api_key.json"
 
-    # api_key.json uses the structured form:
-    #   {"keys": {"<endpoint_name>": {"api_key": "...", ...}}}
-    # Secrets are NOT merged into the config namespace; EndpointManager
-    # resolves them per-endpoint via get_api_key().
     try:
         with open(api_key_file, encoding="utf-8") as f:
             api_data = json.load(f)
@@ -107,7 +102,6 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
         else:
             raise ValueError('api_key.json must use the structured form: {"keys": {"<endpoint_name>": {"api_key": "..."}}}. See example_api_key.json.')
     except FileNotFoundError:
-        # Try alternate location
         alt_api_key = find_config_file("api_key.json")
         if alt_api_key.exists():
             with open(alt_api_key, encoding="utf-8") as f:
@@ -122,7 +116,6 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
         else:
             config["_api_keys"] = {}
 
-    # Store config directory for reference
     config["_config_dir"] = str(config_dir)
 
     validate_config(config)
@@ -133,12 +126,12 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
 def get_repo_root() -> Path:
     """
     Repository root for containment: directory that holds config.json
-    (or CWD fallback when config has not been loaded yet).
+    (or the package root when that file is missing).
     """
-    try:
-        return find_config_file("config.json").parent.resolve()
-    except Exception:
-        return Path.cwd().resolve()
+    found = find_config_file("config.json")
+    if found.exists():
+        return found.parent.resolve()
+    return get_package_root()
 
 
 def ensure_project_directory(config: dict[str, Any] | None = None) -> Path:
@@ -149,10 +142,9 @@ def ensure_project_directory(config: dict[str, Any] | None = None) -> Path:
     if config is None:
         config = get_config()
     raw = config.get("project_directory") or "./project"
-    repo = get_repo_root()
     path = Path(str(raw)).expanduser()
     if not path.is_absolute():
-        path = (repo / path).resolve()
+        path = normalize_path(str(raw), base=get_repo_root())
     else:
         path = path.resolve()
 
@@ -167,16 +159,14 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
     """
     errors = []
 
-    # project_directory is required for path containment and file operations
     pd = config.get("project_directory")
     if not pd or not isinstance(pd, str):
         errors.append("project_directory is required and must be a non-empty string")
     else:
         try:
-            repo = get_repo_root()
             path = Path(pd).expanduser()
             if not path.is_absolute():
-                path = (repo / path).resolve()
+                path = normalize_path(pd, base=get_repo_root())
             else:
                 path = path.resolve()
 
@@ -184,7 +174,6 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
         except Exception as e:
             errors.append(f"project_directory could not be validated: {e}")
 
-    # file_editing section: accept legacy method or new multi-mode keys
     fe = config.get("file_editing")
     if fe is not None and not isinstance(fe, dict):
         errors.append("file_editing must be an object/dict when present")
@@ -232,15 +221,10 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
                 if not isinstance(be, list) or not all(isinstance(x, str) for x in be):
                     errors.append("content_safety.blocked_extensions must be a list of strings")
 
-    # ------------------------------------------------------------------
-    # Endpoints & models: N endpoints x M models per endpoint (dict form).
-    # Every reference elsewhere (default_model, agent_model_preferences,
-    # resource_controller.model_downgrades) uses 'endpoint/model'.
-    # ------------------------------------------------------------------
     endpoints = config.get("endpoints")
     endpoint_names: set[str] = set()
-    model_keys: set[str] = set()  # full "endpoint/model" refs
-    bare_model_names: dict[str, list[str]] = {}  # model -> owning endpoints
+    model_keys: set[str] = set()
+    bare_model_names: dict[str, list[str]] = {}
 
     if endpoints is not None and not isinstance(endpoints, dict):
         errors.append("endpoints must be an object/dict mapping name → endpoint settings")
@@ -269,35 +253,28 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
                 if m_cfg is not None and not isinstance(m_cfg, dict):
                     errors.append(f"endpoints.{ep_name}.models.{m_name} must be an object when present")
 
-        # default_endpoint must point at a real endpoint
         de = config.get("default_endpoint")
         if de and de not in endpoint_names:
             errors.append(f"default_endpoint '{de}' does not match any entry in endpoints ({sorted(endpoint_names)})")
 
-        # Model reference helper: a leading 'endpoint/' prefix only counts when
-        # it names a real endpoint — model IDs may themselves contain slashes.
         def _ref_ok(ref: str) -> bool:
             if "/" in ref:
                 head, _rest = ref.split("/", 1)
                 if head in endpoint_names:
                     return ref in model_keys
-                # No known endpoint prefix: treat the whole string as an ID.
-                # It matches if any registered key ends with '/<ref>'.
                 return any(k.endswith(f"/{ref}") for k in model_keys)
             return len(bare_model_names.get(ref, [])) >= 1
 
-        # default_model: accept full ref or bare ID; bare must resolve unambiguously
         dm = config.get("default_model")
         if dm:
             dm_head = dm.split("/", 1)[0] if "/" in dm else None
             if not _ref_ok(dm):
-                errors.append(f"default_model '{dm}' is not a known model. Known: {sorted(model_keys)[:20]}{'…' if len(model_keys) > 20 else ''}")
+                errors.append(f"default_model '{dm}' is not a known model. Known: {sorted(model_keys)[:20]}{'\u2026' if len(model_keys) > 20 else ''}")
             elif dm_head is None and len(bare_model_names[dm]) > 1:
                 errors.append(
                     f"default_model '{dm}' is ambiguous — it exists on multiple endpoints ({bare_model_names[dm]}). Use the full 'endpoint/model' form."
                 )
 
-        # agent_model_preferences values follow the same rule
         prefs = config.get("agent_model_preferences") or {}
         if not isinstance(prefs, dict):
             errors.append("agent_model_preferences must be an object/dict when present")
@@ -308,7 +285,6 @@ def validate_config(config: dict[str, Any]) -> None:  # noqa: C901
                 if not _ref_ok(ref):
                     errors.append(f"agent_model_preferences.{agent}: unknown or ambiguous model reference '{ref}'")
 
-        # resource_controller.model_downgrades values too
         downgrades = ((config.get("resource_controller") or {}).get("model_downgrades")) or {}
         stack = [downgrades]
         while stack:
@@ -333,7 +309,7 @@ def load_agent_prompts() -> dict[str, Any]:
             f"agent_prompts.json not found. Searched:\n"
             f"  - {Path.cwd() / 'agent_prompts.json'}\n"
             f"  - {Path.cwd().parent / 'agent_prompts.json'}\n"
-            f"  - {Path(__file__).parent.parent / 'agent_prompts.json'}\n"
+            f"  - {get_package_root() / 'agent_prompts.json'}\n"
             f"\nPlease ensure agent_prompts.json is in the same directory as config.json"
         )
 
@@ -362,7 +338,7 @@ def get_agent_prompts() -> dict[str, Any]:
 def get_config_dir() -> Path:
     """Get directory where config files are located"""
     config = get_config()
-    return Path(config.get("_config_dir", Path.cwd()))
+    return Path(config.get("_config_dir", get_package_root()))
 
 
 def reload_config():

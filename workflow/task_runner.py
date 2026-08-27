@@ -2,8 +2,9 @@
 
 import json
 import time
+from datetime import datetime
 
-from agents.base import call_agent
+from agents.base import _last_call_http_latency, call_agent
 from agents.orchestrator import call_orchestrator
 from agents.parallel_workers import get_agent_pool
 from core.config import get_config
@@ -16,6 +17,163 @@ from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER
 from workflow.path_targets import extract_files_needed_from_text, sanitize_path_token
 
 # Governed editing imports
+
+# Active-work tracking: accumulates HTTP latency (seconds) across call_agent
+# invocations within a single iteration. Rate-limit sleeps and DB lock
+# backoffs are excluded so iteration timeouts count only real work.
+_active_work_seconds: float = 0.0
+
+
+def _edit_mode_settings(config: dict) -> tuple[list | None, list, int]:
+    """Multi-mode editing config (t-shirt size + fallback), shared by dispatch sites."""
+    fe_cfg = config.get("file_editing", {}) or {}
+    # Legacy single-method setting is treated as a soft preference only
+    legacy_method = fe_cfg.get("method", "guid_sloc")
+    preferred_modes = fe_cfg.get("preferred_modes") or (
+        [legacy_method] if legacy_method in ("guid_sloc", "guid", "full_replace", "planned_diff", "find_replace") else None
+    )
+    # Normalize legacy names
+    if preferred_modes:
+        preferred_modes = [("guid" if m in ("guid_sloc", "guid") else "diff" if m in ("planned_diff", "diff") else m) for m in preferred_modes]
+    fallback_order = fe_cfg.get("fallback_order") or list(DEFAULT_FALLBACK_ORDER)
+    small_file_threshold = int(fe_cfg.get("small_file_threshold_lines", 180))
+    return preferred_modes, fallback_order, small_file_threshold
+
+
+def _inject_seed_feedback(task_id: str, user_command: str) -> None:
+    """Insert the active seed/task description as HIGH feedback so the
+    prioritizer/orchestrator/redirect machinery has concrete work from turn 1.
+
+    Without this, a cold-start run has backlog=0 and the orchestrator rationally
+    chooses 'background', orphaning the seed task until reviewers happen to post
+    findings. Idempotent per (task_id, category='seed_task').
+    """
+    if not user_command or not user_command.strip():
+        return
+    try:
+        with get_db_connection() as conn:
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM agent_feedback WHERE task_id = ? AND category = 'seed_task'",
+                (task_id,),
+            ).fetchone()[0]
+            if existing:
+                return
+            conn.execute(
+                """
+                INSERT INTO agent_feedback
+                (agent_name, file_path, priority, category, message, suggestion,
+                 task_id, file_event_id, timestamp)
+                VALUES ('system', NULL, 'HIGH', 'seed_task', ?, NULL, ?, ?, ?)
+                """,
+                (
+                    f"[SEED TASK] {user_command.strip()[:1000]}",
+                    task_id,
+                    f"seed-{task_id}",
+                    datetime.now().isoformat(),
+                ),
+            )
+            print(f"🌱 Seed task registered as feedback item (task {task_id})")
+    except Exception as e:
+        print(f"   ⚠️  Seed feedback injection skipped: {e}")
+
+
+def _dispatch_developer(
+    *,
+    task_id: str,
+    instructions: str,
+    user_command: str,
+    decision: dict,
+    conversation_context: list,
+    model_choice: str | None,
+    progress: dict,
+    current_turn: int,
+    requested_files: list[str] | None = None,
+) -> dict:
+    """Single developer dispatch point honoring ``developer.implementation``.
+
+    Shared by the orchestrator 'developer' path and the BACKLOG_PROCESSING
+    redirect so the shell/edit_payload switch applies everywhere. Returns the
+    mutation result dict; callers append it to conversation_context.
+    """
+    config = get_config()
+    dev_impl = (config.get("developer", {}) or {}).get("implementation", "edit_payload")
+    if dev_impl == "shell":
+        from workflow.shell_developer import run_shell_developer_turn
+
+        mut = run_shell_developer_turn(
+            task_id=task_id,
+            instructions=instructions or user_command,
+            user_command=user_command,
+            conversation_context=conversation_context,
+            model_choice=model_choice,
+            progress=progress,
+            decision=decision,
+            current_turn=current_turn,
+        )
+        if mut.get("status") not in ("success", "rejected"):
+            print(f"   ⚠️  Shell developer status: {mut.get('status')} {mut.get('message', '')}")
+        return mut
+
+    preferred_modes, fallback_order, small_file_threshold = _edit_mode_settings(config)
+    mut = run_developer_mutation(
+        task_id=task_id,
+        instructions=instructions or user_command,
+        user_command=user_command,
+        requested_files=requested_files or [],
+        conversation_context=conversation_context,
+        model_choice=model_choice,
+        preferred_modes=preferred_modes,
+        fallback_order=fallback_order,
+        small_file_threshold=small_file_threshold,
+        progress=progress,
+        decision=decision,
+        current_turn=current_turn,
+    )
+    if mut.get("status") not in ("success", "rejected"):
+        print(f"   ⚠️  Developer mutation status: {mut.get('status')} {mut.get('message', '')}")
+    return mut
+
+
+def _finish_gate_blocked(
+    critical_count: int,
+    high_pending: int,
+    highs_pending_turns: int,
+    grace: int,
+) -> tuple[bool, str]:
+    """Decide whether a FINISH decision must be deferred.
+
+    CRITICAL items always block. HIGH items block only until the orchestrator
+    has requested completion `grace` consecutive turns with them still pending
+    — background reviewers keep the HIGH backlog non-empty indefinitely, which
+    in the 12h soak prevented every task from ever closing.
+    """
+    if critical_count > 0:
+        return True, f"{critical_count} CRITICAL item(s) remain"
+    if high_pending > 0 and highs_pending_turns < grace:
+        return True, f"{high_pending} HIGH item(s) pending (grace {highs_pending_turns}/{grace})"
+    return False, ""
+
+
+def _finalize_task(task_id: str, progress: dict, reason: str) -> None:
+    """Write a terminal status for a task.
+
+    `completed` when the task produced file changes, `stalled` otherwise.
+    Never downgrades an already-terminal task (e.g. completed via FINISH).
+    """
+    status = "completed" if progress.get("files_modified", 0) > 0 else "stalled"
+    result = f"{reason}: files_modified={progress.get('files_modified', 0)}"
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                """
+                UPDATE tasks SET status = ?, completed_at = ?, result = ?
+                WHERE id = ? AND status = 'in_progress'
+            """,
+                (status, datetime.now().isoformat(), result, task_id),
+            )
+        print(f"📌 Task {task_id} finalized as '{status}' ({result})")
+    except Exception as e:
+        print(f"   ⚠️  Failed to finalize task {task_id}: {e}")
 
 
 def run_task_cycle(  # noqa: C901
@@ -33,18 +191,7 @@ def run_task_cycle(  # noqa: C901
     min_iterations = config.get("min_iterations_before_complete", 3)
     background_enabled = config.get("background_agents_enabled", True)
 
-    # Multi-mode editing config (t-shirt size + fallback)
-    fe_cfg = config.get("file_editing", {}) or {}
-    # Legacy single-method setting is treated as a soft preference only
-    legacy_method = fe_cfg.get("method", "guid_sloc")
-    preferred_modes = fe_cfg.get("preferred_modes") or (
-        [legacy_method] if legacy_method in ("guid_sloc", "guid", "full_replace", "planned_diff", "find_replace") else None
-    )
-    # Normalize legacy names
-    if preferred_modes:
-        preferred_modes = [("guid" if m in ("guid_sloc", "guid") else "diff" if m in ("planned_diff", "diff") else m) for m in preferred_modes]
-    fallback_order = fe_cfg.get("fallback_order") or list(DEFAULT_FALLBACK_ORDER)
-    small_file_threshold = int(fe_cfg.get("small_file_threshold_lines", 180))
+    preferred_modes, fallback_order, _small_file_threshold = _edit_mode_settings(config)
 
     print(f"\n{'=' * 60}")
     print(f"🚀 Task: {task_id}")
@@ -53,6 +200,7 @@ def run_task_cycle(  # noqa: C901
     print(f"{'=' * 60}\n")
 
     create_task(task_id, user_command)
+    _inject_seed_feedback(task_id, user_command)
     start_time = time.time()
 
     # Backlog hygiene: age out old LOW items and cap unbounded growth
@@ -86,6 +234,7 @@ def run_task_cycle(  # noqa: C901
         "fallback_successes": 0,
         "materialize_successes": 0,
     }
+    finish_grace_turns = 0
 
     try:
         max_orchestrator_retries = 3
@@ -94,15 +243,20 @@ def run_task_cycle(  # noqa: C901
             current_turn += 1
             iteration_start = time.time()
             iteration_end = iteration_start + (time_box_minutes * 60)
+            active_budget = time_box_minutes * 60
 
             orchestrator_attempts = 0
             decision = None
+
+            # Reset active-work counter for this iteration
+            global _active_work_seconds
+            _active_work_seconds = 0.0
 
             elapsed_total = (time.time() - start_time) / 60
             time_remaining = (iteration_end - time.time()) / 60
 
             print(f"\n{'=' * 60}")
-            print(f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m")
+            print(f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m | Work: {_active_work_seconds:.1f}s")
             print(f"{'=' * 60}\n")
 
             while orchestrator_attempts < max_orchestrator_retries and not decision:
@@ -118,6 +272,7 @@ def run_task_cycle(  # noqa: C901
                     max_turns,
                     time_remaining,
                 )
+                _active_work_seconds += _last_call_http_latency
 
                 try:
                     with get_db_connection() as conn:
@@ -222,21 +377,38 @@ def run_task_cycle(  # noqa: C901
                     cursor = conn.cursor()
                     cursor.execute(
                         """
-                        SELECT COUNT(*) FROM agent_feedback
+                        SELECT
+                            SUM(CASE WHEN priority = 'CRITICAL' THEN 1 ELSE 0 END),
+                            SUM(CASE WHEN priority = 'HIGH' THEN 1 ELSE 0 END)
+                        FROM agent_feedback
                         WHERE task_id = ? AND addressed = 0
                         AND priority IN ('CRITICAL', 'HIGH')
                     """,
                         (task_id,),
                     )
-                    critical_count = cursor.fetchone()[0]
+                    row = cursor.fetchone()
+                    critical_count = row[0] or 0
+                    high_pending = row[1] or 0
 
-                if critical_count > 0:
+                if high_pending > 0 and critical_count == 0:
+                    finish_grace_turns += 1
+                else:
+                    finish_grace_turns = 0
+
+                gate_cfg = config.get("finish_gate", {}) or {}
+                blocked, block_reason = _finish_gate_blocked(
+                    critical_count=critical_count,
+                    high_pending=high_pending,
+                    highs_pending_turns=finish_grace_turns,
+                    grace=int(gate_cfg.get("high_grace_iterations", 3)),
+                )
+                if blocked:
                     post_message(
                         "system",
                         "orchestrator",
-                        f"{critical_count} CRITICAL/HIGH items remain.",
+                        f"Finish deferred: {block_reason}.",
                         task_id,
-                        "CRITICAL",
+                        "CRITICAL" if critical_count else "HIGH",
                     )
                     continue
 
@@ -248,24 +420,21 @@ def run_task_cycle(  # noqa: C901
             # DEVELOPER PATH
             # =====================================================
             if next_agent == "developer":
-                # Implementation switch: "shell" (worktree + bash loop, default
-                # via example config) or legacy structured EditPayload flow.
+                # Shell implementation skips Phase-1 file negotiation entirely;
+                # the worktree agent explores and verifies on its own.
                 dev_impl = (config.get("developer", {}) or {}).get("implementation", "edit_payload")
                 if dev_impl == "shell":
-                    from workflow.shell_developer import run_shell_developer_turn
-
-                    mut = run_shell_developer_turn(
+                    mut = _dispatch_developer(
                         task_id=task_id,
                         instructions=instructions or user_command,
                         user_command=user_command,
+                        decision=decision,
                         conversation_context=conversation_context,
                         model_choice=model_choice,
                         progress=progress,
-                        decision=decision,
                         current_turn=current_turn,
                     )
-                    if mut.get("status") not in ("success", "rejected"):
-                        print(f"   ⚠️  Shell developer status: {mut.get('status')} {mut.get('message', '')}")
+                    _active_work_seconds += _last_call_http_latency
                     conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
                     continue
 
@@ -293,6 +462,7 @@ PLAN: [brief explanation]"""
                     conversation_context,
                     model_choice,
                 )
+                _active_work_seconds += _last_call_http_latency
 
                 if not understanding:
                     print("   ❌ Developer failed to respond")
@@ -352,22 +522,18 @@ PLAN: [brief explanation]"""
                 requested_files = valid_files
 
                 # === DEVELOPER MUTATION (extracted) ===
-                mut = run_developer_mutation(
+                mut = _dispatch_developer(
                     task_id=task_id,
                     instructions=instructions or user_command,
                     user_command=user_command,
-                    requested_files=requested_files,
+                    decision=decision,
                     conversation_context=conversation_context,
                     model_choice=model_choice,
-                    preferred_modes=preferred_modes,
-                    fallback_order=fallback_order,
-                    small_file_threshold=small_file_threshold,
                     progress=progress,
-                    decision=decision,
                     current_turn=current_turn,
+                    requested_files=requested_files,
                 )
-                if mut.get("status") not in ("success", "rejected"):
-                    print(f"   ⚠️  Developer mutation status: {mut.get('status')} {mut.get('message', '')}")
+                _active_work_seconds += _last_call_http_latency
 
             # BACKGROUND AGENTS - Yield control
             # =====================================================
@@ -476,8 +642,27 @@ PLAN: [brief explanation]"""
                             print(f"   📄 File: {file_path}")
                             print(f"   💡 Issue: {message[:80]}{'...' if len(message) > 80 else ''}")
 
-                            # Recursively call developer path (simplified - just log it)
-                            print("   🔄 Would process via developer agent (implementation needed)")
+                            # Real dispatch through the configured developer
+                            # implementation; addressing_feedback_ids makes
+                            # materialized work mark this item addressed.
+                            print(f"   🔄 Dispatching developer for item #{fb_id}")
+                            mut = _dispatch_developer(
+                                task_id=task_id,
+                                instructions=developer_instructions,
+                                user_command=user_command,
+                                decision={
+                                    **decision,
+                                    "addressing_feedback_ids": [fb_id],
+                                    "reasoning": "BACKLOG PROCESSING redirect",
+                                },
+                                conversation_context=conversation_context,
+                                model_choice=model_choice,
+                                progress=progress,
+                                current_turn=current_turn,
+                                requested_files=[file_path] if file_path else [],
+                            )
+                            _active_work_seconds += _last_call_http_latency
+                            conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
 
                     else:
                         # NORMAL MODE: Yield to background agents
@@ -542,10 +727,19 @@ PLAN: [brief explanation]"""
             else:
                 print(f"⚠️  Unknown or unsupported agent decision: {next_agent}")
 
-            if time.time() >= iteration_end:
-                print("\n⏰ Iteration timeout")
+            if _active_work_seconds >= active_budget:
+                print(f"\n⏰ Iteration timeout (active work: {_active_work_seconds:.1f}s >= {active_budget}s)")
 
             time.sleep(0.5)
+
+        # Loop exhausted without an orchestrator FINISH: write a terminal
+        # status so the task does not linger as in_progress forever (soak:
+        # 5/5 tasks orphaned this way).
+        _finalize_task(task_id, progress, reason="max_turns exhausted")
+
+    except Exception as e:
+        _finalize_task(task_id, progress, reason=f"error: {e}")
+        raise
 
     finally:
         if background_enabled:

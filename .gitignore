@@ -58,3 +58,4 @@ build/
 # Logs / exports
 *.log
 exports/
+.hermes/

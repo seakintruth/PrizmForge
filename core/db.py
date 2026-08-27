@@ -407,6 +407,18 @@ def init_db():
                 last_updated TEXT
             );
 
+            -- Per-model outcome events for recency-weighted flakiness tracking
+            CREATE TABLE IF NOT EXISTS model_health_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts TEXT NOT NULL,
+                model_ref TEXT NOT NULL,
+                endpoint TEXT NOT NULL,
+                ok INTEGER NOT NULL,
+                latency_ms INTEGER DEFAULT 0,
+                kind TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_model_health_events_ref_ts ON model_health_events(model_ref, ts);
+
             -- Project reports for human-readable audit reports
             CREATE TABLE IF NOT EXISTS project_reports (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -509,12 +509,17 @@ PYEOF
       read -r -p "Base URL for '${EP}' [https://api.example.com/v1/chat/completions]: " BASEURL || BASEURL=""
       if [[ -z "$BASEURL" ]]; then BASEURL="https://api.example.com/v1/chat/completions"; fi
 
-      # Model names for this endpoint — loop until 'end' or empty.
+      # Model names + context sizes for this endpoint — loop until 'end' or empty.
+      # Entries are "name|ctx" pairs so models ship usable max_context_tokens
+      # (empty {} entries previously degraded every lookup to the unknown-model
+      # default in context_manager).
       mapfile -t MODELS < <(
         while true; do
           read -r -p "Model name for '${EP}' (type 'end' or Enter to finish): " M || M=""
           [[ -z "$M" || "$M" == "end" || "$M" == "End" || "$M" == "END" ]] && break
-          echo "$M"
+          read -r -p "Max context tokens for '${M}' [128000]: " CTX || CTX=""
+          if ! [[ "$CTX" =~ ^[0-9]+$ ]]; then CTX=128000; fi
+          echo "${M}|${CTX}"
         done
       )
 
@@ -528,6 +533,20 @@ kdata = json.load(open(key_path))
 kdata.setdefault("keys", {})[ep] = {"api_key": val}
 json.dump(kdata, open(key_path, "w"), indent=2)
 
+def model_entry(pair: str) -> dict:
+    name, _, ctx = pair.partition("|")
+    try:
+        max_context = int(ctx) if ctx else 128000
+    except ValueError:
+        max_context = 128000
+    return {
+        "max_context_tokens": max_context,
+        # Conservative output reservation; users override per-model.
+        "max_output_tokens": min(16_000, max_context // 4),
+    }
+
+models_cfg = {pair.split("|", 1)[0]: model_entry(pair) for pair in models}
+
 # config.json: endpoint registration (skip if the endpoint already exists)
 cfg = json.load(open(cfg_path))
 if ep not in (cfg.get("endpoints") or {}):
@@ -538,14 +557,14 @@ if ep not in (cfg.get("endpoints") or {}):
         "description": f"{ep} endpoint (added by setup)",
         "priority": 50,
         "rate_limit_per_minute": 60,
-        "models": {m: {} for m in models},
+        "models": models_cfg,
     }
 json.dump(cfg, open(cfg_path, "w"), indent=2)
 
 # First endpoint entered: seed its models into the endpoint entry.
 ep_cfg = cfg["endpoints"][ep]
 if models:
-    ep_cfg["models"] = {m: {} for m in models}
+    ep_cfg["models"] = models_cfg
 json.dump(cfg, open(cfg_path, "w"), indent=2)
 PYEOF
 
@@ -708,7 +727,7 @@ PYEOF
     echo ""
     echo "Everything else (budgets, background agents, fallbacks) is set to"
     echo "the documented defaults from example_config.json."
-    echo "See CONFIGURATION.md for the complete schema."
+    echo "See docs/CONFIGURATION.md for the complete schema."
   fi
 else
   echo "✅ ${CONFIG_FILE} already exists — keeping it."

@@ -181,6 +181,51 @@ Verification after this round: 19/19 shell-developer tests,
 
 ---
 
+## Unattended Cold-Start Round
+
+Implemented from the Hermes cold-start plan
+(`.hermes/plans/2026-08-24_021500-unattended-coldstart-context-fixes.md`):
+
+1. **Seed-as-feedback** (`workflow/task_runner.py`): new `_inject_seed_feedback()`
+   inserts the task's seed description as a HIGH `category='seed_task'`
+   `agent_feedback` row right after `create_task()` — idempotent per task, empty
+   commands ignored. The prioritizer/orchestrator backlog counts and the
+   BACKLOG_PROCESSING redirect now have concrete work from iteration 1 instead of
+   waiting ~5 min for reviewer findings.
+2. **Backlog redirect implemented**: the `"Would process via developer agent
+   (implementation needed)"` stub is gone. Both the orchestrator `developer`
+   path and the BACKLOG_PROCESSING redirect now route through a shared
+   `_dispatch_developer()` helper that honors `developer.implementation`
+   (`shell` or legacy `edit_payload`) — design decision flagged by the plan,
+   resolved per its recommendation (consistency over predictability). Redirects
+   pass `addressing_feedback_ids=[fb_id]` so materialized work marks the item
+   addressed (shell path maps it to files that actually landed).
+   Mode-preference derivation extracted to `_edit_mode_settings()`, shared by
+   both call sites.
+3. **Context-limit resolution** (`core/context_manager.py`): root cause was
+   setup-created model entries being `{}` — `get_model_config()` resolved the ID
+   but returned no limits, falling to the unknown-model branch every iteration.
+   Known-but-unlimited models now take the 100k default **silently**; only
+   genuinely unknown references warn. `utils/setup.sh` prompts for max context
+   tokens when adding a model and writes real entries
+   (`max_context_tokens`, capped `max_output_tokens`) instead of `{}`;
+   `example_config.json` verified to carry limits on every shipped model;
+   CONFIGURATION.md documents the behavior.
+
+Tests added: `test_seed_feedback.py` (3), `test_backlog_redirect_dispatch.py` (1),
+`test_context_limit_resolution.py` (3, incl. regression that unknown models still
+warn). Full normal gate: **623 passed**, ruff clean.
+
+Manual smoke validation still pending (requires live endpoints): point
+`project_directory` at a scratch git repo, set
+`cli_mode.unattended.seed_tasks = ["Add a docstring to app.py"]`,
+`duration_hours: 0.2`, run `python main.py`; expect
+`🌱 Seed task registered as feedback item` on turn 1, a developer dispatch (or
+immediate REDIRECT) on iteration 1 — not two rounds of `background` — and no
+`⚠️ Unknown model` lines.
+
+---
+
 ## Known Limitations / Follow-ups
 
 1. **Shell escape**: agent bash runs with `cwd=worktree` but is not confined to it;
@@ -208,3 +253,53 @@ Verification after this round: 19/19 shell-developer tests,
 
 Set `"developer": {"implementation": "edit_payload"}` in `config.json` (or remove
 the key) to restore the legacy developer path without any code changes.
+
+---
+
+## Soak Process-Evaluation Round (2026-08-25)
+
+Evidence source: HumanHaunt soak DB (`.PrizmForge/agents.db`), 12h unattended run.
+Model/API flakiness was already addressed by the model-health round; this round
+targets the *process* failures the same data exposed.
+
+### Findings → Fixes
+
+| # | Finding (evidence) | Fix |
+|---|--------------------|-----|
+| P1 | **Tasks never close**: 5/5 tasks `in_progress` after 12h. FINISH gate requires `critical_count == 0` but background reviewers keep posting HIGH items, so the gate never clears; when `max_turns` exhausts, no terminal status is written at all. | Grace-based finish gate (`finish_gate.high_grace_iterations`, default 3): CRITICAL always blocks; HIGH stops blocking after N consecutive FINISH attempts with pending HIGHs. Loop exhaustion / shutdown / exception now finalize the task: `completed` if files modified, else `stalled`, with a result string. |
+| P2 | **Prioritizer error storm**: 1,071 API errors in bursts of up to 31/s — `_categorize_batch` swallows failures and the batch loop advances instantly, so an endpoint outage turns one cycle into ~17 rapid failing batches, every cycle. | Circuit breaker: per-cycle consecutive-failure counter; abort after 3 consecutive failed batches with exponential inter-batch backoff; cycle-level cooldown (5 min) before retrying categorization. Success resets the counter. |
+| P3 | **jr_reviewer burn**: 147 "failed JSON validation after 3 attempts" events (~441 wasted calls). Empty responses (endpoint down) trigger identical retries with a stricter prompt that cannot help. | Empty/None response → no stricter-prompt retries (endpoint problem); single short backoff then break. Malformed JSON → keep stricter-prompt ladder but add 2 s between attempts. |
+| P4 | **Category fragmentation**: 36 distinct `agent_feedback.category` values vs the prioritizer's canonical ~8 ("code_smell"/"code-smell", "test_coverage"/"test-coverage"/"coverage-gap"…), fragmenting grouping, dedup, and task-generation counts. | `normalize_category()` applied at the single write choke point (`save_agent_feedback`): spelling/separator canonicalization + alias map → {security, bug, performance, maintainability, documentation, architecture, style, test, other}; process categories (`seed_task`, `review_rejection`, `uncategorized`) pass through. |
+
+Seed-task duplication seen in soak is already fixed by the cold-start round
+(injection is idempotent per task).
+
+### Verification
+- New unit tests: category normalization, finish-gate decision, task
+  finalization, prioritizer circuit breaker, reviewer empty-response discipline.
+- Full gate green; ruff clean; mypy: zero new errors.
+
+
+### Rotation follow-up (same round)
+
+P2 originally parked the prioritizer for 5 minutes when the circuit opened.
+Per review, idle parking was replaced with active resilience:
+
+- **Per-model down windows**: after `down_streak` (2) consecutive failures a
+  model is marked down for `down_base_seconds` (300 s), doubling per extra
+  failure up to `down_max_seconds` (1800 s); any success clears it
+  (`model_down_until`, `core/model_health.py`).
+- **Enforced ranking tiers**: fallback/rotation ordering is now
+  healthy → demoted → down; down models are skipped entirely while any
+  healthy candidate exists and become the automatic recovery probe when all
+  candidates are down.
+- **Round-robin rotation**: on batch failure the categorizer advances to the
+  next healthy `endpoint/model` (`_rr_next_model`) instead of re-dialing the
+  same one — wrapping back to the original endpoint lands on its sibling
+  model because the failed one is marked down.
+- **Probe mode**: an open circuit no longer idles; each cycle runs exactly one
+  batch through the rotation. A successful probe reopens the circuit; a
+  failed one leaves it armed.
+
+Verified: 9 new/updated unit tests; full gate 693 passed; ruff clean; mypy
+zero new errors.

@@ -2,7 +2,7 @@
 
 This document records **authorization-oriented** implementation and security requirements for deploying Python CLI and (where applicable) **Shiny for Python** workloads in **AWS GovCloud (US)** under continuous authorization patterns aligned with **Navy RAISE 2.0**.
 
-It is **governance and control-mapping documentation**, not the automated test suite. Day-to-day pytest guidance is in [`tests/README.md`](tests/README.md). Local product setup remains in [`README.md`](README.md) and [`CONFIGURATION.md`](CONFIGURATION.md).
+It is **governance and control-mapping documentation**, not the automated test suite. Day-to-day pytest guidance is in [`tests/README.md`](../tests/README.md). Local product setup remains in [`README.md`](../README.md) and [`CONFIGURATION.md`](CONFIGURATION.md).
 
 > Placeholders such as `[Name]` / `[repository-url]` should be filled for a specific program of record. PrizmForge itself is the multi-agent forge; target applications (e.g. ExampleProject Shiny viewers) inherit platform controls when deployed on an approved RPOC.
 
@@ -144,5 +144,5 @@ shiny run app.py
 | Item | Value |
 |------|--------|
 | Audience | ISSE, NQV, developers integrating with RPOC |
-| Related engineering docs | `README.md`, `CONFIGURATION.md`, `tests/README.md`, `architecture.md` |
+| Related engineering docs | `README.md` (root), `docs/CONFIGURATION.md`, `tests/README.md`, `docs/architecture.md` |
 | Related product tests | Pytest suite — **not** a substitute for STIG/SBOM/scan packages |

@@ -197,7 +197,8 @@ def test_sql_response_exact_matching(memory_db):
         def __exit__(self, *args):
             return False
 
-    with patch("utils.query_developer_responses.get_db_connection", return_value=_CM()):
+    # query tool uses read-only connections returned directly (no CM protocol)
+    with patch("utils.query_developer_responses._connect_ro", return_value=memory_db):
         from utils.query_developer_responses import list_recent_developer_responses
 
         ids = list_recent_developer_responses(task_id="task_001", modified_only=True)

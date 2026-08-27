@@ -4,6 +4,13 @@ Query and display raw agent responses + diagnostic data from the PrizmForge data
 
 Useful for debugging JSON parsing failures, inspecting edit proposals,
 materialization results, errors, and events.
+
+All connections are opened READ-ONLY (sqlite URI mode=ro), so this tool can run
+against a live unattended session without interfering with it. Use --db to point
+at another project's database (e.g. a scratch repo running a smoke test).
+
+Ad-hoc queries: --sql "SELECT ..." executes any single read query and prints the
+result table; writes fail by virtue of the read-only connection.
 """
 
 from __future__ import annotations
@@ -17,30 +24,34 @@ try:
 except ImportError:
     sqlite3 = None  # type: ignore
 
-try:
-    from core.db import get_db_path
-except ImportError:
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-    def get_db_path():
+# Set by --db; when empty, fall back to core.db.get_db_path() or CWD/.PrizmForge.
+_DB_PATH_OVERRIDE: str | None = None
+
+
+def _db_file() -> str:
+    """Resolve the target database path (--db override > core config > CWD default)."""
+    if _DB_PATH_OVERRIDE:
+        return str(Path(_DB_PATH_OVERRIDE).resolve())
+    try:
+        from core.db import get_db_path
+
+        return str(get_db_path())
+    except Exception:
         return str(Path.cwd() / ".PrizmForge" / "agents.db")
 
 
-try:
-    from core.db_connection import get_db_connection
-except ImportError:
-    from contextlib import contextmanager
-
-    @contextmanager
-    def get_db_connection():
-        """Fallback for environments without core.db_connection."""
-        import sqlite3
-
-        conn = sqlite3.connect(get_db_path())
-        conn.row_factory = sqlite3.Row
-        try:
-            yield conn
-        finally:
-            conn.close()
+def _connect_ro() -> sqlite3.Connection:
+    """Open the DB read-only (WAL-aware); never writes or blocks the live loop."""
+    path = _db_file()
+    if not Path(path).is_file():
+        raise SystemExit(f"❌ Database not found: {path}\n   Pass --db /path/to/project/.PrizmForge/agents.db")
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5.0)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def list_recent_developer_responses(
@@ -51,7 +62,8 @@ def list_recent_developer_responses(
     modified_only: bool = False,
 ):
     """List recent developer responses with summary info, file filtering, and exact Reviewer approval matching."""
-    with get_db_connection() as conn:
+    conn = _connect_ro()
+    try:
         cursor = conn.cursor()
 
         query_conditions = ["r.agent_name = ?"]
@@ -101,6 +113,8 @@ def list_recent_developer_responses(
         params.append(limit)
         cursor.execute(query, params)
         responses = cursor.fetchall()
+    finally:
+        conn.close()
 
     file_msg = f" mentioning '{file_filter}'" if file_filter else ""
     mod_msg = " that resulted in file changes" if modified_only else ""
@@ -153,9 +167,8 @@ def _print_table(headers, rows):
 
 
 def _get_db(task_id: str | None = None):
-    """Open DB connection with row_factory and return (conn, cur, task_filter, tparam)."""
-    conn = sqlite3.connect(get_db_path())
-    conn.row_factory = sqlite3.Row
+    """Open read-only DB connection with row_factory and return (conn, cur, task_filter, tparam)."""
+    conn = _connect_ro()
     cur = conn.cursor()
     task_filter = "AND task_id = ?" if task_id else ""
     tparam = (task_id,) if task_id else ()
@@ -322,8 +335,7 @@ def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
       6. Error budget burn (HIGH errors per hour, by agent/category)
       7. Token spend vs outcomes
     """
-    conn = sqlite3.connect(get_db_path())
-    conn.row_factory = sqlite3.Row
+    conn = _connect_ro()
     cur = conn.cursor()
     task_filter = "AND task_id = ?" if task_id else ""
     tparam = (task_id,) if task_id else ()
@@ -494,6 +506,65 @@ def show_run_effectiveness(task_id: str | None = None):  # noqa: C901
     conn.close()
 
 
+def run_adhoc_sql(sql: str):
+    """Execute one ad-hoc read query and print the result table to stdout.
+
+    The connection is read-only, so writes fail at the SQLite level regardless
+    of the statement text — safe against a live unattended run.
+    """
+    conn = _connect_ro()
+    try:
+        cur = conn.cursor()
+        try:
+            rows = cur.execute(sql).fetchall()
+        except sqlite3.Error as e:
+            print(f"❌ SQL error: {e}")
+            return 1
+    finally:
+        conn.close()
+
+    print(f"\n{'=' * 80}")
+    print(f"🗄️  Ad-hoc query on {_db_file()}")
+    print(f"{'=' * 80}\n")
+
+    if not rows:
+        print("✅ executed — 0 rows")
+        return 0
+
+    headers = list(rows[0].keys())
+    table_rows = [["NULL" if v is None else (v.decode("utf-8", "replace") if isinstance(v, bytes) else v) for v in r] for r in rows]
+    _print_table(headers, table_rows)
+    print(f"\n{len(rows)} row(s)")
+    return 0
+
+
+def run_model_health(limit: int = 30):
+    """Per-model flakiness report from core.model_health (recency-weighted)."""
+    try:
+        from core import model_health as mh
+    except ImportError:
+        print("❌ core.model_health unavailable — run from the PrizmForge repo root.")
+        return 1
+
+    rows = mh.health_report(limit=limit)
+    print(f"\n{'=' * 80}")
+    print(f"🩺 MODEL HEALTH (recency-weighted, half-life {mh._setting('half_life_minutes')}m) — {_db_file()}")
+    print(f"{'=' * 80}\n")
+
+    if not rows:
+        print("No outcome events recorded yet.")
+        return 0
+
+    _print_table(
+        ["model_ref", "attempts", "fail_ratio", "streak", "avg_ms", "demoted", "until", "reason"],
+        [[r["model_ref"], r["attempts"], r["fail_ratio"], r["streak"], r["avg_ms"], r["demoted"], r["until"], r["reason"]] for r in rows],
+    )
+    demoted = [r["model_ref"] for r in rows if r["demoted"]]
+    if demoted:
+        print(f"\n⬇️  demoted (deprioritized in fallback): {', '.join(demoted)}")
+    return 0
+
+
 def run_full_diagnostic(task_id: str | None = None, limit: int = 40):
     """Convenience command that dumps the most useful diagnostic views."""
     print("\n" + "=" * 80)
@@ -522,23 +593,36 @@ def run_full_diagnostic(task_id: str | None = None, limit: int = 40):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Query agent responses and diagnostic tables from the PrizmForge database",
+        description="Query agent responses and diagnostic tables from the PrizmForge database (read-only)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s --diagnostic                     # full dump (default limit 40)
   %(prog)s --diagnostic --task task_001     # scoped to one task
+  %(prog)s --responses                      # recent developer LLM responses
+  %(prog)s --responses --agent reviewer     # any agent's responses
+  %(prog)s --responses --file app.py --modified-only
   %(prog)s --proposals                      # just edit proposals
   %(prog)s --events --limit 100             # lifecycle events
   %(prog)s --errors HIGH --limit 10         # recent HIGH errors
   %(prog)s --errors --keyword materialize   # search error text
   %(prog)s --write-log                      # materialization log
   %(prog)s --line-counts                    # file sizes
+  %(prog)s --sql "SELECT * FROM agent_feedback WHERE addressed=0"
+  %(prog)s --model-health                    # per-model flakiness (recency-weighted)
+  %(prog)s --db /path/to/other/repo/.PrizmForge/agents.db --diagnostic
         """,
     )
+    parser.add_argument("--db", help="Path to an agents.db (default: this project's .PrizmForge/agents.db)")
     parser.add_argument("--diagnostic", action="store_true", help="Run full diagnostic dump")
     parser.add_argument("--task", help="Scope diagnostic to a specific task_id")
     parser.add_argument("--limit", type=int, default=40, help="Row limit for list views (default 40)")
+    parser.add_argument("--responses", action="store_true", help="List recent agent responses from agent_responses_archive")
+    parser.add_argument("--agent", default="developer", help="Agent name for --responses (default: developer)")
+    parser.add_argument("--file", help="Filter --responses by text/file mention")
+    parser.add_argument("--modified-only", action="store_true", help="--responses: only ones tied to applied proposals + reviewer approval")
+    parser.add_argument("--sql", help='Ad-hoc read query, e.g. --sql "SELECT category, COUNT(*) FROM agent_feedback GROUP BY category"')
+    parser.add_argument("--model-health", action="store_true", help="Per-model flakiness report (recency-weighted)")
     parser.add_argument("--proposals", action="store_true", help="Show edit proposals")
     parser.add_argument("--full-replace", action="store_true", help="Only show full_replace/fallback proposals (with --proposals)")
     parser.add_argument("--events", action="store_true", help="Show edit/proposal lifecycle events")
@@ -549,8 +633,28 @@ Examples:
 
     args = parser.parse_args()
 
+    global _DB_PATH_OVERRIDE
+    if args.db:
+        _DB_PATH_OVERRIDE = args.db
+
+    if args.sql:
+        return run_adhoc_sql(args.sql)
+
+    if args.model_health:
+        return run_model_health(limit=args.limit)
+
     if args.diagnostic:
         run_full_diagnostic(task_id=args.task, limit=args.limit)
+        return 0
+
+    if args.responses:
+        list_recent_developer_responses(
+            task_id=args.task,
+            limit=args.limit,
+            agent_name=args.agent,
+            file_filter=args.file,
+            modified_only=args.modified_only,
+        )
         return 0
 
     if args.proposals:

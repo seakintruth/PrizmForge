@@ -5,6 +5,114 @@ from datetime import datetime, timedelta
 from core.db import get_db_path as _get_db_path
 from core.db_connection import get_db_connection
 
+# Canonical review-taxonomy categories (mirrors the prioritizer prompt).
+_CANONICAL_CATEGORIES = (
+    "security",
+    "bug",
+    "performance",
+    "maintainability",
+    "documentation",
+    "architecture",
+    "style",
+    "test",
+    "other",
+)
+
+# Process/bookkeeping categories that pass through untouched.
+_PROCESS_CATEGORIES = ("seed_task", "review_rejection", "uncategorized")
+
+_CATEGORY_ALIASES = {
+    # security
+    "vulnerability": "security",
+    "vulnerabilities": "security",
+    "security-vulnerability": "security",
+    # bug
+    "defect": "bug",
+    "bugfix": "bug",
+    "error": "bug",
+    "failure": "bug",
+    "crash": "bug",
+    "logic-error": "bug",
+    # performance
+    "perf": "performance",
+    "optimization": "performance",
+    "efficiency": "performance",
+    "latency": "performance",
+    "memory": "performance",
+    # maintainability
+    "maintenance": "maintainability",
+    "code-smell": "maintainability",
+    "code_smell": "maintainability",
+    "code smell": "maintainability",
+    "refactor": "maintainability",
+    "refactoring": "maintainability",
+    "tech-debt": "maintainability",
+    "technical-debt": "maintainability",
+    "complexity": "maintainability",
+    "robustness": "maintainability",
+    "consistency": "maintainability",
+    "organization": "maintainability",
+    "readability": "maintainability",
+    "type-safety": "maintainability",
+    "type_safety": "maintainability",
+    "testability": "maintainability",
+    "dead-code": "maintainability",
+    "duplication": "maintainability",
+    # documentation
+    "docs": "documentation",
+    "doc": "documentation",
+    "comment": "documentation",
+    "comments": "documentation",
+    "completeness": "documentation",
+    # architecture
+    "design": "architecture",
+    "structure": "architecture",
+    "pattern": "architecture",
+    "coupling": "architecture",
+    "cohesion": "architecture",
+    "modularity": "architecture",
+    # style
+    "formatting": "style",
+    "format": "style",
+    "naming": "style",
+    "lint": "style",
+    "polish": "style",
+    # test
+    "test": "test",
+    "tests": "test",
+    "testing": "test",
+    "unittest": "test",
+    "unit-test": "test",
+    "regression": "test",
+    "coverage": "test",
+    "test-coverage": "test",
+    "test_gap": "test",
+    "test-quality": "test",
+    "coverage-gap": "test",
+}
+
+
+def normalize_category(raw: str | None) -> str:
+    """Map an LLM-emitted feedback category onto the canonical taxonomy.
+
+    Reviewer models emit free-form categories ("Code Smell", "test-coverage",
+    "coverage-gap" ...). Left verbatim they fragment backlog grouping, dedup and
+    task-generation counts (a 12h soak produced 36 distinct values). Canonical
+    targets mirror the prioritizer prompt; process categories pass through.
+    """
+    if not raw:
+        return "other"
+    key = str(raw).strip().lower().replace("-", "_").replace(" ", "_")
+    if key in _PROCESS_CATEGORIES or key in _CANONICAL_CATEGORIES:
+        return key
+    if key in _CATEGORY_ALIASES:
+        return _CATEGORY_ALIASES[key]
+    # Alias keys were written with hyphens/spaces above; re-check underscore form.
+    for alias, canonical in _CATEGORY_ALIASES.items():
+        if alias.replace("-", "_") == key:
+            return canonical
+    return "other"
+
 
 def get_db_path() -> str:
     """Get database path"""
@@ -163,6 +271,7 @@ def save_agent_feedback(
     file_event_id: str,
 ):
     """Save feedback from background agent"""
+    category = normalize_category(category)
     with get_db_connection() as conn:
         conn.execute(
             """

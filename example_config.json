@@ -5,6 +5,9 @@
   "git_auto_commit": false,
   "default_iteration_minutes": 5,
   "min_iterations_before_complete": 3,
+  "finish_gate": {
+    "high_grace_iterations": 3
+  },
   "background_agents_enabled": true,
   "default_model": "gemini/gemini-3.1-pro-preview",
   "cli_mode": {
@@ -152,7 +155,7 @@
   },
   "developer": {
     "implementation": "shell",
-    "_note": "shell = worktree + bash loop (workflow/shell_developer.py); edit_payload = legacy structured EditPayload flow"
+    "_note": "shell = worktree + bash loop (workflow/shell_developer.py) using mini-swe-agent; edit_payload = legacy structured EditPayload flow"
   },
   "shell_developer": {
     "step_limit": 30,

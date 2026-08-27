@@ -81,7 +81,10 @@ class ContextManager:
         if model and model in self.model_limits:
             return self.model_limits[model]
 
-        if model:
+        # Known reference without an explicit limit (e.g. setup-created `{}`
+        # model entries): take the default quietly — warning here would fire
+        # every iteration for a perfectly usable configuration.
+        if model and not endpoint_mgr.model_reference_exists(model):
             print(f"⚠️  Unknown model '{model}', using default context limit")
         return getattr(self, "default_context_limit", 100_000)
 

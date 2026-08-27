@@ -11,7 +11,9 @@ import pytest
 from core.config import (
     ensure_project_directory,
     find_config_file,
+    get_package_root,
     get_repo_root,
+    load_config,
     normalize_path,
     validate_config,
 )
@@ -34,11 +36,16 @@ def test_normalize_path_absolute_unix(tmp_path):
     assert result == target.resolve()
 
 
-def test_normalize_path_relative_resolves_to_cwd(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "rel_dir").mkdir()
+def test_normalize_path_relative_uses_package_root_by_default():
     result = normalize_path("rel_dir")
-    assert result == (tmp_path / "rel_dir").resolve()
+    assert result == (get_package_root() / "rel_dir").resolve()
+
+
+def test_normalize_path_relative_respects_base(tmp_path):
+    forge = tmp_path / "PrizmForge"
+    forge.mkdir()
+    result = normalize_path("../HumanHaunt", base=forge)
+    assert result == (tmp_path / "HumanHaunt").resolve()
 
 
 def test_normalize_path_home_expand(monkeypatch, tmp_path):
@@ -49,10 +56,7 @@ def test_normalize_path_home_expand(monkeypatch, tmp_path):
     home = str(tmp_path)
     monkeypatch.setenv("HOME", home)
     monkeypatch.setenv("USERPROFILE", home)
-    # Windows also consults HOMEDRIVE+HOMEPATH when USERPROFILE is unset;
-    # keep them consistent if present so expanduser cannot escape tmp_path.
     if os.name == "nt":
-        # tmp_path is typically C:\Users\...\AppData\Local\Temp\...
         drive, tail = os.path.splitdrive(home)
         if drive:
             monkeypatch.setenv("HOMEDRIVE", drive)
@@ -68,12 +72,10 @@ def test_normalize_path_mixed_slashes(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a").mkdir()
     (tmp_path / "a" / "b").mkdir()
-    # Forward slash works everywhere
-    result = normalize_path("a/b")
+    result = normalize_path("a/b", base=tmp_path)
     assert result == (tmp_path / "a" / "b").resolve()
-    # Backslash: on Windows it separates; on POSIX it is part of the name
     if os.name == "nt":
-        result_bs = normalize_path("a\\b")
+        result_bs = normalize_path("a\\b", base=tmp_path)
         assert result_bs == (tmp_path / "a" / "b").resolve()
 
 
@@ -100,27 +102,25 @@ def test_find_config_file_in_parent(tmp_path, monkeypatch):
     assert found == parent / "config.json"
 
 
-def test_find_config_file_defaults_to_cwd_when_missing(tmp_path, monkeypatch):
+def test_find_config_file_defaults_to_package_root_when_missing(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     found = find_config_file("no_such_config_xyz.json")
-    assert found == tmp_path / "no_such_config_xyz.json"
+    assert found == get_package_root() / "no_such_config_xyz.json"
     assert not found.exists()
 
 
 # ---------------------------------------------------------------------------
-# get_repo_root / ensure_project_directory
+# get_repo_root / ensure_project_directory / load_config path anchor
 # ---------------------------------------------------------------------------
 
 
-def test_get_repo_root_falls_back_to_cwd(tmp_path, monkeypatch):
-    """When find_config_file cannot locate config.json, get_repo_root returns cwd."""
+def test_get_repo_root_falls_back_to_package_root(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     from core import config as cfg_mod
 
-    # Force the search path to miss so we exercise the cwd fallback
     monkeypatch.setattr(cfg_mod, "find_config_file", lambda name: tmp_path / name)
     root = get_repo_root()
-    assert root == tmp_path.resolve()
+    assert root == get_package_root()
 
 
 def test_get_repo_root_from_config_location(tmp_path, monkeypatch):
@@ -130,10 +130,25 @@ def test_get_repo_root_from_config_location(tmp_path, monkeypatch):
     assert root == tmp_path.resolve()
 
 
+def test_load_config_project_directory_ignores_cwd(tmp_path, monkeypatch):
+    """../HumanHaunt must resolve from config.json's directory, not the caller's cwd."""
+    forge = tmp_path / "PrizmForge"
+    utils = forge / "utils"
+    haunt = tmp_path / "HumanHaunt"
+    forge.mkdir()
+    utils.mkdir()
+    haunt.mkdir()
+    cfg_path = forge / "config.json"
+    cfg_path.write_text(json.dumps({"project_directory": "../HumanHaunt"}), encoding="utf-8")
+    monkeypatch.chdir(utils)
+
+    loaded = load_config(str(cfg_path))
+    assert Path(loaded["project_directory"]) == haunt.resolve()
+
+
 def test_ensure_project_directory_creates(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.json").write_text(json.dumps({"project_directory": "./my_proj"}))
-    # Patch get_config to avoid full load_config side effects
     from core import config as cfg_mod
 
     def fake_get():
@@ -177,9 +192,8 @@ def test_validate_config_rejects_non_string_project_directory():
 
 def test_validate_config_accepts_minimal(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "config.json").write_text("{}")  # for get_repo_root
+    (tmp_path / "config.json").write_text("{}")
     cfg = {"project_directory": str(tmp_path / "proj")}
-    # Should not raise; creates the directory
     validate_config(cfg)
     assert (tmp_path / "proj").exists()
 
@@ -240,7 +254,7 @@ def test_validate_config_accepts_known_modes(tmp_path, monkeypatch):
             "blocked_extensions": [".exe", ".bin"],
         },
     }
-    validate_config(cfg)  # must not raise
+    validate_config(cfg)
 
 
 def test_validate_config_rejects_bad_content_safety_type(tmp_path):
@@ -301,16 +315,14 @@ def _slashed_cfg(tmp_path) -> dict:
 
 
 def test_validate_config_accepts_slashed_model_ids(tmp_path):
-    """Endpoint + slashed model ID references must validate cleanly."""
     cfg = _slashed_cfg(tmp_path)
-    validate_config(cfg)  # must not raise
+    validate_config(cfg)
 
 
 def test_validate_config_accepts_bare_slashed_model_id(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.json").write_text("{}")
     cfg = _slashed_cfg(tmp_path)
-    # Bare slashed ID that exists under exactly one endpoint is fine.
     cfg["default_model"] = "stealth/ox-alpha"
     validate_config(cfg)
 
@@ -323,9 +335,6 @@ def test_validate_config_rejects_unknown_slashed_reference(tmp_path):
 
 
 def test_validate_config_rejects_ambiguous_bare_id_without_prefix(tmp_path):
-    """'openai/gpt-4o' exists on TWO endpoints — bare use is ambiguous only
-    when no endpoint prefix matches; here it resolves via suffix match."""
     cfg = _slashed_cfg(tmp_path)
-    # Explicit endpoint-prefixed forms are always OK:
     cfg["default_model"] = "backup/openai/gpt-4o"
     validate_config(cfg)

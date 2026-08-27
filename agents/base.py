@@ -15,6 +15,7 @@ from core.endpoint_manager import EndpointConfig, EndpointStatus, get_endpoint_m
 from core.fallback_stats import log_fallback
 from core.http_client import post_json
 from core.json_parser import parse_json_response
+from core.model_health import record_model_outcome
 from core.rate_limiter import RateLimiter
 from core.token_budget import TokenBudget
 from file_editing.db import log_error
@@ -22,6 +23,11 @@ from file_editing.db import log_error
 # Initialize
 _rate_limiter = None
 _token_budget = None
+
+# Active-work tracking: HTTP latency (seconds) of the most recent call_endpoint
+# invocation. Rate-limit sleeps and DB lock backoffs are excluded so iteration
+# timeouts count only real work, not idle waits.
+_last_call_http_latency: float = 0.0
 
 # Agents that are allowed to return free-form text / markdown
 TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
@@ -78,6 +84,10 @@ def call_endpoint(  # noqa: C901
     # Per-endpoint rate limiting
     rate_limiter = get_rate_limiter(endpoint)
     rate_limiter.wait_if_needed()
+
+    # Track HTTP latency only (rate-limit sleeps and DB lock backoffs excluded)
+    global _last_call_http_latency
+    _last_call_http_latency = 0.0
 
     # Check if endpoint is available
     if not endpoint.health.is_available():
@@ -151,6 +161,7 @@ def call_endpoint(  # noqa: C901
     except ValueError as e:
         print(f"❌ {e}")
         endpoint.health.mark_failure(EndpointStatus.KEY_LOCKED)
+        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="key_locked")
 
         # Try fallback
         fallback = endpoint_mgr.get_fallback_model(endpoint)
@@ -183,6 +194,7 @@ def call_endpoint(  # noqa: C901
     proxies = config.get("proxy")
 
     for attempt in range(retry_count):
+        _req_t0 = time.time()
         try:
             resp = post_json(
                 endpoint.base_url,
@@ -191,6 +203,7 @@ def call_endpoint(  # noqa: C901
                 timeout=120,
                 proxies=proxies,
             )
+            _last_call_http_latency += time.time() - _req_t0
 
             # Attempt to extract error JSON safely
             error_data = {}
@@ -225,6 +238,7 @@ def call_endpoint(  # noqa: C901
                             timeout=120,
                             proxies=proxies,
                         )
+                        _last_call_http_latency += time.time() - _req_t0
 
                         retry_error_data = {}
                         try:
@@ -253,6 +267,7 @@ def call_endpoint(  # noqa: C901
 
                 # === Fallback Logic (Executes if no unlock_url, or if retry failed) ===
                 endpoint.health.mark_failure(EndpointStatus.KEY_LOCKED, cooldown_minutes=30)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="unauthorized")
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
                     fallback_model, fallback_endpoint = fallback
@@ -284,6 +299,7 @@ def call_endpoint(  # noqa: C901
 
                 if retry_after > 60:  # If wait is > 1 minute, try fallback
                     endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=2)
+                    record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
                     print(f"   Rate limit cooldown too long ({retry_after}s)")
 
                     fallback = endpoint_mgr.get_fallback_model(endpoint)
@@ -319,6 +335,7 @@ def call_endpoint(  # noqa: C901
 
                 # Mark endpoint as unavailable
                 endpoint.health.mark_failure(EndpointStatus.TOKEN_EXHAUSTED, cooldown_minutes=15)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="token_exhausted")
 
                 # Try fallback immediately
                 print(f"⚠️  {endpoint.name} marked as unavailable for 15 minutes")
@@ -355,6 +372,7 @@ def call_endpoint(  # noqa: C901
                 # On last retry, try fallback
                 if attempt == retry_count - 1:
                     endpoint.health.mark_failure(EndpointStatus.SERVER_ERROR, cooldown_minutes=5)
+                    record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="server_error")
 
                     fallback = endpoint_mgr.get_fallback_model(endpoint)
                     if fallback:
@@ -393,6 +411,7 @@ def call_endpoint(  # noqa: C901
 
                 # Mark endpoint as having issues
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="bad_payload")
 
                 # Try fallback
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
@@ -422,6 +441,12 @@ def call_endpoint(  # noqa: C901
             # ============= SUCCESS =============
             # Mark endpoint as healthy
             endpoint.health.mark_success()
+            record_model_outcome(
+                f"{endpoint.name}/{model_name}",
+                endpoint.name,
+                ok=True,
+                latency_ms=int((time.time() - _req_t0) * 1000),
+            )
 
             # Track tokens
             output_tokens = estimate_tokens(answer)
@@ -436,6 +461,7 @@ def call_endpoint(  # noqa: C901
 
             if attempt == retry_count - 1:
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="timeout")
 
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
@@ -479,6 +505,7 @@ def call_endpoint(  # noqa: C901
 
             if attempt == retry_count - 1:
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="request_error")
 
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
@@ -514,6 +541,7 @@ def call_endpoint(  # noqa: C901
             traceback.print_exc()
 
             endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+            record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="unexpected_error")
 
             fallback = endpoint_mgr.get_fallback_model(endpoint)
             if fallback:
@@ -541,6 +569,7 @@ def call_endpoint(  # noqa: C901
     # All retries exhausted
     print(f"❌ All retries exhausted for {endpoint.name}")
     endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+    record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="retries_exhausted")
 
     fallback = endpoint_mgr.get_fallback_model(endpoint)
     if fallback:

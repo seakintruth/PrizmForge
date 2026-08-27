@@ -52,5 +52,5 @@ Delivery order per §9:
 
 ## 3. Documentation upkeep (continuous)
 
-- [x] CONFIGURATION.md / architecture.md updated for `endpoint/model` reference resolution (2026-08-22)
+- [x] docs/CONFIGURATION.md / docs/architecture.md updated for `endpoint/model` reference resolution (2026-08-22)
 - [ ] Keep UNATTENDED_CLOSED_LOOP_PLAN status header current as phases land
