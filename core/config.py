@@ -126,14 +126,11 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
 def get_repo_root() -> Path:
     """
     Repository root for containment: directory that holds config.json
-    (or the package root when config has not been loaded yet).
+    (or the package root when that file is missing).
     """
-    try:
-        found = find_config_file("config.json")
-        if found.exists():
-            return found.parent.resolve()
-    except Exception:
-        pass
+    found = find_config_file("config.json")
+    if found.exists():
+        return found.parent.resolve()
     return get_package_root()
 
 
