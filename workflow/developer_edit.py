@@ -16,7 +16,7 @@ from typing import Any
 
 from agents.base import call_agent
 from core.db_connection import get_db_connection
-from core.db_helpers import post_message
+from core.db_helpers import post_message, save_agent_feedback
 from core.edit_response_validator import validate_developer_edit_response
 from core.events import publish_event
 from core.file_operations import format_file_with_guids, get_file_content_from_db
@@ -535,7 +535,42 @@ def run_developer_mutation(  # noqa: C901
     print("   📝 Materializing changes to disk...")
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)
-    if mat.get("status") == "success":
+
+    # ---------------------------------------------------------------
+    # Git closed loop: when git/hook fails, emit edit.git_failed
+    # (not edit.materialized) and write CRITICAL feedback so the
+    # next developer turn sees the hook excerpt.
+    # ---------------------------------------------------------------
+    git_failed = mat.get("git_failed")
+    if git_failed and git_failed.get("attempted"):
+        stderr_excerpt = (git_failed.get("stderr") or "")[:500]
+        publish_event(
+            "edit.git_failed",
+            source="writer",
+            task_id=task_id,
+            proposal_id=proposal_id,
+            payload=git_failed,
+        )
+        # CRITICAL feedback — dedupe by proposal_id in file_event_id
+        with get_db_connection() as conn:
+            existing = conn.execute(
+                "SELECT id FROM agent_feedback WHERE file_event_id = ? LIMIT 1",
+                (proposal_id,),
+            ).fetchone()
+        if not existing:
+            save_agent_feedback(
+                agent_name="git_hook",
+                file_path=git_failed.get("file_path") or "",
+                priority="CRITICAL",
+                category="bug",
+                message=f"git {git_failed.get('stage', '?')} failed (code={git_failed.get('code')}): " + stderr_excerpt,
+                suggestion="Fix the pre-commit hook failure before continuing.",
+                task_id=task_id or "",
+                file_event_id=proposal_id,
+            )
+        print(f"   🔴 Git {git_failed.get('stage', '?')} failed (code={git_failed.get('code')})")
+        print(f"      Hook excerpt: {stderr_excerpt[:200]}")
+    elif mat.get("status") == "success":
         publish_event(
             "edit.materialized",
             source="writer",

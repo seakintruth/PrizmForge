@@ -1,13 +1,13 @@
 import hashlib
 import json
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from core.content_safety import validate_source_content
+from utils.git_operations import git_commit
 
 from .db import get_db_connection, log_error, reconstruct_file_content
 from .editing import apply_edit_proposal
@@ -256,6 +256,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         # ------------------------------------------------------------------
         write_results = []
         task_id = proposal["task_id"] if "task_id" in proposal.keys() else None
+        git_failed = None
 
         for target_path in affected_paths:
             op_file_id = before_state[target_path]["file_id"]
@@ -344,29 +345,26 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     )
 
                 # ----------------------------------------------------------
-                # Git add + commit using the configured project root
+                # Git add + commit using the structured git_commit() helper
                 # ----------------------------------------------------------
                 if resolved_path is not None and rel_path is not None:
-                    try:
-                        subprocess.run(
-                            ["git", "add", "--", rel_path],
-                            cwd=str(project_dir),
-                            check=False,
-                            timeout=10,
+                    git_result = git_commit(
+                        rel_path,
+                        f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
+                    )
+                    if not git_result.get("ok") and git_result.get("attempted"):
+                        git_failed = git_result
+                        log_error(
+                            "file_editing",
+                            "git_commit",
+                            "HIGH",
+                            f"git {git_result.get('stage', '?')} failed (code={git_result.get('code')}): " + (git_result.get("stderr") or "")[:500],
+                            proposal_id=proposal_id,
+                            file_path=rel_path,
+                            task_id=task_id,
                         )
-                        subprocess.run(
-                            [
-                                "git",
-                                "commit",
-                                "-m",
-                                f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
-                            ],
-                            cwd=str(project_dir),
-                            check=False,
-                            timeout=10,
-                        )
-                    except Exception as e:
-                        print(f"    ⚠️  Exception handled in writer.py (git): {e}")
+                    else:
+                        git_failed = None
             else:
                 conn.execute(
                     "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
@@ -388,4 +386,5 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             "proposal_id": proposal_id,
             "materialized_files": list(affected_paths),
             "results": write_results,
+            "git_failed": git_failed,
         }
