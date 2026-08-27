@@ -431,7 +431,8 @@ class PrioritizerWorker:
                     break
 
             if probe_only:
-                break  # failed or succeeded: a probe is exactly one batch        print("    ✓ Phase 1: Complete")
+                break  # failed or succeeded: a probe is exactly one batch
+                print("    ✓ Phase 1: Complete")
         return items
 
     def _rr_next_model(self) -> str | None:
