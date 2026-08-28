@@ -39,6 +39,7 @@ from core.db_helpers import post_message
 from core.events import publish_event
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
+from workflow.git_failure import record_git_failure
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 
 FINISH_TOKEN = "FINISH_EDIT_SESSION"
@@ -694,7 +695,10 @@ Rules:
     publish_event("proposal.approved", source="reviewer", task_id=task_id, proposal_id=proposal_id)
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)
-    if mat.get("status") == "success":
+
+    if mat.get("status") == "git_failed":
+        record_git_failure(mat, task_id, proposal_id)
+    elif mat.get("status") == "success":
         publish_event(
             "edit.materialized",
             source="writer",
