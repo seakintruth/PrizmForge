@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -32,20 +33,38 @@ def _get_or_create_file_id_short(conn, target_file_path: str) -> int:
     during the apply phase, and the second writer busy-waits ~30s before
     dying with SQLITE_BUSY. Allocate any missing row on a short-lived
     connection (committed immediately) so the main connection stays read-only.
+
+    One rule for both lookups in this file: ``file_path`` is UNIQUE, so a path
+    maps to exactly one ``files`` row regardless of ``is_deleted``; a
+    soft-deleted row is resurrected at initialize time. Do NOT filter on
+    ``is_deleted`` here, or re-creating a deleted path would collide with the
+    UNIQUE constraint.
     """
     row = conn.execute(
-        "SELECT file_id FROM files WHERE file_path = ? AND is_deleted = 0",
+        "SELECT file_id FROM files WHERE file_path = ?",
         (target_file_path,),
     ).fetchone()
     if row:
         return row[0]
-    with get_db_connection() as short:
-        cursor = short.execute(
-            """INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
-               VALUES (?, 1, 0, 0)""",
-            (target_file_path,),
-        )
-        return cursor.lastrowid
+    try:
+        with get_db_connection() as short:
+            cursor = short.execute(
+                """INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
+                   VALUES (?, 1, 0, 0)""",
+                (target_file_path,),
+            )
+            return cursor.lastrowid
+    except sqlite3.IntegrityError:
+        # Lost the race with a concurrent materialize for the same new path —
+        # reuse the row the winner committed.
+        with get_db_connection() as short:
+            row = short.execute(
+                "SELECT file_id FROM files WHERE file_path = ?",
+                (target_file_path,),
+            ).fetchone()
+            if row:
+                return row[0]
+        raise
 
 
 def initialize_file_lines(file_path: str, content: str, conn=None) -> dict[str, Any]:
@@ -64,17 +83,24 @@ def initialize_file_lines(file_path: str, content: str, conn=None) -> dict[str, 
         with get_db_connection() as conn:
             return _initialize_lines_impl(conn, file_path, content)
     except Exception as e:
-        log_error("file_editing", "initialize", "HIGH", str(e), file_path=file_path)
+        log_error("HIGH", "file_editing", "initialize", str(e), file_path=file_path)
         return {"status": "error", "message": str(e)}
 
 
 def _initialize_lines_impl(conn, file_path: str, content: str) -> dict[str, Any]:
-    # 1. Get or create file record
-    cursor = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (file_path,))
+    # 1. Get or create file record. file_path is UNIQUE, so reuse the existing
+    # row even when soft-deleted; resurrecting keeps one live row per path.
+    cursor = conn.execute(
+        "SELECT file_id, is_deleted FROM files WHERE file_path = ?",
+        (file_path,),
+    )
     row = cursor.fetchone()
 
     if row:
         file_id = row["file_id"] if hasattr(row, "keys") else row[0]
+        is_deleted = row["is_deleted"] if hasattr(row, "keys") else row[1]
+        if is_deleted:
+            conn.execute("UPDATE files SET is_deleted = 0 WHERE file_id = ?", (file_id,))
         # Delete existing lines (we're re-initializing)
         conn.execute("DELETE FROM file_lines WHERE file_id = ?", (file_id,))
     else:

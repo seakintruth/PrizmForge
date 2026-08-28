@@ -169,6 +169,101 @@ def git_config_env(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# File-id rules (PR-94 nits: UNIQUE race + is_deleted consistency)
+# ---------------------------------------------------------------------------
+
+
+class TestFileIdRules:
+    def test_reuses_and_resurrects_soft_deleted_path(self, git_config_env, temp_db):
+        from file_editing.db import get_db_connection
+        from file_editing.writer import _get_or_create_file_id_short, initialize_file_lines
+
+        with get_db_connection() as conn:
+            cur = conn.execute("INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk) VALUES ('pkg/old.py', 1, 1, 0)")
+            deleted_id = cur.lastrowid
+
+        # file_path is UNIQUE: the lookup must reuse the soft-deleted row,
+        # never attempt a second INSERT for the same path.
+        with get_db_connection() as conn:
+            assert _get_or_create_file_id_short(conn, "pkg/old.py") == deleted_id
+
+        # Re-initializing resurrects the row and rewrites its lines in place.
+        init = initialize_file_lines("pkg/old.py", "x = 1\ny = 2\n")
+        assert init["status"] == "success"
+        assert init["file_id"] == deleted_id
+        with get_db_connection() as conn:
+            row = conn.execute("SELECT file_id, is_deleted FROM files WHERE file_path = 'pkg/old.py'").fetchone()
+            assert int(row[1]) == 0
+            n = conn.execute(
+                "SELECT COUNT(*) FROM file_lines WHERE file_id = ? AND is_deleted = 0",
+                (deleted_id,),
+            ).fetchone()[0]
+            assert n == init["line_count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# Backlog drain picks the git_hook CRITICAL row first (PR-94 nit #4)
+# ---------------------------------------------------------------------------
+
+
+class TestBacklogDrain:
+    def test_git_hook_critical_drains_before_high(self, git_config_env, temp_db):
+        from datetime import datetime, timezone
+
+        from core.db_connection import get_db_connection
+        from workflow.backlog import apply_backlog_overrides, fetch_top_feedback
+
+        task_id = "bl_githook"
+        iso = datetime.now(timezone.utc).isoformat()
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO agent_feedback (agent_name, file_path, priority, category, message, task_id, addressed, timestamp) "
+                "VALUES ('jr_reviewer', 'warn.py', 'HIGH', 'style', 'minor formatting', ?, 0, ?)",
+                (task_id, iso),
+            )
+            conn.execute(
+                "INSERT INTO agent_feedback (agent_name, file_path, priority, category, message, suggestion, task_id, addressed, timestamp) "
+                "VALUES ('git_hook', 'pkg/app.py', 'CRITICAL', 'bug', 'git commit failed (code=1): pre-commit hook failed', "
+                "'Fix the pre-commit hook failure before continuing.', ?, 0, ?)",
+                (task_id, iso),
+            )
+            top = fetch_top_feedback(conn, task_id)
+            out = apply_backlog_overrides(task_id, {"next_agent": "background"}, conn)
+
+        assert top is not None
+        assert top[2] == "bug"  # agent category
+        assert top[3] == "pkg/app.py"
+        assert "git commit failed" in top[4]
+        assert out["next_agent"] == "developer"
+        assert out["files_needed"] == ["pkg/app.py"]
+        assert out["addressing_feedback_ids"] == [top[0]]
+        assert "pre-commit hook failure" in out["instructions"]
+
+    def test_multiple_critical_rows_pick_newest_unaddressed(self, git_config_env, temp_db):
+        from datetime import datetime, timedelta, timezone
+
+        from core.db_connection import get_db_connection
+        from workflow.backlog import fetch_top_feedback
+
+        task_id = "bl_multi"
+        base = datetime.now(timezone.utc)
+        with get_db_connection() as conn:
+            for i in (0, 1):
+                conn.execute(
+                    "INSERT INTO agent_feedback (agent_name, file_path, priority, category, message, task_id, addressed, timestamp) "
+                    "VALUES ('git_hook', ?, 'CRITICAL', 'bug', ?, ?, 0, ?)",
+                    (
+                        f"f{i}.py",
+                        f"git commit failed for f{i}",
+                        task_id,
+                        (base - timedelta(hours=i)).isoformat(),
+                    ),
+                )
+            top = fetch_top_feedback(conn, task_id)
+        assert top is not None and "f1" in top[3]
+
+
+# ---------------------------------------------------------------------------
 # Writer status semantics
 # ---------------------------------------------------------------------------
 
