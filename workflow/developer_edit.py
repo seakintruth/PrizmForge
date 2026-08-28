@@ -24,8 +24,8 @@ from core.index_context import load_symbol_json_context
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
 from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER, MODE_DIFF, MODE_FULL_REPLACE, MODE_GUID, next_fallback_mode, select_edit_mode
-from workflow.git_failure import record_git_failure
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
+from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict
 
 
 # =========================================================================
@@ -131,6 +131,22 @@ def _build_generation_prompt(
         joined,
         "",
     ]
+
+    # Environment card (§7.3): surface repo constraints (hooks, git) to the developer.
+    try:
+        from core.config import get_config
+        from core.repo_env import build_repo_env_card
+
+        _config = get_config()
+        parts.append(
+            "**Repository environment:**\n"
+            + build_repo_env_card(
+                _config.get("project_directory", "./project"),
+                bool(_config.get("git")),
+            )
+        )
+    except Exception as e:
+        print(f"    ⚠️  Exception handled in developer_edit.py (repo env card): {e}")
 
     # 🎯 PHASE 3 INJECTION: Check and inject Reviewer rejections into Developer prompt
     primary_target = requested_files[0] if requested_files else ""
@@ -460,68 +476,21 @@ def run_developer_mutation(  # noqa: C901
     - APPROVE only when the change is coherent and the resulting file would still be valid.
     """
 
-    reviewer_response = call_agent("reviewer", reviewer_prompt, task_id)
+    # Fail closed (shared with shell_developer): any missing or unparseable
+    # verdict REJECTs. The historical APPROVE default is removed. One
+    # same-prompt retry is allowed on an empty/unparseable verdict; a ``None``
+    # transport failure and a semantic REJECT are never retried.
+    verdict = request_review_verdict(reviewer_prompt, task_id)
+    post_reviewer_suggestions(proposal_id, task_id, verdict.suggestions)
 
-    decision_result = "APPROVE"
-    reason = ""
-    suggestions: list[str] = []
-    if reviewer_response:
-        try:
-            decision_data = json.loads(reviewer_response)
-            decision_result = str(decision_data.get("decision", "APPROVE")).upper()
-            reason = decision_data.get("reason", "")
-            suggestions = decision_data.get("suggestions") or []
-        except Exception:
-            decision_result = "APPROVE"
-            reason = "reviewer response not JSON; defaulting to APPROVE"
-
-    if suggestions:
-        suggestion_text = "\n".join([f"- {s}" for s in suggestions])
-        post_message(
-            "reviewer",
-            "prioritizer",
-            f"Suggestions from Reviewer for Proposal {proposal_id}:\n{suggestion_text}",
-            task_id,
-            "MEDIUM",
-        )
-
-    if decision_result == "REJECT":
-        print(f"   ❌ Reviewer rejected proposal: {reason}")
-        update_proposal_status(proposal_id, "rejected")
-
-        try:
-            with get_db_connection() as conn:
-                conn.execute(
-                    """
-                    INSERT INTO agent_feedback
-                    (task_id, file_path, agent_name, message, suggestion,
-                     priority, category, addressed, timestamp)
-                    VALUES (?, ?, 'reviewer', ?, ?, 'HIGH', 'review_rejection', 0, ?)
-                    """,
-                    (
-                        task_id,
-                        target_file_path,
-                        f"Proposal {proposal_id} REJECTED: {reason}",
-                        "; ".join(suggestions) if suggestions else None,
-                        datetime.now(timezone.utc).isoformat(),
-                    ),
-                )
-        except Exception as e:
-            print(f"   ⚠️ Failed to log reviewer rejection to feedback table: {e}")
-
-        publish_event(
-            "proposal.rejected",
-            source="reviewer",
-            task_id=task_id,
+    if verdict.rejected:
+        print(f"   ❌ Reviewer rejected proposal: {verdict.reason}")
+        handle_reviewer_rejection(
             proposal_id=proposal_id,
-            payload={"reason": reason},
-        )
-        post_message(
-            "reviewer",
-            "orchestrator",
-            f"Proposal {proposal_id} REJECTED.\nReason: {reason}",
-            task_id,
-            "HIGH",
+            target_file_path=target_file_path,
+            task_id=task_id,
+            reason=verdict.reason,
+            suggestions=verdict.suggestions,
         )
         return {
             "status": "rejected",
@@ -537,29 +506,13 @@ def run_developer_mutation(  # noqa: C901
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)
 
-    if mat.get("status") == "git_failed":
-        record_git_failure(mat, task_id, proposal_id)
-    elif mat.get("status") == "success":
-        publish_event(
-            "edit.materialized",
-            source="writer",
-            task_id=task_id,
-            proposal_id=proposal_id,
-            payload=mat if isinstance(mat, dict) else {},
-        )
-        progress["files_modified"] = progress.get("files_modified", 0) + 1
-        progress["materialize_successes"] = progress.get("materialize_successes", 0) + 1
+    from workflow.post_materialize import apply_materialize_outcome
+
+    mat_status = apply_materialize_outcome(mat, task_id=task_id, progress=progress)
+    if mat_status == "success":
         progress["last_file_change"] = current_turn
-    else:
-        publish_event(
-            "edit.failed",
-            source="writer",
-            task_id=task_id,
-            proposal_id=proposal_id,
-            payload=mat if isinstance(mat, dict) else {},
-        )
-        progress["edit_failures"] = progress.get("edit_failures", 0) + 1
-        print(f"   ⚠️  Materialize status: {mat}")
+    elif mat_status not in ("success", "git_failed"):
+        print(f"   ⚠️  Materialize status: {mat_status}")
 
     addressing_ids = decision.get("addressing_feedback_ids") or []
     if addressing_ids and mat.get("status") == "success":

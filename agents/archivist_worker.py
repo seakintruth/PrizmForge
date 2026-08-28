@@ -114,7 +114,11 @@ class ArchivistWorker:
                 summary_prompt = self._build_message_archive_prompt(messages)
                 response = call_agent("archivist", summary_prompt, self.current_task_id)
                 if response:
-                    self._save_message_archive(self.current_task_id, messages, response, conn=conn)
+                    saved = self._save_message_archive(self.current_task_id, messages, response, conn=conn)
+                    if not saved:
+                        # Keep originals on the bus; never swap real context
+                        # for an unparseable summary.
+                        return
                     message_ids = [msg["id"] for msg in messages]
                     placeholders = ",".join("?" * len(message_ids))
                     cursor.execute(
@@ -172,8 +176,7 @@ class ArchivistWorker:
                     )
                 summary_prompt = self._build_conversation_archive_prompt(conversations)
                 response = call_agent("archivist", summary_prompt, self.current_task_id)
-                if response:
-                    self._save_conversation_archive(self.current_task_id, conversations, response)
+                if response and self._save_conversation_archive(self.current_task_id, conversations, response):
                     print(f"    ✅ Archived {len(conversations)} conversation entries")
         except Exception as e:
             print(f"    ❌ Conversation archive error: {e}")
@@ -276,13 +279,15 @@ class ArchivistWorker:
         prompt += "Do NOT include file content summaries - focus on decisions and context."
         return prompt
 
-    def _save_message_archive(
-        self,
-        task_id: str,
-        messages: list[dict],
-        archivist_response: str,
-        conn: Any = None,
-    ) -> None:
+    @staticmethod
+    def _parse_archive_response(archivist_response: str) -> tuple[bool, str, str]:
+        """Return (parsed, summary, key_decisions) from an archivist response.
+
+        On failure returns (False, "", "") so callers can keep originals
+        instead of writing a "parse failed" placeholder row. Soak evidence
+        (2026-08-28): 35/36 archive batches produced junk summaries that were
+        then restored as context, so unparseable output must not be archived.
+        """
         try:
             if "```json" in archivist_response:
                 json_str = archivist_response.split("```json")[1].split("```")[0].strip()
@@ -295,12 +300,28 @@ class ArchivistWorker:
             data = json.loads(json_str)
             summary = data.get("summary", "Archived messages")
             key_decisions = json.dumps(data.get("key_decisions", []))
-            files_modified = "[]"
+            return True, str(summary), key_decisions
         except Exception as e:
-            summary = "Archived messages (parse failed)"
-            key_decisions = "[]"
-            files_modified = "[]"
             print(f"    ⚠️  Failed to parse archivist response: {e}")
+            return False, "", ""
+
+    def _save_message_archive(
+        self,
+        task_id: str,
+        messages: list[dict],
+        archivist_response: str,
+        conn: Any = None,
+    ) -> bool:
+        """Insert an archived-context row; False when the response was unparseable.
+
+        Returning False tells the caller to keep the original messages (the
+        message-bus path deletes them only after a row is actually written).
+        """
+        parsed, summary, key_decisions = self._parse_archive_response(archivist_response)
+        if not parsed:
+            print(f"    ⚠️  Skipping archive: unparseable archivist response ({len(messages)} messages kept)")
+            return False
+        files_modified = "[]"
         timestamps = [msg["timestamp"] for msg in messages]
         turn_range = f"{timestamps[0][:19]} to {timestamps[-1][:19]}" if timestamps else "N/A"
         query = """
@@ -322,9 +343,10 @@ class ArchivistWorker:
         else:
             with get_db_connection() as db_conn:
                 db_conn.execute(query, params)
+        return True
 
     def _save_conversation_archive(self, task_id: str, conversations: list[dict], archivist_response: str):
-        self._save_message_archive(task_id, conversations, archivist_response)
+        return self._save_message_archive(task_id, conversations, archivist_response)
 
 
 _archivist_worker = None

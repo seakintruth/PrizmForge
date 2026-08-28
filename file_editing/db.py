@@ -56,6 +56,7 @@ def log_error(
     proposal_id: str | None = None,
     line_guid: str | None = None,
     stack_trace: str | None = None,
+    agent_name: str | None = None,
 ) -> None:
     """
     Best-effort error logging that never blocks the caller.
@@ -81,8 +82,8 @@ def log_error(
         conn.execute(
             """
             INSERT INTO errors
-            (level, message, context, file_path, function_name, task_id, stack_trace)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (level, message, context, file_path, function_name, task_id, stack_trace, agent_name)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 severity,
@@ -94,12 +95,14 @@ def log_error(
                         "details": details,
                         "proposal_id": proposal_id,
                         "line_guid": line_guid,
+                        "agent_name": agent_name,
                     }
                 ),
                 file_path,
                 f"{component}.{category}",
                 task_id,
                 stack_trace,
+                agent_name,
             ),
         )
     except sqlite3.OperationalError as e:

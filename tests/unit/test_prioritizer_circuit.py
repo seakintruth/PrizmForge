@@ -66,6 +66,18 @@ def test_circuit_breaker_aborts_after_consecutive_failures(temp_db, monkeypatch)
     assert w.circuit_open_until > 0
 
 
+def test_circuit_open_publishes_surface_event(temp_db, monkeypatch):
+    """§8.4: every circuit open is recorded so reporters can surface it."""
+    from core.db_connection import get_db_connection
+
+    w, _calls = _make_worker(monkeypatch, fail_batches=False, n_items=150)
+    w._run_full_prioritization_cycle()
+
+    with get_db_connection() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM events WHERE type = 'prioritizer.circuit_open'").fetchone()[0]
+    assert count == 1
+
+
 def test_successful_batches_do_not_trip_breaker(temp_db, monkeypatch):
     w, calls = _make_worker(monkeypatch, fail_batches=True)  # True == success
     w._run_full_prioritization_cycle()

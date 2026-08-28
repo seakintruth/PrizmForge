@@ -733,7 +733,12 @@ If you cannot analyze the file, return:
                 severity="HIGH",
                 message=f"{agent_name} failed to return a response (API/Network error)",
                 task_id=task_id,
-                details=f"Prompt length: {len(prompt)} chars",
+                details={
+                    "prompt_length": len(prompt),
+                    "model": model,
+                    "agent_name": agent_name,
+                },
+                agent_name=agent_name,
             )
         except Exception as e:
             print(f"  ⚠️  Failed to log error: {e}")

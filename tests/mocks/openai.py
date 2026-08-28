@@ -23,6 +23,7 @@ CALL_AGENT_PATCH_TARGETS = (
     "agents.parallel_workers.call_agent",
     "workflow.task_runner.call_agent",
     "workflow.developer_edit.call_agent",
+    "agents.archivist_worker.call_agent",
 )
 
 

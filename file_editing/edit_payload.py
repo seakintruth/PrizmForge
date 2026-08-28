@@ -1,5 +1,6 @@
 # file_editing/edit_payload.py
 import json
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Literal
 
@@ -113,6 +114,22 @@ class CreateFile(BaseOperation):
 
 
 @dataclass(kw_only=True)
+class DeleteFile(BaseOperation):
+    """Governed whole-file deletion (mini-swe §4: the previously missing delete op).
+
+    Flips the governed store row + lines to is_deleted=1; materialize removes
+    the disk file and stages the deletion for commit.
+    """
+
+    target_file_path: str
+    type: Literal["delete_file"] = "delete_file"
+
+    def __post_init__(self):
+        super().__post_init__()
+        self.target_file_path = _validate_target_path(self.target_file_path)
+
+
+@dataclass(kw_only=True)
 class FindReplace(BaseOperation):
     """Simple find-and-replace operation. Preferred fallback under LLM constraints."""
 
@@ -166,7 +183,89 @@ class ApplyDiff(BaseOperation):
             raise ValueError("diff must be a non-empty string")
 
 
-Operation = ReplaceBlock | InsertAfter | DeleteLines | UpdateDocumentation | CreateFile | FindReplace | FullReplace | ApplyDiff
+Operation = ReplaceBlock | InsertAfter | DeleteLines | UpdateDocumentation | CreateFile | DeleteFile | FindReplace | FullReplace | ApplyDiff
+
+#: Canonical operation types accepted by EditPayload. Shared by the developer
+#: validator (Workstream D: "one schema, two gates") so an edit cannot be
+#: declared valid here and then rejected by proposal_builder.
+KNOWN_OPERATION_TYPES = frozenset(
+    {
+        "replace_block",
+        "insert_after",
+        "delete_lines",
+        "update_documentation",
+        "create_file",
+        "delete_file",
+        "find_replace",
+        "full_replace",
+        "apply_diff",
+    }
+)
+
+
+def _req_str(op: Any, key: str) -> str | None:
+    value = op.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return f"operation requires a non-empty '{key}' string"
+    return None
+
+
+def _req_any(op: Any, key: str) -> str | None:
+    if not isinstance(op.get(key), str) or not op.get(key):
+        return f"operation requires '{key}'"
+    return None
+
+
+def _validate_find_replace(op: Any) -> str | None:
+    if not isinstance(op.get("find"), str) or not op.get("find").strip():
+        return "find_replace operation requires a non-empty 'find' string"
+    if not isinstance(op.get("replace"), str):
+        return "find_replace operation requires a 'replace' string"
+    return None
+
+
+def _validate_full_replace(op: Any) -> str | None:
+    content = op.get("new_content")
+    ok = isinstance(content, str) and bool(content.strip())
+    ok = ok or (isinstance(content, list) and bool(content) and all(isinstance(c, str) for c in content))
+    if not ok:
+        return "full_replace operation requires non-empty 'new_content'"
+    return None
+
+
+#: Per-type required-field checks, mirroring the dataclass rules in this
+#: module, used by both the developer validator and proposal_builder.
+_OPERATION_CHECKS: dict[str, Callable[[Any], str | None]] = {
+    "replace_block": lambda op: _req_any(op, "start_line_guid"),
+    "insert_after": lambda op: None,
+    "delete_lines": lambda op: _req_any(op, "start_line_guid"),
+    "update_documentation": lambda op: _req_str(op, "new_content"),
+    "create_file": lambda op: _req_any(op, "target_file_path"),
+    "delete_file": lambda op: _req_any(op, "target_file_path"),
+    "find_replace": _validate_find_replace,
+    "full_replace": _validate_full_replace,
+    "apply_diff": lambda op: _req_str(op, "diff"),
+}
+
+
+def validate_operation(op: Any) -> str | None:
+    """Return an error message when an operation cannot build, else None.
+
+    Mirrors the required-field rules enforced by the dataclasses in this
+    module. Non-dict values, missing ``type``, unknown type names (e.g. the
+    legacy ``guid`` mode name), and missing per-type required fields all
+    produce a message so the caller can fail the payload before any proposal
+    is created.
+    """
+    if not isinstance(op, dict):
+        return "operation must be an object/dictionary"
+    op_type = op.get("type")
+    if not op_type:
+        return "operation is missing required 'type' field"
+    check = _OPERATION_CHECKS.get(op_type)
+    if check is None:
+        return f"unknown operation type: {op_type!r}"
+    return check(op)
 
 
 @dataclass(kw_only=True)
@@ -207,7 +306,7 @@ class EditPayload:
         return cls.model_validate(data)
 
     @classmethod
-    def model_validate(cls, data: dict[str, Any]) -> "EditPayload":
+    def model_validate(cls, data: dict[str, Any]) -> "EditPayload":  # noqa: C901
         ops = []
         for i, op_data in enumerate(data.get("operations", [])):
             if not isinstance(op_data, dict):
@@ -232,6 +331,8 @@ class EditPayload:
                         op_kwargs["rationale"] = "Update documentation"
                     elif op_type == "create_file":
                         op_kwargs["rationale"] = "Create new file"
+                    elif op_type == "delete_file":
+                        op_kwargs["rationale"] = "Delete file"
                     elif op_type == "find_replace":
                         op_kwargs["rationale"] = "Find and replace text"
                     elif op_type == "full_replace":
@@ -246,6 +347,7 @@ class EditPayload:
                     "delete_lines": DeleteLines,
                     "update_documentation": UpdateDocumentation,
                     "create_file": CreateFile,
+                    "delete_file": DeleteFile,
                     "find_replace": FindReplace,
                     "full_replace": FullReplace,
                     "apply_diff": ApplyDiff,

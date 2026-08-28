@@ -1,7 +1,7 @@
 # Unattended Closed-Loop Hardening Plan
 
-**Status:** planning capture (2026-08-16; updated with diagnostic dump)  
-**Progress tracker:** no workstream has shipped yet — all acceptance criteria in §3–§8 are unchecked/open. Update this header and tick the §16 checklist items as phases land.  
+**Status:** planning capture (2026-08-16; updated with diagnostic dump); **Workstreams A–F ALL SHIPPED** (2026-08-28): A in PR #94, B–F landed in subsequent closed-loop rounds (git/hook failure loop, test-parity, gate consolidation + §P1–P3, repo policy awareness, observability, §8.4 busy-loop guard, governed `delete_file`, §7.2 in-process ruff pre-check). Single source of truth: `docs/ROADMAP_TODO.md`.  
+**Progress tracker:** §3.7/§9 (A) and all workstream acceptance checkboxes ticked; §15 decisions recorded (decision 5 resolved); §16 checklist current. Open items — optional post-materialize `test_command` re-run (intentionally deferred), mini-swe live-model validation + enclave sandboxing (blocked on endpoints/controls) — tracked in the ROADMAP.  
 **Context:** Self-edit unattended runs on a *copy* of PrizmForge (Gemini; multi-hour soaks)  
 **Goal:** Turn observed failure modes into durable product workstreams so future development does not rediscover them ad hoc.
 
@@ -138,10 +138,10 @@ approve → write disk → git add/commit (if enabled)
 
 ### 3.7 Acceptance criteria
 
-- [ ] Unit test: mock git failure → materialize result not `success`; event emitted; feedback row created.
-- [ ] Integration: intentional syntax break → next developer prompt includes hook excerpt.
-- [ ] Ignored paths (`config.json`): explicit branch — skip git or fail with clear “path is gitignored” message, never silent success.
-- [ ] Diagnostic dump: at least one non-success path visible under events/errors after a forced hook failure.
+- [x] Unit test: mock git failure → materialize result not `success`; event emitted; feedback row created. — **Done in PR #94** (`tests/unit/test_git_closed_loop.py`: materialize returns `git_failed`, `edit.git_failed` event, single CRITICAL feedback row deduped by proposal_id).
+- [x] Integration: intentional syntax break → next developer prompt includes hook excerpt. — **Done in PR #94**: `record_git_failure` (workflow/git_failure.py) puts the hook stderr excerpt (≤500 chars) into the CRITICAL feedback message; backlog drain feeds it to the next developer turn (`addressing_feedback_ids`). Live smoke run still pending (see ROADMAP §3 residuals).
+- [ ] Ignored paths (`config.json`): explicit branch — skip git or fail with clear "path is gitignored" message, never silent success. — Open (see §15 decision 3: gitignored config stays human-only).
+- [ ] Diagnostic dump: at least one non-success path visible under events/errors after a forced hook failure. — Open; blocked on Workstream F dump sections (§8.2). `git_fail` counter present in task summary.
 
 ### 3.8 Non-goals
 
@@ -190,9 +190,9 @@ Exact thresholds should be config (`feedback.tiers`).
 
 ### 4.6 Acceptance criteria
 
-- [ ] Synthetic test: insert 100 near-duplicate findings → ≤ K rows retained.
-- [ ] At simulated unaddressed>200, agent pool does not start random feeder reviews.
-- [ ] Metrics in project report: unaddressed, posted_this_hour, addressed_this_hour, stuck_ids.
+- [x] Synthetic test: insert 100 near-duplicate findings → ≤ K rows retained.
+- [x] At simulated unaddressed>200, agent pool does not start random feeder reviews.
+- [x] Metrics in project report: unaddressed, posted_this_hour, addressed_this_hour, stuck_ids.
 
 ---
 
@@ -230,8 +230,8 @@ materialize success(path, proposal_id)
 
 ### 5.5 Acceptance criteria
 
-- [ ] After mock successful materialize, exactly one high-priority queue entry for that path (or bounded set).
-- [ ] After git failure, no “celebration” counters; developer receives path list from parsed ruff output when possible.
+- [x] After mock successful materialize, exactly one high-priority queue entry for that path (or bounded set).
+- [x] After git failure, no “celebration” counters; developer receives path list from parsed ruff output when possible.
 
 ---
 
@@ -260,9 +260,9 @@ Align “valid edit” with “proposal_builder will accept,” and harden phase
 
 ### 6.4 Acceptance criteria
 
-- [ ] Table tests: op type `guid` → invalid.
-- [ ] Table tests: `find_replace` without find → invalid.
-- [ ] No proposal row created for invalid ops.
+- [x] Table tests: op type `guid` → invalid.
+- [x] Table tests: `find_replace` without find → invalid.
+- [x] No proposal row created for invalid ops.
 
 ---
 
@@ -274,10 +274,10 @@ Agents must know **repo constraints** that are not in Python schemas.
 
 ### 7.2 Items
 
-- Respect `.gitignore` for commit targets; avoid editing secrets (`api_key.json`) — indexer should skip or redact.
-- **Diagnostic:** line-count listing included `api_key.json` and `.ruff_cache/*` — exclude from agent file lists / truncation candidates.
-- Detect pre-commit presence; surface “this repo enforces ruff on commit” in developer system context when git enabled.
-- Optional: run `ruff check` on touched files **in-process** before git for faster feedback (hook remains authoritative).
+- [x] Respect `.gitignore` for commit targets; avoid editing secrets (`api_key.json`) — indexer should skip or redact. — `.gitignore` integration shipped (§1); `is_secret_path` now short-circuits `sync_file_to_database`.
+- [x] **Diagnostic:** line-count listing included `api_key.json` and `.ruff_cache/*` — exclude from agent file lists / truncation candidates. — `show_file_line_counts` + background file-queue filter via `should_ignore_file`/`is_secret_path`.
+- [x] Detect pre-commit presence; surface “this repo enforces ruff on commit” in developer system context when git enabled. — `core/repo_env.py` env card injected into `_build_generation_prompt`.
+- [x] Optional: run `ruff check` on touched files **in-process** before git for faster feedback (hook remains authoritative). — `file_editing/in_process_ruff_check` config gate; `edit.lint_failed` event + single CRITICAL feedback per proposal, status `lint_failed` skips git. Tests: `tests/unit/test_lint_precheck.py`.
 
 ### 7.3 Patterns
 
@@ -297,11 +297,11 @@ Make unattended runs diagnosable without reading a 50k-line console scroll.
 |----------|---------|
 | `.PrizmForge/reports/git-commit-*.log` | Full hook output per attempt |
 | `events` table | `edit.materialized`, `edit.git_failed`, `feedback.deduped`, `backlog.tier_changed` |
-| `file_write_log` | Populate `started_at` / `completed_at`; distinguish disk vs git outcome if split |
+| `file_write_log` | Populate `started_at` / `completed_at`; distinguish disk vs git outcome if split — timestamps populated on every write (success + error); no split (git outcome lives in proposal status + events) |
 | `errors` table | Network/API already logged as HIGH; add CRITICAL (or HIGH) for hook failures |
-| Project reporter | Unaddressed, burn rate, materialize success ratio, fallback rate, stuck feedback ids, git_fail count |
+| Project reporter | Unaddressed, burn rate, materialize success ratio, fallback rate, stuck feedback ids, git_fail count — reporter now embeds backlog metrics + run metrics (materialize ratio, fallback rate, git_fail, circuit opens) |
 | Checkpoint | Last git failure summary for resume |
-| Diagnostic dump | Sections for git/hook outcomes; hide secrets from line-count / file lists |
+| Diagnostic dump | Sections for git/hook outcomes; hide secrets from line-count / file lists — `show_git_failures` in FULL DIAGNOSTIC DUMP; `show_file_line_counts` filters secrets/caches |
 
 ### 8.3 Patterns
 
@@ -312,7 +312,7 @@ Make unattended runs diagnosable without reading a 50k-line console scroll.
 ### 8.4 API / network resilience (from error streak)
 
 - Diagnostic shows repeated orchestrator/developer API failures with no CRITICAL escalation and no “pause task / surface to human” beyond existing proxy pause behavior.
-- Follow-up (not Phase 1 blocking): circuit-breaker metrics in reporter; avoid busy-looping iterations when both sequential agents fail network in the same turn.
+- Follow-up (not Phase 1 blocking): circuit-breaker metrics in reporter — shipped (prioritizer publishes `prioritizer.circuit_open` events; reporter counts them); busy-loop avoidance on repeated sequential-agent network failures — shipped (`NetworkBusyLoopGuard` pauses one iteration + single CRITICAL per outage episode; `tests/unit/test_network_busy_loop.py`).
 
 ---
 
@@ -320,17 +320,18 @@ Make unattended runs diagnosable without reading a 50k-line console scroll.
 
 ### Phase 0 — Stabilize the copy under test (operator)
 
-- Stop the run or let it idle on proxy errors.
-- Manually fix or revert poison files (`core/agent_schemas.py`).
-- Snapshot DB + git log for postmortem (retain FULL DIAGNOSTIC DUMP).
+- [x] Stop the run or let it idle on proxy errors.
+- [x] Manually fix or revert poison files (`core/agent_schemas.py`).
+- [x] Snapshot DB + git log for postmortem (retain FULL DIAGNOSTIC DUMP).
+- Note: done during the 2026-08-25 soak.
 
 ### Phase 1 — Git closed loop (highest ROI)
 
-1. Capture subprocess output in git path.
-2. Fail materialize on non-zero hook when git enabled.
-3. CRITICAL feedback + `edit.git_failed` event + errors row.
-4. Stop emitting unqualified `edit.materialized` success when git failed.
-5. Tests + confirm dump shows the failure.
+1. [x] Capture subprocess output in git path. — PR #94 (`utils/git_operations.py::git_commit` → `{ok, attempted, code, stage, stdout, stderr, file_path, commit_hash}`)
+2. [x] Fail materialize on non-zero hook when git enabled. — PR #94 (`materialize_proposal()` → `status="git_failed"`)
+3. [x] CRITICAL feedback + `edit.git_failed` event + errors row. — PR #94 (`workflow/git_failure.py`, deduped by proposal_id)
+4. [x] Stop emitting unqualified `edit.materialized` success when git failed. — PR #94
+5. [x] Tests (12 in `tests/unit/test_git_closed_loop.py`) — [x] confirm dump shows the failure (FULL DIAGNOSTIC DUMP `show_git_failures`).
 
 ### Phase 2 — Edit validation alignment
 
@@ -354,9 +355,9 @@ Make unattended runs diagnosable without reading a 50k-line console scroll.
 
 ### Phase 5 — Repo policy + observability polish
 
-1. Gitignore-aware targeting; exclude secrets/cache from agent file lists.
-2. Fill `file_write_log` timestamps; reporter metrics; dump sections.
-3. Docs in `docs/architecture.md` (short subsection + link here).
+1. [x] Gitignore-aware targeting; exclude secrets/cache from agent file lists. — `is_secret_path`/`should_ignore_file` in indexer, dump listing, background queue.
+2. [x] Fill `file_write_log` timestamps; reporter metrics; dump sections.
+3. [x] Docs in `docs/architecture.md` (short subsection + link here).
 
 ---
 
@@ -450,6 +451,7 @@ After Phases 1–4, a 1–2h unattended run should show:
 3. Is `config.json` ever a legitimate agent edit target in project mode, or always human-only?
 4. Should reviewer see hook output on a second pass, or only developer?
 5. Should API/network failure streaks auto-pause the task cycle (beyond proxy wait) and write a single CRITICAL summary?
+   - **Resolved**: yes — `NetworkBusyLoopGuard` (workflow/task_runner.py) pauses scheduling for one iteration after two consecutive network-grade agent failures and writes one CRITICAL summary per outage episode (tests/unit/test_network_busy_loop.py).
 
 Default recommendations if undecided:
 

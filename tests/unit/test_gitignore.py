@@ -106,9 +106,29 @@ def test_file_operations_hardcoded_ignores(tmp_path: Path, monkeypatch):
     assert should_ignore_file("__pycache__/x.pyc") is True
     assert should_ignore_file(".venv/bin/python") is True
     assert should_ignore_file("reports/foo.md") is True
+    assert should_ignore_file(".ruff_cache/x.py") is True
     # normal source not ignored by hardcoded rules (no .gitignore at cwd root here,
     # and path is relative → resolve() may land outside any root; fail open)
     assert isinstance(should_ignore_file("core/config.py"), bool)
+
+
+def test_sync_file_to_database_skips_secrets(tmp_path, monkeypatch, temp_db):
+    """§7.2: indexer never ingests api_key.json / .env into project_files."""
+    from core.db_connection import get_db_connection
+    from core.file_operations import sync_file_to_database
+
+    monkeypatch.setattr(
+        "core.file_operations.get_config",
+        lambda: {"file_operations": {"ignore_patterns": []}, "project_directory": str(tmp_path)},
+    )
+
+    assert sync_file_to_database("api_key.json", '{"key": "x"}') is False
+    assert sync_file_to_database(".env", "SECRET=1") is False
+    assert sync_file_to_database("secrets.py", "TOKEN='abc'") is False
+
+    with get_db_connection() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM project_files").fetchone()[0]
+    assert count == 0
 
 
 def test_consolidate_respects_gitignore(project_root: Path):

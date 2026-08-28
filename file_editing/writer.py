@@ -2,7 +2,9 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -151,6 +153,99 @@ def _resolve_contained_path(file_path: str, project_dir: Path) -> Path:
     except ValueError as e:
         raise ValueError(f"Path escapes project directory: {file_path!r} → {resolved} (root={root})") from e
     return resolved
+
+
+def _delete_file_from_disk(file_path: str, project_dir: Path) -> dict[str, Any]:
+    """Remove a governed-deleted file from disk (contained)."""
+    try:
+        resolved = _resolve_contained_path(file_path, project_dir)
+        if resolved.exists():
+            resolved.unlink()
+        return {"status": "success", "file_path": str(resolved)}
+    except ValueError as e:
+        log_error("file_editing", "writer", "HIGH", str(e))
+        return {"status": "error", "message": str(e)}
+
+
+def _run_ruff_precheck(path: Path | None, project_dir: Path, rel_path: str) -> dict[str, Any]:
+    """Optional in-process ruff pre-check before git (plan §7.2).
+
+    Fast-feedfback fast-path only: the pre-commit hook remains authoritative
+    when git is enabled. Returns ``{}`` when disabled via
+    ``file_editing.in_process_ruff_check`` or when ruff is unavailable, so the
+    git-only path is unchanged.
+    """
+    try:
+        from core.config import get_config
+
+        cfg = get_config().get("file_editing", {}) or {}
+        if not cfg.get("in_process_ruff_check"):
+            return {}
+    except Exception:
+        return {}
+    if path is None or not path.exists():
+        return {}
+    try:
+        proc = subprocess.run(
+            ["ruff", "check", str(path)],
+            cwd=project_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return {}
+    if proc.returncode == 0:
+        return {"attempted": True, "ok": True}
+    return {
+        "attempted": True,
+        "ok": False,
+        "code": proc.returncode,
+        "stderr": (proc.stdout or "") + (proc.stderr or ""),
+        "file_path": rel_path,
+    }
+
+
+def _record_lint_failure(task_id: str | None, proposal_id: str, lint_result: dict[str, Any]) -> None:
+    """Surface an in-process ruff pre-check failure after the write transaction.
+
+    Runs post-commit (mirroring the git-failure log placement): the feedback /
+    event INSERTs use their own connections and would deadlock inside the open
+    materialize transaction.
+    """
+    from core.db_connection import get_db_connection as _core_db
+    from core.db_helpers import save_agent_feedback
+    from core.events import publish_event
+
+    publish_event(
+        "edit.lint_failed",
+        source="writer",
+        task_id=task_id,
+        proposal_id=proposal_id,
+        payload=lint_result,
+    )
+    excerpt = (lint_result.get("stderr") or "")[:500]
+    try:
+        with _core_db() as conn:
+            existing = conn.execute(
+                "SELECT id FROM agent_feedback WHERE file_event_id = ? LIMIT 1",
+                (proposal_id,),
+            ).fetchone()
+        if not existing:
+            save_agent_feedback(
+                agent_name="ruff_precheck",
+                file_path=lint_result.get("file_path") or "",
+                priority="CRITICAL",
+                category="bug",
+                message=f"in-process ruff pre-check failed (code={lint_result.get('code')}): {excerpt}",
+                suggestion="Fix the ruff violations before continuing.",
+                task_id=task_id or "",
+                file_event_id=proposal_id,
+            )
+    except Exception as e:
+        log_error("MEDIUM", "file_editing", "lint_feedback", f"Failed to record lint feedback: {e}", proposal_id=proposal_id)
+    print(f"   🔴 In-process ruff pre-check failed (code={lint_result.get('code')})")
+    print(f"      Excerpt: {excerpt[:200]}")
 
 
 def write_file_to_disk(file_path: str, content: str, proposal_id: str | None = None) -> dict[str, Any]:
@@ -316,14 +411,23 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         write_results = []
         task_id = proposal["task_id"] if "task_id" in proposal.keys() else None
         git_failed = None
+        lint_failed = None
 
         for target_path in affected_paths:
             op_file_id = before_state[target_path]["file_id"]
             content_after = reconstruct_file_content(conn, op_file_id) or ""
             hash_after = _compute_hash(content_after)
 
-            res = write_file_to_disk(target_path, content_after, proposal_id)
+            _deleted_row = conn.execute("SELECT is_deleted FROM files WHERE file_id = ?", (op_file_id,)).fetchone()
+            is_deleted = bool(_deleted_row[0] if _deleted_row else 0)
+
+            write_started_at = datetime.now().isoformat()
+            if is_deleted:
+                res = _delete_file_from_disk(target_path, project_dir)
+            else:
+                res = write_file_to_disk(target_path, content_after, proposal_id)
             write_results.append(res)
+            write_completed_at = datetime.now().isoformat()
 
             if res.get("status") == "success":
                 # ----------------------------------------------------------
@@ -361,14 +465,16 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                             proposal_id=proposal_id,
                         )
 
-                # Update files table
+                # Update files table (skipped for deletions — row stays is_deleted)
+                if not is_deleted:
+                    conn.execute(
+                        "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
+                        (op_file_id,),
+                    )
+                write_log_status = "deleted" if is_deleted else "success"
                 conn.execute(
-                    "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
-                    (op_file_id,),
-                )
-                conn.execute(
-                    "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'success')",
-                    (proposal_id, op_file_id),
+                    "INSERT INTO file_write_log (proposal_id, file_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, ?)",
+                    (proposal_id, op_file_id, write_log_status, write_started_at, write_completed_at),
                 )
 
                 # ----------------------------------------------------------
@@ -404,12 +510,22 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     )
 
                 # ----------------------------------------------------------
+                # Optional in-process ruff pre-check (plan §7.2)
+                # ----------------------------------------------------------
+                precheck = {}
+                if lint_failed is None:
+                    precheck = _run_ruff_precheck(resolved_path, project_dir, rel_path or target_path)
+                    if precheck.get("attempted") and not precheck.get("ok"):
+                        lint_failed = precheck
+
+                # ----------------------------------------------------------
                 # Git add + commit using the structured git_commit() helper
                 # ----------------------------------------------------------
-                if resolved_path is not None and rel_path is not None:
+                if lint_failed is None and resolved_path is not None and rel_path is not None:
                     git_result = git_commit(
                         rel_path,
                         f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
+                        delete=is_deleted,
                     )
                     if not git_result.get("ok") and git_result.get("attempted"):
                         # Keep the FIRST failure: a later file's success must
@@ -423,8 +539,8 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     (proposal_id,),
                 )
                 conn.execute(
-                    "INSERT INTO file_write_log (proposal_id, file_id, status) VALUES (?, ?, 'error')",
-                    (proposal_id, op_file_id),
+                    "INSERT INTO file_write_log (proposal_id, file_id, status, started_at, completed_at) VALUES (?, ?, 'error', ?, ?)",
+                    (proposal_id, op_file_id, write_started_at, write_completed_at),
                 )
 
         # Invalidate overlapping proposals (existing logic)
@@ -435,6 +551,8 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         overall_success = all(r.get("status") == "success" for r in write_results)
         if not overall_success:
             status = "error"
+        elif lint_failed is not None:
+            status = "lint_failed"
         elif git_failed is not None:
             status = "git_failed"
         else:
@@ -454,10 +572,25 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             task_id=task_id,
         )
 
+    # Surface the lint failure AFTER the write transaction has committed
+    # (same reasoning as the git log below).
+    if lint_failed is not None:
+        log_error(
+            "CRITICAL",
+            "file_editing",
+            "ruff_precheck",
+            f"in-process ruff pre-check failed (code={lint_failed.get('code')}): " + (lint_failed.get("stderr") or "")[:500],
+            proposal_id=proposal_id,
+            file_path=lint_failed.get("file_path"),
+            task_id=task_id,
+        )
+        _record_lint_failure(task_id, proposal_id, lint_failed)
+
     return {
         "status": status,
         "proposal_id": proposal_id,
         "materialized_files": list(affected_paths),
         "results": write_results,
         "git_failed": git_failed,
+        "lint_failed": lint_failed,
     }

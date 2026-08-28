@@ -16,6 +16,7 @@ result table; writes fail by virtue of the read-only connection.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -223,7 +224,7 @@ def show_edit_proposals(task_id: str | None = None, limit: int = 40, full_replac
     ]
 
     print(f"\n{'=' * 80}")
-    print(f"📦 Edit Proposals (full_replace / fallback only) — {len(rows)} rows")
+    print(f"📦 Edit Proposals — {len(rows)} rows")
     print(f"{'=' * 80}\n")
     _print_table(headers, table_rows)
     conn.close()
@@ -312,14 +313,59 @@ def show_file_line_counts(limit: int = 30):
            LEFT JOIN file_lines fl ON fl.file_id = f.file_id AND fl.is_deleted = 0
            WHERE f.is_deleted = 0
            GROUP BY f.file_id, f.file_path
-           ORDER BY line_count ASC
-           LIMIT ?""",
-        (limit,),
+           ORDER BY line_count ASC""",
     )
+    # Exclude secrets / ignored cache (Workstream E §7.2): these are the
+    # agent truncation candidates, so api_key.json / .ruff_cache must not leak.
+    filtered = [r for r in rows if not _is_sensitive_or_ignored(r[0])]
+    rows = filtered[:limit]
     print(f"\n{'=' * 80}")
     print(f"📏 Current line counts (lowest first — potential truncation candidates) — {len(rows)} files")
     print(f"{'=' * 80}\n")
     _print_table(["file_path", "line_count"], rows)
+    conn.close()
+
+
+def _is_sensitive_or_ignored(path: str) -> bool:
+    """True for secret files and git/cache-ignored paths (Workstream E §7.2)."""
+    if not path:
+        return True
+    try:
+        from core.file_operations import is_secret_path, should_ignore_file
+
+        return bool(should_ignore_file(path) or is_secret_path(path))
+    except Exception:
+        return False
+
+
+def show_git_failures(limit: int = 20):
+    """Dump git/hook failure outcomes: events + linked CRITICAL feedback."""
+    conn, cur, _, _ = _get_db()
+    events = _q(
+        cur,
+        """SELECT ts, proposal_id, source, payload_json
+           FROM events
+           WHERE type = 'edit.git_failed'
+           ORDER BY ts DESC
+           LIMIT ?""",
+        (limit,),
+    )
+    print(f"\n{'=' * 80}")
+    print(f"🔴 GIT / HOOK OUTCOMES (edit.git_failed) — {len(events)} rows")
+    print(f"{'=' * 80}\n")
+    if not events:
+        print("   No git-failure events recorded.")
+    for ts, proposal_id, _source, payload_json in events:
+        payload = {}
+        try:
+            payload = json.loads(payload_json) if payload_json else {}
+        except (json.JSONDecodeError, TypeError):
+            pass
+        stage = payload.get("stage", "?")
+        code = payload.get("code", "?")
+        file_path = payload.get("file_path", "")
+        excerpt = (payload.get("stderr") or "")[:80].replace("\n", " ")
+        print(f"   {ts} | proposal {proposal_id} | {stage} exit={code} | {file_path} | {excerpt}")
     conn.close()
 
 
@@ -565,20 +611,48 @@ def run_model_health(limit: int = 30):
     return 0
 
 
+def _print_data_window() -> None:
+    """Print the newest timestamp recorded in the diagnostic tables.
+
+    Guards against stale/copied DB snapshots: a dump whose funnel diverges
+    from the live DB is immediately visible because the record watermark is
+    printed up front.
+    """
+    conn, cur, _, _ = _get_db()
+    newest = "N/A"
+    for table, col in (
+        ("errors", "timestamp"),
+        ("events", "timestamp"),
+        ("edit_proposals", "created_at"),
+        ("file_write_log", "log_id"),
+        ("tasks", "updated_at"),
+    ):
+        try:
+            row = cur.execute(f"SELECT MAX({col}) FROM {table}").fetchone()
+        except sqlite3.Error:
+            continue
+        if row and row[0] and (newest == "N/A" or str(row[0]) > newest):
+            newest = str(row[0])
+    conn.close()
+    print(f"   📆 data window: latest record seen {newest}")
+
+
 def run_full_diagnostic(task_id: str | None = None, limit: int = 40):
     """Convenience command that dumps the most useful diagnostic views."""
     print("\n" + "=" * 80)
     print("🔬 FULL DIAGNOSTIC DUMP")
     print("=" * 80)
+    _print_data_window()
 
     show_run_effectiveness(task_id=task_id)
-    show_edit_proposals(task_id=task_id, limit=limit, full_replace_only=True)
+    show_edit_proposals(task_id=task_id, limit=limit)
     show_file_write_log(limit=limit)
     show_errors(level="HIGH", limit=30)
     show_errors(level="CRITICAL", limit=20)
     show_errors(keyword="full_replace", limit=20)
     show_errors(keyword="materialize", limit=20)
     show_edit_events(limit=60)
+    show_git_failures(limit=20)
     show_file_line_counts(limit=30)
 
     print("\n" + "=" * 80)

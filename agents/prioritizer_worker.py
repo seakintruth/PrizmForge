@@ -12,6 +12,7 @@ from agents.base import call_agent
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
+from core.events import publish_event
 from core.index_context import load_index_text, load_symbol_json_context
 from core.json_parser import parse_json_response
 
@@ -428,6 +429,15 @@ class PrioritizerWorker:
                     self.circuit_open_until = time.time() + self.circuit_cooldown_seconds
                     remaining_batches = (len(uncategorized) - i - 30) // 30 + (1 if (len(uncategorized) - i - 30) % 30 else 0)
                     print(f"    ⚡ Circuit OPEN for {self.circuit_cooldown_seconds}s — aborting {remaining_batches} remaining batch(es)")
+                    # §8.4: surface breaker events for reporter / diagnostic metrics.
+                    publish_event(
+                        "prioritizer.circuit_open",
+                        source="prioritizer_worker",
+                        payload={
+                            "cooldown_seconds": self.circuit_cooldown_seconds,
+                            "consecutive_failures": self.consecutive_batch_failures,
+                        },
+                    )
                     break
 
             if probe_only:

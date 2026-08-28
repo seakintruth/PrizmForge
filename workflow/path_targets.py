@@ -18,6 +18,22 @@ _FILES_NEEDED_LINE = re.compile(r"FILES_NEEDED:\s*(.+?)(?:\n|$)", re.IGNORECASE)
 
 _PROSE_FILE = re.compile(r"(?:^|\s|`)([A-Za-z0-9_./\\-]+\.(?:py|json|js|txt|md|html|css|yaml|yml|sh))(?:$|\s|`|[,;])")
 
+# ruff/flake8-style diagnostics: "<path>:<line>[:<col>]: <code> <message>"
+_HOOK_CITED_FILE = re.compile(r"(?m)^\s*([A-Za-z0-9_./\\-]+\.(?:py|json|js|txt|md|html|css|yaml|yml|sh))(?::\d+){1,2}(?::|\s|$)")
+
+
+def parse_hook_cited_files(stderr: str | None, *, max_files: int = 5) -> list[str]:
+    """Extract developer-target paths from pre-commit hook diagnostics.
+
+    Parses ruff/flake8-style ``path:line:col:`` lines so a git failure can hand
+    the next developer turn the exact files to fix instead of a broad sweep
+    (plan §5.3). Every token is sanitized through sanitize_path_token.
+    """
+    if not stderr:
+        return []
+    found = [sanitize_path_token(m.group(1)) for m in _HOOK_CITED_FILE.finditer(stderr)]
+    return list(dict.fromkeys(p for p in found if p))[:max_files]
+
 
 def sanitize_path_token(raw: str | None) -> str | None:
     """

@@ -1,7 +1,8 @@
 # TODO: Incorporate mini-swe-agent as the Developer Agent
 
-Status: **Implemented (beta) — pending real-model validation**
-Date: 2026-08-23
+Status: **Implemented (beta) — pending real-model validation**  
+Date: 2026-08-23  
+Note (2026-08-28): feature branch merged into `main`; hardened through review, cold-start, and soak process-eval rounds (gates 616 → 623 → 693 → 724; soak round #2 evidence below). Open follow-ups are tracked in `docs/ROADMAP_TODO.md` §4.
 
 ---
 
@@ -44,7 +45,7 @@ natively inside PrizmForge.
 - **Worktree isolation** (`ShellWorktree`): one disposable worktree per session,
   subdirectory-aware (project_directory may sit inside the repo root); changes
   collected via `git diff --cached --name-status -z`; renames mapped to destination;
-  deletions skipped with a warning (no governed delete operation exists yet);
+  deletions mapped to the governed `delete_file` operation;
   guaranteed cleanup in `finally`.
 - **Governed handoff**: changed files become EditPayload proposals
   (`create_file` / `full_replace`) via the existing
@@ -232,8 +233,10 @@ immediate REDIRECT) on iteration 1 — not two rounds of `background` — and no
    only worktree-internal changes are collected. For enclave deployment, pair with
    external sandboxing (container/approved workstation controls).
 2. **Reviewer sees evidence, not independent execution**: gate reviews the unified
-   diff plus the session's own test run. A future hardening step could re-run
-   `test_command` after materialize as a deployment-validator trigger.
+   diff plus the session's own test run. A post-materialize `test_command` re-run as a
+   deployment-validator trigger is documented as intentionally deferred in the roadmap
+   (optional hardening; overlaps shipped Workstream C). The §7.2 in-process `ruff`
+   pre-check provides the cheap fast-feedback gate instead.
 3. **Legacy developer path still fails open**: `developer_edit.py` defaults to
    APPROVE on missing/unparseable reviewer verdicts (pre-existing behavior,
    unchanged in this round). Fold into the gate-consolidation item below.
@@ -303,3 +306,47 @@ Per review, idle parking was replaced with active resilience:
 
 Verified: 9 new/updated unit tests; full gate 693 passed; ruff clean; mypy
 zero new errors.
+
+
+
+## Soak Process-Evaluation Round #2 (2026-08-28)
+
+Evidence source: `PrizmForgeSoak_target_8/.PrizmForge/agents.db`, ~8h
+unattended run — live DB queries (read-only), not the preserved dump. The
+dump snapshot was already stale (8/5/3 vs the live 9/6/3), which is precisely
+the class of divergence R2b guards against.
+
+Soak headline numbers (as of 2026-08-28, task_001 completed 04:10 via
+max_turns exit with 4 files modified; task_002 in flight):
+
+- **Proposal acceptance 67%** (9 proposals / 6 applied / 3 rejected).
+- **All 3 rejects were infra-class** (empty/unparseable reviewer verdicts),
+  including the *correct* SQL-injection fix for `cli/commands.py`
+  (feedback #318/319/320) — valid, security-relevant work shelved by one
+  blank reviewer stream. The 6th apply (`workflow/backlog.py`, 11:24) fixed
+  the seed-task feedback leak feeding `BACKLOG OVERRIDE` (#317).
+- **35/36 `archived_context` rows** were `summary LIKE '%parse failed%'`
+  placeholders — junk summaries standing in for real archived context.
+- **128/128 network-error rows** had `agent_name = NULL` — the API storm
+  could not be attributed to any single agent.
+- ~1,923 calls / ~11.7M tokens in the sampled window; `endpoint_fallbacks`:
+  developer ×7, prioritizer ×2, key_locked ×1, token_exhausted ×1.
+
+### Findings → Fixes
+
+| # | Finding (evidence) | Fix |
+|---|--------------------|-----|
+| R1 | Diagnostic dump filtered proposals to `full_replace`, hiding the shell-session proposals (`selected_mode = 'shell_session'`) that soak showed 4 of 9 proposals use. | Dump now lists **all** proposals (`run_full_diagnostic` → `show_edit_proposals` without `full_replace_only`); the `--full-replace` filter stays available on the CLI. |
+| R2 | 128/128 network-error rows had `agent_name = NULL`, so the API storm could not be attributed per agent. | `log_error` persists the `agent_name` column; `agents.base.call_agent` failure site passes `agent_name` + structured `details` (prompt length, model, agent name). |
+| R2b | The preserved dump (8/5/3 = 62%) under-counted the live 9/6/3 (67%): a stale or copied DB snapshot silently skews every tally. | Diagnostic prints a **data watermark** up front (`📆 data window: latest record seen …`) from the actual DB tables. |
+| R3-elevated | 35/36 archive batches produced "parse failed" junk summaries that were restored as context. | Unparseable archivist output is **not archived**: parse failure skips the INSERT and the message-bus path keeps the originals (`agents/archivist_worker.py`). |
+| R4 | A correct SQL-injection fix was rejected-and-shelved on one empty reviewer stream (a transient infra class, not a real REJECT). | Gate helper `request_review_verdict` retries **once (same prompt)** when the verdict is an infra reject (empty/unparseable/unknown decision); a semantic REJECT or a `None` transport failure is never retried (§8.4 guard + PR #93 discipline). |
+
+### Verification
+
+- New unit tests: `TestRequestReviewRetry` (retry matrix), archivist
+  parse-fail skip + originals kept on the bus, dump lists shell-session
+  proposals, data-watermark stamp, `log_error` agent attribution (persist +
+  end-to-end `call_agent` failure branch).
+- Added `agents.archivist_worker.call_agent` to the MockLLM patch-target list.
+- Full gate green; ruff clean.

@@ -81,6 +81,7 @@ ignore = ["S101", "S105","RUF001"] # Allow assert in tests, ignore hardcoded moc
 "core/agent_schemas.py" = ["S608"]
 "cli/commands.py" = ["S608"]
 "file_editing/db.py" = ["S608"]
+"workflow/proposal_builder.py" = ["S608"]
 
 # Utility scripts
 "utils/git_operations.py" = ["S603", "S607"]

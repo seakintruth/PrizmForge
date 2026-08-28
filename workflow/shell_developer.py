@@ -32,15 +32,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agents.base import call_agent, call_endpoint
+from agents.base import call_endpoint
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.events import publish_event
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
-from workflow.git_failure import record_git_failure
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
+from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict
 
 FINISH_TOKEN = "FINISH_EDIT_SESSION"
 BASH_BLOCK_RE = re.compile(r"```bash\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
@@ -291,9 +291,8 @@ class ShellWorktree:
         Paths are relative to the project directory (repo subdirectory aware).
         Changes are collected against the post-sync baseline tree (falling back to
         HEAD when no baseline was recorded), so only agent-authored work is
-        reported. Deleted files are reported so the caller can warn; there is
-        currently no governed delete operation, so deletions are skipped at
-        proposal time.
+        reported. Deleted files are reported and mapped to the governed
+        delete_file operation at proposal time.
         """
         assert self.path is not None
         add = self._git("add", "-A", cwd=self.path)
@@ -558,7 +557,9 @@ def change_to_operation(change: dict[str, Any]) -> dict | None:
         }
     if status == "M":
         return {"type": "full_replace", "new_content": content, "rationale": "Full replace (shell developer session)"}
-    # D / S / anything else: no governed equivalent — caller warns.
+    if status == "D":
+        return {"type": "delete_file", "target_file_path": path, "rationale": "Delete file (shell developer session)"}
+    # S / anything else: no governed equivalent — caller warns.
     return None
 
 
@@ -634,59 +635,23 @@ Rules:
 """
 
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
-    reviewer_response = call_agent("reviewer", reviewer_prompt, task_id)
 
-    # Fail closed: shell-session diffs originate from arbitrary bash execution,
-    # so a missing or unparseable verdict must REJECT, never auto-approve.
-    decision_result: str
-    reason: str
-    suggestions: list[Any]
-    if not reviewer_response or not str(reviewer_response).strip():
-        decision_result = "REJECT"
-        reason = "Reviewer unavailable (empty response) - failing closed"
-        suggestions = []
-        print("   ⚠️ Reviewer returned no response; rejecting proposal (fail closed)")
-    else:
-        try:
-            decision_data = json.loads(reviewer_response)
-            decision_result = str(decision_data.get("decision", "")).upper()
-            reason = decision_data.get("reason", "")
-            suggestions = decision_data.get("suggestions") or []
-            if decision_result not in ("APPROVE", "REJECT"):
-                raise ValueError(f"invalid decision value {decision_result!r}")
-        except Exception as e:
-            decision_result = "REJECT"
-            reason = f"Reviewer returned an unparseable verdict ({e}) - failing closed"
-            suggestions = []
-            print("   ⚠️ Reviewer response was not valid JSON; rejecting proposal (fail closed)")
+    # Fail closed (shared with developer_edit - see workflow/reviewer_gate.py).
+    # Shell-session diffs originate from arbitrary bash execution, so a missing
+    # or unparseable verdict must REJECT, never auto-approve. A ``None``
+    # transport failure and a semantic REJECT are never retried; only one
+    # same-prompt retry is allowed on an empty/unparseable verdict.
+    verdict = request_review_verdict(reviewer_prompt, task_id)
+    post_reviewer_suggestions(proposal_id, task_id, verdict.suggestions)
 
-    if suggestions:
-        suggestion_text = "\n".join([f"- {s}" for s in suggestions])
-        post_message(
-            "reviewer",
-            "prioritizer",
-            f"Suggestions from Reviewer for Proposal {proposal_id}:\n{suggestion_text}",
-            task_id,
-            "MEDIUM",
-        )
-
-    if decision_result == "REJECT":
-        print(f"   ❌ Reviewer rejected proposal {proposal_id}: {reason}")
-        update_proposal_status(proposal_id, "rejected")
-        _log_rejection_feedback(task_id, target_file_path, proposal_id, reason, suggestions)
-        publish_event(
-            "proposal.rejected",
-            source="reviewer",
-            task_id=task_id,
+    if verdict.rejected:
+        print(f"   ❌ Reviewer rejected proposal {proposal_id}: {verdict.reason}")
+        handle_reviewer_rejection(
             proposal_id=proposal_id,
-            payload={"reason": reason},
-        )
-        post_message(
-            "reviewer",
-            "orchestrator",
-            f"Proposal {proposal_id} REJECTED.\nReason: {reason}",
-            task_id,
-            "HIGH",
+            target_file_path=target_file_path,
+            task_id=task_id,
+            reason=verdict.reason,
+            suggestions=verdict.suggestions,
         )
         return "rejected"
 
@@ -696,28 +661,12 @@ Rules:
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)
 
-    if mat.get("status") == "git_failed":
-        record_git_failure(mat, task_id, proposal_id)
-    elif mat.get("status") == "success":
-        publish_event(
-            "edit.materialized",
-            source="writer",
-            task_id=task_id,
-            proposal_id=proposal_id,
-            payload=mat if isinstance(mat, dict) else {},
-        )
-        progress["files_modified"] = progress.get("files_modified", 0) + 1
-        progress["materialize_successes"] = progress.get("materialize_successes", 0) + 1
+    from workflow.post_materialize import apply_materialize_outcome
+
+    mat_status = apply_materialize_outcome(mat, task_id=task_id, progress=progress)
+    if mat_status == "success":
         progress["last_file_change"] = current_turn
-    else:
-        publish_event(
-            "edit.failed",
-            source="writer",
-            task_id=task_id,
-            proposal_id=proposal_id,
-            payload=mat if isinstance(mat, dict) else {},
-        )
-        progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+    elif mat_status not in ("success", "git_failed"):
         print(f"   ⚠️  Materialize status: {mat}")
     return mat.get("status", "error")
 
@@ -733,34 +682,6 @@ def _read_current_file(file_path: str) -> str:
     from core.file_operations import get_file_content_from_db
 
     return get_file_content_from_db(file_path) or ""
-
-
-def _log_rejection_feedback(
-    task_id: str,
-    target_file_path: str,
-    proposal_id: str,
-    reason: str,
-    suggestions: list[str],
-) -> None:
-    try:
-        with get_db_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO agent_feedback
-                (task_id, file_path, agent_name, message, suggestion,
-                 priority, category, addressed, timestamp)
-                VALUES (?, ?, 'reviewer', ?, ?, 'HIGH', 'review_rejection', 0, ?)
-                """,
-                (
-                    task_id,
-                    target_file_path,
-                    f"Proposal {proposal_id} REJECTED: {reason}",
-                    "; ".join(suggestions) if suggestions else None,
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-    except Exception as e:  # feedback logging must never break the gate
-        print(f"   ⚠️ Failed to log reviewer rejection to feedback table: {e}")
 
 
 # =========================================================================
