@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # =============================================================================
 # utils/setup.sh
 # Create / reuse project-root .venv and install runtime + dev dependencies.
@@ -12,6 +13,7 @@
 #   Alpine              apk       py3-venv / py3-pip
 #   Void                xbps      (usually included)
 #   NixOS/Gentoo/macOS/WSL — venv is part of the interpreter; no pkg needed
+#   Git for windows, use --python and --pip to identify the location of the .exe files
 # =============================================================================
 
 set -euo pipefail
@@ -21,6 +23,7 @@ REPO_ROOT="$(pwd)"
 VENV_DIR="${REPO_ROOT}/.venv"
 
 PYTHON_EXEC="${PYTHON_EXEC:-python3}"
+PIP_EXEC="${PIP_EXEC:-}"
 FORCE_RECREATE=0
 NO_SUDO=0
 
@@ -43,7 +46,31 @@ PYPI_EXTRA_INDEX="--extra-index-url https://pypi.org/simple --trusted-host pypi.
 
 # Helper to ensure all pip installs use the extra index
 pip_install() {
-    "${VENV_PYTHON}" -m pip install $PYPI_EXTRA_INDEX "$@"
+  local py_target="${VENV_PYTHON:-$PYTHON_EXEC}"
+  local -a args=("$@") # Copy arguments to a new array
+
+  # Fallback to --python path if the venv python doesn't exist
+  if [[ ! -f "$py_target" ]]; then
+    py_target="$PYTHON_EXEC"
+  fi
+
+  # In MSYS/Git Bash, convert file paths for requirements files to Windows format.
+  if [[ "$PLATFORM" == "windows-msys" ]]; then
+    for i in "${!args[@]}"; do
+      if [[ "${args[$i]}" == "-r" || "${args[$i]}" == "--requirement" ]]; then
+        local req_file_index=$((i + 1))
+        if [[ -n "${args[$req_file_index]:-}" ]]; then
+          args[$req_file_index]="$(cygpath -w "${args[$req_file_index]}")"
+        fi
+      fi
+    done
+  fi
+
+  if [[ -n "${PIP_EXEC}" ]]; then
+    "${py_target}" "${PIP_EXEC}" install $PYPI_EXTRA_INDEX "${args[@]}"
+  else
+    "${py_target}" -m pip install $PYPI_EXTRA_INDEX "${args[@]}"
+  fi
 }
 
 # =============================================================================
@@ -59,6 +86,7 @@ dependencies from requirements.txt and requirements-dev.txt.
 
 Options:
   -p, --python PATH   Python interpreter used to create the venv (default: python3)
+      --pip PATH      Explicit pip executable/script to use for installs
   -f, --force         Remove existing .venv and recreate it
   -n, --no-sudo       Never invoke package managers; report missing pieces only
   -h, --help          Show this help
@@ -77,6 +105,11 @@ while [[ $# -gt 0 ]]; do
     -p|--python)
       [[ -n "${2:-}" && ! "$2" =~ ^- ]] || { echo "Error: $1 needs a path" >&2; exit 1; }
       PYTHON_EXEC="$2"
+      shift 2
+      ;;
+    --pip)
+      [[ -n "${2:-}" && ! "$2" =~ ^- ]] || { echo "Error: $1 needs a path" >&2; exit 1; }
+      PIP_EXEC="$2"
       shift 2
       ;;
     -f|--force)
@@ -207,7 +240,7 @@ venv_package_for() {
       echo "python3"
       ;;
     zypper) echo "python3-venv";;
-    pacman) echo "python";;                              # single `python` pkg includes venv
+    pacman) echo "python";;                              # single \`python\` pkg includes venv
     apk)    echo "py3-venv";;
     xbps)   echo "python3-venv" ;;                       # best-effort name; often preinstalled
     *) return 1;;
@@ -295,34 +328,34 @@ else
           if pkg_install apt "$PKG"; then INSTALLED=1; break; fi
         done
         ;;
-    dnf|yum)
-      # Modern Fedora/RHEL ship venv inside python3 itself; reinstall to fix a
-      # stripped-down install, then fall back to devel headers for old EL.
-      for PKG in "python3" "python3-devel" "python${PY_MAJOR}.${PY_MINOR}-devel"; do
-        echo "Attempting: ${PKG}"
-        if pkg_install "$PKGMGR" "$PKG"; then INSTALLED=1; break; fi
-      done
-      ;;
-    zypper)
-      for PKG in "python3-venv" "python3"; do
-        echo "Attempting: ${PKG}"
-        if pkg_install zypper "$PKG"; then INSTALLED=1; break; fi
-      done
-      ;;
-    pacman)
-      echo "Attempting: python"
-      if pkg_install pacman "python"; then INSTALLED=1; fi
-      ;;
-    apk)
-      for PKG in "py3-venv" "py3-pip"; do
-        echo "Attempting: ${PKG}"
-        if pkg_install apk "$PKG"; then INSTALLED=1; break; fi
-      done
-      ;;
-    xbps)
-      echo "Attempting: python3"
-      if pkg_install xbps "python3"; then INSTALLED=1; fi
-      ;;
+      dnf|yum)
+        # Modern Fedora/RHEL ship venv inside python3 itself; reinstall to fix a
+        # stripped-down install, then fall back to devel headers for old EL.
+        for PKG in "python3" "python3-devel" "python${PY_MAJOR}.${PY_MINOR}-devel"; do
+          echo "Attempting: ${PKG}"
+          if pkg_install "$PKGMGR" "$PKG"; then INSTALLED=1; break; fi
+        done
+        ;;
+      zypper)
+        for PKG in "python3-venv" "python3"; do
+          echo "Attempting: ${PKG}"
+          if pkg_install zypper "$PKG"; then INSTALLED=1; break; fi
+        done
+        ;;
+      pacman)
+        echo "Attempting: python"
+        if pkg_install pacman "python"; then INSTALLED=1; fi
+        ;;
+      apk)
+        for PKG in "py3-venv" "py3-pip"; do
+          echo "Attempting: ${PKG}"
+          if pkg_install apk "$PKG"; then INSTALLED=1; break; fi
+        done
+        ;;
+      xbps)
+        echo "Attempting: python3"
+        if pkg_install xbps "python3"; then INSTALLED=1; fi
+        ;;
     esac
 
     if [[ "$INSTALLED" -eq 1 ]] \
@@ -374,9 +407,8 @@ elif [[ -x "${VENV_DIR}/bin/python" ]]; then
 elif [[ -x "${VENV_DIR}/Scripts/python.exe" ]]; then
   VENV_PYTHON="${VENV_DIR}/Scripts/python.exe"
 else
-  echo "Error: could not locate python inside ${VENV_DIR}" >&2
-  echo "The venv creation may have failed partway — try: ./utils/setup.sh --force" >&2
-  exit 1
+  echo "Warning: could not locate python inside ${VENV_DIR}. Falling back to --python (${PYTHON_EXEC})." >&2
+  VENV_PYTHON="${PYTHON_EXEC}"
 fi
 
 # MSYS path conversion mangles URLs passed to native Windows python/pip
@@ -386,7 +418,7 @@ if [[ "$PLATFORM" == "windows-msys" ]]; then
   export MSYS2_ARG_CONV_EXCL="*"
 fi
 
-echo "Using venv Python: ${VENV_PYTHON}"
+echo "Using Python: ${VENV_PYTHON}"
 
 "${VENV_PYTHON}" -c '
 import sys
@@ -395,15 +427,15 @@ print(f"  Python {ver} at {sys.executable}")
 '
 
 # ---------------------------------------------------------------------------
-# Ensure the venv actually has pip (venvs created without ensurepip lack it)
+# Ensure the python actually has pip
 # ---------------------------------------------------------------------------
 if ! "${VENV_PYTHON}" -m pip --version >/dev/null 2>&1; then
-  echo "venv has no pip — attempting to bootstrap via ensurepip..."
+  echo "Python has no pip — attempting to bootstrap via ensurepip..."
   if "${VENV_PYTHON}" -m ensurepip --upgrade >/dev/null 2>&1 \
      && "${VENV_PYTHON}" -m pip --version >/dev/null 2>&1; then
     echo "pip bootstrapped successfully."
   else
-    echo "Error: this virtual environment has no pip and ensurepip failed." >&2
+    echo "Error: this environment has no pip and ensurepip failed." >&2
     echo "" >&2
     echo "Most likely the host interpreter's venv/ensurepip support is incomplete" >&2
     echo "(Debian/Ubuntu keep it in python<X.Y>-venv; Alpine in py3-venv)." >&2
@@ -420,8 +452,10 @@ fi
 # Install dependencies
 # ---------------------------------------------------------------------------
 SETUP_WARNINGS=0
-echo "Upgrading pip..."
-pip_install --upgrade pip
+if [[ -z "${PIP_EXEC}" ]]; then
+  echo "Upgrading pip..."
+  pip_install --upgrade pip
+fi
 
 echo "Installing runtime dependencies..."
 pip_install -r "${REPO_ROOT}/requirements.txt"
@@ -577,7 +611,7 @@ cfg_path, ep, first_model = sys.argv[1], sys.argv[2], sys.argv[3]
 cfg = json.load(open(cfg_path))
 cfg["default_endpoint"] = ep
 if first_model:
-    cfg["default_model"] = f"{ep}/{first_model}"
+    cfg["default_model"] = f"{ep}/{first_model.split('|')[0]}"
 cfg["endpoints"][ep]["priority"] = 10
 json.dump(cfg, open(cfg_path, "w"), indent=2)
 PYEOF
