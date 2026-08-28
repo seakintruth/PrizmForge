@@ -235,6 +235,48 @@ class ProjectReporterWorker:
             )
             addressed_feedback = cursor.fetchall()
 
+            # Backlog health metrics (Workstream B §4.6): unaddressed,
+            # posted_this_hour, addressed_this_hour, stuck_ids.
+            from core.db_helpers import backlog_metrics
+
+            metrics = backlog_metrics(conn, task_id=self.task_id)
+
+            # Always-on run counters (Workstream F §8.3): materialize success
+            # ratio, fallback rate, git-failure count since last report.
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(CASE WHEN status IN ('applied', 'materialized') THEN 1 ELSE 0 END), 0) AS ok,
+                       COALESCE(SUM(CASE WHEN status IN ('git_failed', 'error', 'failed') THEN 1 ELSE 0 END), 0) AS err,
+                       COALESCE(SUM(CASE WHEN fallback_used = 1 THEN 1 ELSE 0 END), 0) AS fallback
+                FROM edit_proposals
+                WHERE created_at >= ?
+                """,
+                (start_time.isoformat(),),
+            )
+            funnel = cursor.fetchone()
+            total = funnel[0] or 0
+            ok = funnel[1] or 0
+            fallback = funnel[3] or 0
+            cursor.execute(
+                "SELECT COUNT(*) FROM events WHERE type = 'edit.git_failed' AND ts >= ?",
+                (start_time.isoformat(),),
+            )
+            git_fail_count = cursor.fetchone()[0] or 0
+            cursor.execute(
+                "SELECT COUNT(*) FROM events WHERE type = 'prioritizer.circuit_open' AND ts >= ?",
+                (start_time.isoformat(),),
+            )
+            circuit_open_count = cursor.fetchone()[0] or 0
+            run_metrics = {
+                "materialize_total": total,
+                "materialize_success": ok,
+                "materialize_success_ratio": (ok / total) if total else 0.0,
+                "fallback_rate": (fallback / total) if total else 0.0,
+                "git_fail_count": git_fail_count,
+                "circuit_open_count": circuit_open_count,
+            }
+
         return {
             "start_time": start_time,
             "end_time": end_time,
@@ -242,6 +284,8 @@ class ProjectReporterWorker:
             "git_commits": git_commits,
             "addressed_feedback": addressed_feedback,
             "total_files_changed": len(set(m[0] for m in modifications)),
+            "backlog_metrics": metrics,
+            "run_metrics": run_metrics,
             "trigger": ("time" if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60 else "change"),
         }
 
@@ -249,6 +293,22 @@ class ProjectReporterWorker:
         mods = "\n".join([f"- {m[0]} ({m[1]}) by {m[2]} at {m[3][:16]}" for m in data["modifications"][:15]])
         commits = "\n".join([f"- {c}" for c in data["git_commits"][:8]]) if data["git_commits"] else "No git commits recorded"
         feedback = "\n".join([f"- [{f[2]}] {f[1]}: {f[3][:80]} (by {f[0]})" for f in data["addressed_feedback"][:10]])
+        m = data.get("backlog_metrics") or {}
+        backlog = (
+            f"Unaddressed: {m.get('unaddressed')} | "
+            f"Posted this hour: {m.get('posted_this_hour')} | "
+            f"Addressed this hour: {m.get('addressed_this_hour')} | "
+            f"Stuck ids: {m.get('stuck_ids') or []}"
+        )
+        rm = data.get("run_metrics") or {}
+        run_metrics = (
+            f"Proposals: {rm.get('materialize_total', 0)} | "
+            f"Materialize success ratio: {rm.get('materialize_success_ratio', 0.0):.0%} "
+            f"({rm.get('materialize_success', 0)}/{rm.get('materialize_total', 0)}) | "
+            f"Fallback rate: {rm.get('fallback_rate', 0.0):.0%} | "
+            f"Git failures: {rm.get('git_fail_count', 0)} | "
+            f"Circuit opens: {rm.get('circuit_open_count', 0)}"
+        )
 
         return f"""
 Generate a human-readable project report for the period
@@ -262,6 +322,12 @@ Generate a human-readable project report for the period
 
 **Addressed High-Priority Feedback:**
 {feedback}
+
+**Backlog Health:**
+{backlog}
+
+**Run Metrics:**
+{run_metrics}
 
 **Trigger:** {data["trigger"]}
 
@@ -315,6 +381,8 @@ Please produce the full Markdown report following the exact structure defined in
                             {
                                 "files_changed": data["total_files_changed"],
                                 "modifications_count": len(data["modifications"]),
+                                "backlog_metrics": data.get("backlog_metrics") or {},
+                                "run_metrics": data.get("run_metrics") or {},
                             }
                         ),
                         datetime.now().isoformat(),

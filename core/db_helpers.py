@@ -1,5 +1,6 @@
 """Database helper functions"""
 
+import re
 from datetime import datetime, timedelta
 
 from core.db import get_db_path as _get_db_path
@@ -260,6 +261,27 @@ def complete_task(task_id: str, result: str):
         )
 
 
+def normalize_feedback_message(message: str) -> str:
+    """Collapse a feedback message to a stable dedupe key.
+
+    Whitespace, punctuation and case are normalized so findings that differ
+    only in phrasing/highlighting map to the same key (Workstream B §4.4.1).
+    """
+    text = " ".join(str(message).split())
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _dedupe_settings() -> tuple[bool, int]:
+    # Import lazily so tests that patch core.config.get_config take effect
+    # (module-bound imports would pin the original function object).
+    from core.config import get_config
+
+    cfg = (get_config() or {}).get("feedback", {}) or {}
+    dedupe = cfg.get("dedupe") or {}
+    return bool(dedupe.get("enabled", True)), int(dedupe.get("window_minutes", 30))
+
+
 def save_agent_feedback(
     agent_name: str,
     file_path: str,
@@ -272,13 +294,38 @@ def save_agent_feedback(
 ):
     """Save feedback from background agent"""
     category = normalize_category(category)
+    enabled, window_minutes = _dedupe_settings()
+    dup_key = normalize_feedback_message(message) if enabled else None
     with get_db_connection() as conn:
+        if enabled:
+            now_iso = datetime.now().isoformat()
+            cutoff = (datetime.now() - timedelta(minutes=window_minutes)).isoformat()
+            existing = conn.execute(
+                """
+                SELECT id FROM agent_feedback
+                WHERE addressed = 0
+                  AND task_id = ?
+                  AND IFNULL(file_path, '') = IFNULL(?, '')
+                  AND category = ?
+                  AND dup_key = ?
+                  AND timestamp >= ?
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (task_id, file_path or "", category, dup_key, cutoff),
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    "UPDATE agent_feedback SET dup_count = dup_count + 1, timestamp = ? WHERE id = ?",
+                    (now_iso, existing[0]),
+                )
+                return
         conn.execute(
             """
             INSERT INTO agent_feedback
             (agent_name, file_path, priority, category, message, suggestion,
-            task_id, file_event_id, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            task_id, file_event_id, timestamp, dup_key, dup_count)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """,
             (
                 agent_name,
@@ -290,6 +337,7 @@ def save_agent_feedback(
                 task_id,
                 file_event_id,
                 datetime.now().isoformat(),
+                dup_key,
             ),
         )
 
@@ -344,6 +392,42 @@ def mark_feedback_addressed(feedback_ids: list[int], addressed_by: str):
             f"UPDATE agent_feedback SET addressed = 1, addressed_by = ?, addressed_at = ? WHERE id IN ({placeholders})",
             [addressed_by, datetime.now().isoformat(), *feedback_ids],
         )
+
+
+def backlog_metrics(conn, *, task_id: str | None = None) -> dict:
+    """Gather backlog health numbers for project reports (Workstream B §4.6).
+
+    Keys: ``unaddressed``, ``posted_this_hour``, ``addressed_this_hour``,
+    ``stuck_ids`` (unaddressed items flagged stuck after repeated targeting).
+    A ``task_id`` optionally scopes the unaddressed/stuck counts.
+    """
+    hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
+    task_filter = " AND task_id = ?" if task_id else ""
+    params: tuple = (task_id,) if task_id else ()
+
+    with conn:
+        unaddressed = conn.execute(
+            f"SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0{task_filter}",
+            params,
+        ).fetchone()[0]
+        posted_this_hour = conn.execute(
+            "SELECT COUNT(*) FROM agent_feedback WHERE timestamp >= ?",
+            (hour_ago,),
+        ).fetchone()[0]
+        addressed_this_hour = conn.execute(
+            "SELECT COUNT(*) FROM agent_feedback WHERE addressed = 1 AND addressed_at >= ?",
+            (hour_ago,),
+        ).fetchone()[0]
+        stuck = conn.execute(
+            f"SELECT id FROM agent_feedback WHERE stuck = 1 AND addressed = 0{task_filter} ORDER BY id",
+            params,
+        ).fetchall()
+    return {
+        "unaddressed": int(unaddressed),
+        "posted_this_hour": int(posted_this_hour),
+        "addressed_this_hour": int(addressed_this_hour),
+        "stuck_ids": [r[0] for r in stuck],
+    }
 
 
 def age_feedback_backlog(

@@ -291,6 +291,12 @@ def get_project_directory() -> Path:
     return Path(project_dir)
 
 
+def is_secret_path(file_path: str) -> bool:
+    """True for obvious secret files (api_key.json, .env, credentials, ...)."""
+    name = Path(file_path).name.lower()
+    return name in {".env", "secrets.py", "credentials.json"} or name.startswith(("api_key", "secret", "credentials", ".env"))
+
+
 def should_ignore_file(file_path: str) -> bool:
     """Check if file should be ignored (config patterns + hardcoded + .gitignore)"""
 
@@ -336,7 +342,7 @@ def sync_file_to_database(file_path: str, content: str) -> bool:
     Sync file content to database
     COMPUTE TOKEN ESTIMATE HERE (write-time)
     """
-    if should_ignore_file(file_path):
+    if should_ignore_file(file_path) or is_secret_path(file_path):
         return False
     try:
         content_hash = compute_file_hash(content)

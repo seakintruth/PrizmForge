@@ -273,7 +273,7 @@ class TestMaterializeStatus:
         pid = _make_proposal([{"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]}])
         monkeypatch.setattr(
             "file_editing.writer.git_commit",
-            lambda fp, msg: _git_failure_result(file_path=fp),
+            lambda fp, msg, **kwargs: _git_failure_result(file_path=fp),
         )
 
         from file_editing.writer import materialize_proposal
@@ -291,7 +291,7 @@ class TestMaterializeStatus:
         pid = _make_proposal([{"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]}])
         monkeypatch.setattr(
             "file_editing.writer.git_commit",
-            lambda fp, msg: _git_success_result(file_path=fp),
+            lambda fp, msg, **kwargs: _git_success_result(file_path=fp),
         )
 
         from file_editing.writer import materialize_proposal
@@ -305,7 +305,7 @@ class TestMaterializeStatus:
         pid = _make_proposal([{"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]}])
         monkeypatch.setattr(
             "file_editing.writer.git_commit",
-            lambda fp, msg: {**_git_failure_result(file_path=fp), "attempted": False, "stage": "disabled"},
+            lambda fp, msg, **kwargs: {**_git_failure_result(file_path=fp), "attempted": False, "stage": "disabled"},
         )
 
         from file_editing.writer import materialize_proposal
@@ -323,7 +323,7 @@ class TestMaterializeStatus:
             ]
         )
 
-        def fake_git_commit(rel_path, _msg):
+        def fake_git_commit(rel_path, _msg, **kwargs):
             if rel_path == "pkg/app.py":
                 return _git_failure_result(file_path=rel_path)
             return _git_success_result(file_path=rel_path)
@@ -348,7 +348,7 @@ class TestMaterializeStatus:
         )
         monkeypatch.setattr(
             "file_editing.writer.git_commit",
-            lambda fp, msg: _git_success_result(file_path=fp),
+            lambda fp, msg, **kwargs: _git_success_result(file_path=fp),
         )
 
         from file_editing.writer import materialize_proposal
@@ -411,12 +411,12 @@ class TestGateAndMaterializeClosedLoop:
 
         pid = _make_proposal([{"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]}])
         monkeypatch.setattr(
-            "workflow.shell_developer.call_agent",
+            "agents.base.call_agent",
             lambda agent_name, prompt, task_id, *a, **k: json.dumps({"decision": "APPROVE", "reason": "ok", "suggestions": []}),
         )
         monkeypatch.setattr(
             "file_editing.writer.git_commit",
-            lambda fp, msg: _git_failure_result(file_path=fp),
+            lambda fp, msg, **kwargs: _git_failure_result(file_path=fp),
         )
 
         progress = {"edit_failures": 0}
@@ -492,7 +492,7 @@ class TestRunDeveloperMutationClosedLoop:
         )
         monkeypatch.setattr(
             "file_editing.writer.git_commit",
-            lambda fp, msg: _git_failure_result(file_path=fp),
+            lambda fp, msg, **kwargs: _git_failure_result(file_path=fp),
         )
 
         progress: dict = {}

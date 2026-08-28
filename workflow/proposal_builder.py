@@ -57,23 +57,26 @@ def _get_affected_guids_from_operation(op) -> list[str]:
 
 
 def _capture_hashes_for_operations(conn: sqlite3.Connection, file_id: int, payload: EditPayload) -> tuple[list[str], dict]:
-    """Capture current hashes for optimistic concurrency validation."""
+    """Capture current hashes for optimistic concurrency validation.
+
+    All affected line GUIDs are fetched in a single ``IN (...)`` lookup rather
+    than issuing one SELECT per GUID (PR-83 residual P3).
+    """
     affected_guids: list[str] = []
-    expected_hashes: dict = {}
-
     for op in payload.operations:
-        guids = _get_affected_guids_from_operation(op)
-        if guids:
-            affected_guids.extend(guids)
-            for guid in guids:
-                row = conn.execute(
-                    "SELECT content_hash FROM file_lines WHERE line_guid = ? AND is_deleted = 0",
-                    (guid,),
-                ).fetchone()
-                if row:
-                    expected_hashes[guid] = row[0]
+        affected_guids.extend(_get_affected_guids_from_operation(op))
 
-    return list(set(affected_guids)), expected_hashes
+    unique_guids = list(set(affected_guids))
+    expected_hashes: dict = {}
+    if unique_guids:
+        placeholders = ",".join("?" for _ in unique_guids)
+        rows = conn.execute(
+            f"SELECT line_guid, content_hash FROM file_lines WHERE line_guid IN ({placeholders}) AND is_deleted = 0",
+            unique_guids,
+        ).fetchall()
+        expected_hashes = {row[0]: row[1] for row in rows}
+
+    return unique_guids, expected_hashes
 
 
 def create_proposal_from_developer_output(
@@ -98,18 +101,6 @@ def create_proposal_from_developer_output(
             affected_guids, expected_hashes = _capture_hashes_for_operations(conn, file_id, payload)
 
             proposal_id = str(uuid4())
-
-            # Best-effort: ensure metadata columns exist (safe for existing DBs)
-            for col, coltype in (
-                ("selected_mode", "TEXT"),
-                ("fallback_used", "INTEGER DEFAULT 0"),
-                ("final_mode", "TEXT"),
-                ("task_id", "TEXT"),
-            ):
-                try:
-                    conn.execute(f"ALTER TABLE edit_proposals ADD COLUMN {col} {coltype}")
-                except Exception as e:
-                    print(f"   ℹ️ Column {col} already exists or skipped: {e}")
 
             # Embed mode info in rationale prefix for auditability even without columns
             base_rationale = rationale or payload.rationale or ""

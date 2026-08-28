@@ -32,9 +32,12 @@ def git_init():
     return False
 
 
-def git_commit(file_path: str, message: str) -> dict:
+def git_commit(file_path: str, message: str, *, delete: bool = False) -> dict:
     """
     Commit a file, returning a structured outcome.
+
+    When ``delete`` is True the change is staged with ``git add -A`` so the
+    removal of a tracked file is committed (mini-swe governed delete op).
 
     Returns dict with:
         ok (bool)         — True only if add+commit+rev-parse all succeeded
@@ -65,10 +68,12 @@ def git_commit(file_path: str, message: str) -> dict:
         }
 
     try:
-        # Add file (-- guards against a path that begins with a flag)
+        # Add file (-- guards against a path that begins with a flag). Deletions
+        # need -A so an untracked-path removal is also staged.
         try:
+            add_cmd = ["git", "add", "-A", "--", file_path] if delete else ["git", "add", "--", file_path]
             subprocess.run(
-                ["git", "add", "--", file_path],
+                add_cmd,
                 cwd=project_dir,
                 capture_output=True,
                 text=True,

@@ -115,6 +115,15 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     except sqlite3.OperationalError as e:
         print(f"   ⚠️  idx_edit_proposals_task: {e}")
 
+    # agent_feedback: Workstream B growth controls (dedupe key/count, stuck-id tracking)
+    for col, coltype in (
+        ("dup_key", "TEXT"),
+        ("dup_count", "INTEGER DEFAULT 1"),
+        ("targeted_count", "INTEGER DEFAULT 0"),
+        ("stuck", "INTEGER DEFAULT 0"),
+    ):
+        _ensure_column(conn, "agent_feedback", col, coltype)
+
 
 def init_db():
     """Initialize database with complete schema"""
@@ -281,7 +290,11 @@ def init_db():
                 addressed INTEGER DEFAULT 0,
                 addressed_by TEXT,
                 addressed_at TEXT,
-                timestamp TEXT
+                timestamp TEXT,
+                dup_key TEXT,
+                dup_count INTEGER DEFAULT 1,
+                targeted_count INTEGER DEFAULT 0,
+                stuck INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS agent_profiles (

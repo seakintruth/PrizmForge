@@ -49,8 +49,11 @@ def test_change_to_operation_mapping():
     assert modified["type"] == "full_replace"
     assert modified["new_content"] == "x=1\n"
 
-    # Deletions and skipped entries have no governed equivalent.
-    assert sd.change_to_operation({"status": "D", "path": "gone.py"}) is None
+    deleted = sd.change_to_operation({"status": "D", "path": "gone.py"})
+    assert deleted["type"] == "delete_file"
+    assert deleted["target_file_path"] == "gone.py"
+
+    # Skipped entries have no governed equivalent.
     assert sd.change_to_operation({"status": "S", "path": "big.bin"}) is None
 
 
@@ -146,7 +149,7 @@ def shell_env(isolated_project, monkeypatch):
         return json.dumps({"decision": kwargs.pop("decision", "APPROVE"), "reason": "ok", "suggestions": []})
 
     monkeypatch.setattr(sd, "call_endpoint", fake_call_endpoint)
-    monkeypatch.setattr(sd, "call_agent", fake_call_agent)
+    monkeypatch.setattr("agents.base.call_agent", fake_call_agent)
     return {"project": project, "state": state}
 
 
@@ -177,7 +180,7 @@ def test_turn_rejection_reports_rejected_status(shell_env, monkeypatch):
     def rejecting_reviewer(agent_name, prompt, task_id, *args, **kwargs):
         return json.dumps({"decision": "REJECT", "reason": "unsafe", "suggestions": ["do better"]})
 
-    monkeypatch.setattr(sd, "call_agent", rejecting_reviewer)
+    monkeypatch.setattr("agents.base.call_agent", rejecting_reviewer)
 
     progress = {"edit_failures": 0}
     result = sd.run_shell_developer_turn(
@@ -199,7 +202,7 @@ def test_turn_rejection_reports_rejected_status(shell_env, monkeypatch):
 # Reviewer gate fail-closed behavior (review fix #1)
 # =========================================================================
 def test_turn_fails_closed_when_reviewer_unavailable(shell_env, monkeypatch):
-    monkeypatch.setattr(sd, "call_agent", lambda *a, **k: None)
+    monkeypatch.setattr("agents.base.call_agent", lambda *a, **k: None)
 
     progress = {"edit_failures": 0}
     result = sd.run_shell_developer_turn(
@@ -221,7 +224,7 @@ def test_turn_fails_closed_on_non_json_verdict(shell_env, monkeypatch):
     def sloppy_reviewer(agent_name, prompt, task_id, *args, **kwargs):
         return "Looks good to me, approving!"
 
-    monkeypatch.setattr(sd, "call_agent", sloppy_reviewer)
+    monkeypatch.setattr("agents.base.call_agent", sloppy_reviewer)
 
     progress = {"edit_failures": 0}
     result = sd.run_shell_developer_turn(
@@ -243,7 +246,7 @@ def test_turn_fails_closed_on_invalid_decision_value(shell_env, monkeypatch):
     def odd_reviewer(agent_name, prompt, task_id, *args, **kwargs):
         return json.dumps({"decision": "MAYBE", "reason": "unclear"})
 
-    monkeypatch.setattr(sd, "call_agent", odd_reviewer)
+    monkeypatch.setattr("agents.base.call_agent", odd_reviewer)
 
     result = sd.run_shell_developer_turn(
         task_id="T-shell-maybe",

@@ -45,6 +45,16 @@ def record_git_failure(mat: dict[str, Any], task_id: str | None, proposal_id: st
         payload=git_failed,
     )
 
+    # Parse the hook diagnostics so the next developer turn gets concrete file
+    # targets instead of a broad sweep (Workstream C §5.3).
+    from workflow.path_targets import parse_hook_cited_files
+
+    cited = parse_hook_cited_files(git_failed.get("stderr"))
+    message = f"git {git_failed.get('stage', '?')} failed (code={git_failed.get('code')}): " + stderr_excerpt
+    if cited:
+        message += f"\n**HOOK CITED FILES:** {', '.join(cited)}"
+        message += "\n**ACTION:** fix these specific files before continuing"
+
     # CRITICAL feedback — dedupe by proposal_id in file_event_id so a
     # re-materialize (e.g. retried turn) cannot pile up duplicate rows.
     with get_db_connection() as conn:
@@ -58,7 +68,7 @@ def record_git_failure(mat: dict[str, Any], task_id: str | None, proposal_id: st
             file_path=git_failed.get("file_path") or "",
             priority="CRITICAL",
             category="bug",
-            message=f"git {git_failed.get('stage', '?')} failed (code={git_failed.get('code')}): " + stderr_excerpt,
+            message=message,
             suggestion="Fix the pre-commit hook failure before continuing.",
             task_id=task_id or "",
             file_event_id=proposal_id,

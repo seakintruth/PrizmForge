@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from file_editing.edit_payload import validate_operation
+
 
 class EditFailureReason(Enum):
     EMPTY_RESPONSE = "empty_response"
@@ -23,6 +25,7 @@ class EditFailureReason(Enum):
     EMPTY_OPERATIONS = "empty_operations"
     UNKNOWN_STRUCTURE = "unknown_structure"
     FULL_REPLACE_MISSING_CONTENT = "full_replace_missing_content"
+    INVALID_OPERATION = "invalid_operation"
 
 
 @dataclass
@@ -130,13 +133,17 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
     # --- Detect mode and validate minimum usable content ---
 
     # Single top-level operation (GUID style) must be checked before full_replace.
-    # replace_block uses new_content as a *list* of lines; full_replace uses a string.
-    if data.get("type") in {
-        "replace_block",
-        "insert_after",
-        "delete_lines",
-        "find_replace",
-    }:
+    # Shared op-schema checks reject unknown type names (e.g. "guid") and
+    # missing per-type required fields before anything reaches proposal_builder.
+    if data.get("type"):
+        op_error = validate_operation(data)
+        if op_error:
+            return EditValidationResult(
+                is_valid=False,
+                reason=EditFailureReason.INVALID_OPERATION,
+                message=f"Invalid operation: {op_error}",
+                data=data,
+            )
         return EditValidationResult(
             is_valid=True,
             data=data,
@@ -227,6 +234,19 @@ def validate_developer_edit_response(response: str) -> EditValidationResult:  # 
             data=data,
             detected_mode="guid",
         )
+
+    # Shared op-schema checks: every operation must be a valid candidate for
+    # proposal_builder (Workstream D, "one schema, two gates", fail early).
+    for idx, op in enumerate(operations):
+        op_error = validate_operation(op)
+        if op_error:
+            return EditValidationResult(
+                is_valid=False,
+                reason=EditFailureReason.INVALID_OPERATION,
+                message=f"Operation at index {idx} is invalid: {op_error}",
+                data=data,
+                detected_mode="guid",
+            )
 
     return EditValidationResult(
         is_valid=True,

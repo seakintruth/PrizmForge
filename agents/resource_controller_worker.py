@@ -265,14 +265,18 @@ class HeuristicOptimizer:
 
     def _check_feedback_backlog(self, state: ResourceState) -> ThrottleDecision | None:
         """
-        Check if feedback backlog is too high
+        Check if feedback backlog is too high (Workstream B §4.3).
 
-        Strategy:
-        - If 300+ unaddressed feedback items → STOP background agents
-        - Only run: prioritizer (organize), developer (fix)
+        Tier policy (config ``feedback.tiers``, defaults 50/100/200):
+        - freeze (> freeze_at): STOP background agents; prioritizer + developer only.
+        - hard (> hard_start): pause most background agents; reviewers on changed files only.
+        - soft (>= soft_start): intake softening only — no pool freeze, dedupe on insert.
+        Each tier resolution is delegated to workflow.backlog so the policy is
+        unit-testable without a live resource controller.
         """
         try:
             from core.db_connection import get_db_connection
+            from workflow.backlog import resolve_backlog_tier, tier_pool_policy
 
             with get_db_connection() as conn:
                 cursor = conn.cursor()
@@ -284,8 +288,10 @@ class HeuristicOptimizer:
 
                 unaddressed_count = cursor.fetchone()[0]
 
-            # Threshold: 300+ unaddressed items = STOP generating more
-            if unaddressed_count >= 300:
+            tier = resolve_backlog_tier(unaddressed_count)
+            policy = tier_pool_policy(tier)
+
+            if tier == "freeze":
                 return ThrottleDecision(
                     level="BACKLOG_PROCESSING",
                     background_feeder_interval=9999,  # Effectively disable
@@ -296,12 +302,12 @@ class HeuristicOptimizer:
                         f"🚨 FEEDBACK BACKLOG: {unaddressed_count} unaddressed items. "
                         f"Pausing background agents (jr_reviewer, etc.). "
                         f"Allowing ONLY prioritizer to organize existing feedback. "
-                        f"Developer will work through backlog in priority order."
+                        f"Developer will work through backlog in priority order. "
+                        f"[{policy['reasoning']}]"
                     ),
                 )
 
-            # Warning threshold: 150-299 items = Slow down
-            elif unaddressed_count >= 150:
+            if tier == "hard":
                 return ThrottleDecision(
                     level="BACKLOG_WARNING",
                     background_feeder_interval=300,  # 5 min (very slow)
@@ -314,7 +320,22 @@ class HeuristicOptimizer:
                     reasoning=(
                         f"⚠️  FEEDBACK BACKLOG: {unaddressed_count} unaddressed items. "
                         f"Reducing background agent activity to prevent overload. "
-                        f"Only jr_reviewer active. Prioritizer organizing feedback."
+                        f"Only jr_reviewer active. Prioritizer organizing feedback. "
+                        f"[{policy['reasoning']}]"
+                    ),
+                )
+
+            if tier == "soft":
+                return ThrottleDecision(
+                    level="BACKLOG_SOFT",
+                    background_feeder_interval=120,
+                    active_agents=[],
+                    rate_limit_per_minute=state.api_rate_limit,
+                    model_downgrades={},
+                    reasoning=(
+                        f"ℹ️  FEEDBACK BACKLOG: {unaddressed_count} unaddressed items "
+                        f"(soft tier) — intake softened, dedupe on insert active. "
+                        f"Background agents keep running."
                     ),
                 )
 

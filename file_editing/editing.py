@@ -49,6 +49,7 @@ def _validate_operation_guids(conn: sqlite3.Connection, file_id: int, op) -> boo
         "full_replace",
         "apply_diff",
         "create_file",
+        "delete_file",
         "update_documentation",
     ):
         return True  # content-level ops; no GUID references
@@ -676,6 +677,46 @@ def apply_create_file(conn: sqlite3.Connection, file_id: int, op) -> dict[str, A
     }
 
 
+def apply_delete_file(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
+    """
+    Governed whole-file deletion (mini-swe §4).
+
+    Flips the governed store row + all its lines to is_deleted=1 so the file
+    stops being served/reconstructed; materialize_proposal then removes the
+    disk file. Refuses to delete an already-deleted row.
+    """
+    file_path = getattr(op, "target_file_path", None)
+    row = conn.execute(
+        "SELECT file_path, is_deleted FROM files WHERE file_id = ?",
+        (file_id,),
+    ).fetchone()
+    if not row:
+        return {"status": "error", "message": f"file_id {file_id} not found"}
+    row_path = row["file_path"] if isinstance(row, sqlite3.Row) else row[0]
+    row_deleted = row["is_deleted"] if isinstance(row, sqlite3.Row) else row[1]
+
+    if file_path and file_path != row_path:
+        return {"status": "error", "message": f"delete_file path mismatch: expected {row_path!r} got {file_path!r}"}
+    if row_deleted:
+        return {"status": "error", "message": f"delete_file refused: {row_path!r} is already deleted"}
+
+    live = conn.execute(
+        "SELECT COUNT(*) FROM file_lines WHERE file_id = ? AND is_deleted = 0",
+        (file_id,),
+    ).fetchone()
+    live_count = live[0] if live else 0
+
+    conn.execute("UPDATE files SET is_deleted = 1 WHERE file_id = ?", (file_id,))
+    conn.execute("UPDATE file_lines SET is_deleted = 1 WHERE file_id = ? AND is_deleted = 0", (file_id,))
+
+    return {
+        "status": "success",
+        "file_id": file_id,
+        "lines_deleted": live_count,
+        "message": f"Deleted file {row_path} ({live_count} lines)",
+    }
+
+
 def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     with get_db_connection() as conn:
         proposal_row = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
@@ -739,6 +780,9 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     operation_results.append(result)
                 elif op.type == "create_file":
                     result = apply_create_file(conn, file_id, op)
+                    operation_results.append(result)
+                elif op.type == "delete_file":
+                    result = apply_delete_file(conn, file_id, op)
                     operation_results.append(result)
                 else:
                     operation_results.append(

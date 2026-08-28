@@ -10,7 +10,7 @@ from agents.parallel_workers import get_agent_pool
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import age_feedback_backlog, complete_task, create_task, post_message
-from core.file_operations import get_file_content_from_db
+from core.file_operations import get_file_content_from_db, is_secret_path, should_ignore_file
 from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
 from workflow.developer_edit import run_developer_mutation
 from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER
@@ -22,6 +22,21 @@ from workflow.path_targets import extract_files_needed_from_text, sanitize_path_
 # invocations within a single iteration. Rate-limit sleeps and DB lock
 # backoffs are excluded so iteration timeouts count only real work.
 _active_work_seconds: float = 0.0
+
+#: Sequential-agent network failures within one iteration before the busy-loop
+#: guard pauses scheduling for a turn (plan §8.4 residual, §15 decision 5).
+NETWORK_FAILURE_PAUSE_THRESHOLD = 2
+
+
+def _is_network_failure_text(text: str | None) -> bool:
+    """Detect endpoint-outage phrasing in an agent result message.
+
+    Matches the shell developer's ``LlmUnavailable`` exit status and the
+    endpoint-manager's "endpoint unavailable" wording. Keep the check cheap and
+    obvious so future outage phrasings are easy to extend.
+    """
+    hay = (text or "").lower().replace("_", "")
+    return "llmunavailable" in hay or "endpoint unavailable" in hay or "network" in hay
 
 
 def _edit_mode_settings(config: dict) -> tuple[list | None, list, int]:
@@ -176,6 +191,52 @@ def _finalize_task(task_id: str, progress: dict, reason: str) -> None:
         print(f"   ⚠️  Failed to finalize task {task_id}: {e}")
 
 
+class NetworkBusyLoopGuard:
+    """Busy-loop guard for sequential-agent network outages (plan §8.4 decision 5).
+
+    Counts network-grade agent failures; once the threshold is reached it pauses
+    scheduling for a single iteration and surfaces exactly ONE CRITICAL summary
+    per outage episode. A successful agent response resets both the counter and
+    the episode flag, so a recovered proxy resumes at full cadence and a
+    persistent outage cannot flood the message/error tables.
+    """
+
+    def __init__(self, threshold: int = NETWORK_FAILURE_PAUSE_THRESHOLD):
+        self.threshold = max(1, int(threshold))
+        self._fail_count = 0
+        self._critical_shown = False
+        self.pause_requested = False
+
+    def record_failure(self) -> bool:
+        """Register one network-grade failure; True when the loop must pause."""
+        self._fail_count += 1
+        if self._fail_count >= self.threshold and not self.pause_requested:
+            self.pause_requested = True
+            return True
+        return False
+
+    def surface(self, task_id: str) -> None:
+        """Write the single CRITICAL outage summary (no-op once per episode)."""
+        if self._critical_shown:
+            return
+        self._critical_shown = True
+        post_message(
+            "system",
+            "orchestrator",
+            "Sequential agents failed network — pausing scheduling for one iteration. Single CRITICAL summary for the outage; the loop resumes automatically.",
+            task_id,
+            "CRITICAL",
+        )
+
+    def record_success(self) -> None:
+        """A sequential agent responded: outage (if any) is over."""
+        self._fail_count = 0
+        self._critical_shown = False
+
+    def consume_pause(self) -> None:
+        self.pause_requested = False
+
+
 def run_task_cycle(  # noqa: C901
     task_id: str,
     user_command: str,
@@ -236,6 +297,8 @@ def run_task_cycle(  # noqa: C901
     }
     finish_grace_turns = 0
 
+    network_guard = NetworkBusyLoopGuard()
+
     try:
         max_orchestrator_retries = 3
 
@@ -244,6 +307,13 @@ def run_task_cycle(  # noqa: C901
             iteration_start = time.time()
             iteration_end = iteration_start + (time_box_minutes * 60)
             active_budget = time_box_minutes * 60
+
+            # Busy-loop guard: consume one full iteration without any agent
+            # dispatch after a sequential-agent network outage (plan §8.4).
+            if network_guard.pause_requested:
+                print("   🛑 Pausing scheduling for one iteration (sequential-agent network failure guard).")
+                network_guard.consume_pause()
+                continue
 
             orchestrator_attempts = 0
             decision = None
@@ -272,6 +342,8 @@ def run_task_cycle(  # noqa: C901
                     max_turns,
                     time_remaining,
                 )
+                if decision:
+                    network_guard.record_success()
                 _active_work_seconds += _last_call_http_latency
 
                 try:
@@ -330,6 +402,9 @@ def run_task_cycle(  # noqa: C901
                         "HIGH",
                     )
                     return progress
+
+                if network_guard.record_failure():
+                    network_guard.surface(task_id)
 
                 print(
                     f"   ❌ Orchestrator failed to produce a valid decision after "
@@ -435,6 +510,12 @@ def run_task_cycle(  # noqa: C901
                         current_turn=current_turn,
                     )
                     _active_work_seconds += _last_call_http_latency
+                    if _is_network_failure_text(str(mut.get("message", ""))):
+                        network_guard.record_failure()
+                        if network_guard.pause_requested:
+                            network_guard.surface(task_id)
+                    else:
+                        network_guard.record_success()
                     conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
                     continue
 
@@ -466,9 +547,13 @@ PLAN: [brief explanation]"""
 
                 if not understanding:
                     print("   ❌ Developer failed to respond")
+                    network_guard.record_failure()
+                    if network_guard.pause_requested:
+                        network_guard.surface(task_id)
                     continue
 
                 print("   ✅ Developer response received")
+                network_guard.record_success()
 
                 # === EXTRACT FILES FROM PHASE 1 (sanitized) ===
                 requested_files = extract_files_needed_from_text(understanding or "")
@@ -544,8 +629,10 @@ PLAN: [brief explanation]"""
                     rc = get_resource_controller()
                     current_decision = rc.get_current_decision()
 
-                    # Check if in backlog mode
-                    if current_decision and current_decision.level == "BACKLOG_PROCESSING":
+                    # Check if in backlog mode (freeze or hard tier: no random
+                    # feeder reviews — route orchestrator 'background' to the
+                    # single active developer repair instead, plan §4.3).
+                    if current_decision and current_decision.level in ("BACKLOG_PROCESSING", "BACKLOG_WARNING"):
                         with get_db_connection() as conn:
                             cursor = conn.cursor()
                             cursor.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0")
@@ -662,6 +749,12 @@ PLAN: [brief explanation]"""
                                 requested_files=[file_path] if file_path else [],
                             )
                             _active_work_seconds += _last_call_http_latency
+                            if _is_network_failure_text(str(mut.get("message", ""))):
+                                network_guard.record_failure()
+                                if network_guard.pause_requested:
+                                    network_guard.surface(task_id)
+                            else:
+                                network_guard.record_success()
                             conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
 
                     else:
@@ -698,6 +791,9 @@ PLAN: [brief explanation]"""
                                 random_files = [row[0] for row in cursor.fetchall()]
 
                             all_files = list(set(recent_files + random_files))
+
+                            # Workstream E §7.2: never hand secrets / caches to agents
+                            all_files = [f for f in all_files if f and not should_ignore_file(f) and not is_secret_path(f)]
 
                             for file_path in all_files:
                                 try:
