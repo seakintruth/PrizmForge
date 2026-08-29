@@ -13,9 +13,9 @@ design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_
 
 ## 0. Deployed state & PR map
 
-- `main` @ `26566f3` = merge of the **PR-95 residual batch (P1–P11 + W1–W8)** — see §1.
-- Previous stamps: `cf30bee` = PR #96 (`fit/setup-accept-pip-path`); `954cc14` = PR #95 merge base (Workstream A Phase 1, git/pre-commit closed loop).
-- Full normal gate: **877 passed** (`bash utils/run_tests.sh --normal -j 4`) logged in `26566f3`; ruff clean; pre-commit hooks (black/isort/ruff/flake8/mypy) green. (Progression: 848 → 877.)
+- `main` @ `6d79e5d` = **Soak9 recompute pass 2 (a9–f9)** — see §1 (2026-08-29).
+- Previous stamps: `26566f3` = PR-95 residual batch (P1–P11 + W1–W8, §1); `198f6d8` = roadmap stamp (848 → 877); `cf30bee` = PR #96 (`fit/setup-accept-pip-path`); `954cc14` = PR #95 merge base (Workstream A Phase 1).
+- Full normal gate: **877 passed** at `26566f3`; recompute pass 2 re-verified after `bc11cef`, `4821f4d`, `ae822ed`, `70d1b95`, `1646e91`, `6d79e5d` → **897 passed** (`bash utils/run_tests.sh --normal -j 4`, +20 tests, 2026-08-29), ruff clean. Pre-commit hooks (black/isort/ruff/flake8/mypy) green on every commit.
 
 ---
 
@@ -52,6 +52,25 @@ Status: **SHIPPED & MERGED** in `26566f3` (2026-08-29, gate 848 → 877).
 - [x] **W6 — Developer lane isolation** — during a shell session the feedback agents are paused (`set_active_agents([])`) and the previous filter (None = all-active resume) is restored in `finally`; support workers are never touched. Tests: `test_parallel_workers.py`.
 - [x] **W7 — Initial-review queue caps** — both initial-review and modified-file queues are `LIMIT`-capped by `background_agents.initial_review_max_files` (default 25) instead of enqueueing every project file per agent. Tests: `test_parallel_workers.py`.
 - [x] **W8 — Intake-soft pool backoff** — `start()` bumps the feeder to 120s when `event_queue.qsize() > background_agents.intake_soft_batch` (default 100), a pool-level slack valve that cannot deadlock a queued batch (unlike a `ThrottleDecision([])`).
+
+### Soak9 recompute pass 2 (a9–f9) — non-overlapping corrections
+
+Derived from the Soak9 branch inspection (the run executed pre-`26566f3`
+code); each fix was vetted to NOT overlap the P/W series above. **Root cause
+under test:** the run's shared rate-limited endpoint starved the foreground
+developer session while the support pool (prioritizer/archivist/reporter)
+kept streaming LLM cycles into it, and the archivist's conversation-history
+pipeline re-archived the same rows forever with prompts that had no JSON
+contract.
+
+Status: **SHIPPED & MERGED** `bc11cef` … `6d79e5d` (2026-08-29).
+
+- [x] **a9 — Prune `conversation_history` on archive save** — saved conversation batches are deleted in the same transaction (mirroring the message-bus path `DELETE FROM messages`); unsaved (junk) batches keep their rows for re-archive. Soak evidence: 6 `archived_context` snapshots with repeated identical `turn_range` starts and ~110k-char prompts. Tests: `test_archivist_context.py`.
+- [x] **b9 — Strict JSON output contract in archive prompts** — both prompt builders end with `Respond with ONLY this JSON … {"summary": …, "key_decisions": […]}`; keys match `_parse_archive_response`. Soak evidence: 12.6k–28.4k-token prose replies that the tolerant parser could not recover ("Expecting value: line 1 column 1" kept 201/206/209 msg + 597/614 conv batches unarchived). Tests: `test_archivist_context.py`.
+- [x] **c9 — Support workers yield to an active foreground session** — a counter-based `foreground_session_guard()` wraps `session.run` in the shell developer; prioritizer/archivist/reporter loops hold off via `hold_while_foreground_session_active()` (5s probe, still responsive to `stop()`), so the foreground session gets the shared endpoint. Complements W6 lane isolation (feedback agents only). Tests: `test_worker_utils.py`.
+- [x] **d9 — No-progress developer loop guard** — `NoProgressLoopGuard` counts consecutive zero-change developer turns (same signal `_finalize_task` uses for "stalled"); past `NO_PROGRESS_TURNS_THRESHOLD` (3) it posts one HIGH stall summary and redirects developer decisions to background discovery (FAILSAFE-style), including the backlog-mode redirect. Any materialized file resets the streak. Soak evidence: task_002/003/005 `files_modified=0` with "📋 Decision: developer" and "Work: 0.0s" every turn. Tests: `test_task_runner.py`.
+- [x] **e9 — Dedup unchanged prioritizer posts** — `_post_results` keeps a ranked-set signature and skips reposting when unchanged (items still marked processed). Soak evidence: identical HIGH "🎯 PRIORITIZED FEEDBACK" posts every ~60–90s (13:07:57→13:14:57). Tests: `test_prioritizer_phases.py`.
+- [x] **f9 — Coalesce background-worker transport-error telemetry** — `TransportErrorCoalescer` logs ONE HIGH per (agent, category) per 5-min window with repeats at MEDIUM, applied only to background-pool agents via `call_agent`. Soak evidence: 275 HIGH "failed to return a response" rows (prioritizer 173). Tests: `test_worker_utils.py`.
 
 ---
 
