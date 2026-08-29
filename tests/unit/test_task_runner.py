@@ -214,3 +214,60 @@ class TestDeferredPoolStart:
                 return None
 
         _ensure_pool_started(_NoStart(), "t5", {"materialize_successes": 9}, 9)
+
+
+class TestNoProgressGuard:
+    """d9 (soak recompute): a zero-change developer streak must stop respinning
+    the identical session once it crosses the threshold — task_002/003/005 all
+    show files_modified=0 while the orchestrator chose "developer" every turn."""
+
+    def test_not_stalled_below_threshold(self):
+        from workflow.task_runner import NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard(threshold=2)
+        assert not guard.stalled()
+
+    def test_default_threshold_latches_after_constant(self, temp_db):
+        from workflow.task_runner import NO_PROGRESS_TURNS_THRESHOLD, NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard()
+        for _ in range(NO_PROGRESS_TURNS_THRESHOLD - 1):
+            assert guard.record_no_change("t_d9") is False
+        assert guard.record_no_change("t_d9") is True
+        assert guard.stalled()
+
+    def test_posts_single_stall_summary_per_episode(self, temp_db):
+        from core.db_connection import get_db_connection
+        from workflow.task_runner import NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard(threshold=2)
+        guard.record_no_change("t_d9")
+        guard.record_no_change("t_d9")  # latch + posts
+        guard.record_no_change("t_d9")  # no repost (episode latch)
+
+        with get_db_connection() as conn:
+            rows = conn.execute("SELECT COUNT(*) FROM messages WHERE task_id = 't_d9' AND from_agent = 'system' AND content LIKE '%No progress%'").fetchone()
+        assert rows[0] == 1
+
+    def test_change_resets_streak_and_latch(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard(threshold=2)
+        guard.record_no_change("t_d9")
+        guard.record_no_change("t_d9")
+        assert guard.stalled()
+        guard.record_change()
+        assert not guard.stalled()
+
+    def test_record_developer_progress_helper(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard, _record_developer_progress
+
+        guard = NoProgressLoopGuard(threshold=2)
+        progress = {"files_modified": 1}
+        _record_developer_progress(guard, "t_d9", progress, files_before=1)  # no change: streak 1
+        assert not guard.stalled()
+        guard.record_no_change("t_d9")  # streak 2 -> latch
+        assert guard.stalled()
+        progress["files_modified"] = 3
+        _record_developer_progress(guard, "t_d9", progress, files_before=1)  # bumped +2: change
+        assert not guard.stalled()

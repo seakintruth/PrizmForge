@@ -28,6 +28,13 @@ _active_work_seconds: float = 0.0
 #: guard pauses scheduling for a turn (plan §8.4 residual, §15 decision 5).
 NETWORK_FAILURE_PAUSE_THRESHOLD = 2
 
+#: Consecutive developer sessions that materialize zero file changes before the
+#: loop stops respinning the identical session (d9, soak recompute 2026-08-29:
+#: task_002/003/005 ran 30-call shell sessions producing no changes under
+#: rate-limit pressure, yet the orchestrator re-dispatched the same developer
+#: turn every iteration — "📋 Decision: developer", Work 0.0s each time).
+NO_PROGRESS_TURNS_THRESHOLD = 3
+
 
 def _is_network_failure_text(text: str | None) -> bool:
     """Detect endpoint-outage phrasing in an agent result message.
@@ -266,6 +273,60 @@ class NetworkBusyLoopGuard:
         self.pause_requested = False
 
 
+class NoProgressLoopGuard:
+    """d9: stop respinning an identical no-progress developer session.
+
+    Soak9 (2026-08-29): tasks 002, 003 and 005 all show files_modified=0 while
+    the orchestrator chose "developer" every single iteration; each shell session
+    burned 30 model calls (mostly rate-limit retries) and returned error with
+    "Work: 0.0s". Counting consecutive zero-change developer turns is the same
+    signal ``_finalize_task`` uses to call a task stalled.
+
+    Once the streak reaches the threshold the guard latches: subsequent
+    "developer" decisions are redirected to background discovery and ONE HIGH
+    stall summary is posted per episode. Any developer turn that actually
+    materializes a file clears the streak and the latch.
+    """
+
+    def __init__(self, threshold: int = NO_PROGRESS_TURNS_THRESHOLD):
+        self.threshold = max(1, int(threshold))
+        self._streak = 0
+        self._stall_shown = False
+
+    def stalled(self) -> bool:
+        return self._streak >= self.threshold
+
+    def record_change(self) -> None:
+        self._streak = 0
+        self._stall_shown = False
+
+    def record_no_change(self, task_id: str) -> bool:
+        """Count one zero-change turn; True once the guard latches."""
+        self._streak += 1
+        if self._streak >= self.threshold and not self._stall_shown:
+            self._stall_shown = True
+            post_message(
+                "system",
+                "orchestrator",
+                (
+                    f"No progress: developer produced no file changes in {self._streak} "
+                    "consecutive sessions. Pausing developer re-dispatch; routing "
+                    "through other agents."
+                ),
+                task_id,
+                "HIGH",
+            )
+        return self._streak >= self.threshold
+
+
+def _record_developer_progress(guard: NoProgressLoopGuard, task_id: str, progress: dict, files_before: int) -> None:
+    """Feed the d9 guard from a developer turn's file-change delta."""
+    if progress["files_modified"] > files_before:
+        guard.record_change()
+    else:
+        guard.record_no_change(task_id)
+
+
 def run_task_cycle(  # noqa: C901
     task_id: str,
     user_command: str,
@@ -330,6 +391,7 @@ def run_task_cycle(  # noqa: C901
     finish_grace_turns = 0
 
     network_guard = NetworkBusyLoopGuard()
+    no_progress_guard = NoProgressLoopGuard()
 
     try:
         max_orchestrator_retries = 3
@@ -471,6 +533,20 @@ def run_task_cycle(  # noqa: C901
 
             conversation_context.append({"role": "assistant", "content": json.dumps(decision)})
 
+            # d9: after a streak of zero-change developer sessions, stop
+            # respinning the identical session. Redirect developer choices to
+            # background discovery (FAILSAFE-style, same shape as the fallback
+            # decision above) until a developer turn actually changes a file.
+            if next_agent == "developer" and no_progress_guard.stalled():
+                print("   🧯 No-progress stall guard: redirecting developer dispatch to background discovery.")
+                decision = {
+                    "next_agent": "background",
+                    "instructions": user_command,
+                    "files_needed": [],
+                    "reasoning": "Stall guard: repeated no-progress developer sessions; background discovery dispatched.",
+                }
+                next_agent = "background"
+
             # =====================================================
             # COMPLETION HANDLING
             # =====================================================
@@ -536,6 +612,7 @@ def run_task_cycle(  # noqa: C901
                 # the worktree agent explores and verifies on its own.
                 dev_impl = (config.get("developer", {}) or {}).get("implementation", "edit_payload")
                 if dev_impl == "shell":
+                    files_before = progress["files_modified"]
                     mut = _dispatch_developer(
                         task_id=task_id,
                         instructions=instructions or user_command,
@@ -553,6 +630,7 @@ def run_task_cycle(  # noqa: C901
                             network_guard.surface(task_id)
                     else:
                         network_guard.record_success()
+                    _record_developer_progress(no_progress_guard, task_id, progress, files_before)
                     conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
                     continue
 
@@ -644,6 +722,7 @@ PLAN: [brief explanation]"""
                 requested_files = valid_files
 
                 # === DEVELOPER MUTATION (extracted) ===
+                files_before = progress["files_modified"]
                 mut = _dispatch_developer(
                     task_id=task_id,
                     instructions=instructions or user_command,
@@ -656,6 +735,7 @@ PLAN: [brief explanation]"""
                     requested_files=requested_files,
                 )
                 _active_work_seconds += _last_call_http_latency
+                _record_developer_progress(no_progress_guard, task_id, progress, files_before)
 
             # BACKGROUND AGENTS - Yield control
             # =====================================================
@@ -726,7 +806,7 @@ PLAN: [brief explanation]"""
                                 """)
                                 next_items = cursor.fetchall()
 
-                        if top_item:
+                        if top_item and not no_progress_guard.stalled():
                             print(f"   ⚠️  Orchestrator chose 'background', but agents are PAUSED (backlog: {backlog_count})")
                             print("   🔄 Redirecting to 'developer' to work on prioritized feedback")
 
@@ -776,6 +856,7 @@ PLAN: [brief explanation]"""
                             # implementation; addressing_feedback_ids makes
                             # materialized work mark this item addressed.
                             print(f"   🔄 Dispatching developer for item #{fb_id}")
+                            files_before = progress["files_modified"]
                             mut = _dispatch_developer(
                                 task_id=task_id,
                                 instructions=developer_instructions,
@@ -798,7 +879,14 @@ PLAN: [brief explanation]"""
                                     network_guard.surface(task_id)
                             else:
                                 network_guard.record_success()
+                            _record_developer_progress(no_progress_guard, task_id, progress, files_before)
                             conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
+
+                        elif top_item:
+                            # d9: stall latch — do not respin the identical
+                            # developer session from backlog redirect either.
+                            print("   🧯 No-progress stall guard: keeping developer paused in backlog mode.")
+                            time.sleep(8)
 
                     else:
                         # NORMAL MODE: Yield to background agents
