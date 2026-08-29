@@ -3,6 +3,7 @@
 import json
 import time
 from datetime import datetime
+from typing import Any
 
 from agents.base import _last_call_http_latency, call_agent
 from agents.orchestrator import call_orchestrator
@@ -191,6 +192,34 @@ def _finalize_task(task_id: str, progress: dict, reason: str) -> None:
         print(f"   ⚠️  Failed to finalize task {task_id}: {e}")
 
 
+def _ensure_pool_started(
+    agent_pool: Any,
+    task_id: str,
+    progress: dict,
+    current_turn: int,
+    *,
+    pool_start_after_turns: int = 2,
+) -> None:
+    """Defer the background pool start (residual W5, soak 2026-08-29).
+
+    Soak9 started the pool instantly and queued a 1155-event initial burst
+    that shared the core code loop's RateLimiter/TokenBudget, producing the
+    429 flood. The pool now starts only after the task's FIRST successful
+    materialize proves it is a real working task, or after
+    ``pool_start_after_turns`` turns - whichever comes first. Idempotent:
+    BackgroundAgentPool.start is a no-op once running, and test FakePools
+    have no start() to guard against.
+    """
+    if agent_pool is None or not hasattr(agent_pool, "start"):
+        return
+    if getattr(agent_pool, "running", False):
+        return
+    if progress.get("materialize_successes", 0) == 0 and current_turn < pool_start_after_turns:
+        return
+    print("   🌱 Deferred background pool start: task is productive, spawning workers")
+    agent_pool.start(task_id)
+
+
 class NetworkBusyLoopGuard:
     """Busy-loop guard for sequential-agent network outages (plan §8.4 decision 5).
 
@@ -276,9 +305,12 @@ def run_task_cycle(  # noqa: C901
     except Exception as e:
         print(f"   ⚠️  Backlog aging skipped: {e}")
 
+    agent_pool = None
     if background_enabled:
         agent_pool = get_agent_pool()
-        agent_pool.start(task_id)
+        # Residual W5: NO eager pool.start(task_id) here. Background workers
+        # (and their queued burst) are deferred until _ensure_pool_started,
+        # called each iteration, decides the task is real.
         print()
 
     conversation_context = []
@@ -304,6 +336,7 @@ def run_task_cycle(  # noqa: C901
 
         while current_turn < max_turns:
             current_turn += 1
+            _ensure_pool_started(agent_pool, task_id, progress, current_turn)
             iteration_start = time.time()
             iteration_end = iteration_start + (time_box_minutes * 60)
             active_budget = time_box_minutes * 60
@@ -401,6 +434,10 @@ def run_task_cycle(  # noqa: C901
                         task_id,
                         "HIGH",
                     )
+                    # Residual P6: budget-exhausted cycles were ending with the
+                    # task still 'in_progress'; finalize (completed/stalled)
+                    # so the run table reflects reality.
+                    _finalize_task(task_id, progress, reason="token budget exhausted")
                     return progress
 
                 if network_guard.record_failure():
@@ -624,6 +661,11 @@ PLAN: [brief explanation]"""
             # =====================================================
             elif next_agent == "background":
                 try:
+                    # Ensure the deferred pool is live before queueing
+                    # (residual W5) so the orchestrator's explicit
+                    # 'background' decision triggers the same productive-task
+                    # gate as a materialize would.
+                    _ensure_pool_started(agent_pool, task_id, progress, current_turn)
                     from agents.resource_controller_worker import get_resource_controller
 
                     rc = get_resource_controller()
@@ -635,13 +677,14 @@ PLAN: [brief explanation]"""
                     if current_decision and current_decision.level in ("BACKLOG_PROCESSING", "BACKLOG_WARNING"):
                         with get_db_connection() as conn:
                             cursor = conn.cursor()
-                            cursor.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0")
+                            cursor.execute("""SELECT COUNT(*) FROM agent_feedback
+                                             WHERE addressed = 0 AND category != 'seed_task'""")
                             backlog_count = cursor.fetchone()[0]
 
                             cursor.execute("""
                                 SELECT id, priority, category, file_path, message, suggestion
                                 FROM agent_feedback
-                                WHERE addressed = 0
+                                WHERE addressed = 0 AND category != 'seed_task'
                                 ORDER BY
                                     CASE priority
                                         WHEN 'CRITICAL' THEN 1
@@ -670,7 +713,7 @@ PLAN: [brief explanation]"""
                                 cursor.execute("""
                                     SELECT id, priority, category, file_path, message
                                     FROM agent_feedback
-                                    WHERE addressed = 0
+                                    WHERE addressed = 0 AND category != 'seed_task'
                                     ORDER BY
                                         CASE priority
                                             WHEN 'CRITICAL' THEN 1
@@ -833,6 +876,11 @@ PLAN: [brief explanation]"""
         # 5/5 tasks orphaned this way).
         _finalize_task(task_id, progress, reason="max_turns exhausted")
 
+    except KeyboardInterrupt:
+        # Residual P6: a manual stop must still write a terminal status; the
+        # finally block (worker stop) still runs below.
+        _finalize_task(task_id, progress, reason="KeyboardInterrupt")
+        raise
     except Exception as e:
         _finalize_task(task_id, progress, reason=f"error: {e}")
         raise

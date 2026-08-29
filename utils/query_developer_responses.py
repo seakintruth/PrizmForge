@@ -620,19 +620,23 @@ def _print_data_window() -> None:
     """
     conn, cur, _, _ = _get_db()
     newest = "N/A"
-    for table, col in (
-        ("errors", "timestamp"),
-        ("events", "timestamp"),
-        ("edit_proposals", "created_at"),
-        ("file_write_log", "log_id"),
-        ("tasks", "updated_at"),
+    # Tasks record timestamps with isoformat(sep=' '); the rest use 'T'.
+    # Normalize both to 'T' before comparing. file_write_log must not use
+    # log_id (surrogate, non-monotonic across dirt-bearing inserts) — the
+    # completed_at watermark is the real record-time signal (residual P4).
+    for table, expr in (
+        ("errors", "MAX(timestamp)"),
+        ("events", "MAX(ts)"),
+        ("edit_proposals", "MAX(created_at)"),
+        ("file_write_log", "MAX(completed_at)"),
+        ("tasks", "MAX(COALESCE(completed_at, started_at))"),
     ):
         try:
-            row = cur.execute(f"SELECT MAX({col}) FROM {table}").fetchone()
+            row = cur.execute(f"SELECT {expr} FROM {table}").fetchone()
         except sqlite3.Error:
             continue
-        if row and row[0] and (newest == "N/A" or str(row[0]) > newest):
-            newest = str(row[0])
+        if row and row[0] and (newest == "N/A" or str(row[0]).replace(" ", "T") > newest):
+            newest = str(row[0]).replace(" ", "T")
     conn.close()
     print(f"   📆 data window: latest record seen {newest}")
 

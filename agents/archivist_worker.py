@@ -30,6 +30,11 @@ class ArchivistWorker:
     - conversation_history (agent conversation logs)
     """
 
+    # W2 (soak recompute, 2026-08-29): prompt token cost is linear in the
+    # batch, so a single giant archive call balloons the prompt (3.9K -> 9.8K
+    # chars observed); small batches keep each call cheap and retriable.
+    _ARCHIVE_BATCH_SIZE = 20
+
     def __init__(self):
         self.running = False
         self.worker_thread = None
@@ -111,21 +116,34 @@ class ArchivistWorker:
                             "task_id": msg[6],
                         }
                     )
-                summary_prompt = self._build_message_archive_prompt(messages)
-                response = call_agent("archivist", summary_prompt, self.current_task_id)
-                if response:
-                    saved = self._save_message_archive(self.current_task_id, messages, response, conn=conn)
-                    if not saved:
-                        # Keep originals on the bus; never swap real context
-                        # for an unparseable summary.
-                        return
-                    message_ids = [msg["id"] for msg in messages]
+
+                # W2: batch to keep each prompt small; one same-prompt retry on
+                # unparseable non-empty output; an empty transport response is
+                # never retried (same storm policy as the reviewer gate). Only
+                # batches that actually saved are deleted from the bus.
+                for i in range(0, len(messages), self._ARCHIVE_BATCH_SIZE):
+                    batch = messages[i : i + self._ARCHIVE_BATCH_SIZE]
+                    summary_prompt = self._build_message_archive_prompt(batch)
+                    response = call_agent("archivist", summary_prompt, self.current_task_id)
+                    if response and self._save_message_archive(self.current_task_id, batch, response, conn=conn):
+                        pass
+                    else:
+                        if not response:
+                            print("    ⚠️  Skipping batch: empty archivist transport response")
+                            continue
+                        # Non-empty but unparseable -> allow ONE same-prompt retry.
+                        response = call_agent("archivist", summary_prompt, self.current_task_id)
+                        if not response or not self._save_message_archive(self.current_task_id, batch, response, conn=conn):
+                            print("    ⚠️  Skipping batch: archivist output unparseable after retry")
+                            continue
+
+                    message_ids = [msg["id"] for msg in batch]
                     placeholders = ",".join("?" * len(message_ids))
                     cursor.execute(
                         f"DELETE FROM messages WHERE id IN ({placeholders})",  # noqa: S608
                         message_ids,
                     )
-                    print(f"    ✅ Archived and cleaned {len(messages)} messages from bus")
+                    print(f"    ✅ Archived and cleaned {len(batch)} messages from bus")
         except Exception as e:
             print(f"    ❌ Message archive error: {e}")
 
@@ -174,10 +192,21 @@ class ArchivistWorker:
                             "timestamp": conv[4],
                         }
                     )
-                summary_prompt = self._build_conversation_archive_prompt(conversations)
-                response = call_agent("archivist", summary_prompt, self.current_task_id)
-                if response and self._save_conversation_archive(self.current_task_id, conversations, response):
-                    print(f"    ✅ Archived {len(conversations)} conversation entries")
+                # W2: same batching + single-retry policy as the message path.
+                for i in range(0, len(conversations), self._ARCHIVE_BATCH_SIZE):
+                    batch = conversations[i : i + self._ARCHIVE_BATCH_SIZE]
+                    summary_prompt = self._build_conversation_archive_prompt(batch)
+                    response = call_agent("archivist", summary_prompt, self.current_task_id)
+                    if response and self._save_conversation_archive(self.current_task_id, batch, response):
+                        print(f"    ✅ Archived {len(batch)} conversation entries")
+                    elif not response:
+                        print("    ⚠️  Skipping batch: empty archivist transport response")
+                    else:
+                        response = call_agent("archivist", summary_prompt, self.current_task_id)
+                        if response and self._save_conversation_archive(self.current_task_id, batch, response):
+                            print(f"    ✅ Archived {len(batch)} conversation entries after retry")
+                        else:
+                            print("    ⚠️  Skipping batch: archivist output unparseable after retry")
         except Exception as e:
             print(f"    ❌ Conversation archive error: {e}")
 

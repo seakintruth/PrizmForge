@@ -146,3 +146,71 @@ def test_requested_files_single_file_cap():
         requested_files = [requested_files[0]]
 
     assert requested_files == ["app.py"]
+
+
+class TestDeferredPoolStart:
+    """W5 (soak recompute): the eager pool.start at cycle entry was what raced
+    fill-mode against throttled agents → Soak9's orphan burst. The pool now
+    starts only after the first materialize OR after 2 turns."""
+
+    def _make_pool(self):
+        class _RecordingPool:
+            def __init__(self):
+                self.started = 0
+
+            def start(self, task_id):
+                self.started += 1
+
+        return _RecordingPool()
+
+    def test_no_start_before_materialize_and_turn_threshold(self):
+        from workflow.task_runner import _ensure_pool_started
+
+        pool = self._make_pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 0}, 1)
+        assert pool.started == 0
+
+    def test_start_after_first_materialize(self):
+        from workflow.task_runner import _ensure_pool_started
+
+        pool = self._make_pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 1}, 1)
+        assert pool.started == 1
+
+    def test_start_after_turn_threshold_without_materialize(self):
+        from workflow.task_runner import _ensure_pool_started
+
+        pool = self._make_pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 0}, 2)
+        assert pool.started == 1
+
+    def test_start_is_idempotent_once_running(self):
+        # The real pool sets running=True inside start(); the helper checks it,
+        # so a productive multi-turn task does not re-string the pool each turn.
+        from workflow.task_runner import _ensure_pool_started
+
+        started = []
+
+        class _Pool:
+            def __init__(self):
+                self.running = False
+
+            def start(self, task_id):
+                started.append(task_id)
+                self.running = True
+
+        pool = _Pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 1}, 1)
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 2}, 2)
+        assert started == ["t5"]
+
+    def test_pool_without_start_attribute_is_noop(self):
+        # FakePool-style doubles (test_network_busy_loop) lack start(). The
+        # hasattr guard keeps cycle wiring working when agents are disabled.
+        from workflow.task_runner import _ensure_pool_started
+
+        class _NoStart:
+            def queue_file_change(self, **_):
+                return None
+
+        _ensure_pool_started(_NoStart(), "t5", {"materialize_successes": 9}, 9)

@@ -14,7 +14,7 @@ from workflow.proposal_builder import create_proposal_from_developer_output
 class FakeRuffProcess:
     returncode = 1
     stdout = ""
-    stderr = "src/bad.py:3:89: E501 Line too long (92 > 88)" if False else "app.py:2:89: E501 Line too long (92 > 88)"
+    stderr = "app.py:2:89: E501 Line too long (92 > 88)"
 
 
 class FakeRuffOk:
@@ -46,8 +46,10 @@ class TestRunPrecheck:
     def test_disabled_returns_empty(self, mock_minimal_config):
         assert _run_ruff_precheck(None, None, "app.py") == {}
 
-    def test_failure_marker(self, tmp_path, mock_minimal_config):
+    def test_failure_marker(self, tmp_path, mock_minimal_config, monkeypatch):
+        # Hermetic: pre-check result does not depend on ruff being installed.
         mock_minimal_config["file_editing"] = {"in_process_ruff_check": True}
+        monkeypatch.setattr("file_editing.writer.subprocess.run", lambda *_a, **_k: FakeRuffOk())
         f = tmp_path / "app.py"
         f.write_text("x = 1\n")
         res = _run_ruff_precheck(f, tmp_path, "app.py")
@@ -78,7 +80,14 @@ class TestMaterializeLintGate:
             assert fb[0][0] == "ruff_precheck"
             assert fb[0][1] == "CRITICAL"
             status = conn.execute("SELECT status FROM edit_proposals WHERE proposal_id = ?", (pid,)).fetchone()[0]
+            # Residual P5: the write-log row reflects the real single status of
+            # the write (the ruff gate it actually went through), not "success".
+            log_status = conn.execute(
+                "SELECT status FROM file_write_log WHERE proposal_id = ? ORDER BY log_id",
+                (pid,),
+            ).fetchall()
         assert status == "applied"
+        assert log_status and log_status[0][0] == "lint_failed"
 
     def test_ruff_ok_passes_through(self, mock_minimal_config, temp_db, monkeypatch):
         mock_minimal_config["file_editing"] = {"in_process_ruff_check": True}

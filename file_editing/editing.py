@@ -117,7 +117,13 @@ def get_insert_sort_order(conn: sqlite3.Connection, file_id: int, after_guid: st
         return (max_row[0] or 0.0) + initial_gap
 
     except Exception as e:
-        log_error("file_editing", "get_insert_sort_order", "HIGH", str(e), file_id=file_id)
+        log_error(
+            "HIGH",
+            "file_editing",
+            "get_insert_sort_order",
+            str(e),
+            details={"file_id": file_id},
+        )
         raise
 
 
@@ -141,14 +147,20 @@ def renumber_sort_orders(conn: sqlite3.Connection, file_id: int) -> None:
             )
 
         log_error(
+            "INFO",
             "file_editing",
             "renumber_sort_orders",
-            "INFO",
             f"Renumbered {len(line_guids)} lines",
-            file_id=file_id,
+            details={"file_id": file_id},
         )
     except Exception as e:
-        log_error("file_editing", "renumber_sort_orders", "HIGH", str(e), file_id=file_id)
+        log_error(
+            "HIGH",
+            "file_editing",
+            "renumber_sort_orders",
+            str(e),
+            details={"file_id": file_id},
+        )
         raise
 
 
@@ -165,9 +177,9 @@ def validate_proposal(conn, proposal: dict) -> bool:
             ).fetchone()
             if not row or row[0] != expected.get(guid):
                 log_error(
+                    "HIGH",
                     "file_editing",
                     "validation",
-                    "HIGH",
                     f"Hash mismatch on line {guid}",
                     proposal_id=proposal.get("proposal_id"),
                 )
@@ -175,9 +187,9 @@ def validate_proposal(conn, proposal: dict) -> bool:
         return True
     except Exception as e:
         log_error(
+            "HIGH",
             "file_editing",
             "validation",
-            "HIGH",
             str(e),
             proposal_id=proposal.get("proposal_id"),
         )
@@ -726,9 +738,9 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
 
         if not validate_proposal(conn, dict(proposal_row)):
             log_error(
+                "HIGH",
                 "file_editing",
                 "apply",
-                "HIGH",
                 "Optimistic validation failed",
                 proposal_id=proposal_id,
             )
@@ -744,9 +756,9 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             for op in payload.operations:
                 if not _validate_operation_guids(conn, file_id, op):
                     log_error(
+                        "HIGH",
                         "file_editing",
                         "apply",
-                        "HIGH",
                         f"Referenced line GUID not found in operation: {op.type}",
                         proposal_id=proposal_id,
                     )
@@ -820,5 +832,5 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             }
 
         except Exception as e:
-            log_error("file_editing", "apply", "HIGH", str(e), proposal_id=proposal_id)
+            log_error("HIGH", "file_editing", "apply", str(e), proposal_id=proposal_id)
             return {"status": "error", "message": str(e)}

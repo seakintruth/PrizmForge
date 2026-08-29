@@ -156,15 +156,24 @@ def _resolve_contained_path(file_path: str, project_dir: Path) -> Path:
 
 
 def _delete_file_from_disk(file_path: str, project_dir: Path) -> dict[str, Any]:
-    """Remove a governed-deleted file from disk (contained)."""
+    """Remove a governed-deleted file from disk (contained).
+
+    Both ValueError (path escapes the project root) and OSError (unlink
+    failure — permission, missing dir) are surfaced as error results so
+    materialize records a write-log 'error' row instead of leaving the
+    governed store deleted while the disk file survives (residual P8).
+    """
     try:
         resolved = _resolve_contained_path(file_path, project_dir)
         if resolved.exists():
             resolved.unlink()
         return {"status": "success", "file_path": str(resolved)}
     except ValueError as e:
-        log_error("file_editing", "writer", "HIGH", str(e))
+        log_error("HIGH", "file_editing", "writer", str(e))
         return {"status": "error", "message": str(e)}
+    except OSError as e:
+        log_error("HIGH", "file_editing", "writer", f"disk removal failed: {e}")
+        return {"status": "error", "message": f"disk removal failed: {e}"}
 
 
 def _run_ruff_precheck(path: Path | None, project_dir: Path, rel_path: str) -> dict[str, Any]:
@@ -261,9 +270,9 @@ def write_file_to_disk(file_path: str, content: str, proposal_id: str | None = N
         safety = validate_source_content(content, file_path=str(path))
         if not safety.get("ok"):
             log_error(
+                "HIGH",
                 "file_editing",
                 "writer",
-                "HIGH",
                 safety.get("message", "content rejected"),
                 proposal_id=proposal_id,
             )
@@ -281,10 +290,10 @@ def write_file_to_disk(file_path: str, content: str, proposal_id: str | None = N
         return {"status": "success", "file_path": str(path)}
     except ValueError as e:
         # Containment / path policy failure
-        log_error("file_editing", "writer", "HIGH", str(e), proposal_id=proposal_id)
+        log_error("HIGH", "file_editing", "writer", str(e), proposal_id=proposal_id)
         return {"status": "error", "message": str(e)}
     except Exception as e:
-        log_error("file_editing", "writer", "HIGH", str(e), proposal_id=proposal_id)
+        log_error("HIGH", "file_editing", "writer", str(e), proposal_id=proposal_id)
         return {"status": "error", "message": str(e)}
 
 
@@ -335,9 +344,9 @@ def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: l
 
     except Exception as e:
         log_error(
+            "MEDIUM",
             "file_editing",
             "invalidation",
-            "MEDIUM",
             str(e),
             proposal_id=current_proposal_id,
         )
@@ -375,7 +384,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                 if op_path:
                     affected_paths.add(op_path)
         except Exception as e:
-            log_error("file_editing", "materialize", "MEDIUM", f"Payload parse warning: {e}", proposal_id=proposal_id)
+            log_error("MEDIUM", "file_editing", "materialize", f"Payload parse warning: {e}", proposal_id=proposal_id)
 
         before_state: dict[str, dict] = {}
         for path in affected_paths:
@@ -441,9 +450,9 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     rel_path = str(resolved_path.relative_to(project_dir)).replace("\\", "/")
                 except ValueError as path_err:
                     log_error(
+                        "MEDIUM",
                         "file_editing",
                         "path_normalize",
-                        "MEDIUM",
                         f"Could not normalize path inside project_directory: {path_err}",
                         proposal_id=proposal_id,
                     )
@@ -458,9 +467,9 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                         refresh_file_symbols(rel_path, content_after)
                     except Exception as _idx_err:
                         log_error(
+                            "LOW",
                             "file_editing",
                             "index_refresh",
-                            "LOW",
                             f"Symbol index refresh failed: {_idx_err}",
                             proposal_id=proposal_id,
                         )
@@ -502,9 +511,9 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     )
                 except Exception as e:
                     log_error(
+                        "MEDIUM",
                         "file_editing",
                         "file_modifications",
-                        "MEDIUM",
                         f"Failed to record modification: {e}",
                         proposal_id=proposal_id,
                     )
@@ -517,6 +526,13 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     precheck = _run_ruff_precheck(resolved_path, project_dir, rel_path or target_path)
                     if precheck.get("attempted") and not precheck.get("ok"):
                         lint_failed = precheck
+                        # Residual P5: a file whose write passed the ruff
+                        # pre-check is NOT "success" — flip its write-log row so
+                        # the audit trail carries the actual single status.
+                        conn.execute(
+                            "UPDATE file_write_log SET status = 'lint_failed' WHERE proposal_id = ? AND file_id = ?",
+                            (proposal_id, op_file_id),
+                        )
 
                 # ----------------------------------------------------------
                 # Git add + commit using the structured git_commit() helper

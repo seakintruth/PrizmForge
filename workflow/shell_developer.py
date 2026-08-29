@@ -634,14 +634,14 @@ Rules:
 - APPROVE only when the change is coherent and the resulting file would still be valid.
 """
 
-    progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
-
     # Fail closed (shared with developer_edit - see workflow/reviewer_gate.py).
     # Shell-session diffs originate from arbitrary bash execution, so a missing
     # or unparseable verdict must REJECT, never auto-approve. A ``None``
     # transport failure and a semantic REJECT are never retried; only one
     # same-prompt retry is allowed on an empty/unparseable verdict.
     verdict = request_review_verdict(reviewer_prompt, task_id)
+    # residual P10: count actual plays (the gate may retry once internally)
+    progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + verdict.calls_used
     post_reviewer_suggestions(proposal_id, task_id, verdict.suggestions)
 
     if verdict.rejected:
@@ -684,6 +684,70 @@ def _read_current_file(file_path: str) -> str:
     return get_file_content_from_db(file_path) or ""
 
 
+def _gate_and_materialize_changes(
+    *,
+    changes: list[dict],
+    result: SessionResult,
+    cfg: ShellDeveloperConfig,
+    task_id: str,
+    progress: dict,
+    current_turn: int,
+) -> tuple[list[str], list[str], dict[str, str]]:
+    """Change → governed proposal → reviewer gate → materialize.
+
+    Extracted from the turn entry point to keep its branch count under the
+    complexity ceiling; each change is proposed, gated, and materialized
+    independently so one rejected/error gate cannot block the rest.
+    """
+    statuses: list[str] = []
+    proposal_ids: list[str] = []
+    gates_by_path: dict[str, str] = {}
+
+    for change in changes:
+        op = change_to_operation(change)
+        if op is None:
+            print(f"   ⚠️ Skipping unsupported change ({change.get('status')}): {change.get('path')}")
+            continue
+
+        payload_dict = {
+            "target_file_path": change["path"],
+            "summary": f"Shell developer edit: {change['path']}",
+            "operations": [op],
+            "rationale": _build_rationale(result, change, cfg.test_command),
+        }
+        prop = create_proposal_from_developer_output(
+            payload_dict,
+            proposed_by_agent_id=1,
+            target_file_path=change["path"],
+            selected_mode="shell_session",
+            fallback_used=False,
+            final_mode=op["type"],
+            task_id=task_id,
+        )
+        if prop.get("status") != "success":
+            progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+            print(f"   ❌ Proposal creation failed for {change['path']}: {prop}")
+            continue
+
+        proposal_ids.append(prop["proposal_id"])
+        print(f"   📦 Proposal created: {prop['proposal_id']} ({change['path']})")
+        gate = _gate_and_materialize(
+            proposal_id=prop["proposal_id"],
+            payload_dict=payload_dict,
+            target_file_path=change["path"],
+            diff_text=change.get("diff", ""),
+            result=result,
+            fallback_used=False,
+            task_id=task_id,
+            progress=progress,
+            current_turn=current_turn,
+        )
+        statuses.append(gate)
+        gates_by_path[change["path"]] = gate
+
+    return statuses, proposal_ids, gates_by_path
+
+
 # =========================================================================
 # Public turn entry point (mirrors run_developer_mutation contract)
 # =========================================================================
@@ -722,23 +786,43 @@ def run_shell_developer_turn(
     task_text = instructions or user_command
     addressing_ids = decision.get("addressing_feedback_ids") or []
 
+    # W6 (soak recompute): during a developer session the shell worktree is the
+    # source of truth; background reviewers scanning the same files would rack
+    # up competing feedback and burn tokens mid-session. Pause feedback agents
+    # for the duration (lane isolation) and restore the previous stance after.
+    # Never touches support workers (they are exempt inside set_active_agents).
+    lane_pool = None
+    previous_filter = None
+    bg_cfg = config.get("background_agents", {}) or {}
+    if bg_cfg.get("lane_isolation_during_developer", True) and config.get("background_agents_enabled", True):
+        try:
+            from agents.parallel_workers import get_agent_pool
+
+            lane_pool = get_agent_pool()
+            if not getattr(lane_pool, "running", False) or not hasattr(lane_pool, "set_active_agents"):
+                lane_pool = None
+            else:
+                previous_filter = getattr(lane_pool, "active_agents_filter", None)
+                lane_pool.set_active_agents([])
+                print("   🔀 Lane isolation: background feedback agents paused during developer session")
+        except Exception as e:
+            lane_pool = None
+            print(f"   ⚠️  Lane isolation setup skipped: {e}")
+
     try:
         result = session.run(task_text)
-        print(f"   🐚 Session exit: {result.exit_status} after {result.n_model_calls} model calls")
+        print(f"   🐺 Session exit: {result.exit_status} after {result.n_model_calls} model calls")
 
         _save_trajectory(task_id, current_turn, session)
 
-        if result.exit_status != "Finished":
-            progress["edit_failures"] = progress.get("edit_failures", 0) + 1
-            post_message(
-                "developer",
-                "orchestrator",
-                f"Shell developer session ended early ({result.exit_status}): {result.summary}",
-                task_id,
-                "HIGH",
-            )
-            return {"status": "error", "message": f"session {result.exit_status}: {result.summary}"}
-
+        # W1 (soak recompute, 2026-08-29): an early-exiting session
+        # (step_limit, user signal, transport failure) must still materialize
+        # the edits already parked in its worktree - the diff evidence the
+        # reviewer gate exists to judge. Rerunning the identical prompt
+        # previously produced the identical early exit, stranding the edits
+        # forever; now they are rescued the same way a Finished session's are.
+        # The real exit status is preserved in the return so the orchestrator
+        # loop-guard still sees it.
         if result.test_exit_code is not None and result.test_exit_code != 0:
             print(f"   ❌ Verification failed (exit {result.test_exit_code}); policy={cfg.on_test_failure}")
             if cfg.on_test_failure != "propose_anyway":
@@ -758,60 +842,48 @@ def run_shell_developer_turn(
         changes = worktree.collect_changes()
         if not changes:
             progress["edit_failures"] = progress.get("edit_failures", 0) + 1
-            return {"status": "error", "message": "session finished but produced no file changes"}
-
-        statuses: list[str] = []
-        proposal_ids: list[str] = []
-        gates_by_path: dict[str, str] = {}
-
-        for change in changes:
-            op = change_to_operation(change)
-            if op is None:
-                print(f"   ⚠️ Skipping unsupported change ({change.get('status')}): {change.get('path')}")
-                continue
-
-            payload_dict = {
-                "target_file_path": change["path"],
-                "summary": f"Shell developer edit: {change['path']}",
-                "operations": [op],
-                "rationale": _build_rationale(result, change, cfg.test_command),
+            if result.exit_status != "Finished":
+                post_message(
+                    "developer",
+                    "orchestrator",
+                    f"Shell developer session ended early ({result.exit_status}): {result.summary}",
+                    task_id,
+                    "HIGH",
+                )
+            return {
+                "status": "error",
+                "message": (
+                    "session finished but produced no file changes" if result.exit_status == "Finished" else f"session {result.exit_status}: {result.summary}"
+                ),
             }
-            prop = create_proposal_from_developer_output(
-                payload_dict,
-                proposed_by_agent_id=1,
-                target_file_path=change["path"],
-                selected_mode="shell_session",
-                fallback_used=False,
-                final_mode=op["type"],
-                task_id=task_id,
-            )
-            if prop.get("status") != "success":
-                progress["edit_failures"] = progress.get("edit_failures", 0) + 1
-                print(f"   ❌ Proposal creation failed for {change['path']}: {prop}")
-                continue
 
-            proposal_ids.append(prop["proposal_id"])
-            print(f"   📦 Proposal created: {prop['proposal_id']} ({change['path']})")
-            gate = _gate_and_materialize(
-                proposal_id=prop["proposal_id"],
-                payload_dict=payload_dict,
-                target_file_path=change["path"],
-                diff_text=change.get("diff", ""),
-                result=result,
-                fallback_used=False,
-                task_id=task_id,
-                progress=progress,
-                current_turn=current_turn,
-            )
-            statuses.append(gate)
-            gates_by_path[change["path"]] = gate
+        statuses, proposal_ids, gates_by_path = _gate_and_materialize_changes(
+            changes=changes,
+            result=result,
+            cfg=cfg,
+            task_id=task_id,
+            progress=progress,
+            current_turn=current_turn,
+        )
 
         # Only mark feedback addressed when the file it targets actually landed;
         # skipped (deletion/oversize) or rejected changes must stay open.
         materialized_paths = {p for p, s in gates_by_path.items() if s == "success"}
         _mark_feedback_addressed(addressing_ids, materialized_paths)
 
-        overall = "success" if "success" in statuses else ("rejected" if "rejected" in statuses else "error")
+        # P9 (merged residual): the turn is a "success" only when EVERY gated
+        # change landed. A single rejected/error gate flips a mixed turn to
+        # "error" - a half-applied session must never count as a win for the
+        # orchestrator's success accounting.
+        if statuses and all(s == "success" for s in statuses):
+            overall = "success"
+        elif any(s == "success" for s in statuses):
+            overall = "error"
+        elif any(s == "rejected" for s in statuses):
+            overall = "rejected"
+        else:
+            overall = "error"
+
         return {
             "status": overall,
             "proposal_ids": proposal_ids,
@@ -820,6 +892,12 @@ def run_shell_developer_turn(
         }
     finally:
         worktree.cleanup()
+        if lane_pool is not None:
+            try:
+                lane_pool.set_active_agents(previous_filter)
+                print("   🔀 Lane isolation lifted: background feedback agents resumed")
+            except Exception as e:
+                print(f"   ⚠️  Lane isolation restore failed: {e}")
 
 
 def _mark_feedback_addressed(addressing_ids: list[Any], materialized_paths: set[str]) -> None:

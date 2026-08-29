@@ -141,3 +141,86 @@ def test_archive_old_messages_keeps_originals_when_archivist_junk(temp_db, mock_
         n_msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE task_id = 't_bus'").fetchone()[0]
     assert n_rows == 0
     assert n_msgs == 6
+
+
+# ---------------------------------------------------------------------------
+# W2 (soak recompute): batching keeps each archive prompt small; deletions are
+# strictly per-batch — a saved batch is cleaned, a junk batch is kept.
+# ---------------------------------------------------------------------------
+
+
+def test_message_archiving_is_batched_2020_5(temp_db, monkeypatch):
+    """45 old read messages → one LLM call per 20-message batch (20/20/5), one
+    archived_context row per batch, and the bus is fully drained for the task."""
+    import agents.archivist_worker as archivist_module
+
+    worker = archivist_module.ArchivistWorker()
+    worker.current_task_id = "t_w2"
+    from core.db_connection import get_db_connection
+
+    old = (datetime.now() - timedelta(minutes=30)).isoformat()
+    with get_db_connection() as conn:
+        for i in range(45):
+            conn.execute(
+                """
+                INSERT INTO messages (from_agent, to_agent, content, task_id, priority, read, timestamp)
+                VALUES ('a', 'b', ?, 't_w2', 'LOW', 1, ?)
+                """,
+                (f"w2 msg {i:02d}", old),
+            )
+
+    calls = []
+    captured_sizes = []
+
+    def fake_archivist(_agent, prompt, task_id):
+        calls.append(prompt)
+        captured_sizes.append(len(calls))
+        return json.dumps({"summary": f"archived {len(calls)}", "key_decisions": ["batch"]})
+
+    monkeypatch.setattr(archivist_module, "call_agent", fake_archivist)
+    worker._archive_old_messages()
+
+    with get_db_connection() as conn:
+        n_rows = conn.execute("SELECT COUNT(*) FROM archived_context WHERE task_id = 't_w2'").fetchone()[0]
+        n_msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE task_id = 't_w2'").fetchone()[0]
+    assert len(calls) == 3
+    assert n_rows == 3
+    assert n_msgs == 0
+
+
+def test_unparseable_batch_keeps_originals_but_saved_batch_deleted(temp_db, monkeypatch):
+    """W2 deletion policy is per-batch: a saved 20-batch is removed from the bus
+    even when a later junk batch is kept after its single retry."""
+    import agents.archivist_worker as archivist_module
+
+    worker = archivist_module.ArchivistWorker()
+    worker.current_task_id = "t_w2b"
+    from core.db_connection import get_db_connection
+
+    old = (datetime.now() - timedelta(minutes=30)).isoformat()
+    with get_db_connection() as conn:
+        for i in range(26):  # batch 1 = 20, batch 2 = 6
+            conn.execute(
+                """
+                INSERT INTO messages (from_agent, to_agent, content, task_id, priority, read, timestamp)
+                VALUES ('a', 'b', ?, 't_w2b', 'LOW', 1, ?)
+                """,
+                (f"w2b msg {i:02d}", old),
+            )
+
+    responses = iter(
+        [
+            json.dumps({"summary": "first batch ok", "key_decisions": []}),
+            "garbage-not-json {{{",
+            "garbage-not-json {{{",
+        ]
+    )
+
+    monkeypatch.setattr(archivist_module, "call_agent", lambda _a, _p, _t: next(responses))
+    worker._archive_old_messages()
+
+    with get_db_connection() as conn:
+        n_rows = conn.execute("SELECT COUNT(*) FROM archived_context WHERE task_id = 't_w2b'").fetchone()[0]
+        n_msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE task_id = 't_w2b'").fetchone()[0]
+    assert n_rows == 1
+    assert n_msgs == 6

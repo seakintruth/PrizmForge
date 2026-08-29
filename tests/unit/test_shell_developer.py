@@ -288,6 +288,70 @@ def test_finish_with_final_command_defers_then_finishes(shell_env, isolated_proj
 
 
 # =========================================================================
+# W1 (soak recompute): early-exit sessions must still materialize WIP edits
+# =========================================================================
+def test_early_exit_step_limit_materializes_wip_changes(shell_env, isolated_project):
+    # Every reply is a bash command and never a FINISH token → the session is
+    # stopped by the step limit with edits parked in the worktree. W1: those
+    # edits must still go through the reviewer gate and materialize, and the
+    # real exit status ("LimitsExceeded") comes back so the loop-guard sees it.
+    shell_env["state"]["llm_script"] = ["Touch app.py only.\n```bash\nprintf 'VALUE = 42\\n' > app.py\n```"]
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-shell-w1",
+        instructions="Set VALUE to 42",
+        user_command="Set VALUE to 42",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    assert result["status"] == "success", result
+    assert result.get("session_exit") == "LimitsExceeded"
+    assert progress.get("files_modified") == 1
+    assert progress.get("materialize_successes") == 1
+
+
+# =========================================================================
+# P9 (merged residual): a mixed gate turn is an error, not a success
+# =========================================================================
+def test_mixed_gate_turn_reports_error_not_success(shell_env, isolated_project, monkeypatch):
+    shell_env["state"]["llm_script"] = [
+        "```bash\nprintf 'VALUE = 42\\n' > app.py\n```",
+        "```bash\nprintf 'x = 1\\n' > new.py\n```",
+        f"{sd.FINISH_TOKEN}\nBoth files written.",
+    ]
+
+    def mixed_reviewer(agent_name, prompt, task_id, *args, **kwargs):
+        if "new.py" in (prompt or ""):
+            return json.dumps({"decision": "REJECT", "reason": "do not add new.py", "suggestions": []})
+        return json.dumps({"decision": "APPROVE", "reason": "ok", "suggestions": []})
+
+    monkeypatch.setattr("agents.base.call_agent", mixed_reviewer)
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-shell-p9",
+        instructions="Write both files",
+        user_command="Write both files",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    # app.py landed (success); new.py was rejected (rejected) → MIXED.
+    assert result["status"] == "error", result
+    assert result.get("session_exit") == "Finished"
+    assert set(result.get("gates", [])) == {"success", "rejected"}
+    assert progress.get("materialize_successes") == 1
+
+
+# =========================================================================
 # Worktree base fidelity + collection guards (review fixes #2/#4/#5)
 # =========================================================================
 class _FakeCursor:

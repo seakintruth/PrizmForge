@@ -151,6 +151,19 @@ class BackgroundAgentPool:
             self._queue_all_files_for_initial_review()
             self._queue_modified_files()
 
+            # W8 (soak recompute, 2026-08-29): intake softening at the pool
+            # level. If the initial burst already overwhelmed the queue, slow
+            # the feeder hard BEFORE it starts so the shared per-endpoint
+            # RateLimiter is not flooded (429 -> 60s sleeps in the code loop).
+            # Implemented as a feeder-interval bump, NOT as a ThrottleDecision:
+            # active_agents=[] would deadlock a queued batch (paused agents
+            # never drain it) and active_agents=None would crash _apply_decision.
+            soft_batch = int(self.agent_configs.get("intake_soft_batch", 100))
+            if self.event_queue.qsize() > soft_batch:
+                self.feeder_interval = 120.0
+                self.base_feeder_interval = 120.0
+                print(f"    ⚠️  Queue burst of {self.event_queue.qsize()} events exceeds intake soft-batch ({soft_batch}); slowing feeder to 120s")
+
             if self.random_review_agents:
                 self.feeder_thread = threading.Thread(
                     target=self._file_feeder_loop,
@@ -208,12 +221,22 @@ class BackgroundAgentPool:
         get_resource_controller().start(task_id)
 
     def _queue_all_files_for_initial_review(self):
-        """Queue ALL project files for initial review when task starts"""
+        """Queue project files for initial review when task starts.
+
+        W7 (soak recompute, 2026-08-29): capped by
+        ``background_agents.initial_review_max_files`` (default 25). Soak9
+        queued ALL 231 files for all 3 agents (693 events) plus 462 modified
+        -file events in one burst, all sharing the core loop's RateLimiter and
+        TokenBudget, which is what produced the 429 flood.
+        """
         try:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
-            cursor.execute("""
+            max_files = int(self.agent_configs.get("initial_review_max_files", 25))
+
+            cursor.execute(
+                """
                 SELECT
                     pf.file_path, pf.content, pf.content_hash, pf.last_modified,
                     pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
@@ -221,7 +244,10 @@ class BackgroundAgentPool:
                 LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
                 WHERE pf.is_binary = 0
                 ORDER BY pf.last_modified DESC
-            """)
+                LIMIT ?
+            """,
+                (max_files,),
+            )
 
             all_files = cursor.fetchall()
             conn.close()
@@ -251,6 +277,8 @@ class BackgroundAgentPool:
 
             queued_count = 0
 
+            max_files = int(self.agent_configs.get("initial_review_max_files", 25))
+
             for agent_name in self.modification_agents:
                 cursor.execute(
                     """
@@ -269,8 +297,9 @@ class BackgroundAgentPool:
                         OR pf.content_hash != art.content_hash_reviewed
                     )
                     ORDER BY pf.last_modified DESC
+                    LIMIT ?
                 """,
-                    (agent_name,),
+                    (agent_name, max_files),
                 )
 
                 modified_files = cursor.fetchall()
@@ -573,9 +602,9 @@ class BackgroundAgentPool:
 
             print(f"    {agent_name}: Failed after {max_attempts} attempts")
             log_error(
+                "HIGH",
                 "parallel_workers",
                 "json_validation",
-                "HIGH",
                 f"{agent_name} failed JSON validation after {max_attempts} attempts",
                 task_id=event.task_id,
                 file_path=event.file_path,
@@ -584,9 +613,9 @@ class BackgroundAgentPool:
         except Exception as e:
             print(f"    {agent_name} error on {event.file_path}: {e}")
             log_error(
+                "HIGH",
                 "parallel_workers",
                 "process_file",
-                "HIGH",
                 f"{agent_name} exception: {e!s}",
                 task_id=event.task_id,
                 file_path=event.file_path,
@@ -725,14 +754,24 @@ class BackgroundAgentPool:
             self.feeder_interval = float(interval)
         print(f"    Feeder interval adjusted to {interval}s")
 
-    def set_active_agents(self, active_agents: list[str]):
+    def set_active_agents(self, active_agents: list[str] | None):
         """
         Enable/disable specific FEEDBACK agents (called by resource controller)
 
         IMPORTANT: This ONLY affects feedback-generating agents (jr_reviewer, etc.)
         Support workers (prioritizer, archivist, reporter, resource_controller)
         are NEVER disabled - they always run.
+
+        ``active_agents=None`` resets the filter entirely (all feedback agents
+        active again, W6 lane-isolation resume); ``[]`` pauses every feedback
+        agent while support workers keep running.
         """
+        if active_agents is None:
+            with self._state_lock:
+                print("    Resuming ALL background feedback agents")
+                self.active_agents_filter = None
+            return
+
         support_workers = {
             "prioritizer",
             "archivist",

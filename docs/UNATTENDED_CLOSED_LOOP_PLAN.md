@@ -1,6 +1,7 @@
 # Unattended Closed-Loop Hardening Plan
 
 **Status:** planning capture (2026-08-16; updated with diagnostic dump); **Workstreams A–F ALL SHIPPED** (2026-08-28): A in PR #94, B–F landed in subsequent closed-loop rounds (git/hook failure loop, test-parity, gate consolidation + §P1–P3, repo policy awareness, observability, §8.4 busy-loop guard, governed `delete_file`, §7.2 in-process ruff pre-check). Single source of truth: `docs/ROADMAP_TODO.md`.  
+**Status sweep (2026-08-29):** ROADMAP_TODO.md retired its shipped sections; a new §1 tracks the PR #95+ residues (P1–P11 review fixes + soak-recompute W1–W8 burst/429 protections), final gate re-run logged on that merge.  
 **Progress tracker:** §3.7/§9 (A) and all workstream acceptance checkboxes ticked; §15 decisions recorded (decision 5 resolved); §16 checklist current. Open items — optional post-materialize `test_command` re-run (intentionally deferred), mini-swe live-model validation + enclave sandboxing (blocked on endpoints/controls) — tracked in the ROADMAP.  
 **Context:** Self-edit unattended runs on a *copy* of PrizmForge (Gemini; multi-hour soaks)  
 **Goal:** Turn observed failure modes into durable product workstreams so future development does not rediscover them ad hoc.

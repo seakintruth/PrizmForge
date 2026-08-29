@@ -135,3 +135,125 @@ class TestBatchHashCapture:
         assert result["affected_line_guids"] == []
         # With no affected GUIDs the batched query must not run an empty IN ().
         assert all("IN (" not in s or "FROM file_lines" not in s for s in recording_proposal_builder)
+
+
+class TestBareSingleOpPayload:
+    """Residual P1: a single-operation payload without an ``operations`` list."""
+
+    def test_bare_payload_creates_proposal(self, temp_db):
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        result = create_proposal_from_developer_output(
+            {
+                "target_file_path": "pkg/bare.py",
+                "summary": "add module",
+                "rationale": "bare single-operation shape",
+                "type": "create_file",
+                "initial_content": ["x = 1"],
+            },
+            1,
+            "pkg/bare.py",
+        )
+
+        assert result["status"] == "success", result
+
+    def test_payload_missing_operations_and_type_rejected(self, temp_db):
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        # Backstop: neither a bare-op ("type") shape nor an operations list.
+        result = create_proposal_from_developer_output(
+            {"target_file_path": "pkg/blank.py", "summary": "no operations"},
+            1,
+            "pkg/blank.py",
+        )
+        assert result["status"] == "error"
+
+    def test_empty_operations_list_rejected(self, temp_db):
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        result = create_proposal_from_developer_output(
+            {
+                "target_file_path": "pkg/blank.py",
+                "summary": "no operations",
+                "rationale": "empty list backstop",
+                "operations": [],
+            },
+            1,
+            "pkg/blank.py",
+        )
+        assert result["status"] == "error"
+
+
+class TestDeleteThenRecreate:
+    """Residual P2: delete_file followed by recreate must REUSE the file_id."""
+
+    def _propose(self, ops, target, *, approve=False):
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        prop = create_proposal_from_developer_output(
+            {"target_file_path": target, "summary": "work step now", "rationale": "working file edits", "operations": ops},
+            1,
+            target,
+        )
+        assert prop["status"] == "success", prop
+        if approve:
+            from file_editing.db import get_db_connection as _edit_db
+
+            with _edit_db() as conn:
+                conn.execute("UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?", (prop["proposal_id"],))
+        return prop["proposal_id"]
+
+    def test_recreate_reuses_soft_deleted_file_id(self, temp_db):
+        from file_editing.db import get_db_connection
+        from file_editing.edit_payload import DeleteFile
+        from file_editing.editing import apply_delete_file
+        from file_editing.writer import initialize_file_lines
+
+        with get_db_connection() as conn:
+            file_id = initialize_file_lines("pkg/reuse.py", "VALUE = 1\n", conn=conn)["file_id"]
+            apply_delete_file(conn, file_id, DeleteFile(target_file_path="pkg/reuse.py", rationale="remove"))
+            assert conn.execute("SELECT is_deleted FROM files WHERE file_id = ?", (file_id,)).fetchone()[0] == 1
+
+        # Recreate on the same path through the FULL proposal path.
+        self._propose(
+            [{"type": "create_file", "target_file_path": "pkg/reuse.py", "initial_content": ["VALUE = 2"]}],
+            "pkg/reuse.py",
+        )
+
+        with get_db_connection() as conn:
+            # Same path -> same file_id (resurrected), never a second live row.
+            rows = conn.execute("SELECT file_id FROM files WHERE file_path = 'pkg/reuse.py' ORDER BY file_id").fetchall()
+            assert len(rows) == 1
+            assert rows[0]["file_id"] == file_id
+            assert conn.execute("SELECT is_deleted FROM files WHERE file_id = ?", (file_id,)).fetchone()[0] == 0
+
+    def test_delete_then_recreate_has_single_file_row(self, temp_db):
+        from file_editing.db import get_db_connection
+        from file_editing.writer import materialize_proposal
+
+        path = "pkg/cycle.py"
+        create_pid = self._propose(
+            [{"type": "create_file", "target_file_path": path, "initial_content": ["VALUE = 1"]}],
+            path,
+            approve=True,
+        )
+        assert materialize_proposal(create_pid)["status"] == "success"
+        delete_pid = self._propose(
+            [{"type": "delete_file", "target_file_path": path, "rationale": "remove"}],
+            path,
+            approve=True,
+        )
+        assert materialize_proposal(delete_pid)["status"] == "success"
+
+        recreate_pid = self._propose(
+            [{"type": "create_file", "target_file_path": path, "initial_content": ["VALUE = 2"]}],
+            path,
+            approve=True,
+        )
+        assert materialize_proposal(recreate_pid)["status"] == "success"
+
+        with get_db_connection() as conn:
+            rows = conn.execute("SELECT file_id, is_deleted FROM files WHERE file_path = ?", (path,)).fetchall()
+            # Residual P2: exactly one file row, live again (no orphan duplicates).
+            assert len(rows) == 1
+            assert rows[0]["is_deleted"] == 0

@@ -36,6 +36,7 @@ class ReviewerVerdict:
     reason: str
     suggestions: list[Any] = field(default_factory=list)
     infra_reject: bool = False
+    calls_used: int = 1
 
     @property
     def rejected(self) -> bool:
@@ -77,10 +78,21 @@ def parse_reviewer_verdict(reviewer_response: Any) -> ReviewerVerdict:
             infra_reject=True,
         )
 
+    # `suggestions` may arrive as a single newline/comma-separated string
+    # rather than a list (residual P10); split so the string form does not
+    # produce one giant str() blob in post_reviewer_suggestions.
+    raw_suggestions = data.get("suggestions")
+    if isinstance(raw_suggestions, str) and raw_suggestions.strip():
+        suggestions = [line.strip() for line in raw_suggestions.replace("\r", "").split("\n") if line.strip()]
+        if len(suggestions) == 1 and "," in suggestions[0]:
+            suggestions = [part.strip() for part in suggestions[0].split(",") if part.strip()]
+    else:
+        suggestions = list(raw_suggestions or [])
+
     return ReviewerVerdict(
         decision=decision,
         reason=str(data.get("reason") or ""),
-        suggestions=list(data.get("suggestions") or []),
+        suggestions=suggestions,
     )
 
 
@@ -111,6 +123,7 @@ def request_review_verdict(
         print("   🔁 Reviewer returned a transient (empty/unparseable) verdict — retrying once")
         response = call_agent("reviewer", reviewer_prompt, task_id)
         verdict = parse_reviewer_verdict(response)
+        verdict.calls_used = 2  # residual P10: count plays as reviewer_calls
     return verdict
 
 
