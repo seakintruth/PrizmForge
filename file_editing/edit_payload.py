@@ -307,6 +307,20 @@ class EditPayload:
 
     @classmethod
     def model_validate(cls, data: dict[str, Any]) -> "EditPayload":  # noqa: C901
+        # Accept a bare single-operation shape (a dict whose payload-level keys
+        # ARE the operation), e.g. LLMs that return
+        # {"target_file_path", "summary", "rationale", "type", "new_content"}
+        # without an "operations" list (residual P1). Wrapping here backstops
+        # every caller path so a payload can never reach a proposal empty.
+        if data.get("type") and "operations" not in data:
+            op_fields = {k: v for k, v in data.items() if k not in ("target_file_path", "summary", "rationale")}
+            if data.get("rationale") and "rationale" not in op_fields:
+                op_fields["rationale"] = data["rationale"]
+            if data.get("target_file_path") and "target_file_path" not in op_fields:
+                op_fields["target_file_path"] = data["target_file_path"]
+            op_fields.setdefault("rationale", data.get("summary") or "Edit as specified")
+            data = {**data, "operations": [op_fields]}
+
         ops = []
         for i, op_data in enumerate(data.get("operations", [])):
             if not isinstance(op_data, dict):
@@ -362,6 +376,9 @@ class EditPayload:
 
             except TypeError as e:
                 raise ValueError(f"Validation failed for operation '{op_type}' at index {i}: Missing required fields. ({e})") from e
+
+        if not ops:
+            raise ValueError("operations must contain at least one operation")
 
         try:
             return cls(

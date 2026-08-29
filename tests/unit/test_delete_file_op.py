@@ -165,3 +165,35 @@ class TestShellMapping:
 
     def test_oversize_status_still_skipped(self):
         assert change_to_operation({"path": "big.py", "status": "S", "new_content": ""}) is None
+
+
+# ---------------------------------------------------------------------------
+# Disk removal resilience (P8)
+# ---------------------------------------------------------------------------
+
+
+class TestDiskRemovalResilience:
+    def test_missing_file_is_successful_noop(self, tmp_path):
+        from file_editing.writer import _delete_file_from_disk
+
+        result = _delete_file_from_disk("ghost.py", tmp_path)
+        assert result["status"] == "success"
+
+    def test_directory_unlink_oserror_is_surfaced(self, tmp_path):
+        # unlink() on a directory raises IsADirectoryError (an OSError). The
+        # governed store may say "deleted" from a prior applied op, but the
+        # disk removal failing must yield an error result the materialize path
+        # records as a write-log 'error' row (residual P8).
+        from file_editing.writer import _delete_file_from_disk
+
+        subdir = tmp_path / "not_a_file"
+        subdir.mkdir()
+        result = _delete_file_from_disk("not_a_file", tmp_path)
+        assert result["status"] == "error"
+        assert "disk removal failed" in result["message"]
+
+    def test_path_escape_is_error(self, tmp_path):
+        from file_editing.writer import _delete_file_from_disk
+
+        result = _delete_file_from_disk("../outside.py", tmp_path)
+        assert result["status"] == "error"

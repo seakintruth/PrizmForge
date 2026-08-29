@@ -16,14 +16,26 @@ from file_editing.edit_payload import EditPayload
 
 
 def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> int:
-    """Get existing file_id or create a new file record."""
+    """Get existing file_id or create a new file record.
+
+    file_path is UNIQUE in ``files`` (mirrors ``writer._initialize_lines_impl``),
+    so a soft-deleted row (is_deleted=1) is REUSED and resurrected rather than
+    creating a second live row for the same path. Filtering ``is_deleted=0``
+    here was residual P2: after a governed delete_file, a subsequent
+    create_file/full_replace on the same path would INSERT a duplicate path (no
+    such constraint) and then orphan the materialize/delete/review tracking.
+    """
     cursor = conn.execute(
-        "SELECT file_id FROM files WHERE file_path = ? AND is_deleted = 0",
+        "SELECT file_id, is_deleted FROM files WHERE file_path = ?",
         (target_file_path,),
     )
     row = cursor.fetchone()
     if row:
-        return row[0]
+        file_id = row["file_id"] if hasattr(row, "keys") else row[0]
+        is_deleted = row["is_deleted"] if hasattr(row, "keys") else row[1]
+        if is_deleted:
+            conn.execute("UPDATE files SET is_deleted = 0 WHERE file_id = ?", (file_id,))
+        return file_id
 
     cursor = conn.execute(
         """INSERT INTO files (file_path, current_version, is_deleted, has_been_written_to_disk)
@@ -166,9 +178,9 @@ def create_proposal_from_developer_output(
 
         # After commit: audit log + event (never inside the write transaction)
         log_error(
+            "INFO",
             "proposal_builder",
             "create_proposal",
-            "INFO",
             f"Proposal created: {proposal_id} for {target_file_path}",
             proposal_id=proposal_id,
         )
@@ -187,7 +199,7 @@ def create_proposal_from_developer_output(
         return result
 
     except Exception as e:
-        log_error("proposal_builder", "create_proposal", "HIGH", str(e))
+        log_error("HIGH", "proposal_builder", "create_proposal", str(e))
         return {"status": "error", "message": f"Failed to create proposal: {e!s}"}
 
 
@@ -224,5 +236,5 @@ def update_proposal_status(proposal_id: str, new_status: str, reviewed_by_agent_
                 )
         return True
     except Exception as e:
-        log_error("proposal_builder", "update_status", "HIGH", str(e), proposal_id=proposal_id)
+        log_error("HIGH", "proposal_builder", "update_status", str(e), proposal_id=proposal_id)
         return False

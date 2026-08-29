@@ -187,6 +187,62 @@ class TestTierPolicy:
         assert decision.background_feeder_interval == 9999
         assert decision.active_agents == ["prioritizer"]
 
+    def test_seed_rows_do_not_push_tier_to_freeze(self, temp_db, monkeypatch):
+        # Residual P3: raw row count would say 220 (→ freeze), but 30 rows are
+        # seed_task scaffolding; only the 190 real findings count (→ hard, not
+        # freeze). Seed inflation must never stall the whole background pool.
+        monkeypatch.setattr(
+            "agents.resource_controller_worker.get_config",
+            lambda: {"feedback": {}},
+        )
+        from agents.resource_controller_worker import HeuristicOptimizer
+
+        optimizer = HeuristicOptimizer()
+        with get_db_connection() as conn:
+            for i in range(190):
+                _insert_direct(conn, i=i, task_id="t_rc_seed")
+            for i in range(190, 220):
+                _insert_direct(conn, i=i, task_id="t_rc_seed", category="seed_task")
+        state = SimpleNamespace(api_rate_limit=60, budget_percentage=0.9)
+        decision = optimizer._check_feedback_backlog(state)
+        assert decision is not None
+        assert decision.level == "BACKLOG_WARNING"
+        assert decision.level != "BACKLOG_PROCESSING"
+
+    def test_burn_rate_above_warning_escalates_to_moderate(self, temp_db, monkeypatch):
+        # Residual W3 (soak recompute): a disk-melting burn (Soak9: 44,560
+        # tok/min) must force a moderate throttle even at a healthy DAILY
+        # budget % — the burn is what trips the shared per-endpoint budget and
+        # 429-floods the core loop.
+        monkeypatch.setattr(
+            "agents.resource_controller_worker.get_config",
+            lambda: {"feedback": {}},
+        )
+        from agents.resource_controller_worker import HeuristicOptimizer
+
+        optimizer = HeuristicOptimizer()
+
+        def _state(burn: float):
+            return SimpleNamespace(
+                tokens_used_in_window=0,
+                tokens_remaining=1_900_000,
+                max_tokens=2_000_000,
+                current_burn_rate=burn,
+                api_calls_last_minute=10,
+                api_rate_limit=60,
+                budget_percentage=0.95,
+                time_remaining_in_window=120,
+            )
+
+        hot = optimizer.optimize(_state(45_000))
+        assert hot.level == "MODERATE"
+        assert "BURN RATE" in hot.reasoning
+
+        calm = optimizer.optimize(_state(10_000))
+        # Threshold default: burn_rate_warning_per_minute = 40_000.
+        assert calm.level == "NORMAL"
+        assert "BURN RATE" not in calm.reasoning
+
 
 class TestStuckIdTracking:
     def test_repeated_targeting_marks_stuck_and_skips_it(self, temp_db):
@@ -239,6 +295,29 @@ class TestReportMetrics:
         with get_db_connection() as conn:
             metrics = backlog_metrics(conn, task_id="t_m2")
         assert metrics["unaddressed"] == 1
+
+    def test_seed_feedback_excluded_from_unaddressed_count(self, temp_db):
+        # Residual P3: seed_task rows are task-scoped orchestration
+        # scaffolding, not reviewer findings. They must not inflate the
+        # unaddressed backlog (which drives tier freezes / MEDIUM trimming).
+        save_agent_feedback(
+            agent_name="r",
+            file_path="a.py",
+            priority="HIGH",
+            category="bug",
+            message="real finding",
+            suggestion=None,
+            task_id="t_seed",
+            file_event_id="e1",
+        )
+        with get_db_connection() as conn:
+            _insert_direct(conn, i=1, task_id="t_seed", category="seed_task")
+            metrics = backlog_metrics(conn, task_id="t_seed")
+        assert metrics["unaddressed"] == 1
+        with get_db_connection() as conn:
+            _insert_direct(conn, i=2, task_id="t_seed2", category="seed_task")
+            global_metrics = backlog_metrics(conn)
+        assert global_metrics["unaddressed"] == 1
 
     def test_reporter_gather_embeds_backlog_metrics(self, temp_db, mock_minimal_config):
         from agents.reporter_worker import ProjectReporterWorker

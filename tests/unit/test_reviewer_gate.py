@@ -121,6 +121,17 @@ class TestParseReviewerVerdict:
         assert verdict.reason == ""
         assert verdict.suggestions == []
 
+    def test_string_suggestions_split_into_list(self):
+        # Residual P10: reviewers sometimes return suggestions as a single
+        # newline/comma-separated string instead of a list.
+        from workflow.reviewer_gate import parse_reviewer_verdict
+
+        verdict = parse_reviewer_verdict('{"decision": "APPROVE", "reason": "ok", "suggestions": "add a test\\nrename flag\\n"}')
+        assert verdict.suggestions == ["add a test", "rename flag"]
+
+        comma = parse_reviewer_verdict('{"decision": "APPROVE", "reason": "ok", "suggestions": "add a test, rename flag"}')
+        assert comma.suggestions == ["add a test", "rename flag"]
+
 
 # ---------------------------------------------------------------------------
 # handle_reviewer_rejection: shared bookkeeping (status + feedback + event)
@@ -364,3 +375,12 @@ class TestRequestReviewRetry:
         )
         assert verdict.decision == "REJECT"
         assert len(calls) == 2
+
+    def test_calls_used_reflects_actual_plays(self, monkeypatch):
+        # Residual P10: the gate counts the retry as a reviewer call; callers
+        # sum verdict.calls_used into progress["reviewer_calls"].
+        single, calls = self._run(monkeypatch, ['{"decision": "APPROVE", "reason": "ok"}'])
+        assert len(calls) == 1 and single.calls_used == 1
+
+        retried, calls = self._run(monkeypatch, ["", '{"decision": "APPROVE", "reason": "recovered"}'])
+        assert len(calls) == 2 and retried.calls_used == 2

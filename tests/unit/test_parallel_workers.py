@@ -202,6 +202,50 @@ class TestAgentPoolActiveControl:
             finally:
                 pool.stop()
 
+    def test_set_active_agents_none_resumes_all(self):
+        # W6 lane isolation: developers restore the pre-pause filter with None,
+        # which must clear the pause rather than treat None as "no agents".
+        pool = BackgroundAgentPool()
+        pool.set_active_agents(["jr_reviewer"])
+        assert pool.active_agents_filter is not None
+        pool.set_active_agents(None)
+        assert pool.active_agents_filter is None
+        assert pool.active_agents_filter != set()
+
+    def test_set_active_agents_empty_pauses_feedback_only(self):
+        # [] pauses feedback agents while support workers keep the pipeline alive.
+        pool = BackgroundAgentPool()
+        pool.set_active_agents([])
+        assert pool.active_agents_filter == set()
+
+    def test_initial_review_capped_by_config(self, pool_env, temp_db):
+        # W7 / Soak9 recompute: must never blindly enqueue every project file
+        # for every agent in a single turn burst. Cap = initial_review_max_files.
+        import sqlite3
+        from datetime import datetime
+
+        from agents.parallel_workers import get_db_path
+
+        now = datetime.now().isoformat()
+        conn = sqlite3.connect(get_db_path())
+        for i in range(40):
+            conn.execute(
+                """
+                INSERT INTO project_files
+                (file_path, content, content_hash, last_modified, size_bytes,
+                 file_type, indexed_at, is_binary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (f"mod_{i}.py", "x = 1", "hash", now, 20, "py", now),
+            )
+        conn.commit()
+        conn.close()
+
+        pool = BackgroundAgentPool()
+        pool.agent_configs["initial_review_max_files"] = 7
+        pool._queue_all_files_for_initial_review()
+        assert pool.event_queue.qsize() <= 7 * max(1, len(pool.modification_agents))
+
     def test_set_feeder_interval(self):
         pool = BackgroundAgentPool()
         pool.set_feeder_interval(60.0)

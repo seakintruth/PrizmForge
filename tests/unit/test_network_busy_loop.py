@@ -73,8 +73,12 @@ class TestGuard:
 
         # Surface is sticky until a success: further failures never re-write.
         guard.consume_pause()
-        for _ in range(10):
-            assert guard.record_failure() in (True, False)
+        # consume cleared the pause flag, so the very next failure re-pauses
+        # (returns True); every subsequent failure while already paused is a
+        # no-op (False) and surface stays quiet.
+        assert guard.record_failure() is True
+        for _ in range(9):
+            assert guard.record_failure() is False
             guard.surface("net1")
         assert guard.pause_requested is True  # re-paused after consume
 

@@ -131,7 +131,10 @@ def test_run_full_diagnostic_smoke(temp_db, capsys):
     out = capsys.readouterr().out
     # Diagnostic should mention proposals or dump headers without crashing
     assert len(out) > 0
-    assert "error" not in out.lower() or "Diagnostic" in out or "proposal" in out.lower() or True
+    # The smoke must trace real content: no traceback, and the seeded proposal
+    # (or at least the diagnostic header) must appear.
+    assert "Traceback" not in out
+    assert "Diagnostic" in out or "proposal" in out.lower()
 
 
 def test_show_run_effectiveness_smoke(temp_db, capsys):
@@ -284,3 +287,41 @@ def test_dump_prints_data_window_stamp(temp_db, capsys):
     out = capsys.readouterr().out
     assert "data window: latest record seen" in out
     assert now[:19] in out
+
+
+def test_data_window_watermark_uses_normalized_record_timestamps(temp_db, capsys):
+    """Residual P4: the watermark must not come from log_id and must normalize
+    the tasks ' ' isoformat separator to 'T' before comparing record times.
+
+    Regression: tasks store datetime.now().isoformat(sep=' ') while the other
+    diagnostic tables use 'T'; a naive string max() compared a later
+    space-separated task stamp as OLDER than an earlier 'T' one, and an
+    ever-growing log_id surrogate drove file_write_log's "window" with no
+    relation to when writes actually happened.
+    """
+    from core.db_connection import get_db_connection
+    from utils.query_developer_responses import _print_data_window
+
+    task_stamp_t = "2026-08-29T05:30:00.000000"  # newest record, space-separated in tasks
+    task_stamp_space = task_stamp_t.replace("T", " ")
+
+    with get_db_connection() as conn:
+        conn.execute(
+            "INSERT INTO tasks (id, description, status, started_at, completed_at, result) VALUES (?,?,?,?,?,?)",
+            ("t_win", "d", "completed", task_stamp_space, task_stamp_space, None),
+        )
+        conn.execute(
+            "INSERT INTO file_write_log (proposal_id, file_id, status, started_at, completed_at) VALUES (?,?,?,?,?)",
+            ("p_x", 1, "success", "2026-08-29T04:00:00", "2026-08-29T04:00:00"),
+        )
+        conn.execute(
+            "INSERT INTO events (task_id, type, ts) VALUES (?,?,?)",
+            ("t_win", "test.window", "2026-08-29T05:01:00.000000"),
+        )
+
+    _print_data_window()
+    out = capsys.readouterr().out
+    assert "data window: latest record seen" in out
+    # tasks 05:30 (space) beats write-log 04:00 and event 05:01 -> proves the
+    # space-separated stamp was normalized and compared as the newest.
+    assert task_stamp_t[:19] in out

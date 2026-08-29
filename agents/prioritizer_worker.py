@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from agents.base import call_agent
+from agents.worker_utils import hold_while_foreground_session_active
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
@@ -73,6 +74,10 @@ class PrioritizerWorker:
         self.prioritization_interval = 20  # Check every 20s
         self.processing_cycle_time = 0  # Time of last full cycle
 
+        # e9: signature of the last posted ranked set; unchanged sets are not
+        # reposted (soak evidence: identical HIGH posts every ~60-90s).
+        self._last_posted_signature = None
+
         # Circuit breaker (soak P2: endpoint outages turned each cycle into a
         # burst of failing batch calls, ~1,071 errors in 12h). The breaker is
         # a backstop only: per-model down windows + round-robin rotation do
@@ -114,6 +119,10 @@ class PrioritizerWorker:
     def _worker_loop(self):
         """Main worker loop - wait for full cycle before starting timer"""
         while self.running:
+            # c9: yield the rate-limited endpoint to a foreground developer
+            # session instead of reposting prioritized feedback into it.
+            if not hold_while_foreground_session_active(lambda: self.running):
+                break
             try:
                 time.sleep(5)  # Check every 5 seconds
 
@@ -718,6 +727,28 @@ Respond with JSON ONLY:
         """Phase 4: Post to orchestrator"""
         if not ranked:
             return
+
+        # e9 (soak recompute, 2026-08-29): reposting an unchanged ranked set
+        # every cycle flooded the bus with identical "PRIORITIZED FEEDBACK"
+        # messages (13:07:57→13:14:57, same seed items each time), inflating
+        # context and the archivist's input. Post only when the ranked set
+        # actually changed; still mark items processed so message-type items do
+        # not accumulate as unread bus rows.
+        signature = tuple(
+            (
+                item.item_type,
+                item.raw_id or item.id,
+                item.priority,
+                item.category or "",
+                (item.message or "")[:40],
+            )
+            for item in ranked
+        )
+        if signature == self._last_posted_signature:
+            print("    → Phase 4: ranked set unchanged — skipping re-post to orchestrator")
+            self._mark_items_processed(ranked)
+            return
+        self._last_posted_signature = signature
 
         print(f"    → Phase 4: Posting top {len(ranked)} to orchestrator")
 

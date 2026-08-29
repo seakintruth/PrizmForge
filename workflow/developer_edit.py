@@ -228,6 +228,21 @@ def _normalize_payload(data: dict, edit_method: str, requested_files: list[str])
                     "rationale": out.get("rationale") or "find replace",
                 }
             ]
+        elif out.get("type"):
+            # Bare single-operation shape (residual P1, mirror of the
+            # EditPayload.model_validate backstop): wrap the operation fields
+            # verbatim so an "operations"-less payload cannot reach a proposal.
+            op_fields = {k: v for k, v in out.items() if k not in ("target_file_path", "summary", "rationale")}
+            if out.get("rationale") and "rationale" not in op_fields:
+                op_fields["rationale"] = out["rationale"]
+            if out.get("target_file_path") and "target_file_path" not in op_fields:
+                op_fields["target_file_path"] = out["target_file_path"]
+            op_fields.setdefault("rationale", out.get("summary") or "Edit as specified")
+            out["operations"] = [op_fields]
+            if op_fields.get("type") in ("create_file", "full_replace"):
+                out["_final_mode"] = MODE_FULL_REPLACE
+            elif op_fields.get("type") == "apply_diff":
+                out["_final_mode"] = MODE_DIFF
 
     if not out.get("summary"):
         out["summary"] = out.get("rationale") or f"Edit {out.get('target_file_path', 'file')}"
@@ -434,7 +449,6 @@ def run_developer_mutation(  # noqa: C901
     # ---------------------------------------------------------------------------
     # Reviewer execution
     # ---------------------------------------------------------------------------
-    progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + 1
 
     original_content = get_file_content_from_db(target_file_path) or ""
 
@@ -481,6 +495,8 @@ def run_developer_mutation(  # noqa: C901
     # same-prompt retry is allowed on an empty/unparseable verdict; a ``None``
     # transport failure and a semantic REJECT are never retried.
     verdict = request_review_verdict(reviewer_prompt, task_id)
+    # residual P10: count actual plays (the gate may retry once internally)
+    progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + verdict.calls_used
     post_reviewer_suggestions(proposal_id, task_id, verdict.suggestions)
 
     if verdict.rejected:

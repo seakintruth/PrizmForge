@@ -251,6 +251,20 @@ class HeuristicOptimizer:
         if backlog_decision:
             return backlog_decision
 
+        # W3 (soak recompute, 2026-08-29): a disk-melting burn rate (Soak9:
+        # 44,560 tok/min) forces a moderate throttle even while the *daily*
+        # budget percentage still looks healthy - the burn is what trips the
+        # shared per-endpoint budget and floods the code loop with 429s.
+        burn_warning = self.rc_config.get("burn_rate_warning_per_minute", 40_000)
+        if state.current_burn_rate > burn_warning:
+            decision = self._throttle_moderate(state)
+            decision.reasoning = (
+                f"🔥 BURN RATE {state.current_burn_rate:.0f} tok/min exceeds "
+                f"warning threshold {burn_warning:.0f}: escalated to moderate throttle. "
+                f"{decision.reasoning}"
+            )
+            return decision
+
         budget_pct = state.budget_percentage
 
         # Determine throttle level
@@ -283,7 +297,7 @@ class HeuristicOptimizer:
 
                 cursor.execute("""
                     SELECT COUNT(*) FROM agent_feedback
-                    WHERE addressed = 0
+                    WHERE addressed = 0 AND category != 'seed_task'
                 """)
 
                 unaddressed_count = cursor.fetchone()[0]

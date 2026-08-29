@@ -146,3 +146,128 @@ def test_requested_files_single_file_cap():
         requested_files = [requested_files[0]]
 
     assert requested_files == ["app.py"]
+
+
+class TestDeferredPoolStart:
+    """W5 (soak recompute): the eager pool.start at cycle entry was what raced
+    fill-mode against throttled agents → Soak9's orphan burst. The pool now
+    starts only after the first materialize OR after 2 turns."""
+
+    def _make_pool(self):
+        class _RecordingPool:
+            def __init__(self):
+                self.started = 0
+
+            def start(self, task_id):
+                self.started += 1
+
+        return _RecordingPool()
+
+    def test_no_start_before_materialize_and_turn_threshold(self):
+        from workflow.task_runner import _ensure_pool_started
+
+        pool = self._make_pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 0}, 1)
+        assert pool.started == 0
+
+    def test_start_after_first_materialize(self):
+        from workflow.task_runner import _ensure_pool_started
+
+        pool = self._make_pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 1}, 1)
+        assert pool.started == 1
+
+    def test_start_after_turn_threshold_without_materialize(self):
+        from workflow.task_runner import _ensure_pool_started
+
+        pool = self._make_pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 0}, 2)
+        assert pool.started == 1
+
+    def test_start_is_idempotent_once_running(self):
+        # The real pool sets running=True inside start(); the helper checks it,
+        # so a productive multi-turn task does not re-string the pool each turn.
+        from workflow.task_runner import _ensure_pool_started
+
+        started = []
+
+        class _Pool:
+            def __init__(self):
+                self.running = False
+
+            def start(self, task_id):
+                started.append(task_id)
+                self.running = True
+
+        pool = _Pool()
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 1}, 1)
+        _ensure_pool_started(pool, "t5", {"materialize_successes": 2}, 2)
+        assert started == ["t5"]
+
+    def test_pool_without_start_attribute_is_noop(self):
+        # FakePool-style doubles (test_network_busy_loop) lack start(). The
+        # hasattr guard keeps cycle wiring working when agents are disabled.
+        from workflow.task_runner import _ensure_pool_started
+
+        class _NoStart:
+            def queue_file_change(self, **_):
+                return None
+
+        _ensure_pool_started(_NoStart(), "t5", {"materialize_successes": 9}, 9)
+
+
+class TestNoProgressGuard:
+    """d9 (soak recompute): a zero-change developer streak must stop respinning
+    the identical session once it crosses the threshold — task_002/003/005 all
+    show files_modified=0 while the orchestrator chose "developer" every turn."""
+
+    def test_not_stalled_below_threshold(self):
+        from workflow.task_runner import NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard(threshold=2)
+        assert not guard.stalled()
+
+    def test_default_threshold_latches_after_constant(self, temp_db):
+        from workflow.task_runner import NO_PROGRESS_TURNS_THRESHOLD, NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard()
+        for _ in range(NO_PROGRESS_TURNS_THRESHOLD - 1):
+            assert guard.record_no_change("t_d9") is False
+        assert guard.record_no_change("t_d9") is True
+        assert guard.stalled()
+
+    def test_posts_single_stall_summary_per_episode(self, temp_db):
+        from core.db_connection import get_db_connection
+        from workflow.task_runner import NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard(threshold=2)
+        guard.record_no_change("t_d9")
+        guard.record_no_change("t_d9")  # latch + posts
+        guard.record_no_change("t_d9")  # no repost (episode latch)
+
+        with get_db_connection() as conn:
+            rows = conn.execute("SELECT COUNT(*) FROM messages WHERE task_id = 't_d9' AND from_agent = 'system' AND content LIKE '%No progress%'").fetchone()
+        assert rows[0] == 1
+
+    def test_change_resets_streak_and_latch(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard(threshold=2)
+        guard.record_no_change("t_d9")
+        guard.record_no_change("t_d9")
+        assert guard.stalled()
+        guard.record_change()
+        assert not guard.stalled()
+
+    def test_record_developer_progress_helper(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard, _record_developer_progress
+
+        guard = NoProgressLoopGuard(threshold=2)
+        progress = {"files_modified": 1}
+        _record_developer_progress(guard, "t_d9", progress, files_before=1)  # no change: streak 1
+        assert not guard.stalled()
+        guard.record_no_change("t_d9")  # streak 2 -> latch
+        assert guard.stalled()
+        progress["files_modified"] = 3
+        _record_developer_progress(guard, "t_d9", progress, files_before=1)  # bumped +2: change
+        assert not guard.stalled()

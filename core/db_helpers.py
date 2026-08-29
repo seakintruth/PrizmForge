@@ -407,7 +407,7 @@ def backlog_metrics(conn, *, task_id: str | None = None) -> dict:
 
     with conn:
         unaddressed = conn.execute(
-            f"SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0{task_filter}",
+            f"SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0 AND category != 'seed_task'{task_filter}",
             params,
         ).fetchone()[0]
         posted_this_hour = conn.execute(
@@ -463,8 +463,9 @@ def age_feedback_backlog(
         )
         dismissed_low = cur.rowcount if cur.rowcount is not None else 0
 
-        # Cap total unaddressed by dismissing oldest MEDIUM items only
-        row = conn.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0").fetchone()
+        # Cap total unaddressed by dismissing oldest MEDIUM items only.
+        # seed_task rows are excluded so seed inflation never triggers trimming.
+        row = conn.execute("SELECT COUNT(*) FROM agent_feedback WHERE addressed = 0 AND category != 'seed_task'").fetchone()
         total = row[0] if row else 0
         if total > max_unaddressed:
             excess = total - max_unaddressed
