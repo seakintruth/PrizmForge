@@ -13,9 +13,21 @@ design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_
 
 ## 0. Deployed state & PR map
 
-- `main` @ `6d79e5d` = **Soak9 recompute pass 2 (a9–f9)** — see §1 (2026-08-29).
-- Previous stamps: `26566f3` = PR-95 residual batch (P1–P11 + W1–W8, §1); `198f6d8` = roadmap stamp (848 → 877); `cf30bee` = PR #96 (`fit/setup-accept-pip-path`); `954cc14` = PR #95 merge base (Workstream A Phase 1).
+- `main` @ `8be697f` = **roadmap stamp for Soak9 recompute pass 2 (a9–f9)**; functional tip `6d79e5d` — see §1 (2026-08-29).
+- Previous stamps: `26566f3` = PR-95 residual batch (P1–P11 + W1–W8, §1); `198f6d8` = roadmap stamp (848 → 877); `cf30bee` = PR #96 (`fit/setup-accept-pip-path`) = current `origin/main`; `954cc14` = PR #95 merge base (Workstream A Phase 1).
 - Full normal gate: **877 passed** at `26566f3`; recompute pass 2 re-verified after `bc11cef`, `4821f4d`, `ae822ed`, `70d1b95`, `1646e91`, `6d79e5d` → **897 passed** (`bash utils/run_tests.sh --normal -j 4`, +20 tests, 2026-08-29), ruff clean. Pre-commit hooks (black/isort/ruff/flake8/mypy) green on every commit.
+- `main` is **10 commits ahead of `origin/main`** (`cf30bee`), all pending the next PR.
+
+### Next PR — PR-95 residuals + Soak9 recompute pass 2 (P1–P11, W1–W8, a9–f9)
+
+Opening from `main` (`8be697f`) against `base: cf30bee` (`origin/main`).
+
+- **Title (suggested):** `fix: PR-95 residual batch (P1–P11, W1–W8) + Soak9 recompute pass 2 (a9–f9)`
+- **Head:** `8be697f` · **Base:** `origin/main` (`cf30bee`) · 10 commits.
+- **Part 1 — PR-95 residuals (`26566f3` + `198f6d8`):** P1–P11 review residuals (bare single-op payloads, delete-then-recreate dedupe, seed-feedback exclusion, data-window watermark, write-log ruff gate, task finalize on hard stops, `log_error` argument hygiene, failed-unlink visibility, shell turn success semantics, honest reviewer-call accounting, non-hollow test fixes) and W1–W8 soak hardening (WIP-shipping on early exit, archivist batches + honest retry, burn-rate escalation, deferred pool start, developer lane isolation, review-queue caps, intake-soft pool backoff). Gate 848 → 877.
+- **Part 2 — Soak9 recompute pass 2 (`bc11cef` … `8be697f`):** a9 archive-row prune, b9 strict JSON archive contract, c9 foreground-session backoff for support workers, d9 no-progress developer guard, e9 prioritizer post dedup, f9 background transport-error coalescing — full detail per item in §1. Gate 877 → 897 (+20 tests).
+- **Merge notes:** only code-churn pan is the shared `agents/base.py` `call_agent` failure block (f9) — low collision risk; test files are additive (`test_worker_utils.py`, `test_task_runner.py`, `test_prioritizer_phases.py`, `test_archivist_context.py`).
+- **Verification:** full normal gate `bash utils/run_tests.sh --normal -j 4` = **897 passed**; `ruff check .` clean; pre-commit hooks green on every commit. No live-endpoint dependencies (all in-process, hermetic).
 
 ---
 
