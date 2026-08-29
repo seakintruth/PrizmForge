@@ -85,9 +85,13 @@ YAGNI-focused sprints with bounded, measurable experiments.
 
 ### 4.2 `report/plan.md` file_editing structural refactors
 
-Review-flagged structural items that "remain open": `project_files` refactor,
-standardizing errors, 120s-sleep behavior, CLI command leakage, `__init__.py` cleanup.
-Decision needed: fold into backlog as tech-debt or drop as stale.
+Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS TECH-DEBT** — each is small, bounded, and independently scoped; a future sprint can pick them up without a dedicated design doc.
+
+- [ ] **`project_files` refactor** — normalize file metadata/index rows and their update paths.
+- [ ] **Standardize errors** across file_editing — single error shape/status vocabulary instead of per-module strings.
+- [ ] **120s-sleep behavior** — the legacy fixed sleep in the editing loop: replace with event-driven wait or configurable strategy.
+- [ ] **CLI command leakage** — audit `cli.commands` for shelled-out / ungoverned commands that bypass the governed edit path.
+- [ ] **`__init__.py` cleanup** — remove obsolete re-exports in `file_editing/__init__.py`.
 
 ### 4.3 UNATTENDED plan §15 open decisions (parked, with defaults)
 
