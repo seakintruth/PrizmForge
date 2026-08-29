@@ -6,6 +6,9 @@ config.json
 # Exclude the agents.db sqlite database
 agents.db
 
+# Soak directory used for simulation runs
+.soak/
+
 # Python
 *__pycache__/
 *.py[cod]
