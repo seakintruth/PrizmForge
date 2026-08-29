@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from agents.base import call_agent
-from agents.worker_utils import interruptible_sleep
+from agents.worker_utils import hold_while_foreground_session_active, interruptible_sleep
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 
@@ -76,6 +76,10 @@ class ArchivistWorker:
     def _worker_loop(self):
         """Main worker loop"""
         while self.running:
+            # c9: yield the rate-limited endpoint to a foreground developer
+            # session instead of streaming 48k-110k-char archive prompts into it.
+            if not hold_while_foreground_session_active(lambda: self.running):
+                break
             try:
                 current_time = time.time()
 

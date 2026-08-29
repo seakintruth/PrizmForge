@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from agents.base import call_agent
+from agents.worker_utils import hold_while_foreground_session_active
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
@@ -114,6 +115,10 @@ class PrioritizerWorker:
     def _worker_loop(self):
         """Main worker loop - wait for full cycle before starting timer"""
         while self.running:
+            # c9: yield the rate-limited endpoint to a foreground developer
+            # session instead of reposting prioritized feedback into it.
+            if not hold_while_foreground_session_active(lambda: self.running):
+                break
             try:
                 time.sleep(5)  # Check every 5 seconds
 

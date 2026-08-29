@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.base import call_endpoint
+from agents.worker_utils import foreground_session_guard
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
@@ -791,6 +792,10 @@ def run_shell_developer_turn(
     # up competing feedback and burn tokens mid-session. Pause feedback agents
     # for the duration (lane isolation) and restore the previous stance after.
     # Never touches support workers (they are exempt inside set_active_agents).
+    # c9 (soak recompute): support workers (prioritizer/archivist/reporter) back
+    # off via foreground_session_guard() around session.run, so they stop
+    # streaming 48k-110k-char archive prompts / reposting feedback into the same
+    # rate-limited endpoint the developer depends on.
     lane_pool = None
     previous_filter = None
     bg_cfg = config.get("background_agents", {}) or {}
@@ -810,7 +815,8 @@ def run_shell_developer_turn(
             print(f"   ⚠️  Lane isolation setup skipped: {e}")
 
     try:
-        result = session.run(task_text)
+        with foreground_session_guard():
+            result = session.run(task_text)
         print(f"   🐺 Session exit: {result.exit_status} after {result.n_model_calls} model calls")
 
         _save_trajectory(task_id, current_turn, session)

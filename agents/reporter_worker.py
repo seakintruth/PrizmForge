@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from agents.base import call_agent
-from agents.worker_utils import interruptible_sleep
+from agents.worker_utils import hold_while_foreground_session_active, interruptible_sleep
 from core.config import get_config
 from core.db_connection import get_db_connection
 
@@ -80,6 +80,9 @@ class ProjectReporterWorker:
 
     def _worker_loop(self):
         while self.running:
+            # c9: yield the rate-limited endpoint to a foreground developer session.
+            if not hold_while_foreground_session_active(lambda: self.running):
+                break
             try:
                 # Was time.sleep(300) — blocked stop() for up to 5 minutes
                 interruptible_sleep(300, lambda: self.running)
