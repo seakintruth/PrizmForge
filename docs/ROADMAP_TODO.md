@@ -13,9 +13,9 @@ design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_
 
 ## 0. Deployed state & PR map
 
-- `main` @ `cf30bee` = merge of PR #96 (`fit/setup-accept-pip-path`).
-- Previous `main` stamp: `954cc14` = merge of PR #95 (Workstream A Phase 1, git/pre-commit closed loop) — the merge base the §1 residuals sit on.
-- Full normal gate: **848 passed** (`bash utils/run_tests.sh --normal -j 4`) before the §1 batch; that batch's proofs live in `tests/unit/` (referenced per item) and the re-run is logged on merge.
+- `main` @ `26566f3` = merge of the **PR-95 residual batch (P1–P11 + W1–W8)** — see §1.
+- Previous stamps: `cf30bee` = PR #96 (`fit/setup-accept-pip-path`); `954cc14` = PR #95 merge base (Workstream A Phase 1, git/pre-commit closed loop).
+- Full normal gate: **877 passed** (`bash utils/run_tests.sh --normal -j 4`) logged in `26566f3`; ruff clean; pre-commit hooks (black/isort/ruff/flake8/mypy) green. (Progression: 848 → 877.)
 
 ---
 
@@ -26,7 +26,7 @@ merge. **Root cause under test:** Soak9 emitted a single 1155-event developer
 burst (all files × all agents) that shared the core loop's `RateLimiter` and
 `TokenBudget` → the 429 flood that stalled the whole run.
 
-Status: **implemented in working tree on top of `cf30bee`**; shippable as a follow-up PR.
+Status: **SHIPPED & MERGED** in `26566f3` (2026-08-29, gate 848 → 877).
 
 ### P-series (review residuals)
 
