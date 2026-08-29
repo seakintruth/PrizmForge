@@ -224,3 +224,72 @@ def test_unparseable_batch_keeps_originals_but_saved_batch_deleted(temp_db, monk
         n_msgs = conn.execute("SELECT COUNT(*) FROM messages WHERE task_id = 't_w2b'").fetchone()[0]
     assert n_rows == 1
     assert n_msgs == 6
+
+
+# ---------------------------------------------------------------------------
+# A9 (soak recompute): conversation_history must be pruned on save, mirroring
+# the message-bus path. Previously archived rows were re-selected every cycle.
+# ---------------------------------------------------------------------------
+
+
+def _insert_conversations(task_id: str, count: int, start: str):
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        for i in range(count):
+            conn.execute(
+                """
+                INSERT INTO conversation_history (task_id, agent, role, content, timestamp)
+                VALUES (?, 'orchestrator', 'assistant', ?, ?)
+                """,
+                (task_id, f"conv row {i:03d}", start),
+            )
+
+
+def test_conversation_archiving_prunes_saved_batches(temp_db, monkeypatch):
+    """40 large rows → 25 selected (count-15) → batches of 20/5 both saved and
+    pruned, so only the 15 newest rows survive (no re-archive next cycle)."""
+    import agents.archivist_worker as archivist_module
+
+    worker = archivist_module.ArchivistWorker()
+    worker.current_task_id = "t_a9a"
+    _insert_conversations("t_a9a", 40, (datetime.now() - timedelta(minutes=30)).isoformat())
+
+    responses = iter([json.dumps({"summary": f"batch {n}", "key_decisions": []}) for n in (1, 2)])
+    monkeypatch.setattr(archivist_module, "call_agent", lambda _a, _p, _t: next(responses))
+    worker._archive_old_conversations()
+
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        n_rows = conn.execute("SELECT COUNT(*) FROM archived_context WHERE task_id = 't_a9a'").fetchone()[0]
+        n_conv = conn.execute("SELECT COUNT(*) FROM conversation_history WHERE task_id = 't_a9a'").fetchone()[0]
+    assert n_rows == 2
+    assert n_conv == 15
+
+
+def test_conversation_archiving_keeps_unsaved_batch(temp_db, monkeypatch):
+    """Batch 1 saved+pruned, batch 2 junk → batch 2 rows stay (re-archivable)."""
+    import agents.archivist_worker as archivist_module
+
+    worker = archivist_module.ArchivistWorker()
+    worker.current_task_id = "t_a9b"
+    _insert_conversations("t_a9b", 40, (datetime.now() - timedelta(minutes=30)).isoformat())
+
+    responses = iter(
+        [
+            json.dumps({"summary": "batch ok", "key_decisions": []}),
+            "garbage-not-json {{{",
+            "garbage-not-json {{{",
+        ]
+    )
+    monkeypatch.setattr(archivist_module, "call_agent", lambda _a, _p, _t: next(responses))
+    worker._archive_old_conversations()
+
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        n_rows = conn.execute("SELECT COUNT(*) FROM archived_context WHERE task_id = 't_a9b'").fetchone()[0]
+        n_conv = conn.execute("SELECT COUNT(*) FROM conversation_history WHERE task_id = 't_a9b'").fetchone()[0]
+    assert n_rows == 1
+    assert n_conv == 20

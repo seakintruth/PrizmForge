@@ -193,20 +193,28 @@ class ArchivistWorker:
                         }
                     )
                 # W2: same batching + single-retry policy as the message path.
+                # A9 (soak recompute, 2026-08-29): conversation_history was never
+                # pruned, so the same old rows were re-selected every cycle
+                # (archived_context snapshots repeated identical turn_ranges and
+                # prompts ballooned to ~110k chars). Billboard: prune saved
+                # batches in the same transaction, keep unsaved ones.
                 for i in range(0, len(conversations), self._ARCHIVE_BATCH_SIZE):
                     batch = conversations[i : i + self._ARCHIVE_BATCH_SIZE]
                     summary_prompt = self._build_conversation_archive_prompt(batch)
                     response = call_agent("archivist", summary_prompt, self.current_task_id)
-                    if response and self._save_conversation_archive(self.current_task_id, batch, response):
-                        print(f"    ✅ Archived {len(batch)} conversation entries")
-                    elif not response:
+                    if response and self._save_conversation_archive(self.current_task_id, batch, response, conn=conn):
+                        self._prune_conversation_batch(cursor, batch)
+                        print(f"    ✅ Archived and cleaned {len(batch)} conversation entries")
+                        continue
+                    if not response:
                         print("    ⚠️  Skipping batch: empty archivist transport response")
+                        continue
+                    response = call_agent("archivist", summary_prompt, self.current_task_id)
+                    if response and self._save_conversation_archive(self.current_task_id, batch, response, conn=conn):
+                        self._prune_conversation_batch(cursor, batch)
+                        print(f"    ✅ Archived and cleaned {len(batch)} conversation entries after retry")
                     else:
-                        response = call_agent("archivist", summary_prompt, self.current_task_id)
-                        if response and self._save_conversation_archive(self.current_task_id, batch, response):
-                            print(f"    ✅ Archived {len(batch)} conversation entries after retry")
-                        else:
-                            print("    ⚠️  Skipping batch: archivist output unparseable after retry")
+                        print("    ⚠️  Skipping batch: archivist output unparseable after retry")
         except Exception as e:
             print(f"    ❌ Conversation archive error: {e}")
 
@@ -374,8 +382,24 @@ class ArchivistWorker:
                 db_conn.execute(query, params)
         return True
 
-    def _save_conversation_archive(self, task_id: str, conversations: list[dict], archivist_response: str):
-        return self._save_message_archive(task_id, conversations, archivist_response)
+    def _save_conversation_archive(
+        self,
+        task_id: str,
+        conversations: list[dict],
+        archivist_response: str,
+        conn: Any = None,
+    ):
+        return self._save_message_archive(task_id, conversations, archivist_response, conn)
+
+    @staticmethod
+    def _prune_conversation_batch(cursor, batch: list[dict]) -> None:
+        """Delete successfully-archived conversation rows (mirror message path)."""
+        conversation_ids = [conv["id"] for conv in batch]
+        placeholders = ",".join("?" * len(conversation_ids))
+        cursor.execute(
+            f"DELETE FROM conversation_history WHERE id IN ({placeholders})",  # noqa: S608
+            conversation_ids,
+        )
 
 
 _archivist_worker = None
