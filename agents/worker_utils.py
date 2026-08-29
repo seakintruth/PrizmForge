@@ -81,3 +81,47 @@ def hold_while_foreground_session_active(is_running: Callable[[], bool]) -> bool
     while is_running() and foreground_session_active():
         interruptible_sleep(5, is_running)
     return is_running()
+
+
+# ---------------------------------------------------------------------------
+# f9 (soak recompute, 2026-08-29): one rate-limited endpoint produced 275 HIGH
+# "failed to return a response" rows (prioritizer alone 173) — one per call.
+# Background pools (prioritizer/archivist/reviewers) hit the per-call logging
+# path directly; the episode guard lives only in the sequential runner.
+# ---------------------------------------------------------------------------
+
+
+class TransportErrorCoalescer:
+    """Collapse per-call transport failures into ONE HIGH per window-episode.
+
+    Keyed by (agent, category); the first failure in a window logs HIGH and
+    repeats inside the window log MEDIUM, so a throttled endpoint no longer
+    floods the errors table at top severity while single glitches stay visible.
+    """
+
+    def __init__(self, window_seconds: float = 300.0):
+        self.window_seconds = float(window_seconds)
+        self._lock = threading.Lock()
+        self._first_high: dict[tuple[str, str], float] = {}
+
+    def classify(self, agent_name: str, category: str) -> str:
+        key = (agent_name, category)
+        now = time.time()
+        with self._lock:
+            first = self._first_high.get(key)
+            if first is None or now - first >= self.window_seconds:
+                self._first_high[key] = now
+                return "HIGH"
+            return "MEDIUM"
+
+    def clear_for(self, agent_name: str) -> None:
+        with self._lock:
+            self._first_high = {k: v for k, v in self._first_high.items() if k[0] != agent_name}
+
+
+_transport_error_coalescer = TransportErrorCoalescer()
+
+
+def classify_transport_severity(agent_name: str, category: str) -> str:
+    """Shared per-process coalescer for the background-worker transport path."""
+    return _transport_error_coalescer.classify(agent_name, category)

@@ -8,6 +8,12 @@ import time
 
 import requests
 
+# f9 (soak recompute): background-pool agent names whose per-call transport
+# failures go through the windowed coalescer (soak evidence: 275 HIGH rows from
+# one rate-limited endpoint, prioritizer alone 173). Sequential agents
+# (orchestrator, developer, reviewer) keep logging every failure at HIGH so the
+# runner's outage guard and diagnostics stay intact.
+from agents.worker_utils import classify_transport_severity
 from core.config import get_agent_prompts, get_config
 from core.db import get_db_path
 from core.db_helpers import save_conversation
@@ -19,6 +25,17 @@ from core.model_health import record_model_outcome
 from core.rate_limiter import RateLimiter
 from core.token_budget import TokenBudget
 from file_editing.db import log_error
+
+# Background agents that call_agent() as part of a parallel/support pool.
+_BACKGROUND_TRANSPORT_AGENTS = {
+    "prioritizer",
+    "archivist",
+    "project_reporter",
+    "jr_reviewer",
+    "security_reviewer",
+    "jr_researcher",
+    "tech_writer",
+}
 
 # Initialize
 _rate_limiter = None
@@ -727,10 +744,14 @@ If you cannot analyze the file, return:
     else:
         # Log the network/API failure to the central errors table
         try:
+            if agent_name in _BACKGROUND_TRANSPORT_AGENTS:
+                severity = classify_transport_severity(agent_name, "call_agent")
+            else:
+                severity = "HIGH"
             log_error(
                 component="agents.base",
                 category="call_agent",
-                severity="HIGH",
+                severity=severity,
                 message=f"{agent_name} failed to return a response (API/Network error)",
                 task_id=task_id,
                 details={

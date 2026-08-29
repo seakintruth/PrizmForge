@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 
 from agents.worker_utils import (
+    TransportErrorCoalescer,
     begin_foreground_session,
     end_foreground_session,
     foreground_session_active,
@@ -124,3 +125,39 @@ def test_hold_breaks_when_stopped_during_hold(monkeypatch):
     finally:
         while foreground_session_active():
             end_foreground_session()
+
+
+# ---------------------------------------------------------------------------
+# f9 (soak recompute): one HIGH per transport-failure window-episode for
+# background agents (soak gave 275 HIGH rows from a single rate-limited
+# endpoint, prioritizer alone 173).
+# ---------------------------------------------------------------------------
+
+
+def test_coalescer_first_high_then_medium_within_window():
+    coalescer = TransportErrorCoalescer(window_seconds=300.0)
+    assert coalescer.classify("prioritizer", "call_agent") == "HIGH"
+    assert coalescer.classify("prioritizer", "call_agent") == "MEDIUM"
+    assert coalescer.classify("prioritizer", "call_agent") == "MEDIUM"
+
+
+def test_coalescer_agents_are_independent():
+    coalescer = TransportErrorCoalescer(window_seconds=300.0)
+    assert coalescer.classify("prioritizer", "call_agent") == "HIGH"
+    assert coalescer.classify("archivist", "call_agent") == "HIGH"  # own episode
+    assert coalescer.classify("prioritizer", "call_agent") == "MEDIUM"
+
+
+def test_coalescer_new_episode_after_window_elapses():
+    coalescer = TransportErrorCoalescer(window_seconds=0.01)
+    assert coalescer.classify("prioritizer", "call_agent") == "HIGH"
+    time.sleep(0.03)
+    assert coalescer.classify("prioritizer", "call_agent") == "HIGH"  # new episode
+    assert coalescer.classify("prioritizer", "call_agent") == "MEDIUM"
+
+
+def test_coalescer_clear_for_resets_episode():
+    coalescer = TransportErrorCoalescer(window_seconds=300.0)
+    assert coalescer.classify("prioritizer", "call_agent") == "HIGH"
+    coalescer.clear_for("prioritizer")
+    assert coalescer.classify("prioritizer", "call_agent") == "HIGH"
