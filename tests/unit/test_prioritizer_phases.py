@@ -106,3 +106,42 @@ def test_post_results_writes_orchestrator_message(temp_db):
     assert row[1] == "orchestrator"
     assert "PRIORITIZED" in row[2] or "login" in row[2].lower()
     assert row[3] == "HIGH"
+
+
+# ---------------------------------------------------------------------------
+# e9 (soak recompute): an unchanged ranked set must not be reposted every cycle
+# (identical "PRIORITIZED FEEDBACK" HIGH messages ~every 60-90s in Soak9).
+# ---------------------------------------------------------------------------
+
+
+def _orchestrator_msg_count(task_id: str) -> int:
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE task_id = ? AND from_agent = 'prioritizer'",
+            (task_id,),
+        ).fetchone()[0]
+
+
+def test_identical_ranked_set_is_not_reposted(temp_db):
+    worker = PrioritizerWorker()
+    worker.current_task_id = "t_e9a"
+    ranked = [_fb(7, message="Ship blocker in login flow"), _fb(8, message="Null check in parser")]
+
+    worker._post_results(ranked)
+    worker._post_results(ranked)  # unchanged -> skipped
+
+    assert _orchestrator_msg_count("t_e9a") == 1
+
+
+def test_changed_ranked_set_is_reposted_after_skip(temp_db):
+    worker = PrioritizerWorker()
+    worker.current_task_id = "t_e9b"
+    ranked = [_fb(7, message="Ship blocker in login flow")]
+
+    worker._post_results(ranked)
+    worker._post_results(ranked)  # unchanged -> skipped
+    worker._post_results([_fb(7, message="Ship blocker in login flow"), _fb(9, message="New redis deadlock")])
+
+    assert _orchestrator_msg_count("t_e9b") == 2
