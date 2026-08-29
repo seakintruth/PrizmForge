@@ -293,3 +293,40 @@ def test_conversation_archiving_keeps_unsaved_batch(temp_db, monkeypatch):
         n_conv = conn.execute("SELECT COUNT(*) FROM conversation_history WHERE task_id = 't_a9b'").fetchone()[0]
     assert n_rows == 1
     assert n_conv == 20
+
+
+# ---------------------------------------------------------------------------
+# b9 (soak recompute): archive prompts must carry a strict JSON output contract
+# so free-tier models reply with data instead of 12k-28k-token prose.
+# ---------------------------------------------------------------------------
+
+
+def _sample_msg(worker: ArchivistWorker, n: int = 2) -> list[dict]:
+    old_ts = (datetime.now() - timedelta(minutes=30)).isoformat()
+    return [
+        {
+            "id": i,
+            "from": "developer",
+            "to": "orchestrator",
+            "content": f"bus {i}",
+            "timestamp": old_ts,
+            "priority": "HIGH",
+        }
+        for i in range(n)
+    ]
+
+
+def _sample_conv(worker: ArchivistWorker, n: int = 2) -> list[dict]:
+    old_ts = (datetime.now() - timedelta(minutes=30)).isoformat()
+    return [{"id": i, "agent": "developer", "role": "assistant", "content": f"conv {i}", "timestamp": old_ts} for i in range(n)]
+
+
+def test_all_archive_prompts_carry_json_output_contract():
+    worker = ArchivistWorker()
+    msg_prompt = worker._build_message_archive_prompt(_sample_msg(worker, 3))
+    conv_prompt = worker._build_conversation_archive_prompt(_sample_conv(worker, 3))
+    for prompt in (msg_prompt, conv_prompt):
+        assert '"summary"' in prompt
+        assert '"key_decisions"' in prompt
+        assert "ONLY this JSON" in prompt
+        assert "no markdown fences" in prompt

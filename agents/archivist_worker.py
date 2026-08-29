@@ -35,6 +35,16 @@ class ArchivistWorker:
     # chars observed); small batches keep each call cheap and retriable.
     _ARCHIVE_BATCH_SIZE = 20
 
+    # B(b9, soak recompute, 2026-08-29): free-tier models reply with 12k-28k
+    # token prose when the prompt has no output contract, and the tolerant
+    # parser cannot recover from brace-free text ("Expecting value: line 1
+    # column 1 (char 0)" beat 201/206/209 msg + 597/614 conv batches all soak).
+    # Both prompt builders end with this strict JSON-only contract, whose keys
+    # match _parse_archive_response.
+    _ARCHIVE_JSON_CONTRACT = (
+        '\nRespond with ONLY this JSON (no prose, no markdown fences):\n{"summary": "compact summary", "key_decisions": ["decision 1", "decision 2"]}'
+    )
+
     def __init__(self):
         self.running = False
         self.worker_thread = None
@@ -304,6 +314,7 @@ class ArchivistWorker:
             prompt += f"{msg['content'][:200]}...\n\n"
         prompt += "\nCreate a compact summary of decisions and communications. "
         prompt += "Do NOT summarize file contents - only agent conversations."
+        prompt += self._ARCHIVE_JSON_CONTRACT
         return prompt
 
     def _build_conversation_archive_prompt(self, conversations: list[dict]) -> str:
@@ -314,6 +325,7 @@ class ArchivistWorker:
             prompt += f"{conv['content'][:200]}...\n\n"
         prompt += "\nCreate a compact summary of what was discussed and decided. "
         prompt += "Do NOT include file content summaries - focus on decisions and context."
+        prompt += self._ARCHIVE_JSON_CONTRACT
         return prompt
 
     @staticmethod
