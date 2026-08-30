@@ -2,11 +2,13 @@
 
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
 _config_cache = None
 _prompts_cache = None
+_config_load_lock = threading.Lock()
 
 
 def get_package_root() -> Path:
@@ -66,6 +68,23 @@ def find_config_file(filename: str) -> Path:
     return script_dir / filename
 
 
+def _load_api_keys(config_dir: Path) -> dict[str, Any]:
+    """Load structured API keys (``{"keys": {...}}``) from a config directory.
+
+    Returns {} when api_key.json is absent; raises ValueError when the file
+    exists but lacks the structured ``keys`` mapping.
+    """
+    api_key_file = config_dir / "api_key.json"
+    if not api_key_file.exists():
+        return {}
+    with open(api_key_file, encoding="utf-8") as f:
+        api_data = json.load(f)
+    structured = api_data.get("keys")
+    if not isinstance(structured, dict):
+        raise ValueError('api_key.json must use the structured form: {"keys": {"<endpoint_name>": {"api_key": "..."}}}. See example_api_key.json.')
+    return structured
+
+
 def load_config(config_path: str | None = None) -> dict[str, Any]:
     """Load configuration from JSON file"""
     if config_path is None:
@@ -91,28 +110,15 @@ def load_config(config_path: str | None = None) -> dict[str, Any]:
     if "project_directory" in config:
         config["project_directory"] = str(normalize_path(config["project_directory"], base=config_dir))
 
+    # API keys: prefer <config_dir>/api_key.json, then a discoverable copy,
+    # else none.
     api_key_file = config_dir / "api_key.json"
-
-    try:
-        with open(api_key_file, encoding="utf-8") as f:
-            api_data = json.load(f)
-        structured = api_data.get("keys")
-        if isinstance(structured, dict):
-            config["_api_keys"] = structured
-        else:
-            raise ValueError('api_key.json must use the structured form: {"keys": {"<endpoint_name>": {"api_key": "..."}}}. See example_api_key.json.')
-    except FileNotFoundError:
+    if api_key_file.exists():
+        config["_api_keys"] = _load_api_keys(config_dir)
+    else:
         alt_api_key = find_config_file("api_key.json")
         if alt_api_key.exists():
-            with open(alt_api_key, encoding="utf-8") as f:
-                api_data = json.load(f)
-            structured = api_data.get("keys")
-            if isinstance(structured, dict):
-                config["_api_keys"] = structured
-            else:
-                raise ValueError(
-                    'api_key.json must use the structured form: {"keys": {"<endpoint_name>": {"api_key": "..."}}}. See example_api_key.json.'
-                ) from None
+            config["_api_keys"] = _load_api_keys(alt_api_key.parent)
         else:
             config["_api_keys"] = {}
 
@@ -323,7 +329,9 @@ def get_config() -> dict[str, Any]:
     """Get cached configuration"""
     global _config_cache
     if _config_cache is None:
-        _config_cache = load_config()
+        with _config_load_lock:
+            if _config_cache is None:
+                _config_cache = load_config()
     return _config_cache
 
 
@@ -331,7 +339,9 @@ def get_agent_prompts() -> dict[str, Any]:
     """Get cached agent prompts"""
     global _prompts_cache
     if _prompts_cache is None:
-        _prompts_cache = load_agent_prompts()
+        with _config_load_lock:
+            if _prompts_cache is None:
+                _prompts_cache = load_agent_prompts()
     return _prompts_cache
 
 
@@ -344,5 +354,6 @@ def get_config_dir() -> Path:
 def reload_config():
     """Force reload configuration"""
     global _config_cache, _prompts_cache
-    _config_cache = load_config()
-    _prompts_cache = load_agent_prompts()
+    with _config_load_lock:
+        _config_cache = load_config()
+        _prompts_cache = load_agent_prompts()

@@ -146,6 +146,61 @@ def test_load_config_project_directory_ignores_cwd(tmp_path, monkeypatch):
     assert Path(loaded["project_directory"]) == haunt.resolve()
 
 
+# ---------------------------------------------------------------------------
+# load_config: api_key.json structured loading + cached getters
+# ---------------------------------------------------------------------------
+
+
+def test_load_config_reads_structured_api_keys(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"project_directory": "proj"}))
+    (tmp_path / "api_key.json").write_text(json.dumps({"keys": {"openrouter": {"api_key": "sk-test"}}}))
+    loaded = load_config(str(tmp_path / "config.json"))
+    assert loaded["_api_keys"]["openrouter"]["api_key"] == "sk-test"
+    assert loaded["_config_dir"] == str(tmp_path.resolve())
+
+
+def test_load_config_missing_api_keys_is_empty(tmp_path, monkeypatch):
+    from core import config as cfg_mod
+
+    (tmp_path / "config.json").write_text(json.dumps({"project_directory": "proj"}))
+    # Isolate the fallback search so a real repo api_key.json cannot leak in
+    # (find_config_file walks upward toward the package root).
+    monkeypatch.setattr(cfg_mod, "find_config_file", lambda name: tmp_path / name)
+    loaded = cfg_mod.load_config(str(tmp_path / "config.json"))
+    assert loaded["_api_keys"] == {}
+
+
+def test_load_config_rejects_unstructured_api_keys(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"project_directory": "proj"}))
+    (tmp_path / "api_key.json").write_text(json.dumps({"openrouter": "sk-test"}))
+    with pytest.raises(ValueError, match="structured form"):
+        load_config(str(tmp_path / "config.json"))
+
+
+def test_get_config_is_cached_until_reload(tmp_path, monkeypatch):
+    from core import config as cfg_mod
+
+    cfg_file = tmp_path / "config.json"
+    cfg_file.write_text(json.dumps({"project_directory": "proj"}))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(cfg_mod, "find_config_file", lambda name: tmp_path / name)
+    monkeypatch.setattr(cfg_mod, "load_agent_prompts", lambda: {"stub": True})
+    monkeypatch.setattr(cfg_mod, "_config_cache", None)
+    monkeypatch.setattr(cfg_mod, "_prompts_cache", None)
+
+    first = cfg_mod.load_config(str(cfg_file))
+    cfg_mod._config_cache = None
+    second = cfg_mod.load_config(str(cfg_file))
+    assert second == first
+    assert second is not first  # load_config always builds a fresh dict
+
+    cfg_file.write_text(json.dumps({"project_directory": "proj", "default_model": "ep/m"}))
+    cfg_mod.reload_config()
+    assert cfg_mod._config_cache["default_model"] == "ep/m"
+    assert cfg_mod._config_cache is not second
+    assert cfg_mod.get_config()["default_model"] == "ep/m"  # public getter sees reload
+
+
 def test_ensure_project_directory_creates(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.json").write_text(json.dumps({"project_directory": "./my_proj"}))
