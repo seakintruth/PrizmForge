@@ -31,3 +31,22 @@ def test_load_index_text_reads_markdown(tmp_path):
     (base / "INDEX.md").write_text("# Project Index\n\n- app.py\n", encoding="utf-8")
     text = load_index_text(project_directory=str(tmp_path / "proj"))
     assert "app.py" in text
+
+
+def test_load_index_text_named_variant(tmp_path):
+    from core.index_context import load_index_text
+
+    base = tmp_path / "proj" / ".PrizmForge" / "indexes"
+    base.mkdir(parents=True)
+    (base / "index_production.md").write_text("# prod symbols\n", encoding="utf-8")
+    text = load_index_text(which="production", project_directory=str(tmp_path / "proj"))
+    assert "prod symbols" in text
+
+
+def test_load_index_text_raises_on_unknown_which(tmp_path):
+    import pytest
+
+    from core.index_context import load_index_text
+
+    with pytest.raises(ValueError, match="Unknown index which"):
+        load_index_text(which="bogus", project_directory=str(tmp_path / "proj"))

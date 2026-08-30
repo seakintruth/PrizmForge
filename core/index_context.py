@@ -10,6 +10,7 @@ Refresh: rebuild symbols (+ optional Markdown export) after init / materialize.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -17,6 +18,8 @@ from pathlib import Path
 DEFAULT_MAX_CHARS = 24_000
 _last_refresh_mono: float = 0.0
 _MIN_REFRESH_INTERVAL_SEC = 2.0
+
+logger = logging.getLogger(__name__)
 
 
 def indexes_dir(project_directory: str | None = None) -> Path:
@@ -34,7 +37,6 @@ def load_index_text(
     max_chars: int = DEFAULT_MAX_CHARS,
 ) -> str:
     """Load Markdown index export (fallback / human view)."""
-    base = indexes_dir(project_directory)
     names = {
         "combined": "INDEX.md",
         "production": "index_production.md",
@@ -42,12 +44,16 @@ def load_index_text(
         "markdown": "index_docs.md",
         "docs": "index_docs.md",
     }
-    path = base / names.get(which, "INDEX.md")
+    if which not in names:
+        raise ValueError(f"Unknown index which={which!r}; expected one of: {', '.join(sorted(names))}")
+    base = indexes_dir(project_directory)
+    path = base / names[which]
     if not path.is_file():
         return ""
     try:
         text = path.read_text(encoding="utf-8")
-    except Exception:
+    except OSError as e:
+        logger.warning("Could not read index %s: %s", path, e)
         return ""
     if max_chars and len(text) > max_chars:
         return text[:max_chars] + f"\n\n... truncated ({len(text)} chars total; see {path})\n"
@@ -64,7 +70,8 @@ def load_symbol_json_context(
     """Primary agent context: JSON table from sqlite file_symbols."""
     try:
         from core.symbol_index import fetch_symbol_rows, format_symbol_context_block
-    except Exception:
+    except ImportError as e:
+        logger.warning("symbol_index unavailable for JSON context: %s", e)
         return ""
     rows = fetch_symbol_rows(
         file_paths=file_paths,
