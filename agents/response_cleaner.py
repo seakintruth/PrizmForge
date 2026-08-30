@@ -4,7 +4,7 @@ import json
 import re
 
 
-def extract_json_aggressively(response: str, agent_name: str) -> tuple[str | None, str]:
+def extract_json_aggressively(response: str, agent_name: str) -> tuple[str | None, str | None]:
     """
     Aggressively extract JSON from LLM response
 

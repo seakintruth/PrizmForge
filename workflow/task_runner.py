@@ -450,7 +450,7 @@ def run_task_cycle(  # noqa: C901
         # called each iteration, decides the task is real.
         print()
 
-    conversation_context = []
+    conversation_context: list[dict[str, str]] = []
     current_turn = 0
 
     progress = {

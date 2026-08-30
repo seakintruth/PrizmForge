@@ -90,14 +90,18 @@ def call_endpoint(  # noqa: C901
     # Validate and get model name (accepts "endpoint/model" or bare name)
     raw_model = model or config.get("default_model")
     choice = endpoint_mgr.normalize_model_reference(raw_model)
-    if choice.endpoint_name and choice.endpoint_name in endpoint_mgr.endpoints:
-        endpoint = endpoint_mgr.endpoints[choice.endpoint_name]
-    else:
-        endpoint = endpoint_mgr.get_endpoint_for_model(choice.model_name or raw_model)
-
-    model_name = endpoint_mgr.validate_model(
-        f"{choice.endpoint_name}/{choice.model_name}" if choice.endpoint_name and choice.model_name else (choice.model_name or raw_model)
+    endpoint = (
+        endpoint_mgr.endpoints[choice.endpoint_name]
+        if choice.endpoint_name and choice.endpoint_name in endpoint_mgr.endpoints
+        else endpoint_mgr.get_endpoint_for_model(choice.model_name or raw_model)
     )
+    if endpoint is None:
+        raise ValueError(f"No endpoint available for model '{choice.model_name or raw_model}'")
+
+    model_ref = f"{choice.endpoint_name}/{choice.model_name}" if choice.endpoint_name and choice.model_name else (choice.model_name or raw_model)
+    if model_ref is None:
+        raise ValueError("No model name available to validate")
+    model_name = endpoint_mgr.validate_model(str(model_ref))
 
     # Per-endpoint rate limiting
     rate_limiter = get_rate_limiter(endpoint)
@@ -699,13 +703,17 @@ def call_agent(  # noqa: C901
         choice = endpoint_mgr.resolve_agent_model(agent_name)
 
     model = choice.model_name
-    if choice.endpoint_name and choice.endpoint_name in endpoint_mgr.endpoints:
-        endpoint = endpoint_mgr.endpoints[choice.endpoint_name]
-    else:
-        endpoint = endpoint_mgr.get_endpoint_for_model(model)
+    endpoint = (
+        endpoint_mgr.endpoints[choice.endpoint_name]
+        if choice.endpoint_name and choice.endpoint_name in endpoint_mgr.endpoints
+        else endpoint_mgr.get_endpoint_for_model(model)
+    )
 
     # validate_model returns bare model name for API payloads
-    model = endpoint_mgr.validate_model(f"{choice.endpoint_name}/{model}" if choice.endpoint_name and model else model)
+    model_ref = f"{choice.endpoint_name}/{model}" if choice.endpoint_name and model else model
+    if model_ref is None:
+        raise ValueError("No model selected for agent")
+    model = endpoint_mgr.validate_model(model_ref)
     endpoint_name = endpoint.name if endpoint else "default"
     # ============================================================
 

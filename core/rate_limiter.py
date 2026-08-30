@@ -17,7 +17,7 @@ class RateLimiter:
 
     def __init__(self, max_calls_per_minute: int = 100):
         self.max_calls = max_calls_per_minute
-        self.calls = deque()
+        self.calls: deque[float] = deque()
         # Per-endpoint tracking
         self.endpoint_calls: dict[str, deque] = {}
         # Effective capacity multiplier in (_MIN_WINDOW_SCALE..1.0]

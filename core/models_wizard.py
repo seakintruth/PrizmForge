@@ -115,7 +115,7 @@ def _pick(ask: Ask, label: str, numbered: list[str], current: str | None) -> str
         return _pick(ask, label, numbered, current)
 
 
-def run_configure(
+def run_configure(  # noqa: C901
     *,
     cfg_path: Path,
     raw: dict[str, Any],

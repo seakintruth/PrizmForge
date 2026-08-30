@@ -842,9 +842,14 @@ class ResourceControllerWorker:
 
         # 2. Adjust rate limiter
         try:
-            rate_limiter = get_rate_limiter(None)
-            if hasattr(rate_limiter, "set_max_calls"):
-                rate_limiter.set_max_calls(decision.rate_limit_per_minute)
+            from core.endpoint_manager import EndpointManager
+
+            ep_mgr = EndpointManager(self.config)
+            endpoint = ep_mgr.get_endpoint_for_model(self.config.get("default_model")) or next(iter(ep_mgr.endpoints.values()), None)
+            if endpoint is not None:
+                rate_limiter = get_rate_limiter(endpoint)
+                if hasattr(rate_limiter, "set_max_calls"):
+                    rate_limiter.set_max_calls(decision.rate_limit_per_minute)
         except Exception as e:
             print(f"    ⚠️  Failed to adjust rate limiter: {e}")
 

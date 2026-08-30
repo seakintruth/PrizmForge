@@ -27,7 +27,7 @@ class EndpointConfig:
 
     def __init__(self, name: str, config: dict[str, Any]):
         self.name = name
-        self.base_url = config.get("base_url")
+        self.base_url: str = str(config.get("base_url") or "")
         self.api_key_name = config.get("api_key_name", "api_key")
         self.include_model_in_payload = config.get("include_model_in_payload", True)
         self.response_path = config.get("response_path", ["choices", 0, "message", "content"])
