@@ -77,6 +77,7 @@ _GET_CONFIG_PATCH_TARGETS = (
     "workflow.shell_developer.get_config",
     "cli.commands.get_config",
     "interactive.get_config",
+    "main.get_config",
     "utils.git_operations.get_config",
 )
 
