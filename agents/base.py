@@ -3,6 +3,7 @@ Base agent
  - functionality with multi-endpoint support
 """
 
+import random
 import re
 import time
 
@@ -311,8 +312,31 @@ def call_endpoint(  # noqa: C901
             if resp.status_code == 429:
                 print(f"⏳ Rate limited ({endpoint.name})...")
 
-                # Check if we should fall back or wait
-                retry_after = int(resp.headers.get("Retry-After", 60))
+                # AIMD: reduce our effective capacity so concurrent consumers of a
+                # shared upstream window do not keep stacking calls together.
+                rate_limiter.on_rate_limited()
+
+                try:
+                    retry_after = int(resp.headers.get("Retry-After", 60))
+                except (TypeError, ValueError):
+                    retry_after = 60
+
+                # Diagnostics: surface rate-limit headers + server-side message so
+                # upstream throttling is visible without digging into the network.
+                _limit_headers = {
+                    "retry-after",
+                    "ratelimit-limit",
+                    "ratelimit-remaining",
+                    "ratelimit-reset",
+                    "x-ratelimit-remaining",
+                    "x-ratelimit-reset",
+                    "x-ratelimit-limit",
+                }
+                rate_headers = {k: v for k, v in resp.headers.items() if k.lower() in _limit_headers}
+                if rate_headers:
+                    print(f"   Rate-limit headers: {rate_headers}")
+                if error_data.get("message"):
+                    print(f"   Server: {str(error_data['message'])[:200]}")
 
                 if retry_after > 60:  # If wait is > 1 minute, try fallback
                     endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=2)
@@ -341,9 +365,13 @@ def call_endpoint(  # noqa: C901
                             agent_name,
                         )
 
-                # Otherwise wait and retry
-                print(f"   Sleeping {retry_after}s...")
-                time.sleep(retry_after)
+                # Otherwise wait (Retry-After + exponential backoff + jitter) and
+                # retry. The jitter desynchronizes concurrent sleepers that share
+                # the upstream window.
+                backoff = 2**attempt + random.uniform(0, 5)  # noqa: S311
+                sleep_for = max(retry_after, backoff)
+                print(f"   Sleeping {sleep_for:.1f}s...")
+                time.sleep(sleep_for)
                 continue
 
             # ============= HANDLE 402 TOKEN EXHAUSTED =============
@@ -464,6 +492,9 @@ def call_endpoint(  # noqa: C901
                 ok=True,
                 latency_ms=int((time.time() - _req_t0) * 1000),
             )
+
+            # AIMD: a successful call earns back a step of effective capacity.
+            rate_limiter.on_success()
 
             # Track tokens
             output_tokens = estimate_tokens(answer)

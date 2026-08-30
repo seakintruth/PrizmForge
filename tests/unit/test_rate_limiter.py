@@ -7,6 +7,8 @@ import time
 from collections import deque
 from unittest.mock import patch
 
+import pytest
+
 from core.rate_limiter import RateLimiter
 
 
@@ -62,6 +64,45 @@ def test_set_max_calls():
     limiter = RateLimiter(max_calls_per_minute=60)
     limiter.set_max_calls(30)
     assert limiter.max_calls == 30
+    assert limiter._window_scale == 1.0
+
+
+def test_aimd_rate_limited_halves_effective_capacity():
+    limiter = RateLimiter(max_calls_per_minute=100)
+    assert limiter._effective_max_calls() == 100
+    limiter.on_rate_limited()
+    assert limiter._window_scale == pytest.approx(0.5)
+    assert limiter._effective_max_calls() == 50
+
+
+def test_aimd_success_ramps_back_up():
+    limiter = RateLimiter(max_calls_per_minute=100)
+    limiter.on_rate_limited()  # scale 0.5 -> effective 50
+    for _ in range(9):
+        limiter.on_success()
+    # 0.5 + 9*0.05 = 0.95 -> effective 95
+    assert limiter._window_scale == pytest.approx(0.95)
+    assert limiter._effective_max_calls() == 95
+    limiter.on_success()  # 1.0 cap
+    assert limiter._window_scale == pytest.approx(1.0)
+    assert limiter._effective_max_calls() == 100
+
+
+def test_aimd_scale_floors_at_minimum():
+    limiter = RateLimiter(max_calls_per_minute=100)
+    for _ in range(5):
+        limiter.on_rate_limited()
+    assert limiter._window_scale == pytest.approx(0.25)
+    assert limiter._effective_max_calls() == 25
+
+
+def test_aimd_set_max_calls_resets_scale():
+    limiter = RateLimiter(max_calls_per_minute=100)
+    limiter.on_rate_limited()
+    assert limiter._effective_max_calls() == 50
+    limiter.set_max_calls(40)  # fresh ceiling from resource controller
+    assert limiter._window_scale == pytest.approx(1.0)
+    assert limiter._effective_max_calls() == 40
 
 
 def test_global_limit_triggers_sleep_with_mocked_time():

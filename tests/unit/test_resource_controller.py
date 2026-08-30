@@ -78,6 +78,35 @@ class TestResourceState:
         assert "Budget" in output
         assert "tok/min" in output
 
+    def test_resource_state_rate_limited_default_and_suffix(self):
+        """rate_limited_last_minute defaults to 0 and only shows in str when > 0."""
+        quiet = ResourceState(
+            tokens_used_in_window=0,
+            tokens_remaining=500000,
+            max_tokens=500000,
+            current_burn_rate=0.0,
+            api_calls_last_minute=0,
+            api_rate_limit=60,
+            budget_percentage=1.0,
+            time_remaining_in_window=60.0,
+        )
+        assert quiet.rate_limited_last_minute == 0
+        assert "429s" not in str(quiet)
+
+        loud = ResourceState(
+            tokens_used_in_window=0,
+            tokens_remaining=500000,
+            max_tokens=500000,
+            current_burn_rate=0.0,
+            api_calls_last_minute=4,
+            api_rate_limit=60,
+            budget_percentage=1.0,
+            time_remaining_in_window=60.0,
+            rate_limited_last_minute=3,
+        )
+        assert loud.rate_limited_last_minute == 3
+        assert "429s: 3/min" in str(loud)
+
 
 class TestThrottleDecision:
     """Tests for ThrottleDecision."""
@@ -133,6 +162,29 @@ class TestHeuristicOptimizer:
         )
         decision = optimizer.optimize(state)
         assert decision is None or isinstance(decision, ThrottleDecision)
+
+    def test_optimizer_rate_limited_feedback_biases_decision(self):
+        """Recent upstream 429s force a RATE_LIMITED decision that drops the
+        client call rate and backs off the background feeder."""
+        optimizer = HeuristicOptimizer()
+        state = ResourceState(
+            tokens_used_in_window=100000,
+            tokens_remaining=400000,
+            max_tokens=500000,
+            current_burn_rate=2000.0,
+            api_calls_last_minute=10,
+            api_rate_limit=60,
+            budget_percentage=0.8,
+            time_remaining_in_window=50.0,
+            rate_limited_last_minute=3,
+        )
+        decision = optimizer.optimize(state)
+        assert decision is not None
+        assert decision.level == "RATE_LIMITED"
+        # max(10, int(60 * 0.1)) == 10
+        assert decision.rate_limit_per_minute == 10
+        assert decision.background_feeder_interval >= 120
+        assert "429s" in decision.reasoning
 
 
 @pytest.mark.usefixtures("temp_db", "mock_minimal_config")

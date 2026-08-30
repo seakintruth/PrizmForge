@@ -1,8 +1,15 @@
-"""Rate limiting for API calls - per-endpoint support"""
+"""Rate limiting for API calls - per-endpoint support with AIMD scaling"""
 
 import threading
 import time
 from collections import deque
+
+# Adaptive (AIMD) window scaling: on upstream 429 the limiter back offs by
+# halving its effective capacity; on success it ramps back toward the ceiling
+# set by config / the resource controller. This smooths our contribution to a
+# per-minute upstream window shared across concurrent consumers.
+_MIN_WINDOW_SCALE = 0.25
+_ADDITIVE_STEP = 0.05
 
 
 class RateLimiter:
@@ -13,7 +20,23 @@ class RateLimiter:
         self.calls = deque()
         # Per-endpoint tracking
         self.endpoint_calls: dict[str, deque] = {}
+        # Effective capacity multiplier in (_MIN_WINDOW_SCALE..1.0]
+        self._window_scale = 1.0
         self._lock = threading.Lock()
+
+    def _effective_max_calls(self) -> int:
+        """Global-path capacity ceiling, scaled by the AIMD window."""
+        return max(1, int(self.max_calls * self._window_scale))
+
+    def on_success(self):
+        """Ramp back up toward full capacity (additive increase)."""
+        with self._lock:
+            self._window_scale = min(1.0, self._window_scale + _ADDITIVE_STEP)
+
+    def on_rate_limited(self):
+        """Back off capacity after an upstream 429 (multiplicative decrease)."""
+        with self._lock:
+            self._window_scale = max(_MIN_WINDOW_SCALE, self._window_scale * 0.5)
 
     def wait_if_needed(self, endpoint_name: str | None = None):
         """Wait if rate limit would be exceeded"""
@@ -35,7 +58,7 @@ class RateLimiter:
                     max_calls = endpoint_config.get("rate_limit_per_minute", 118)
                 else:
                     calls = self.calls
-                    max_calls = self.max_calls
+                    max_calls = self._effective_max_calls()
 
                 # Remove calls older than 60 seconds
                 while calls and calls[0] < now - 60:
@@ -53,8 +76,13 @@ class RateLimiter:
                 time.sleep(sleep_time)
 
     def set_max_calls(self, max_calls: int):
-        """Dynamically update max calls per minute (called by resource controller)"""
+        """Dynamically update max calls per minute (called by resource controller).
+
+        A fresh ceiling also resets the AIMD window so capacity ramps can start
+        cleanly from the new limit.
+        """
         with self._lock:
             old_max = self.max_calls
             self.max_calls = max_calls
+            self._window_scale = 1.0
             print(f"    🎛️  Rate limit adjusted: {old_max} → {max_calls} calls/min")
