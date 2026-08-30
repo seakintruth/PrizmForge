@@ -285,14 +285,10 @@ def assign_agents(
         in_catalog = reference in catalog_refs(catalog or {})
         if register and "/" in reference:
             if catalog is not None and not in_catalog:
-                raise ValueError(
-                    f"'{reference}' is not in the last fetch cache. Run `models fetch` or pass a registered endpoint/model."
-                )
+                raise ValueError(f"'{reference}' is not in the last fetch cache. Run `models fetch` or pass a registered endpoint/model.")
             resolved = ensure_registered(raw_config, reference)
         elif in_catalog:
-            raise ValueError(
-                f"'{reference}' is in the fetch cache but not in config. Re-run with --register to add a stub under endpoints.*.models."
-            )
+            raise ValueError(f"'{reference}' is in the fetch cache but not in config. Re-run with --register to add a stub under endpoints.*.models.")
         else:
             known = list_registered(raw_config)
             raise ValueError(f"Unknown model '{reference}'. Registered: {known[:12]}{'\u2026' if len(known) > 12 else ''}")
