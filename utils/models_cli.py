@@ -3,6 +3,8 @@
 
 Usage (from the repo root, next to config.json):
 
+  python utils/models_cli.py                      # interactive configure
+  python utils/models_cli.py configure
   python utils/models_cli.py models list
   python utils/models_cli.py models fetch
   python utils/models_cli.py models assign developer openrouter/stealth/ox-alpha
@@ -40,12 +42,33 @@ from core.models_catalog import (  # noqa: E402
     set_prompt_text,
     validate_assignments,
 )
+from core.models_wizard import run_configure  # noqa: E402
 
 
 def _load_runtime(config_override: str | None) -> tuple[Path, dict]:
     cfg_path = config_file_path(config_override)
     runtime = load_config(str(cfg_path))
     return cfg_path, runtime
+
+
+def cmd_configure(args: argparse.Namespace) -> int:
+    cfg_path, runtime = _load_runtime(args.config)
+    raw = load_raw_json(cfg_path)
+    catalog = load_catalog(runtime)
+    try:
+        run_configure(
+            cfg_path=cfg_path,
+            raw=raw,
+            runtime=runtime,
+            catalog=catalog,
+            ask=input,
+            fetch=None if not getattr(args, "no_fetch", False) else False,
+            write=not getattr(args, "dry_run", False),
+        )
+    except (KeyboardInterrupt, EOFError):
+        print("\nAborted.")
+        return 130
+    return 0
 
 
 def cmd_models_list(args: argparse.Namespace) -> int:
@@ -195,7 +218,11 @@ def cmd_prompt_set(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Assign models and edit agent prompts without hand-editing JSON.")
     p.add_argument("--config", help="Path to config.json (default: discover)")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd")
+
+    cfg = sub.add_parser("configure", help="Interactive prompts for models + agent instructions")
+    cfg.add_argument("--no-fetch", action="store_true", help="Skip the live /v1/models prompt and use cache only")
+    cfg.add_argument("--dry-run", action="store_true", help="Walk the prompts but do not write files")
 
     models = sub.add_parser("models", help="Fetch / list / assign / validate models")
     msub = models.add_subparsers(dest="models_cmd", required=True)
@@ -238,6 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not args.cmd:
+        return cmd_configure(args)
+    if args.cmd == "configure":
+        return cmd_configure(args)
     if args.cmd == "models":
         dispatch = {
             "list": cmd_models_list,

@@ -10,15 +10,18 @@ import pytest
 from core.models_catalog import (
     assign_agents,
     assign_tier,
+    available_refs,
     catalog_path,
     ensure_registered,
     fetch_catalog,
     models_url,
     parse_model_ids,
     prompt_text,
+    resolve_choice,
     set_prompt_text,
     validate_assignments,
 )
+from core.models_wizard import run_configure
 
 
 def _cfg(tmp_path: Path) -> dict:
@@ -138,3 +141,55 @@ def test_prompt_roundtrip():
     assert prompts["reviewer"]["system_prompt"] == "new gate rules"
     set_prompt_text(prompts, "new_agent", "hello")
     assert prompt_text(prompts, "new_agent") == "hello"
+
+
+def test_resolve_choice_index_and_literal():
+    numbered = ["openrouter/a", "opencode/b"]
+    assert resolve_choice("1", numbered) == "openrouter/a"
+    assert resolve_choice("2", numbered) == "opencode/b"
+    assert resolve_choice("openrouter/custom", numbered) == "openrouter/custom"
+    with pytest.raises(ValueError, match="out of range"):
+        resolve_choice("9", numbered)
+    with pytest.raises(ValueError, match="empty"):
+        resolve_choice("  ", numbered)
+
+
+def test_available_refs_orders_registered_then_catalog(tmp_path):
+    cfg = _cfg(tmp_path)
+    catalog = {"endpoints": {"openrouter": {"models": ["stealth/ox-alpha", "only-in-cache"]}}}
+    refs = available_refs(cfg, catalog)
+    assert refs.index("openrouter/stealth/ox-alpha") < refs.index("openrouter/only-in-cache")
+
+
+def test_configure_wizard_assigns_tiers_from_answers(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg_path = tmp_path / "config.json"
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    (tmp_path / "agent_prompts.json").write_text(
+        json.dumps({"developer": {"system_prompt": "dev"}, "jr_reviewer": {"system_prompt": "jr"}}),
+        encoding="utf-8",
+    )
+    answers = iter(
+        [
+            "1",  # critical = first registered
+            "2",  # cheap = second registered (sorted: opencode/big-pick, then openrouter...)
+            "n",  # no per-agent overrides
+            "n",  # no prompt edits
+            "y",  # write
+        ]
+    )
+    raw = json.loads(cfg_path.read_text(encoding="utf-8"))
+    run_configure(
+        cfg_path=cfg_path,
+        raw=raw,
+        runtime=cfg,
+        catalog={"endpoints": {}},
+        ask=lambda _p: next(answers),
+        fetch=False,
+        write=True,
+    )
+    written = json.loads(cfg_path.read_text(encoding="utf-8"))
+    refs = available_refs(cfg, {})
+    assert written["default_model"] == refs[0]
+    assert written["agent_model_preferences"]["developer"] == refs[0]
+    assert written["agent_model_preferences"]["jr_reviewer"] == refs[1]
