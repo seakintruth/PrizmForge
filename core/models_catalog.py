@@ -130,6 +130,34 @@ def list_assignments(config: dict[str, Any]) -> dict[str, str]:
     return {k: v for k, v in prefs.items() if isinstance(v, str) and not str(k).startswith("_")}
 
 
+def catalog_refs(catalog: dict[str, Any]) -> set[str]:
+    refs: set[str] = set()
+    for ep_name, entry in (catalog.get("endpoints") or {}).items():
+        for mid in entry.get("models") or []:
+            refs.add(f"{ep_name}/{mid}")
+    return refs
+
+
+def available_refs(config: dict[str, Any], catalog: dict[str, Any] | None = None) -> list[str]:
+    """Registered endpoint/model refs first, then extras from the fetch cache."""
+    regs = list_registered(config)
+    extra = sorted(catalog_refs(catalog or {}) - set(regs))
+    return regs + extra
+
+
+def resolve_choice(raw: str, numbered: list[str]) -> str:
+    """Map a typed answer to a model ref: index into `numbered`, or a literal ref."""
+    text = raw.strip()
+    if not text:
+        raise ValueError("empty choice")
+    if text.isdigit():
+        idx = int(text)
+        if 1 <= idx <= len(numbered):
+            return numbered[idx - 1]
+        raise ValueError(f"choice {idx} is out of range 1..{len(numbered) or 0}")
+    return text
+
+
 def _api_key(config: dict[str, Any], endpoint_name: str, ep_cfg: dict[str, Any]) -> str:
     keys = config.get("_api_keys") or {}
     entry = keys.get(endpoint_name) or {}
@@ -211,14 +239,6 @@ def load_catalog(config: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def catalog_refs(catalog: dict[str, Any]) -> set[str]:
-    refs: set[str] = set()
-    for ep_name, entry in (catalog.get("endpoints") or {}).items():
-        for mid in entry.get("models") or []:
-            refs.add(f"{ep_name}/{mid}")
-    return refs
-
-
 def resolve_or_none(config: dict[str, Any], reference: str) -> str | None:
     if not reference:
         return None
@@ -265,10 +285,14 @@ def assign_agents(
         in_catalog = reference in catalog_refs(catalog or {})
         if register and "/" in reference:
             if catalog is not None and not in_catalog:
-                raise ValueError(f"'{reference}' is not in the last fetch cache. Run `models fetch` or pass a registered endpoint/model.")
+                raise ValueError(
+                    f"'{reference}' is not in the last fetch cache. Run `models fetch` or pass a registered endpoint/model."
+                )
             resolved = ensure_registered(raw_config, reference)
         elif in_catalog:
-            raise ValueError(f"'{reference}' is in the fetch cache but not in config. Re-run with --register to add a stub under endpoints.*.models.")
+            raise ValueError(
+                f"'{reference}' is in the fetch cache but not in config. Re-run with --register to add a stub under endpoints.*.models."
+            )
         else:
             known = list_registered(raw_config)
             raise ValueError(f"Unknown model '{reference}'. Registered: {known[:12]}{'\u2026' if len(known) > 12 else ''}")
