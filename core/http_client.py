@@ -1,5 +1,5 @@
 """
-Minimal HTTP JSON POST helper.
+Minimal HTTP JSON POST/GET helper.
 
 Prefer the `requests` package when available (Advana / normal installs).
 Fall back to stdlib `urllib.request` on minimal SageMaker images.
@@ -71,17 +71,53 @@ def _post_with_urllib(
         data = json.dumps(json_body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
 
-    # suppress the urllib scheme warning ->
     req = urllib_request.Request(url, data=data, headers=hdrs, method="POST")  # noqa: S310
 
-    # Basic proxy support (HTTP_PROXY style) if provided
     handlers = []
     if proxies:
         handlers.append(urllib_request.ProxyHandler(proxies))
-    # Default SSL context
     handlers.append(urllib_request.HTTPSHandler(context=ssl.create_default_context()))
     opener = urllib_request.build_opener(*handlers)
 
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            body = resp.read()
+            status = getattr(resp, "status", None) or resp.getcode()
+            return HttpResponse(int(status), body, dict(resp.headers.items()))
+    except urllib_error.HTTPError as e:
+        body = e.read() if hasattr(e, "read") else b""
+        return HttpResponse(int(e.code), body, dict(getattr(e, "headers", {}) or {}))
+    except urllib_error.URLError as e:
+        raise HttpError(f"URL error: {e}") from e
+
+
+def _get_with_requests(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 120,
+    proxies: dict[str, str] | None = None,
+) -> HttpResponse:
+    import requests
+
+    resp = requests.get(url, headers=headers or {}, timeout=timeout, proxies=proxies)
+    return HttpResponse(resp.status_code, resp.content, dict(resp.headers))
+
+
+def _get_with_urllib(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 120,
+    proxies: dict[str, str] | None = None,
+) -> HttpResponse:
+    hdrs = dict(headers or {})
+    req = urllib_request.Request(url, headers=hdrs, method="GET")  # noqa: S310
+    handlers = []
+    if proxies:
+        handlers.append(urllib_request.ProxyHandler(proxies))
+    handlers.append(urllib_request.HTTPSHandler(context=ssl.create_default_context()))
+    opener = urllib_request.build_opener(*handlers)
     try:
         with opener.open(req, timeout=timeout) as resp:
             body = resp.read()
@@ -103,11 +139,7 @@ def post_json(
     proxies: dict[str, str] | None = None,
     prefer_requests: bool = True,
 ) -> HttpResponse:
-    """
-    POST JSON to url.
-
-    Uses `requests` when importable and prefer_requests=True; otherwise urllib.
-    """
+    """POST JSON to url. Uses requests when importable; otherwise urllib."""
     if prefer_requests:
         try:
             return _post_with_requests(
@@ -120,6 +152,23 @@ def post_json(
         except ImportError:
             pass
     return _post_with_urllib(url, headers=headers, json_body=json_body, timeout=timeout, proxies=proxies)
+
+
+def get_json(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 120,
+    proxies: dict[str, str] | None = None,
+    prefer_requests: bool = True,
+) -> HttpResponse:
+    """GET url (OpenAI-compatible /v1/models). Same transport fallback as post_json."""
+    if prefer_requests:
+        try:
+            return _get_with_requests(url, headers=headers, timeout=timeout, proxies=proxies)
+        except ImportError:
+            pass
+    return _get_with_urllib(url, headers=headers, timeout=timeout, proxies=proxies)
 
 
 def has_requests() -> bool:
