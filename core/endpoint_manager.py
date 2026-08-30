@@ -526,3 +526,19 @@ def get_endpoint_manager() -> EndpointManager:
         config = get_config()
         _endpoint_manager = EndpointManager(config)
     return _endpoint_manager
+
+
+def registered_or_none(model_reference: str | None) -> str | None:
+    """Return the reference if it resolves to a registered model, else None.
+
+    Agents with unstructured/structured outputs may emit a ``model`` field
+    (e.g. a recommended model) that consumer LLMs hallucinate. Blindly routing
+    on that value replays it in conversation context forever (``Model 'X' not
+    found`` spam + wasted agent turns searching for it). Callers should guard
+    the value with this helper before using or echoing it.
+    """
+    if not model_reference:
+        return None
+    if get_endpoint_manager().model_reference_exists(model_reference):
+        return model_reference
+    return None

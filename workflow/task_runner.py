@@ -11,6 +11,7 @@ from agents.parallel_workers import get_agent_pool
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import age_feedback_backlog, complete_task, create_task, post_message
+from core.endpoint_manager import registered_or_none
 from core.file_operations import get_file_content_from_db, is_secret_path, should_ignore_file
 from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
 from workflow.developer_edit import run_developer_mutation
@@ -603,6 +604,12 @@ def run_task_cycle(  # noqa: C901
             instructions = decision.get("instructions", "")
             files_needed = decision.get("files_needed", [])
             model_choice = decision.get("model")
+            if model_choice:
+                clean_model = registered_or_none(model_choice)
+                if clean_model is None:
+                    print(f"   ℹ️  Ignoring unregistered model suggestion '{model_choice}'; using configured model.")
+                    model_choice = None
+                    decision.pop("model", None)
 
             print(f"📋 Decision: {next_agent}")
 
