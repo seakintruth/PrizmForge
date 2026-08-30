@@ -15,6 +15,41 @@ PrizmForge solves the fundamental problem of **safe autonomous code modification
 - **Mutation path** (sequential, governed): Developer → EditPayload → Proposal → Reviewer (Approve → Materialization | Deny with Comments → Developer)
 - **Analysis path** (parallel): Background agents provide continuous feedback without mutation rights
 
+### Operator Principle #1 — The mutation path is the most unblocked path
+
+The project's entire purpose is producing governed edits to a real repository. Every
+control that gates load — resource/budget throttling, feedback-backlog backpressure,
+feeder backoff, rate limits, and the network-busy loop guard — must treat **mutation
+as the last, never the first, thing it impedes**. Background analysis is always
+expendable; a developer attempt is only withheld for a genuine, **completed** session
+that produced no file change, and even then the loop **re-arms itself** so mutation
+resumes as soon as the environment allows.
+
+Ordering of sacrifice under pressure (from most to least protected):
+
+1. **Developer/mutation** — always allowed a bounded retry; never frozen by
+   infrastructure failures (transport, rate limits, `LlmUnavailable`,
+   `RepeatedFormatError`, verification outages).
+2. **Sequential orchestration** — keeps deciding; its calls may back off but stay
+   on the critical path.
+3. **Support workers (prioritizer / archivist / reporter)** — yield to an active
+   foreground session (c9) and coalesce error telemetry (f9).
+4. **Feedback reviewers (jr_reviewer / security_reviewer / researcher / tech_writer)** —
+   pause and dedupe first (backlog tiers, lane isolation W6); they correct the repo,
+   they do not own it.
+
+Concrete guarantees enforced in code (`workflow/task_runner.py`, soak-hardened in the
+2026-08-29 recompute):
+
+- A developer turn that **never completed** (network/format/verification failure)
+  counts as **neutral** for the no-progress stall guard — it can never freeze the
+  mutation path.
+- The no-progress stall latch only ever accumulates from sessions that **finished**
+  with zero changes, and it **re-arms** every `rearm_after` iterations so a recovered
+  endpoint is always allowed to retry.
+- Resource Controller freeze mode explicitly keeps **"prioritizer + developer only"**
+  — analysis starves, mutation does not.
+
 ## Quick Start
 
 ```bash
