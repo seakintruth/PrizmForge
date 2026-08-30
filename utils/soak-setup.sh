@@ -12,12 +12,11 @@
 # Copies EXCLUDE .soak/, .git/, .PrizmForge/ and .prizmforge/,
 # shell_trajectories/, sqlite DB files and caches — a soak always starts
 # with fresh process + analytics state (the target generates its own
-# .PrizmForge/agents.db at runtime). main.py output is teed to the
-# terminal AND to:
-#   <repo>/.soak/SoakN-target/PrizmForge/.PrizmForge/soak_stdout.log
+# .PrizmForge/agents.db at runtime). main.py stdout stays on the terminal
+# (default buffering).
 #
 # Starting SoakN purges previous soaks (Soak1..SoakN-1) down to their
-# analytics component (.PrizmForge/ with agents.db + stdout log) only.
+# analytics component (.PrizmForge/ with agents.db + reports + indexes) only.
 #
 # After copy: cd .soak/SoakN/PrizmForge, git checkout -b soak/N, ./main.py
 #
@@ -190,15 +189,13 @@ if [[ -e "$CONTROLLER" || -e "$TARGET_ROOT" ]]; then
   fi
 fi
 
-LOG_FILE="$TARGET/.PrizmForge/soak_stdout.log"
-
 if [[ $DRY_RUN -eq 1 ]]; then
   echo "[dry-run] would purge prior soaks (Soak< $SOAK_N) down to analytics (.PrizmForge) only"
   echo "[dry-run] would copy source → controller and target"
   echo "[dry-run]   excluding .soak/, .git/, .PrizmForge/, .prizmforge/, shell_trajectories/, *.db*, caches"
   echo "[dry-run] would set $CONTROLLER_CFG project_directory = $REL_PROJECT"
   echo "[dry-run] would cd $CONTROLLER && git checkout -b $SOAK_BRANCH"
-  echo "[dry-run] would run ./main.py, teeing output → $LOG_FILE"
+  echo "[dry-run] would run ./main.py (stdout → terminal)"
   exit 0
 fi
 
@@ -277,16 +274,16 @@ cd "$CONTROLLER"
 
 if [[ ! -d .git ]]; then
   echo "Creating a fresh soak snapshot commit (no repo history copied)"
-  git init >/dev/null
+  git init -q -b main 2>/dev/null || { git init -q; git branch -m main 2>/dev/null || true; }
   git add -A >/dev/null
   git -c user.name="PrizmForge Soak$SOAK_N" -c user.email="soak@local" \
     commit -m "Soak${SOAK_N} snapshot" >/dev/null
 fi
 
 if git show-ref --verify --quiet "refs/heads/${SOAK_BRANCH}"; then
-  git checkout "$SOAK_BRANCH" >/dev/null
+  git checkout -q "$SOAK_BRANCH"
 else
-  git checkout -b "$SOAK_BRANCH" >/dev/null
+  git checkout -q -b "$SOAK_BRANCH"
 fi
 
 echo
@@ -303,14 +300,11 @@ if [[ ! -f ./main.py ]]; then
   exit 1
 fi
 
-mkdir -p "$(dirname "$LOG_FILE")"
-echo "Teeing main.py output → $LOG_FILE"
-
 if [[ -x .venv/bin/python ]]; then
   echo "Starting .venv/bin/python ./main.py"
-  .venv/bin/python ./main.py 2>&1 | tee "$LOG_FILE"
-else
-  chmod +x ./main.py 2>/dev/null || true
-  echo "Starting ./main.py"
-  ./main.py 2>&1 | tee "$LOG_FILE"
+  exec .venv/bin/python ./main.py
 fi
+
+chmod +x ./main.py 2>/dev/null || true
+echo "Starting ./main.py"
+exec ./main.py

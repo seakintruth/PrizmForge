@@ -22,16 +22,16 @@ All soak state lives under the git-ignored `.soak/` directory:
 <repo>/.soak/SoakN-target/PrizmForge      edit target      (the copy being mutated)
 <repo>/.soak/SoakN-target/PrizmForge/
    .PrizmForge/agents.db                  runtime analytics DB (generated)
-   .PrizmForge/soak_stdout.log            teed main.py output (generated)
 ```
 
 - The controller's `config.json` is rewritten so
   `project_directory = "../../SoakN-target/PrizmForge"`.
 - The controller gets a **fresh single-commit git repo** on branch
   `soak/N` (no history is copied). The target is created without git.
-- Analytics (`agents.db`, stdout log) are generated at runtime inside the
+- Analytics (`agents.db`) are generated at runtime inside the
   **target's** `.PrizmForge/` — the state dir name is `.PrizmForge` but both
-  casings (`.prizmforge`) are treated identically.
+  casings (`.prizmforge`) are treated identically. `main.py` stdout stays on
+  the controller terminal (default buffering); nothing is written to a file.
 
 ## 2. Copy hygiene — what never crosses into a soak
 
@@ -56,7 +56,7 @@ Running soak `N` first reduces every earlier soak to its **analytics only**:
 
 - controller + target trees of `Soak1..Soak(N-1)` are purged of everything
   except their `.PrizMForge` / `.prizmforge` directory (which holds
-  `agents.db`, reports, indexes and the stdout log). Where a soak produced no
+  `agents.db`, reports, indexes). Where a soak produced no
   analytics it is emptied entirely.
 - Re-running the *same* `N` with `--force` first **shelves** the current
   analytics into `.soak/archive/SoakN.../PrizmForge/.PrizmForge/` before the
@@ -68,7 +68,7 @@ full repo copies.
 ## 3. Requirements
 
 - `rsync` (fallback to `cp` works but is slower and heavier),
-  `python3`, `git`, `tee` (coreutils).
+  `python3`, `git`.
 - The source repo must contain a runnable `config.json` and `main.py`.
   Both `config.json` and `api_key.json` are git-ignored in the source, so
   they come from the local working tree (and are copied into each soak).
@@ -91,8 +91,8 @@ The script:
 3. Copies source → controller and → target (with the exclusions above).
 4. Rewrites the controller `project_directory` and validates it resolves.
 5. Creates a fresh snapshot commit and checks out branch `soak/N`.
-6. Runs `main.py`, **teeing stdout+stderr to the terminal and to**
-   `.soak/SoakN-target/PrizmForge/.PrizmForge/soak_stdout.log`.
+6. Runs `main.py` with stdout on the controller terminal (default
+   buffering — no file capture).
 
 A typical start:
 
@@ -131,7 +131,7 @@ After (or mid) soak, interrogate the **target** analytics:
 
 | Artifact | What it answers |
 |---|---|
-| `.PrizmForge/soak_stdout.log` | Whole-loop narrative: iterations, agent dispatch, sleeps, fallbacks, decisions, errors. |
+| controller terminal `main.py` output | Whole-loop narrative: iterations, agent dispatch, sleeps, fallbacks, decisions, errors. |
 | `.PrizmForge/agents.db` | Structured state (tables below). |
 | `.PrizmForge/reports/`, `.PrizmForge/indexes/` | Reporter artifacts and the built `INDEX.md` symbol map. |
 | controller `audit/` | Prompts/responses trail of the loop's own reviewing agents. |
@@ -154,7 +154,8 @@ Key tables in `agents.db` (read-only; `sqlite3`, or copy the DB out):
 
 Suggested analysis loop:
 
-1. **Continuity:** skim `soak_stdout.log` for hard stalls vs pacing; confirm
+1. **Continuity:** read the controller terminal output for hard stalls vs
+   pacing; confirm
    "Rate limit" episodes correlate with `endpoint_health` cooldowns and not
    with deadlocks.
 2. **Mutation:** count `file_modifications` per task; confirm stall tasks ran
