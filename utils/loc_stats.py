@@ -108,7 +108,7 @@ def _percentile(values: list[int], p: float) -> float:
         return 0.0
     if len(values) == 1:
         return float(values[0])
-    pct = max(1, min(99, int(round(p))))
+    pct = max(1, min(99, round(p)))
     return float(statistics.quantiles(values, n=100)[pct - 1])
 
 
@@ -147,12 +147,8 @@ def _render(rows: list[dict], *, root: Path, top_n: int, generated: str) -> str:
     out.append(f"- Generated: `{generated}`")
     out.append(f"- Root: `{root}`")
     out.append("- Extensions: `.py`, `.sh`, `.bash`")
-    out.append(
-        "- Excluded dirs: " + ", ".join(f"`{name}`" for name in sorted(SKIP_DIR_NAMES))
-    )
-    out.append(
-        "- Lines are physical (blanks + comments included). Nonempty ignores whitespace-only lines."
-    )
+    out.append("- Excluded dirs: " + ", ".join(f"`{name}`" for name in sorted(SKIP_DIR_NAMES)))
+    out.append("- Lines are physical (blanks + comments included). Nonempty ignores whitespace-only lines.")
     out.append("")
 
     out.append("## Totals")
@@ -310,11 +306,7 @@ def _render(rows: list[dict], *, root: Path, top_n: int, generated: str) -> str:
     if len(line_counts) >= 2:
         out.append("Percentiles (lines per file):")
         out.append("")
-        out.append(
-            ", ".join(
-                f"p{p} **{_percentile(line_counts, p):.0f}**" for p in (50, 75, 90, 95, 99)
-            )
-        )
+        out.append(", ".join(f"p{p} **{_percentile(line_counts, p):.0f}**" for p in (50, 75, 90, 95, 99)))
         out.append("")
 
     long_files = [r for r in rows if r["max_line"] >= 120]
@@ -394,10 +386,7 @@ def main(argv: list[str] | None = None) -> int:
         written.append(stamped)
 
     print(f"Files scanned: {len(rows)}")
-    print(
-        f"Lines: {_sum(rows, 'lines'):,}  nonempty: {_sum(rows, 'nonempty'):,}  "
-        f"bytes: {_sum(rows, 'bytes'):,}"
-    )
+    print(f"Lines: {_sum(rows, 'lines'):,}  nonempty: {_sum(rows, 'nonempty'):,}  bytes: {_sum(rows, 'bytes'):,}")
     for path in written:
         try:
             rel = path.relative_to(root)
