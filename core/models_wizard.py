@@ -52,6 +52,43 @@ def print_numbered(refs: list[str], assignments: dict[str, str], default_model: 
         print(f"  {'default_model':<22} {default_model}")
 
 
+def print_resulting_config(raw: dict[str, Any], prompts: dict[str, Any] | None = None) -> None:
+    """Dump the config the wizard just produced."""
+    assignments = list_assignments(raw)
+    default_model = raw.get("default_model") if isinstance(raw.get("default_model"), str) else None
+    print("\n" + "=" * 60)
+    print("Resulting configuration")
+    print("=" * 60)
+    print(f"default_model          {default_model or '(unset)'}")
+    print("\nagent_model_preferences:")
+    if not assignments:
+        print("  (none)")
+    else:
+        for agent, ref in sorted(assignments.items()):
+            print(f"  {agent:<22} {ref}")
+
+    cheap = set(TIER_AGENTS["cheap"])
+    crit = set(TIER_AGENTS["critical"])
+    cheap_refs = {assignments[a] for a in cheap if a in assignments}
+    crit_refs = {assignments[a] for a in crit if a in assignments}
+    if cheap_refs:
+        print(f"\ncheap-tier models:    {', '.join(sorted(cheap_refs))}")
+    if crit_refs:
+        print(f"critical-tier models: {', '.join(sorted(crit_refs))}")
+
+    if prompts:
+        names = sorted(k for k in prompts if not str(k).startswith("_"))
+        print(f"\nagent prompts ({len(names)}):")
+        for name in names:
+            try:
+                text = prompt_text(prompts, name)
+            except KeyError:
+                text = ""
+            preview = text.replace("\n", " ").strip()[:80]
+            print(f"  {name:<22} {len(text):>5} chars  {preview}{'\u2026' if len(text) > 80 else ''}")
+    print("=" * 60)
+
+
 def _pick(ask: Ask, label: str, numbered: list[str], current: str | None) -> str | None:
     hint = f" [enter keeps {current}]" if current else " [enter skips]"
     raw = ask(f"{label}{hint}: ")
@@ -171,4 +208,5 @@ def run_configure(
     else:
         print("Aborted — nothing written")
 
+    print_resulting_config(raw, prompts if prompts else None)
     return raw
