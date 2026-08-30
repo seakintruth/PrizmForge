@@ -20,7 +20,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = REPO_ROOT / "report" / "loc_stats.md"
 
 SKIP_DIR_NAMES = {
     ".git",
@@ -103,12 +102,12 @@ def _fmt_bytes(n: int) -> str:
     return f"{_fmt_int(n)} B"
 
 
-def _percentile(values: list[int], p: float) -> float:
+def _percentile(values: list[int], p: int) -> float:
     if not values:
         return 0.0
     if len(values) == 1:
         return float(values[0])
-    pct = max(1, min(99, round(p)))
+    pct = max(1, min(99, p))
     return float(statistics.quantiles(values, n=100)[pct - 1])
 
 
@@ -289,7 +288,7 @@ def _render(rows: list[dict], *, root: Path, top_n: int, generated: str) -> str:
         group = [r for r in rows if lo <= r["lines"] <= hi]
         bucket_rows.append(
             [
-                f"{lo}–{hi}",
+                f"{lo}-{hi}",
                 _fmt_int(len(group)),
                 _fmt_int(_sum(group, "lines")),
             ]
@@ -312,7 +311,7 @@ def _render(rows: list[dict], *, root: Path, top_n: int, generated: str) -> str:
     long_files = [r for r in rows if r["max_line"] >= 120]
     out.append("## Longest source lines")
     out.append("")
-    out.append(f"{len(long_files)} files have at least one line ≥ 120 characters.")
+    out.append(f"{len(long_files)} files have at least one line >= 120 characters.")
     out.append("")
     longest = sorted(rows, key=lambda r: (-r["max_line"], r["path"]))[:12]
     out.append(
