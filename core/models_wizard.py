@@ -246,7 +246,7 @@ def run_configure(
         "write files",
         extra=f"{cfg_path.name} + {prompts_path.name}" + (" (changes pending)" if dirty else " (no changes)"),
     )
-    do_write = write and _truthy(ask(f"Write files? [y/N] "), False)
+    do_write = write and _truthy(ask("Write files? [y/N] "), False)
     if do_write:
         save_raw_json(cfg_path, raw)
         if prompts:
