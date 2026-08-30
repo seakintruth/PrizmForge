@@ -11,6 +11,7 @@ from agents.parallel_workers import get_agent_pool
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import age_feedback_backlog, complete_task, create_task, post_message
+from core.endpoint_manager import registered_or_none
 from core.file_operations import get_file_content_from_db, is_secret_path, should_ignore_file
 from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
 from workflow.developer_edit import run_developer_mutation
@@ -274,24 +275,38 @@ class NetworkBusyLoopGuard:
 
 
 class NoProgressLoopGuard:
-    """d9: stop respinning an identical no-progress developer session.
+    """Limit respinning an identical no-progress developer session.
 
-    Soak9 (2026-08-29): tasks 002, 003 and 005 all show files_modified=0 while
-    the orchestrator chose "developer" every single iteration; each shell session
-    burned 30 model calls (mostly rate-limit retries) and returned error with
-    "Work: 0.0s". Counting consecutive zero-change developer turns is the same
-    signal ``_finalize_task`` uses to call a task stalled.
+    d9 (soak recompute, 2026-08-29): soak tasks showed files_modified=0 while
+    the orchestrator chose "developer" every single iteration -- each shell
+    session burned rate-limit retries and returned error with "Work: 0.0s".
+    Counting consecutive zero-change developer turns is the same signal
+    ``_finalize_task`` uses to call a task stalled.
 
-    Once the streak reaches the threshold the guard latches: subsequent
-    "developer" decisions are redirected to background discovery and ONE HIGH
-    stall summary is posted per episode. Any developer turn that actually
-    materializes a file clears the streak and the latch.
+    THE MUTATION PATH IS THE MOST UNBLOCKED PATH. The guard therefore only
+    counts developer turns whose SESSION ACTUALLY COMPLETED. A turn that died
+    before completing -- transport/limits/format/verification failure -- is
+    NEUTRAL: it must never contribute to the latch, because under endpoint
+    degradation (Soak2: opencode key_locked, openrouter rate-limited) every
+    session dies with zero edits and the guard would otherwise freeze the
+    developer for the whole task.
+
+    Once a GENUINE zero-change streak reaches the threshold the guard latches:
+    subsequent "developer" decisions are redirected to background discovery and
+    ONE HIGH stall summary is posted per episode. The latch is SELF-HEALING:
+    every ``rearm_after`` loop iterations it re-arms so the next developer
+    decision dispatches again -- if endpoints recovered, mutation resumes; if
+    not, the same neutral no-op applies and the streak only rebuilds from real
+    stalled sessions. Any developer turn that actually materializes a file
+    clears the streak and the latch immediately.
     """
 
-    def __init__(self, threshold: int = NO_PROGRESS_TURNS_THRESHOLD):
+    def __init__(self, threshold: int = NO_PROGRESS_TURNS_THRESHOLD, rearm_after: int | None = None):
         self.threshold = max(1, int(threshold))
+        self.rearm_after = max(1, int(rearm_after if rearm_after is not None else threshold))
         self._streak = 0
         self._stall_shown = False
+        self._turns_since_stall = 0
 
     def stalled(self) -> bool:
         return self._streak >= self.threshold
@@ -299,9 +314,26 @@ class NoProgressLoopGuard:
     def record_change(self) -> None:
         self._streak = 0
         self._stall_shown = False
+        self._turns_since_stall = 0
+
+    def record_neutral(self) -> None:
+        """A developer turn that never completed is neither progress nor stall."""
+
+    def record_cycle(self) -> None:
+        """One full loop iteration passed without the latch being cleared.
+
+        Re-arms a latched guard every ``rearm_after`` iterations so the
+        mutation path can always retry; endpoints may have recovered.
+        """
+        if self._streak >= self.threshold:
+            self._turns_since_stall += 1
+            if self._turns_since_stall >= self.rearm_after:
+                self._streak = 0
+                self._stall_shown = False
+                self._turns_since_stall = 0
 
     def record_no_change(self, task_id: str) -> bool:
-        """Count one zero-change turn; True once the guard latches."""
+        """Count one completed-but-zero-change turn; True once the guard latches."""
         self._streak += 1
         if self._streak >= self.threshold and not self._stall_shown:
             self._stall_shown = True
@@ -309,9 +341,8 @@ class NoProgressLoopGuard:
                 "system",
                 "orchestrator",
                 (
-                    f"No progress: developer produced no file changes in {self._streak} "
-                    "consecutive sessions. Pausing developer re-dispatch; routing "
-                    "through other agents."
+                    f"No progress: developer completed {self._streak} sessions with no file "
+                    "changes. Pausing developer re-dispatch; routing through other agents."
                 ),
                 task_id,
                 "HIGH",
@@ -319,8 +350,53 @@ class NoProgressLoopGuard:
         return self._streak >= self.threshold
 
 
-def _record_developer_progress(guard: NoProgressLoopGuard, task_id: str, progress: dict, files_before: int) -> None:
-    """Feed the d9 guard from a developer turn's file-change delta."""
+def _is_uncompleted_session(mut: dict | None) -> bool:
+    """True when a developer turn returned WITHOUT completing a real session.
+
+    Shell/full-replace implementations return ``status`` in (``success``,
+    ``rejected``) only when the session actually ran its full course (all
+    gates landed / reviewer rejected). Every other status means the attempt
+    failed before producing a verdict that should count as progress:
+    transport failures (``LlmUnavailable``, ``LimitsExceeded``,
+    ``TimeExceeded``, ``RepeatedFormatError``), verification failures, or a
+    mutation that never produced a valid payload. Such turns are NEUTRAL for
+    the d9 guard so infrastructure failure can never freeze the mutation path.
+
+    The one exception is a shell session that RAN TO ITS END and changed
+    nothing (``status=="error"``, message "session finished but produced no
+    file changes") -- that is a genuine, completed zero-change turn and it
+    DOES count toward the stall streak, exactly the signal the guard exists
+    for.
+
+    ``None`` (caller did not classify the outcome) is judged by file delta
+    for backward compatibility.
+    """
+    if mut is None:
+        return False
+    status = mut.get("status")
+    if status in ("success", "rejected"):
+        return False
+    if status == "error":
+        return not str(mut.get("message", "")).startswith("session finished but")
+    return True
+
+
+def _record_developer_progress(
+    guard: NoProgressLoopGuard,
+    task_id: str,
+    progress: dict,
+    files_before: int,
+    mut: dict | None = None,
+) -> None:
+    """Feed the d9 guard from a developer turn's outcome.
+
+    A session that never completed is recorded as neutral (see
+    ``_is_uncompleted_session``); only completed sessions are judged on their
+    file-change delta, which is what makes the stall signal meaningful.
+    """
+    if _is_uncompleted_session(mut):
+        guard.record_neutral()
+        return
     if progress["files_modified"] > files_before:
         guard.record_change()
     else:
@@ -528,17 +604,26 @@ def run_task_cycle(  # noqa: C901
             instructions = decision.get("instructions", "")
             files_needed = decision.get("files_needed", [])
             model_choice = decision.get("model")
+            if model_choice:
+                clean_model = registered_or_none(model_choice)
+                if clean_model is None:
+                    print(f"   ℹ️  Ignoring unregistered model suggestion '{model_choice}'; using configured model.")
+                    model_choice = None
+                    decision.pop("model", None)
 
             print(f"📋 Decision: {next_agent}")
 
             conversation_context.append({"role": "assistant", "content": json.dumps(decision)})
 
-            # d9: after a streak of zero-change developer sessions, stop
-            # respinning the identical session. Redirect developer choices to
-            # background discovery (FAILSAFE-style, same shape as the fallback
-            # decision above) until a developer turn actually changes a file.
+            # d9: after a streak of COMPLETED zero-change developer sessions,
+            # stop respinning the identical session. Redirect developer choices
+            # to background discovery (FAILSAFE-style, same shape as the
+            # fallback decision above). The latch self-heals via record_cycle()
+            # below, so the mutation path -- the LOOP's MOST IMPORTANT PATH --
+            # always gets a chance to retry once infrastructure recovers.
+            no_progress_guard.record_cycle()
             if next_agent == "developer" and no_progress_guard.stalled():
-                print("   🧯 No-progress stall guard: redirecting developer dispatch to background discovery.")
+                print("   🧯 No-progress stall guard: redirecting developer dispatch to background discovery (mutation path re-arms next cycle).")
                 decision = {
                     "next_agent": "background",
                     "instructions": user_command,
@@ -630,7 +715,7 @@ def run_task_cycle(  # noqa: C901
                             network_guard.surface(task_id)
                     else:
                         network_guard.record_success()
-                    _record_developer_progress(no_progress_guard, task_id, progress, files_before)
+                    _record_developer_progress(no_progress_guard, task_id, progress, files_before, mut)
                     conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
                     continue
 
@@ -735,7 +820,7 @@ PLAN: [brief explanation]"""
                     requested_files=requested_files,
                 )
                 _active_work_seconds += _last_call_http_latency
-                _record_developer_progress(no_progress_guard, task_id, progress, files_before)
+                _record_developer_progress(no_progress_guard, task_id, progress, files_before, mut)
 
             # BACKGROUND AGENTS - Yield control
             # =====================================================
@@ -879,13 +964,21 @@ PLAN: [brief explanation]"""
                                     network_guard.surface(task_id)
                             else:
                                 network_guard.record_success()
-                            _record_developer_progress(no_progress_guard, task_id, progress, files_before)
+                            # d9 (mutation path is the most unblocked path):
+                            # the outcome (completed vs failed session) is fed
+                            # to the guard; failed sessions stay neutral so
+                            # infrastructure failure never freezes the
+                            # developer.
+                            _record_developer_progress(no_progress_guard, task_id, progress, files_before, mut)
                             conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
 
                         elif top_item:
-                            # d9: stall latch — do not respin the identical
-                            # developer session from backlog redirect either.
-                            print("   🧯 No-progress stall guard: keeping developer paused in backlog mode.")
+                            # d9: genuine stall episode — do not respin the
+                            # identical zero-change developer session from the
+                            # backlog redirect either. record_cycle() re-arms
+                            # this latch after rearm_after iterations so the
+                            # mutation path always retries.
+                            print("   🧯 No-progress stall guard: keeping developer paused in backlog mode (mutation path re-arms next cycle).")
                             time.sleep(8)
 
                     else:

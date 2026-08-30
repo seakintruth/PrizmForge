@@ -70,8 +70,8 @@ def _normalize_ext(ext: str) -> str:
         return ""
     if not e.startswith("."):
         e = "." + e
-    # final suffix only (e.g. "foo.bar.exe" config entry → ".exe" if given as .exe)
-    return e if e.startswith(".") else "." + e
+    # Already dot-prefixed (or empty) at this point.
+    return e
 
 
 def get_content_safety_settings(

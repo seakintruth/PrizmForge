@@ -271,3 +271,91 @@ class TestNoProgressGuard:
         progress["files_modified"] = 3
         _record_developer_progress(guard, "t_d9", progress, files_before=1)  # bumped +2: change
         assert not guard.stalled()
+
+    # ---- f9/d9 mutation-path priority (soak recompute pass 2) ----------------
+    # The mutation path is the MOST UNBLOCKED path: a developer turn whose
+    # SESSION NEVER COMPLETED (transport/limits/format/verification) must not
+    # count toward the stall latch. Soak2 latched after 3 dead sessions
+    # (RepeatedFormatError + LlmUnavailable) and froze the developer for the
+    # rest of the task.
+
+    def test_failed_session_is_neutral_never_latches(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard, _is_uncompleted_session, _record_developer_progress
+
+        assert _is_uncompleted_session({"status": "error", "message": "session LlmUnavailable: LLM endpoint unavailable or token budget exhausted"})
+        assert _is_uncompleted_session({"status": "error", "message": "session RepeatedFormatError: no ```bash block or finish token"})
+        assert _is_uncompleted_session({"status": "error", "message": "session LimitsExceeded: endpoint hits"})
+        assert _is_uncompleted_session({"status": "test_failed", "message": "post-session verification failed (exit 1)"})
+
+        # A pure streak of failed sessions must never latch via the helper.
+        guard = NoProgressLoopGuard(threshold=2)
+        progress = {"files_modified": 0}
+        for _ in range(50):
+            _record_developer_progress(
+                guard,
+                "t_d9",
+                progress,
+                files_before=0,
+                mut={"status": "error", "message": "session LlmUnavailable: LLM endpoint unavailable"},
+            )
+        assert not guard.stalled()
+
+        # The redirect branches only fire when stalled(), so a streak of
+        # failures keeps the mutation path DISPATCHABLE.
+        assert not guard.stalled()
+
+    def test_genuine_finished_zero_change_still_latches(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard, _is_uncompleted_session, _record_developer_progress
+
+        # A session that RAN TO ITS END with no changes is a real stall.
+        assert not _is_uncompleted_session({"status": "error", "message": "session finished but produced no file changes"})
+
+        guard = NoProgressLoopGuard(threshold=2)
+        progress = {"files_modified": 0}
+        _record_developer_progress(
+            guard,
+            "t_d9",
+            progress,
+            files_before=0,
+            mut={"status": "error", "message": "session finished but produced no file changes"},
+        )
+        assert not guard.stalled()
+        _record_developer_progress(
+            guard,
+            "t_d9",
+            progress,
+            files_before=0,
+            mut={"status": "error", "message": "session finished but produced no file changes"},
+        )
+        assert guard.stalled()
+
+    def test_success_with_change_clears_streak_even_after_failures(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard, _record_developer_progress
+
+        guard = NoProgressLoopGuard(threshold=2)
+        progress = {"files_modified": 0}
+        _record_developer_progress(guard, "t_d9", progress, 0, {"status": "error", "message": "session LlmUnavailable: down"})
+        _record_developer_progress(guard, "t_d9", progress, 0, {"status": "error", "message": "session LlmUnavailable: down"})
+        progress["files_modified"] = 1
+        _record_developer_progress(guard, "t_d9", progress, 0, {"status": "success", "session_exit": "Finished", "gates": ["success"]})
+        assert not guard.stalled()
+
+    def test_latch_rearms_after_rearm_after_cycles(self, temp_db):
+        from workflow.task_runner import NoProgressLoopGuard
+
+        guard = NoProgressLoopGuard(threshold=2, rearm_after=2)
+        guard.record_no_change("t_d9")
+        guard.record_no_change("t_d9")  # latch
+        assert guard.stalled()
+
+        # Even while the streak is recorded, record_cycle() re-arms the guard
+        # so the very next developer decision dispatches again.
+        guard.record_cycle()  # turn 1 after latch
+        assert guard.stalled()
+        guard.record_cycle()  # turn 2 -> re-arm
+        assert not guard.stalled()
+
+        # A re-armed guard still protects against a NEW genuine stall episode.
+        guard.record_no_change("t_d9")
+        guard.record_no_change("t_d9")
+        assert guard.stalled()

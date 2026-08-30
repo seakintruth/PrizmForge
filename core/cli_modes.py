@@ -1,6 +1,6 @@
 """CLI operating modes and state management"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 
@@ -29,7 +29,7 @@ class UnattendedConfig:
     stop_when_backlog_empty: bool = False
     exit_on_preflight_failure: bool = True
     # runtime queue (not from config file persistence)
-    _seed_queue: list | None = None
+    _seed_queue: list | None = field(default=None, repr=False, compare=False)
 
     @classmethod
     def from_config(cls, config: dict) -> "UnattendedConfig":

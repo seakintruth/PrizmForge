@@ -53,6 +53,30 @@ def test_code_block_with_language_tag_stripped():
     assert r.data["value"] == 42
 
 
+def test_code_block_json5_tag_stripped():
+    """json5/jsonc/uppercase-JSON tags are not prose; body is still parsed."""
+    for tag in ["json5", "jsonc", "JSON", "c++", "javascript+json"]:
+        p = ResponseParser()
+        r = p.parse(f'```{tag}\n{{"value": 42}}\n```')
+        assert r.success is True, tag
+        assert r.data["value"] == 42, tag
+
+
+def test_tagged_block_with_non_json_body_is_not_code():
+    """A python-tagged fence whose body is prose must not parse as JSON."""
+    p = ResponseParser()
+    r = p.parse("```python\nprint('hello world')\n```")
+    assert r.success is False
+    assert r.status == ParseStatus.MALFORMED
+
+
+def test_json_tag_with_non_json_body_is_malformed():
+    p = ResponseParser()
+    r = p.parse("```json\n{not valid json}\n```")
+    assert r.success is False
+    assert r.status == ParseStatus.MALFORMED
+
+
 def test_raw_brace_slice_with_preamble():
     p = ResponseParser()
     raw = 'Here is the result: {"status": "ok", "n": 3} Thanks.'
@@ -85,6 +109,14 @@ def test_invalid_json_inside_fences():
     p = ResponseParser()
     raw = "```json\n{not valid json}\n```"
     r = p.parse(raw)
+    assert r.success is False
+    assert r.status == ParseStatus.MALFORMED
+
+
+def test_free_text_without_braces_is_malformed():
+    """Raw extraction with no braces and no fence yields MALFORMED, not a slice."""
+    p = ResponseParser()
+    r = p.parse("just words here")
     assert r.success is False
     assert r.status == ParseStatus.MALFORMED
 

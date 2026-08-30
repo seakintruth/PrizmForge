@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from core.endpoint_manager import registered_or_none
+
 #: Growth tiers per plan §4.3. `soft_start` begins dedupe/intake softening,
 #: `hard_start` pauses most background agents (single active repair), and
 #: `freeze_at` freezes nearly all feedback agents (prioritizer + developer
@@ -204,7 +206,7 @@ def apply_backlog_overrides(
             "files_needed": [file_path] if file_path else [],
             "addressing_feedback_ids": [fb_id],
             "feedback_summary": (f"Backlog: {total} items. Processing highest priority: #{fb_id} [{priority}] {category}"),
-            "model": (decision or {}).get("model"),
+            "model": registered_or_none((decision or {}).get("model")),
         }
 
     if total > 0 and decision and decision.get("next_agent") == "background":

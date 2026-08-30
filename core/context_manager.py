@@ -12,6 +12,18 @@ from core.config import get_config
 from core.db_connection import get_db_connection
 from core.token_estimator import estimate_messages
 
+#: Reserve output + headroom: 80% of the model's available token window.
+#: Single factor shared by __init__ and get_model_context_limit so the legacy
+#: flat-models limit and the live endpoint/model lookup can never diverge.
+SAFETY_FACTOR = 0.8
+#: Conservative fallback limit for models without a configured window.
+DEFAULT_CONTEXT_LIMIT = 100_000
+
+
+def _usable_context(max_context: int, max_output: int) -> int:
+    """Compute the usable input window given a context/output pair."""
+    return max(int((max_context - max_output) * SAFETY_FACTOR), 4096)
+
 
 @dataclass
 class FileContext:
@@ -46,15 +58,14 @@ class ContextManager:
             max_output = model_config.get("max_output_tokens", 16384)
 
             if max_context:
-                # Reserve space for output + safety margin (80% of available)
-                usable_input = int((max_context - max_output) * 0.8)
-                self.model_limits[model_name] = usable_input
+                # Reserve space for output + safety margin
+                self.model_limits[model_name] = _usable_context(max_context, max_output)
             else:
                 # Fallback: conservative default if not specified
-                self.model_limits[model_name] = 100_000
+                self.model_limits[model_name] = DEFAULT_CONTEXT_LIMIT
 
         # Fallback for unknown models
-        self.default_context_limit = 100_000
+        self.default_context_limit = DEFAULT_CONTEXT_LIMIT
 
     def get_model_context_limit(self, model: str | None) -> int:
         """
@@ -74,8 +85,7 @@ class ContextManager:
             max_output = model_config.get("max_output_tokens", 16384)
 
             if max_context:
-                usable_context = int((max_context - max_output) * 0.85)
-                return max(usable_context, 4096)
+                return _usable_context(max_context, max_output)
 
         # Legacy cache built from flat models{} (empty under nested config)
         if model and model in self.model_limits:
@@ -86,7 +96,7 @@ class ContextManager:
         # every iteration for a perfectly usable configuration.
         if model and not endpoint_mgr.model_reference_exists(model):
             print(f"⚠️  Unknown model '{model}', using default context limit")
-        return getattr(self, "default_context_limit", 100_000)
+        return getattr(self, "default_context_limit", DEFAULT_CONTEXT_LIMIT)
 
     def build_orchestrator_context(
         self,

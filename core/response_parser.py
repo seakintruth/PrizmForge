@@ -24,7 +24,7 @@ class ResponseParser:
         ]
 
     def parse(self, response: str) -> ParseResult:
-        if not response or not str(response).strip():
+        if not response or not response.strip():
             return ParseResult(
                 status=ParseStatus.EMPTY,
                 data=None,
@@ -69,11 +69,16 @@ class ResponseParser:
         if not match:
             return None
         content = match.group(1).strip()
-        # Drop optional language tag on first line
-        if "\n" in content:
-            first, rest = content.split("\n", 1)
-            if first.isalpha() and first.lower() != "json":
-                content = rest.strip()
+        # Drop an optional language tag on the first line. Only treat the first
+        # line as a tag when it looks like an identifier AND the rest of the
+        # block still begins a JSON structure — this keeps python/json5/jsonc/
+        # c++/uppercase-JSON fences from being mis-read as code blocks, while a
+        # `python`-tagged block whose body is not JSON is rejected as not-JSON.
+        first_line = content.split("\n", 1)[0].strip()
+        if first_line != content:
+            body = content[len(first_line) :].lstrip("\n")
+            if re.fullmatch(r"[A-Za-z0-9_+.#\-]+", first_line) and body[:1] in "{[":
+                content = body.strip()
         if content.startswith("{") or content.startswith("["):
             return content
         return None
@@ -95,7 +100,7 @@ class ResponseParser:
             candidates.append((start_bracket, text[start_bracket : end_bracket + 1]))
 
         if not candidates:
-            return text if text[:1] in "{[" else None
+            return None
 
         # Prefer the earliest starting structure
         candidates.sort(key=lambda c: c[0])
@@ -104,6 +109,9 @@ class ResponseParser:
     def _validate_and_parse(self, extracted: str) -> ParseResult:
         try:
             data: Any = json.loads(extracted)
+            # Non-object payloads (strings, numbers, arrays) are normalized to a
+            # dict under a "_value" key so all callers receive a mapping; this
+            # contract is relied on by tests and downstream consumers.
             return ParseResult(
                 status=ParseStatus.SUCCESS,
                 data=data if isinstance(data, dict) else {"_value": data},

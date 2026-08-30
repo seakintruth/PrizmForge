@@ -14,6 +14,7 @@ design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_
 ## 0. Deployed state & PR map
 
 - `main` @ `8be697f` = **roadmap stamp for Soak9 recompute pass 2 (a9–f9)**; functional tip `6d79e5d` — see §1 (2026-08-29).
+- **Soak2 recompute pass 3 — mutation-path priority (d9/index hardening)**: Soak2 (2026-08-29 16:13–~20:30) exposed that d9 counted transport-failed sessions as stall → the developer froze for whole tasks while Resource Controller reasoned *"freeze: prioritizer + developer only"*. Fixed at root (see `## 1` pass-3 entry): failed/uncompleted sessions are **neutral**, genuine finished-zero-change sessions alone build the streak, and the latch **self-heals** every `rearm_after` iterations. README now documents **Operator Principle #1 — the mutation path is the most unblocked path**. Gate → **901 passed**.
 - Previous stamps: `26566f3` = PR-95 residual batch (P1–P11 + W1–W8, §1); `198f6d8` = roadmap stamp (848 → 877); `cf30bee` = PR #96 (`fit/setup-accept-pip-path`) = current `origin/main`; `954cc14` = PR #95 merge base (Workstream A Phase 1).
 - Full normal gate: **877 passed** at `26566f3`; recompute pass 2 re-verified after `bc11cef`, `4821f4d`, `ae822ed`, `70d1b95`, `1646e91`, `6d79e5d` → **897 passed** (`bash utils/run_tests.sh --normal -j 4`, +20 tests, 2026-08-29), ruff clean. Pre-commit hooks (black/isort/ruff/flake8/mypy) green on every commit.
 - `main` is **10 commits ahead of `origin/main`** (`cf30bee`), all pending the next PR.
@@ -83,6 +84,22 @@ Status: **SHIPPED & MERGED** `bc11cef` … `6d79e5d` (2026-08-29).
 - [x] **d9 — No-progress developer loop guard** — `NoProgressLoopGuard` counts consecutive zero-change developer turns (same signal `_finalize_task` uses for "stalled"); past `NO_PROGRESS_TURNS_THRESHOLD` (3) it posts one HIGH stall summary and redirects developer decisions to background discovery (FAILSAFE-style), including the backlog-mode redirect. Any materialized file resets the streak. Soak evidence: task_002/003/005 `files_modified=0` with "📋 Decision: developer" and "Work: 0.0s" every turn. Tests: `test_task_runner.py`.
 - [x] **e9 — Dedup unchanged prioritizer posts** — `_post_results` keeps a ranked-set signature and skips reposting when unchanged (items still marked processed). Soak evidence: identical HIGH "🎯 PRIORITIZED FEEDBACK" posts every ~60–90s (13:07:57→13:14:57). Tests: `test_prioritizer_phases.py`.
 - [x] **f9 — Coalesce background-worker transport-error telemetry** — `TransportErrorCoalescer` logs ONE HIGH per (agent, category) per 5-min window with repeats at MEDIUM, applied only to background-pool agents via `call_agent`. Soak evidence: 275 HIGH "failed to return a response" rows (prioritizer 173). Tests: `test_worker_utils.py`.
+
+### Soak2 recompute pass 3 (2026-08-29) — mutation-path priority (d9 hardening)
+
+Soak2 ran the fixed build (`89b684c`) and surfaced a regression in **d9**: under
+endpoint degradation (opencode `key_locked` ~1h, openrouter unavailable/
+rate-limited), 10 of 11 tasks stalled `files_modified=0` because the no-progress
+guard counted **transport-failed shell sessions** (`LlmUnavailable`,
+`RepeatedFormatError` — see trajectory files `task_011-turn1..3`) as zero-change
+turns. 3 dead sessions latched the guard, which then held the developer for the
+remainder of each task — directly contradicting Resource Controller's own freeze
+reasoning ("prioritizer + developer only"). The mutation path — the point of the
+loop — was the LEAST unblocked path.
+
+Status: **FIXED** at root (this PR, gate 897 → 901).
+
+- [x] **d9/MU — The mutation path is the most unblocked path** — `_is_uncompleted_session` classifies a developer turn as NEUTRAL when the session never completed (any status other than `success`/`rejected`, except the genuine "session finished but produced no file changes" which still counts); `_record_developer_progress` is fed the structured `mut` result at all three dispatch sites (`task_runner.py` shell, edit_payload, backlog redirect). The `NoProgressLoopGuard` latch now **self-heals**: `record_cycle()` re-arms it every `rearm_after` (default = threshold) iterations, so a recovered endpoint always gets a developer retry. Backlog-redirect branch no longer pauses the developer on failure-derived latches. README documents **Operator Principle #1 — the mutation path is the most unblocked path** under Core Philosophy. Tests: `TestNoProgressGuard` in `test_task_runner.py` (4 new: failed-session-neutral, genuine-finished-still-latches, success-clears, latch-rearms). Gate → **901 passed**, ruff clean.
 
 ---
 

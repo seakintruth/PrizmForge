@@ -1,6 +1,6 @@
 """Model context limits must resolve through the nested endpoints config."""
 
-from core.context_manager import ContextManager
+from core.context_manager import SAFETY_FACTOR, ContextManager
 from core.endpoint_manager import EndpointManager
 
 
@@ -22,7 +22,7 @@ def test_resolves_nested_endpoint_model(monkeypatch):
     _patch_env(monkeypatch, cfg)
     cm = ContextManager()
     limit = cm.get_model_context_limit("ep/foo/bar")
-    expected = int((200_000 - 16_000) * 0.85)
+    expected = int((200_000 - 16_000) * SAFETY_FACTOR)
     assert limit == expected
 
 

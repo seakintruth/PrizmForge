@@ -17,6 +17,16 @@ def test_rejects_msi_ole_magic():
     assert r["ok"] is False
 
 
+def test_normalize_ext_defaults():
+    from core.content_safety import _normalize_ext
+
+    assert _normalize_ext("exe") == ".exe"  # dot-less lowercase
+    assert _normalize_ext(".EXE") == ".exe"  # already dotted, case-folded
+    assert _normalize_ext("..exe") == "..exe"  # preserved verbatim past the dot
+    assert _normalize_ext("") == ""  # empty stays empty
+    assert _normalize_ext("  .msi  ") == ".msi"  # whitespace trimmed
+
+
 def test_rejects_pe_mz_header():
     from core.content_safety import validate_source_content
 

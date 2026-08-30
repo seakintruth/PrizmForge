@@ -146,3 +146,56 @@ def test_health_report_flags_worst_model(tracker_db):
     by_ref = {r["model_ref"]: r for r in rows}
     assert by_ref["ep/bad"]["demoted"] == "YES"
     assert by_ref["ep/good"]["demoted"] == ""
+
+
+def test_load_events_for_models_partitions_and_orders(tracker_db):
+    import sqlite3
+
+    now = datetime.now()
+    conn = sqlite3.connect(tracker_db)
+    for i, ok in enumerate([1, 0, 1]):
+        ref = "ep/a" if i < 2 else "ep/b"
+        ts = (now - timedelta(minutes=3 - i)).isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO model_health_events (ts, model_ref, endpoint, ok, latency_ms, kind) VALUES (?, ?, ?, ?, 0, 'x')",
+            (ts, ref, "ep", ok),
+        )
+    conn.commit()
+    conn.close()
+
+    got = mh.load_events_for_models(["ep/a", "ep/b", "ep/nope"])
+    assert [e["ok"] for e in got["ep/a"]] == [1, 0]  # oldest first
+    assert len(got["ep/b"]) == 1
+    assert got["ep/nope"] == []
+    assert got == {"ep/a": got["ep/a"], "ep/b": got["ep/b"], "ep/nope": []}
+
+    assert mh.load_events_for_models([]) == {}
+
+
+def test_compute_stats_skips_unparseable_ts(tracker_db):
+    now = datetime.now()
+    events = [_ev(now, True), {"ts": "not-a-date", "ok": 0, "latency_ms": 0}, _ev(now, False)]
+    stats = mh.compute_stats(events, now=now)
+    assert stats["attempts"] == 2
+    assert stats["skipped_events"] == 1
+    assert stats["consecutive_failures"] == 1
+    assert stats["last_error_ts"] is not None  # only the parseable failure counted
+
+
+def test_rank_candidates_sinks_down_models_last(tracker_db):
+    import sqlite3
+
+    conn = sqlite3.connect(tracker_db)
+    now = datetime.now()
+    for i, ok in enumerate([0, 0]):
+        ts = (now - timedelta(seconds=2 - i)).isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO model_health_events (ts, model_ref, endpoint, ok, latency_ms, kind) VALUES (?, ?, ?, ?, 0, 'x')",
+            (ts, "ep/down", "ep", ok),
+        )
+    conn.commit()
+    conn.close()
+
+    ranked = mh.rank_candidates([("ep/healthy", 20), ("ep/down", 10)])
+    assert ranked[0][0] == "ep/healthy"
+    assert ranked[-1][0] == "ep/down"

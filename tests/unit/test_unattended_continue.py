@@ -8,6 +8,19 @@ from core.cli_modes import CLIMode, CLIState, UnattendedConfig
 from interactive import generate_next_task, should_continue_unattended
 
 
+def test_unattended_config_repr_hides_seed_queue():
+    cfg = UnattendedConfig(seed_task="do a thing", _seed_queue=["a", "b"])
+    assert "seed_queue" not in repr(cfg)
+    assert "do a thing" in repr(cfg)  # public fields remain visible
+
+
+def test_unattended_config_eq_ignores_seed_queue():
+    a = UnattendedConfig()
+    b = UnattendedConfig(_seed_queue=["runtime-only"])
+    assert a == b
+    assert a._seed_queue != b._seed_queue  # runtime queue still reachable
+
+
 def test_stops_when_duration_exceeded():
     state = CLIState(mode=CLIMode.UNATTENDED, start_time=datetime.now() - timedelta(hours=3))
     cfg = UnattendedConfig(max_duration_hours=2.0)

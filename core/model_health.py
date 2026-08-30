@@ -48,6 +48,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -92,6 +93,8 @@ DEFAULTS = {
 
 _LOCK = threading.Lock()
 _PRUNE_EVERY = 64  # records between lazy prune passes
+# NOTE: only ever mutated under _LOCK inside record_model_outcome(), so the
+# read-modify-write counter is safe (SQLite writes themselves are serialized).
 _records_since_prune = 0
 
 
@@ -206,6 +209,44 @@ def load_events(model_ref: str | None = None, since_hours: float | None = None) 
         return []
 
 
+def load_events_for_models(
+    model_refs: Sequence[str],
+    since_hours: float | None = None,
+) -> dict[str, list[dict]]:
+    """Load events for several models in a single query.
+
+    Returns ``{model_ref: events_oldest_first}`` scoped to the retention
+    window, so callers scoring many candidates avoid N+1 round-trips. Unknown
+    refs map to empty lists; DB failure degrades to {}.
+    """
+    refs = list(dict.fromkeys(r for r in model_refs if r))
+    if not refs:
+        return {}
+    hours = float(since_hours if since_hours is not None else max(float(_setting("event_retention_hours")), 1.0))
+    cutoff = _iso(datetime.now() - timedelta(hours=hours))
+    placeholders = ",".join("?" for _ in refs)
+    # placeholders holds only fixed "?" marks (a count, never user text), so the
+    # IN (...) clause is injection-safe-by-construction despite the static scan.
+    sql = (
+        "SELECT ts, model_ref, endpoint, ok, latency_ms, kind FROM model_health_events "  # noqa: S608
+        "WHERE ts >= ? AND model_ref IN (" + placeholders + ") ORDER BY ts ASC"
+    )
+    out: dict[str, list[dict]] = {r: [] for r in refs}
+    try:
+        conn = _connect()
+        try:
+            for row in conn.execute(sql, [cutoff, *refs]).fetchall():
+                d = dict(row)
+                key = str(d.get("model_ref"))
+                if key in out:
+                    out[key].append(d)
+        finally:
+            conn.close()
+    except Exception:
+        return {}
+    return out
+
+
 def compute_stats(events: list[dict], now: datetime | None = None) -> dict:
     """Derive recency-weighted stats from an event list (see record_model_outcome)."""
     now = now or datetime.now()
@@ -213,9 +254,13 @@ def compute_stats(events: list[dict], now: datetime | None = None) -> dict:
     latencies: list[int] = []
     last_error_ts: str | None = None
     streak = 0  # trailing run of failures (events are oldest-first)
+    skipped = 0  # events with an unparseable ts, excluded from all stats
     for ev in events:
         raw_ts = ev.get("ts") or ""
-        ts = _parse(raw_ts) or now
+        ts = _parse(raw_ts)
+        if ts is None:
+            skipped += 1
+            continue
         w = _decay_weight(ts, now)
         if ev.get("ok"):
             ws += w
@@ -226,10 +271,11 @@ def compute_stats(events: list[dict], now: datetime | None = None) -> dict:
             last_error_ts = ev.get("ts")
         if ev.get("latency_ms"):
             latencies.append(int(ev["latency_ms"]))
-    attempts = len(events)
+    attempts = len(events) - skipped
     denom = wf + ws
     return {
         "attempts": attempts,
+        "skipped_events": skipped,
         "weighted_failures": round(wf, 3),
         "weighted_successes": round(ws, 3),
         "weighted_samples": round(denom, 3),
@@ -271,20 +317,13 @@ def model_verdict(model_ref: str, now: datetime | None = None) -> dict:
     return {"model_ref": model_ref, **stats, "demotion": demotion}
 
 
-def model_down_until(model_ref: str, now: datetime | None = None) -> datetime | None:
-    """Short enforced down-window after repeated consecutive failures.
-
-    After ``down_streak`` trailing failures a model is considered down until
-    ``last_failure + down_base_seconds``, doubling per extra failure and
-    capped at ``down_max_seconds``. Any success clears it (streak resets).
-    Returns None while the model is up.
-    """
+def _compute_down_until(stats: dict, now: datetime | None = None) -> datetime | None:
+    """Enforced down-window derived from already-computed stats."""
     now = now or datetime.now()
     streak_thr = int(_setting("down_streak"))
     base_s = float(_setting("down_base_seconds"))
     max_s = float(_setting("down_max_seconds"))
 
-    stats = compute_stats(load_events(model_ref), now=now)
     streak = int(stats.get("consecutive_failures", 0))
     if streak < streak_thr or not stats.get("last_error_ts"):
         return None
@@ -298,6 +337,19 @@ def model_down_until(model_ref: str, now: datetime | None = None) -> datetime | 
     return until if until > now else None
 
 
+def model_down_until(model_ref: str, now: datetime | None = None) -> datetime | None:
+    """Short enforced down-window after repeated consecutive failures.
+
+    After ``down_streak`` trailing failures a model is considered down until
+    ``last_failure + down_base_seconds``, doubling per extra failure and
+    capped at ``down_max_seconds``. Any success clears it (streak resets).
+    Returns None while the model is up.
+    """
+    now = now or datetime.now()
+    stats = compute_stats(load_events(model_ref), now=now)
+    return _compute_down_until(stats, now=now)
+
+
 def rank_candidates(candidates: list[tuple[str, int]], now: datetime | None = None) -> list[tuple[str, int]]:
     """Order ``(model_ref, priority)`` pairs: healthy → demoted → down.
 
@@ -308,13 +360,14 @@ def rank_candidates(candidates: list[tuple[str, int]], now: datetime | None = No
     exists, which doubles as the automatic recovery probe during full outages.
     """
     now = now or datetime.now()
+    events_by_ref = load_events_for_models([ref for ref, _pri in candidates])
     scored: list[tuple[int, float, int, str]] = []
     for model_ref, priority in candidates:
-        stats = compute_stats(load_events(model_ref), now=now)
+        stats = compute_stats(events_by_ref.get(model_ref, []), now=now)
         tier = 0
         if evaluate_demotion(stats, now=now):
             tier = 1
-        if model_down_until(model_ref, now=now):
+        if _compute_down_until(stats, now=now):
             tier = 2
         scored.append((tier, float(stats["failure_ratio"]), int(priority or 0), model_ref))
     scored.sort(key=lambda t: (t[0], t[1], t[2], t[3]))
