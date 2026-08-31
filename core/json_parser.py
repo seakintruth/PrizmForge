@@ -371,6 +371,8 @@ def parse_json_response(
 
     # Handle truncation with auto-resume
     if result.can_resume and auto_resume:
+        if result.raw_json is None:
+            return None
         print(f"    RESUME {agent_name}: Response truncated, requesting continuation...")
 
         resume_prompt = parser.build_resume_prompt(result.raw_json, "")

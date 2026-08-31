@@ -97,20 +97,25 @@ def prompts_file_path(config_path: Path) -> Path:
 
 def parse_model_ids(payload: Any) -> list[str]:
     """Accept OpenAI {data:[{id:...}]} or a bare list of ids/objects."""
-    ids: list[str] = []
     if isinstance(payload, dict):
         rows = payload.get("data") or payload.get("models") or []
+        if not isinstance(rows, list):
+            rows = []
+        object_rows_only = True
     elif isinstance(payload, list):
         rows = payload
+        object_rows_only = False
     else:
         rows = []
+        object_rows_only = False
+    ids: list[str] = []
     for row in rows:
-        if isinstance(row, str) and row:
-            ids.append(row)
-        elif isinstance(row, dict):
+        if isinstance(row, dict):
             mid = row.get("id") or row.get("name")
             if mid:
                 ids.append(str(mid))
+        elif isinstance(row, str) and row and not object_rows_only:
+            ids.append(row)
     seen: set[str] = set()
     out: list[str] = []
     for mid in ids:

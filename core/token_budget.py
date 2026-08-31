@@ -1,6 +1,7 @@
 """Token budget tracking"""
 
 from datetime import datetime, timedelta
+from typing import Any
 
 from core.db_connection import get_db_connection
 
@@ -11,7 +12,7 @@ class TokenBudget:
     def __init__(self, db_path: str, max_tokens_per_4h: int = 50000000):
         self.db_path = db_path
         self.max_tokens = max_tokens_per_4h
-        self.usage = []
+        self.usage: list[tuple[Any, Any]] = []
         self.load_from_db()
 
     def __del__(self):

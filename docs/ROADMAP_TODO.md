@@ -7,7 +7,7 @@ note the PR/commit.
 Shipped sections were retired from this tracker on **2026-08-29** (their
 design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_LOOP_PLAN.md`).
 
-**Last updated:** 2026-08-29
+**Last updated:** 2026-08-30
 
 ---
 
@@ -123,15 +123,33 @@ Implemented (beta), review-hardened, cold-start + soak process-eval rounds merge
 
 ---
 
-## 4. Annexes (strategic / parked decisions)
+## 4. Post-merge feat/ramp-up residuals (2026-08-30) — open items
 
-### 4.1 Forge Federation strategy — `Federation/Plan.md`
+`feat/ramp-up` merged `main` (`11bfc02`, includes PR #100 soak/setup, #103
+models-cli, #105). This landed a real failing test
+(`test_parse_model_ids_openai_shape`) and surfaced repo-wide mypy debt (64
+errors → 43 after this pass). Fixed here: `parse_model_ids` now object-rows-only
+in the OpenAI `{"data": ...}` shape; feature-owned + trivial mypy classes; RC
+`_apply_decision` resolves a real endpoint via `EndpointManager(get_config())`
+(was `get_rate_limiter(None)`, silently failing); `run_configure` C901
+suppressed with `# noqa: C901`. Gate: **905 passed** (batched, `overall_exit=0`),
+`ruff check` + `ruff format --check` clean. Open:
+
+- [ ] **Full-repo mypy cleanup (43 errors)** — non-gating (CI has no mypy; `pre_commit.sh` runs it warnings-only). Remaining by file: `tests/integration/test_golden_path.py` (12), `core/agent_schemas.py` (5), `core/endpoint_manager.py` (4), `workflow/task_runner.py` (3), `utils/run_codemodes.py` (3, libcst API drift), `utils/list_endpoint_models.py` (3), `file_editing/edit_payload.py` (3), `workflow/proposal_builder.py` (2), `tests/mocks/openai.py` (2), `agents/prioritizer_worker.py` (2), `agents/orchestrator.py` (2), `workflow/post_materialize.py` (1), `utils/query_developer_responses.py` (1). See `mypy .` for line-level detail.
+- [ ] **`run_configure` (core/models_wizard.py) C901 → real refactor** — complexity 25 > 15; currently suppressed with `# noqa: C901` (repo precedent `call_endpoint`). Extract per-prompt `_pick` steps into helpers to drop complexity.
+- [ ] **RC rate-limiter-adjust unit coverage** — `_apply_decision` now applies `set_max_calls` against a resolved endpoint; add a test proving the rate-limit is actually adjusted with a real endpoint config (previously the `get_rate_limiter(None)` path always `except`'d, so adjustments were no-ops).
+
+---
+
+## 5. Annexes (strategic / parked decisions)
+
+### 5.1 Forge Federation strategy — `Federation/Plan.md`
 
 Active northstar: Stage 0 (current single-Territory system) → Stage 1 (enhanced
 single-Territory, next) → Stage 2 (multi-Territory, future). Operates via short,
 YAGNI-focused sprints with bounded, measurable experiments.
 
-### 4.2 `report/plan.md` file_editing structural refactors
+### 5.2 `report/plan.md` file_editing structural refactors
 
 Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS TECH-DEBT** — each is small, bounded, and independently scoped; a future sprint can pick them up without a dedicated design doc.
 
@@ -141,7 +159,7 @@ Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS
 - [ ] **CLI command leakage** — audit `cli.commands` for shelled-out / ungoverned commands that bypass the governed edit path.
 - [ ] **`__init__.py` cleanup** — remove obsolete re-exports in `file_editing/__init__.py`.
 
-### 4.3 UNATTENDED plan §15 open decisions (parked, with defaults)
+### 5.3 UNATTENDED plan §15 open decisions (parked, with defaults)
 
 1. Hook failure: fix-forward (leave disk dirty; CRITICAL fix) unless `git.revert_on_hook_failure` set — current behavior is fix-forward.
 2. Create-file policy: clean relative paths OK; add prefix policy only if junk root files recur.

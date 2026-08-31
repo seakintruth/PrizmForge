@@ -588,7 +588,7 @@ Respond with JSON ONLY:
         print("    → Phase 2: Scoring within categories")
 
         # Group by category
-        by_category = {}
+        by_category: dict[str, list[FeedbackItem]] = {}
         for item in items:
             if item.category not in by_category:
                 by_category[item.category] = []

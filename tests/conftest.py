@@ -163,7 +163,7 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     path = _duration_report_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
+        payload: dict = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "exitstatus": int(exitstatus),
             "batch": os.environ.get("PRIZMFORGE_BATCH_NAME", "session"),

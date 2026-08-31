@@ -356,7 +356,7 @@ def show_git_failures(limit: int = 20):
     if not events:
         print("   No git-failure events recorded.")
     for ts, proposal_id, _source, payload_json in events:
-        payload = {}
+        payload: dict = {}
         try:
             payload = json.loads(payload_json) if payload_json else {}
         except (json.JSONDecodeError, TypeError):

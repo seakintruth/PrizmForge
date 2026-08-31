@@ -64,13 +64,16 @@ class ResourceState:
     api_rate_limit: int
     budget_percentage: float
     time_remaining_in_window: float  # minutes
+    rate_limited_last_minute: int = 0  # upstream 429s seen in the last minute
 
     def __str__(self):
+        rate_suffix = f", 429s: {self.rate_limited_last_minute}/min" if self.rate_limited_last_minute > 0 else ""
         return (
             f"Budget: {self.budget_percentage:.1%} "
             f"({self.tokens_remaining:,}/{self.max_tokens:,} tokens), "
             f"Burn: {self.current_burn_rate:.0f} tok/min, "
             f"API: {self.api_calls_last_minute}/{self.api_rate_limit} calls/min"
+            f"{rate_suffix}"
         )
 
 
@@ -262,6 +265,23 @@ class HeuristicOptimizer:
                 f"🔥 BURN RATE {state.current_burn_rate:.0f} tok/min exceeds "
                 f"warning threshold {burn_warning:.0f}: escalated to moderate throttle. "
                 f"{decision.reasoning}"
+            )
+            return decision
+
+        # Rate-limited feedback (AIMD governor): when the upstream window is
+        # 429ing us, lower our contribution for a full check cycle so concurrent
+        # consumers sharing the same key can recover, then ramp back as the
+        # events age out of the window.
+        if (getattr(state, "rate_limited_last_minute", 0) or 0) > 0:
+            decision = self._throttle_moderate(state)
+            decision.level = "RATE_LIMITED"
+            decision.rate_limit_per_minute = max(10, int(state.api_rate_limit * 0.1))
+            decision.background_feeder_interval = max(120, decision.background_feeder_interval * 2)
+            decision.reasoning = (
+                f"⏳ Rate-limited feedback: {state.rate_limited_last_minute} upstream "
+                f"429s in the last minute. Dropping our call rate to "
+                f"{decision.rate_limit_per_minute}/min and backing off background "
+                f"feeding to {decision.background_feeder_interval}s until the window clears."
             )
             return decision
 
@@ -678,6 +698,9 @@ class ResourceControllerWorker:
         # Recent API calls
         api_calls_last_minute = self._count_recent_api_calls()
 
+        # Upstream 429s observed in the last minute (model_health events)
+        rate_limited_last_minute = self._count_recent_rate_limits()
+
         # Time remaining in window (24h rolling window)
         time_remaining = 24 * 60  # minutes
 
@@ -690,6 +713,7 @@ class ResourceControllerWorker:
             api_rate_limit=api_rate_limit,
             budget_percentage=budget_pct,
             time_remaining_in_window=time_remaining,
+            rate_limited_last_minute=rate_limited_last_minute,
         )
 
     def _compute_burn_rate(self) -> float:
@@ -732,6 +756,30 @@ class ResourceControllerWorker:
                     SELECT COUNT(*)
                     FROM token_log
                     WHERE timestamp > ?
+                """,
+                    (one_min_ago,),
+                )
+
+                result = cursor.fetchone()
+
+            return result[0] if result else 0
+
+        except Exception:
+            return 0
+
+    def _count_recent_rate_limits(self) -> int:
+        """Count upstream 429 events (kind='rate_limited') in the last minute."""
+        try:
+            with get_db_connection() as conn:
+                cursor = conn.cursor()
+
+                one_min_ago = (datetime.now() - timedelta(minutes=1)).isoformat()
+
+                cursor.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM model_health_events
+                    WHERE kind = 'rate_limited' AND ts > ?
                 """,
                     (one_min_ago,),
                 )
@@ -794,9 +842,14 @@ class ResourceControllerWorker:
 
         # 2. Adjust rate limiter
         try:
-            rate_limiter = get_rate_limiter(None)
-            if hasattr(rate_limiter, "set_max_calls"):
-                rate_limiter.set_max_calls(decision.rate_limit_per_minute)
+            from core.endpoint_manager import EndpointManager
+
+            ep_mgr = EndpointManager(self.config)
+            endpoint = ep_mgr.get_endpoint_for_model(self.config.get("default_model")) or next(iter(ep_mgr.endpoints.values()), None)
+            if endpoint is not None:
+                rate_limiter = get_rate_limiter(endpoint)
+                if hasattr(rate_limiter, "set_max_calls"):
+                    rate_limiter.set_max_calls(decision.rate_limit_per_minute)
         except Exception as e:
             print(f"    ⚠️  Failed to adjust rate limiter: {e}")
 

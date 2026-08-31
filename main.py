@@ -70,8 +70,8 @@ def main():  # noqa: C901
         ok, errs = preflight_unattended(config)
         if not ok:
             print("\n❌ Unattended preflight failed:")
-            for e in errs:
-                print(f"  • {e}")
+            for err in errs:
+                print(f"  • {err}")
             if getattr(unattended_config, "exit_on_preflight_failure", True):
                 sys.exit(2)
 

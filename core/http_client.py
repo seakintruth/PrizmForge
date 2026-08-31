@@ -73,7 +73,7 @@ def _post_with_urllib(
 
     req = urllib_request.Request(url, data=data, headers=hdrs, method="POST")  # noqa: S310
 
-    handlers = []
+    handlers: list[urllib_request.BaseHandler] = []
     if proxies:
         handlers.append(urllib_request.ProxyHandler(proxies))
     handlers.append(urllib_request.HTTPSHandler(context=ssl.create_default_context()))
@@ -113,7 +113,7 @@ def _get_with_urllib(
 ) -> HttpResponse:
     hdrs = dict(headers or {})
     req = urllib_request.Request(url, headers=hdrs, method="GET")  # noqa: S310
-    handlers = []
+    handlers: list[urllib_request.BaseHandler] = []
     if proxies:
         handlers.append(urllib_request.ProxyHandler(proxies))
     handlers.append(urllib_request.HTTPSHandler(context=ssl.create_default_context()))

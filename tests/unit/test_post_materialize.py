@@ -26,7 +26,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 class _FakePool:
     def __init__(self, running: bool = True):
         self.running = running
-        self.events = []
+        self.events: list[SimpleNamespace] = []
 
     def queue_file_change(self, file_path: str, operation: str, content: str | None):
         self.events.append(SimpleNamespace(file_path=file_path, operation=operation, content=content, priority=1))

@@ -406,7 +406,7 @@ class ContextManager:
 
                 if feedback_items:
                     # Count by priority
-                    priority_counts = {}
+                    priority_counts: dict = {}
                     for item in feedback_items:
                         priority = item[3]
                         priority_counts[priority] = priority_counts.get(priority, 0) + 1

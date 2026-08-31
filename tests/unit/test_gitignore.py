@@ -137,7 +137,7 @@ def test_consolidate_respects_gitignore(project_root: Path):
 
     sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "utils"))
     try:
-        import consolidate  # type: ignore[import-not-found]
+        import consolidate
     finally:
         sys.path.pop(0)
 
