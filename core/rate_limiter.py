@@ -72,10 +72,7 @@ class RateLimiter:
                     break
 
             if sleep_time > 0:
-                print(
-                    f"⏳ Rate limit (LOCAL client, {endpoint_name or 'global'}): "
-                    f"sleeping {sleep_time:.1f}s — not an HTTP response"
-                )
+                print(f"⏳ Rate limit (LOCAL client, {endpoint_name or 'global'}): sleeping {sleep_time:.1f}s — not an HTTP response")
                 time.sleep(sleep_time)
 
     def set_max_calls(self, max_calls: int):
