@@ -103,4 +103,4 @@ def apply_materialize_outcome(
         payload=mat,
     )
     progress["edit_failures"] = progress.get("edit_failures", 0) + 1
-    return status
+    return status if isinstance(status, str) else "error"

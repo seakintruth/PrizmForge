@@ -69,7 +69,7 @@ class AgentResponseSchema:
         """
         if self.array_field and self.item_fields:
             # Build item example with live database values
-            item_example = {}
+            item_example: dict[str, Any] = {}
 
             for field in self.item_fields:
                 if field == "priority":
@@ -94,7 +94,7 @@ class AgentResponseSchema:
                     item_example[field] = f"<{field}>"
 
             # Build full schema
-            schema = {self.array_field: [item_example]}
+            schema: dict[str, Any] = {self.array_field: [item_example]}
         else:
             schema = {}
 

@@ -40,7 +40,7 @@ class EndpointConfig:
 
     def extract_response(self, data: dict) -> str:
         """Extract response text using configured path"""
-        result = data
+        result: Any = data
         try:
             for key in self.response_path:
                 if isinstance(result, list) and isinstance(key, int):
@@ -60,11 +60,11 @@ class EndpointHealth:
     def __init__(self, endpoint_name: str | None = None):
         self.endpoint_name = endpoint_name
         self.status = EndpointStatus.HEALTHY
-        self.last_error = None
+        self.last_error: datetime | None = None
         self.last_http_dump = None  # memory-only; too large / sensitive for SQLite
         self.error_count = 0
         self.last_success = datetime.now()
-        self.unavailable_until = None
+        self.unavailable_until: datetime | None = None
         self.consecutive_failures = 0
 
         if endpoint_name:
@@ -181,7 +181,7 @@ class EndpointManager:
             logger.info(f"Loaded endpoint: {name}")
 
         default_name = config.get("default_endpoint")
-        self.default_endpoint = self.endpoints.get(default_name)
+        self.default_endpoint = self.endpoints.get(default_name) if isinstance(default_name, str) else None
 
         if default_name and not self.default_endpoint:
             logger.warning(f"Default endpoint '{default_name}' not found in config")

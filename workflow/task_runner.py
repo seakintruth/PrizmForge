@@ -385,7 +385,7 @@ def _record_developer_progress(
     guard: NoProgressLoopGuard,
     task_id: str,
     progress: dict,
-    files_before: int,
+    files_before: int | None,
     mut: dict | None = None,
 ) -> None:
     """Feed the d9 guard from a developer turn's outcome.
@@ -397,7 +397,8 @@ def _record_developer_progress(
     if _is_uncompleted_session(mut):
         guard.record_neutral()
         return
-    if progress["files_modified"] > files_before:
+    before = files_before if files_before is not None else 0
+    if progress["files_modified"] > before:
         guard.record_change()
     else:
         guard.record_no_change(task_id)

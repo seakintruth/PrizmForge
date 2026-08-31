@@ -108,7 +108,7 @@ def test_models_endpoint(base_url: str, api_key: str, proxies: dict, endpoint_na
 
         if resp.status_code == 200:
             data = resp.json()
-            models = [m.get("id") for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
+            models = [str(m.get("id")) for m in data.get("data", []) if isinstance(m, dict) and m.get("id")]
             print(f"   ✅ SUCCESS — Found {len(models)} models")
             for m in sorted(models)[:30]:
                 print(f"      • {m}")
@@ -172,7 +172,7 @@ def test_model(base_url: str, api_key: str, model: str, proxies: dict, endpoint_
 
 def main() -> None:
     config = get_config()
-    proxy = config.get("proxy")
+    proxy: dict = config.get("proxy") or {}
     endpoints = config.get("endpoints", {})
 
     test_models = load_test_models()

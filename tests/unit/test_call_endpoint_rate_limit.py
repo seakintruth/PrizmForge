@@ -9,17 +9,23 @@ Covers:
   is printed with auth redacted and stashed on health.last_http_dump
 - on a LOCAL health latch hit, the skip message says so and reprints the dump
   without calling the API
+- quota vs burst: daily-quota 429s (Remaining: 0 / body keywords) park or
+  sleep-to-reset instead of the short 60s hop; true bursts keep the short
+  Retry-After backoff unchanged
 """
 
 from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+from core.endpoint_manager import EndpointStatus
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -79,6 +85,23 @@ class _FakeManager:
 
     def get_api_key(self, endpoint):
         return "test-key-not-placeholder"
+
+
+class _RecordingHealth(SimpleNamespace):
+    def __init__(self):
+        super().__init__(parked=[])
+
+    def is_available(self):
+        return True
+
+    def time_until_available(self):
+        return 0
+
+    def mark_success(self):
+        pass
+
+    def mark_failure(self, status, cooldown_minutes=None):
+        self.parked.append((status, cooldown_minutes))
 
 
 @pytest.fixture
@@ -207,9 +230,11 @@ def test_local_latch_skip_prints_dump_without_calling_api(call_endpoint_env, cap
     def boom(*args, **kwargs):
         raise AssertionError("post_json must not be called on a local health latch")
 
+    sleeps: list[float] = []
     with patch.object(base, "get_endpoint_manager", lambda: manager):
         with patch("agents.base.post_json", side_effect=boom):
-            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
 
     out = capfd.readouterr().out
     assert "LOCAL health latch" in out
@@ -218,3 +243,147 @@ def test_local_latch_skip_prints_dump_without_calling_api(call_endpoint_env, cap
     assert "HTTP 429" in out
     assert "body: prior" in out
     assert answer is None
+    assert sleeps[0] == 120  # 272s wait clamped to the 30..120 backoff window
+
+
+def test_429_quota_ms_reset_parks_and_does_not_hop(call_endpoint_env, capfd):
+    """Distant daily-quota reset (ms) parks the endpoint instead of the 60s hop."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+
+    reset_ms = int((time.time() + 7200) * 1000)
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "quota"}},
+            headers={
+                "Retry-After": "60",
+                "X-RateLimit-Limit": "50",
+                "X-RateLimit-Remaining": "0",
+                "X-RateLimit-Reset": str(reset_ms),
+            },
+        )
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked == [(EndpointStatus.RATE_LIMITED, 15)]
+    assert sleeps == []
+    out = capfd.readouterr().out
+    assert "Daily quota exhausted" in out
+    assert "parking" in out
+
+
+def test_429_quota_body_token_parks_and_does_not_hop(call_endpoint_env, capfd):
+    """Body-keyword quota without a Reset header parks 15m; no 1s hop."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "free-models-per-day daily quota. Add 10 credits to unlock more."}},
+            headers={"Content-Type": "application/json"},
+        )
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked == [(EndpointStatus.RATE_LIMITED, 15)]
+    assert sleeps == []
+    out = capfd.readouterr().out
+    assert "Daily quota exhausted" in out
+    assert "body signal" in out
+
+
+def test_429_quota_short_reset_sleeps_to_reset_then_retries(call_endpoint_env, capfd):
+    """Remaining==0 with Reset within 60s sleeps the remaining wait instead of parking."""
+    base = call_endpoint_env
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "quota"}},
+            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "30"},
+        ),
+        _resp(200, {"choices": [{"message": {"content": "recovered"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "recovered"
+    assert 25 <= sleeps[0] <= 35
+    assert "sleeping to reset" in capfd.readouterr().out
+
+
+def test_429_burst_with_ratelimit_headers_not_quota(call_endpoint_env, capfd):
+    """Remaining > 0 with no Reset header keeps the short burst backoff."""
+    base = call_endpoint_env
+    rate_limiter = base.get_rate_limiter(_FakeEndpoint())
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "slow down"}},
+            headers={
+                "Retry-After": "2",
+                "X-RateLimit-Limit": "50",
+                "X-RateLimit-Remaining": "30",
+            },
+        ),
+        _resp(200, {"choices": [{"message": {"content": "ok"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "ok"
+    assert sleeps[0] >= 2.0
+    assert rate_limiter._window_scale < 1.0
+    assert "Daily quota exhausted" not in capfd.readouterr().out
+
+
+def test_skip_path_all_parked_sleeps_bounded_backoff(call_endpoint_env, capfd):
+    """Both endpoints latched: skip path sleeps a bounded backoff, no hot loop."""
+    base = call_endpoint_env
+    fake = _FakeEndpoint()
+    fake.health = SimpleNamespace(
+        is_available=lambda: False,
+        status=SimpleNamespace(value="rate_limited"),
+        time_until_available=lambda: 300,
+        mark_success=lambda: None,
+        mark_failure=lambda *a, **k: None,
+    )
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert sleeps[0] == 120
+    out = capfd.readouterr().out
+    assert "LOCAL health latch" in out
+    assert "No alternate endpoints available" in out

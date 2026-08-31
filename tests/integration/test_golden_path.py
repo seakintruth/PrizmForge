@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -44,7 +45,7 @@ def run_governed_edit_once(
     from file_editing.writer import materialize_proposal
     from workflow.proposal_builder import create_proposal_from_developer_output
 
-    progress = {
+    progress: dict[str, Any] = {
         "valid_edit_payloads": 0,
         "edit_failures": 0,
         "fallback_successes": 0,

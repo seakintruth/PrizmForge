@@ -495,8 +495,8 @@ class PrioritizerWorker:
         # Build prompt with message and suggestion context
         index_snip = ""
         try:
-            paths = [getattr(it, "file_path", None) for it in batch]
-            paths = [p for p in paths if p]
+            raw_paths = [getattr(it, "file_path", None) for it in batch]
+            paths: list[str] = [p for p in raw_paths if isinstance(p, str)]
             index_snip = load_symbol_json_context(
                 file_paths=paths or None,
                 max_rows=40,
@@ -709,10 +709,10 @@ Respond with JSON ONLY:
                 ranked = []
                 for suggestion in data["top_suggestions"][:8]:
                     item_id = str(suggestion["id"])
-                    item = id_map.get(item_id) or raw_id_map.get(item_id)
-                    if item:
-                        item.score = suggestion.get("final_score", item.score)
-                        ranked.append(item)
+                    matched = id_map.get(item_id) or raw_id_map.get(item_id)
+                    if matched:
+                        matched.score = suggestion.get("final_score", matched.score)
+                        ranked.append(matched)
 
                 print(f"    ✓ Phase 3: Ranked top {len(ranked)} items")
                 return ranked

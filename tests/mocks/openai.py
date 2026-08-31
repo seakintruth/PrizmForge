@@ -15,7 +15,7 @@ from unittest.mock import MagicMock, patch
 
 # Modules that do `from agents.base import call_agent` must be listed here.
 # Integration tests should only patch via MockLLM.patch_call_agent() / this list.
-CALL_AGENT_PATCH_TARGETS = (
+CALL_AGENT_PATCH_TARGETS: tuple[str, ...] = (
     "agents.base.call_agent",
     "agents.orchestrator.call_agent",
     "agents.prioritizer_worker.call_agent",
@@ -94,7 +94,7 @@ def mock_openai_chat_completion(
     response_text: str,
     model: str = "mock-model",
     status_code: int = 200,
-) -> MagicMock:
+) -> Any:
     """
     Patch `requests.post` (as used by agents.base) to return a fixed completion.
 

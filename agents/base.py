@@ -24,6 +24,7 @@ from core.http_client import post_json
 from core.http_diag import print_http_error_dump
 from core.json_parser import parse_json_response
 from core.model_health import record_model_outcome
+from core.rate_limit_headers import classify_rate_limit
 from core.rate_limiter import RateLimiter
 from core.token_budget import TokenBudget
 from file_editing.db import log_error
@@ -146,7 +147,12 @@ def call_endpoint(  # noqa: C901
                 agent_name,
             )
         else:
-            print("   ❌ No alternate endpoints available")
+            # Every candidate is latched (all-parked). Pause a bounded
+            # minutes-level backoff instead of hot-looping the skip path until
+            # the first cooldown expires.
+            backoff_s = min(max(int(wait_time), 30), 120)
+            print(f"   ❌ No alternate endpoints available — recheck in {backoff_s}s")
+            time.sleep(backoff_s)
             return None, 0
 
     # Build payload for this endpoint
@@ -345,6 +351,68 @@ def call_endpoint(  # noqa: C901
                     retry_after = int(resp.headers.get("Retry-After", 60))
                 except (TypeError, ValueError):
                     retry_after = 60
+
+                # Quota-vs-burst: Remaining==0 or body keywords, not Reset alone.
+                rl_info = classify_rate_limit(resp.headers, body_text=getattr(resp, "text", "") or "")
+                if rl_info.is_quota:
+                    reset_epoch = rl_info.reset_epoch
+                    wait = (reset_epoch - time.time()) if reset_epoch is not None else 0.0
+                    if wait > 60:
+                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
+                        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
+                        reset_label = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(reset_epoch)) if reset_epoch is not None else "later"
+                        print(f"   Daily quota exhausted (free-models-per-day pattern) — reset {reset_label}; parking {endpoint.name} for 15m")
+                        fallback = endpoint_mgr.get_fallback_model(endpoint)
+                        if fallback:
+                            fallback_model, fallback_endpoint = fallback
+                            log_fallback(
+                                original_endpoint=endpoint.name,
+                                fallback_endpoint=fallback_endpoint.name,
+                                reason=endpoint.health.status.value,
+                                task_id=task_id,
+                                agent_name=agent_name,
+                            )
+                            print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
+                            return call_endpoint(
+                                messages,
+                                max_tokens,
+                                temperature,
+                                fallback_model,
+                                retry_count,
+                                task_id,
+                                agent_name,
+                            )
+                        return None, 0
+                    if wait <= 0 and reset_epoch is None:
+                        # body-quota, no Reset — park, do not 1s-hop
+                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
+                        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
+                        print(f"   Daily quota exhausted (body signal, no Reset) — parking {endpoint.name} for 15m")
+                        fallback = endpoint_mgr.get_fallback_model(endpoint)
+                        if fallback:
+                            fallback_model, fallback_endpoint = fallback
+                            log_fallback(
+                                original_endpoint=endpoint.name,
+                                fallback_endpoint=fallback_endpoint.name,
+                                reason=endpoint.health.status.value,
+                                task_id=task_id,
+                                agent_name=agent_name,
+                            )
+                            print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
+                            return call_endpoint(
+                                messages,
+                                max_tokens,
+                                temperature,
+                                fallback_model,
+                                retry_count,
+                                task_id,
+                                agent_name,
+                            )
+                        return None, 0
+                    sleep_for = max(1.0, wait)
+                    print(f"   Quota reset in {sleep_for:.0f}s — sleeping to reset and retrying once...")
+                    time.sleep(sleep_for)
+                    continue
 
                 if retry_after > 60:  # If wait is > 1 minute, try fallback
                     endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=2)

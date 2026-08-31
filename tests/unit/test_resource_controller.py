@@ -239,6 +239,53 @@ class TestResourceControllerWorker:
         t.join(timeout=2)
         assert not worker.running
 
+    def test_apply_decision_adjusts_resolved_endpoint_rate_limiter(self, mock_minimal_config):
+        """A decision's rate limit lands on the real endpoint's RateLimiter.
+
+        Regression: the old `get_rate_limiter(None)` path always excepted, so
+        _apply_decision adjustments were silent no-ops. The endpoint is now
+        resolved via EndpointManager(get_config()) -> get_rate_limiter(endpoint).
+        """
+        import agents.base as base
+
+        base._rate_limiter = None  # rebuild cleanly from the resolved endpoint
+        worker = ResourceControllerWorker()
+        state = ResourceState(
+            tokens_used_in_window=0,
+            tokens_remaining=500000,
+            max_tokens=500000,
+            current_burn_rate=0.0,
+            api_calls_last_minute=0,
+            api_rate_limit=60,
+            budget_percentage=1.0,
+            time_remaining_in_window=60.0,
+        )
+
+        base_decision = ThrottleDecision(
+            level="MODERATE",
+            background_feeder_interval=45,
+            active_agents=["developer"],
+            rate_limit_per_minute=25,
+            model_downgrades={},
+            reasoning="test rate adjustment",
+        )
+        worker._apply_decision(base_decision, state)
+
+        assert base._rate_limiter is not None
+        assert base._rate_limiter.max_calls == 25
+
+        # Re-applying a second value proves it is an active adjustment, not a no-op.
+        tighter = ThrottleDecision(
+            level="MODERATE",
+            background_feeder_interval=45,
+            active_agents=["developer"],
+            rate_limit_per_minute=40,
+            model_downgrades={},
+            reasoning="test rate adjustment 2",
+        )
+        worker._apply_decision(tighter, state)
+        assert base._rate_limiter.max_calls == 40
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-q", "--tb=no"])
