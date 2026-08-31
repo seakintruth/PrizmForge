@@ -2,14 +2,18 @@
 AIMD ramp for call_endpoint's upstream-429 path (no network; sleep patched).
 
 Covers:
-- on 429: client backcl off via rate_limiter.on_rate_limited(), sleep honors
+- on 429: client back off via rate_limiter.on_rate_limited(), sleep honors
   max(Retry-After, exponential backoff + jitter)
 - on eventual success: rate_limiter.on_success() ramps capacity back up
-- diagnostics print the server-side error message
+- on >= 400: the full HTTP dump (status/url/model/headers/parsed error/body)
+  is printed with auth redacted and stashed on health.last_http_dump
+- on a LOCAL health latch hit, the skip message says so and reprints the dump
+  without calling the API
 """
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +31,7 @@ def _resp(status: int, body: dict, headers: dict | None = None):
     m.headers = headers or {"Content-Type": "application/json"}
     m.json.return_value = body
     m.raise_for_status = MagicMock()
+    m.text = json.dumps(body)
     return m
 
 
@@ -153,3 +158,63 @@ def test_429_long_cooldown_marks_unavailable_and_uses_backoff(call_endpoint_env,
     assert sleeps[0] == 300
     # AIMD still reacted to the 429 even though we had no fallback target
     assert base.get_rate_limiter(_FakeEndpoint())._window_scale < 1.0
+
+
+def test_429_dumps_body_and_redacts_auth(call_endpoint_env, capfd):
+    base = call_endpoint_env
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "quota", "type": "rate_limit", "metadata": {"provider": "opencode"}}},
+            headers={
+                "Authorization": "Bearer secret-token",
+                "Retry-After": "2",
+                "x-request-id": "req-1",
+            },
+        ),
+        _resp(200, {"choices": [{"message": {"content": "ok"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "ok"
+    out = capfd.readouterr().out
+    assert "HTTP 429" in out
+    assert "quota" in out
+    assert "x-request-id" in out
+    assert "<redacted>" in out
+    assert "secret-token" not in out
+    assert "body (" in out
+
+
+def test_local_latch_skip_prints_dump_without_calling_api(call_endpoint_env, capfd):
+    base = call_endpoint_env
+    manager = _FakeManager()
+    fake = _FakeEndpoint()
+    fake.health = SimpleNamespace(
+        is_available=lambda: False,
+        time_until_available=lambda: 272,
+        status=SimpleNamespace(value="unavailable"),
+        last_http_dump="   HTTP 429\n   body: prior",
+        mark_success=lambda: None,
+        mark_failure=lambda *a, **k: None,
+    )
+    manager.endpoints = {"primary": fake}
+
+    def boom(*args, **kwargs):
+        raise AssertionError("post_json must not be called on a local health latch")
+
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=boom):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    out = capfd.readouterr().out
+    assert "LOCAL health latch" in out
+    assert "Not calling the API" in out
+    assert "Last HTTP dump from when this latch was set:" in out
+    assert "HTTP 429" in out
+    assert "body: prior" in out
+    assert answer is None
