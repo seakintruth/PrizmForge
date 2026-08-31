@@ -1014,7 +1014,7 @@ No changes are written to disk without explicit reviewer approval in the governe
 Repo-policy awareness and observability for unattended runs (git-pre-commit closed
 loop, backlog backpressure tiers, post-materialize localized verify, and diagnostic
 dump coverage) is specified and tracked in
-[`docs/UNATTENDED_CLOSED_LOOP_PLAN.md`](UNATTENDED_CLOSED_LOOP_PLAN.md) with
+[`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`](UNATTENDED_CLOSED_LOOP_CAPABILITIES.md) with
 acceptance criteria per workstream. Key invariants: secret/cache files (`api_key.json`,
 `.ruff_cache`, `.git`, `__pycache__`, …) are never served to agents, `file_write_log`
 rows carry `started_at`/`completed_at`, reporter output includes materialize

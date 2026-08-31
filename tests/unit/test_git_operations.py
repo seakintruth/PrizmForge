@@ -1,7 +1,7 @@
 """
 Tests for Workstream A (git/pre-commit closed loop) — RED phase.
 
-Target behavior per docs/UNATTENDED_CLOSED_LOOP_PLAN.md §3:
+Target behavior per docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md §3:
 - git operations return a structured GitResult (ok, code, stdout, stderr)
 - failures are data, not just console prints
 """

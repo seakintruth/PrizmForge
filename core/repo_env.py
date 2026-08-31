@@ -1,5 +1,5 @@
 """
-Repo "environment card" (UNATTENDED_CLOSED_LOOP_PLAN §7.3).
+Repo "environment card" (UNATTENDED_CLOSED_LOOP_CAPABILITIES §7.3).
 
 Short machine-readable repo facts injected into developer context whenever the
 attended loop writes through git. Kept small and dependency-free so any agent

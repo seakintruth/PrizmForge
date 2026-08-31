@@ -4,7 +4,7 @@ The legacy edit_payload developer (workflow/developer_edit.py) used to default
 APPROVE on empty / unparseable / decision-less reviewer output. Both developer
 paths now share `workflow/reviewer_gate.py`, which REJECTs anything that is not
 an explicit, parseable APPROVE. These tests lock that behavior and the
-acceptance criteria from UNATTENDED_CLOSED_LOOP_PLAN.md §5.2/§5.3.
+acceptance criteria from UNATTENDED_CLOSED_LOOP_CAPABILITIES.md §5.2/§5.3.
 """
 
 from __future__ import annotations
