@@ -5,9 +5,9 @@ linked documents; this file tracks status. Tick checkboxes as items land and
 note the PR/commit.
 
 Shipped sections were retired from this tracker on **2026-08-29** (their
-design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_LOOP_PLAN.md`).
+design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`).
 
-**Last updated:** 2026-08-30
+**Last updated:** 2026-08-31
 
 ---
 
@@ -105,21 +105,38 @@ Status: **FIXED** at root (this PR, gate 897 → 901).
 
 ## 2. Unattended closed-loop hardening — open residuals only
 
-All shipped workstreams (A–F) are recorded in `docs/UNATTENDED_CLOSED_LOOP_PLAN.md`; the tracker keeps only what is still open.
+All shipped workstreams (A–F) are recorded in `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`; the tracker keeps only what is still open.
 
 - [ ] **Live failing-hook smoke run on a copy** — run with a deliberately failing hook; confirm CRITICAL feedback → developer fix-forward proposal → materialized and addressed, all visible in events/errors/feedback. **Blocked: live runtime/endpoints** (in-process failure paths have deterministic unit proofs in `tests/unit/test_git_closed_loop.py`).
 - [ ] **PR #94 body nit** (manual GitHub edit): body still cites `tests/unit/test_writer_git_closed_loop.py`; should cite `tests/unit/test_git_closed_loop.py`. **Blocked: GitHub/manual editor access** (cosmetic, merged-PR body).
+- [ ] **Ignored-path handling in the git closed loop** — a git-governed target that is gitignored (e.g. `config.json`) needs an explicit branch: skip git or fail with a clear "path is gitignored" message, never silent success. **Default parked (§5.3 decision 3: gitignored config stays human-only).** Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §3.7.
+- [ ] **Diagnostic dump shows a forced-hook-failure path** — at least one non-success path visible under events/errors after an intentional hook failure; the `git_fail` counter is already present in task summaries. **Blocked: Workstream F dump sections (`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §8.2).**
 
 ---
 
-## 3. Mini-swe agent — open items only
+## 3. Mini-swe agent (shell developer) — shipped + open items
 
-Implemented (beta), review-hardened, cold-start + soak process-eval rounds merged. Open items:
+### Shipped (2026-08-23 → 2026-08-28; gates 616 → 623 → 693 → 724, plus 2026-08-29 closed-loop residuals)
+
+**SHIPPED & MERGED**: native mini-swe-agent port as the shell developer
+(`workflow/shell_developer.py`, MIT attribution + material differences in
+`THIRD_PARTY_NOTICES.md`). Original 5-item plan landed in full:
+
+1. Native port of the mini-swe-agent core loop (worktree + bash).
+2. Disposable `git worktree` isolation per session; real bash edits + post-session `test_command` verification.
+3. Session output converted to governed EditPayload proposals → Reviewer → materialize.
+4. Wired into the task loop behind `developer.implementation` (`"shell"` default, `"edit_payload"` legacy fallback).
+5. Packaging/tooling (`setup.sh` git prereq; `export_project_zip.py` excludes runtime artifacts).
+
+Capability/operator runbook: `docs/mini_swe_agent.md`. Rollback: `developer.implementation: "edit_payload"` (no code change).
+
+### Open items
 
 - [ ] **Real-model end-to-end validation + tuning** — live endpoints, prompt/limit tuning. **Blocked: live endpoints.**
 - [ ] **Manual cold-start smoke** — seed task consumed on turn 1 (no `background` for two rounds), no `⚠️ Unknown model` lines. **Blocked: live endpoints.**
 - [ ] **Enclave sandboxing** — shell runs are not confined to the worktree (container/approved-workstation controls for enclave deployment). **Blocked: operational/container controls.**
 - [ ] **Optional hardening: post-materialize `test_command` re-run** — **Decision: intentionally deferred** (Phase-4 test-driven loop + the session's own pre-proposal `test_command` already gate every edit; a mid-session full re-run risks long/flaky hangs with no closed loop consuming it). The §7.2 in-process `ruff` pre-check ships the cheap fast-feedback gate instead. Revisit only if a deploy-time validator becomes a requirement.
+- [ ] **EndpointManager / LiteLLM-overlap revisit (parked)** — if verification/model routing ever moves toward a LiteLLM-style layer, revisit `EndpointManager` overlap (mini-swe follow-up #7; see `docs/mini_swe_agent.md`). **Blocked: no such routing layer planned.**
 
 ---
 
@@ -138,6 +155,9 @@ suppressed with `# noqa: C901`. Gate: **905 passed** (batched, `overall_exit=0`)
 - [ ] **Full-repo mypy cleanup (43 errors)** — non-gating (CI has no mypy; `pre_commit.sh` runs it warnings-only). Remaining by file: `tests/integration/test_golden_path.py` (12), `core/agent_schemas.py` (5), `core/endpoint_manager.py` (4), `workflow/task_runner.py` (3), `utils/run_codemodes.py` (3, libcst API drift), `utils/list_endpoint_models.py` (3), `file_editing/edit_payload.py` (3), `workflow/proposal_builder.py` (2), `tests/mocks/openai.py` (2), `agents/prioritizer_worker.py` (2), `agents/orchestrator.py` (2), `workflow/post_materialize.py` (1), `utils/query_developer_responses.py` (1). See `mypy .` for line-level detail.
 - [ ] **`run_configure` (core/models_wizard.py) C901 → real refactor** — complexity 25 > 15; currently suppressed with `# noqa: C901` (repo precedent `call_endpoint`). Extract per-prompt `_pick` steps into helpers to drop complexity.
 - [ ] **RC rate-limiter-adjust unit coverage** — `_apply_decision` now applies `set_max_calls` against a resolved endpoint; add a test proving the rate-limit is actually adjusted with a real endpoint config (previously the `get_rate_limiter(None)` path always `except`'d, so adjustments were no-ops).
+- [ ] **OpenRouter `free-models-per-day` is a daily quota, not a burst 429** — `call_endpoint`'s 429 branch (`agents/base.py`) prints the `X-RateLimit-*` headers then sleeps a hard 60s (`Retry-After` default) against a bucket that resets at midnight UTC. Headers are the real signal and are parsed nowhere: `X-RateLimit-Limit: 50`, `Remaining: 0`, `Reset: 1788134400000` (ms → 2026-08-31 00:00 UTC; value > 1e12 = ms, else seconds). Soak symptom: opencode 429 ×3 → 5m `UNAVAILABLE` → OpenRouter daily `Remaining: 0` → 3×60s hops, the two dead endpoints ping-ponging all night while the mutation path idles in `time.sleep(60)`. **Fix:** parse the Reset header and classify quota vs burst — quota when `Remaining == 0`, a Reset header exists, or the body mentions `free-models-per-day`/`Add 10 credits`; then `wait = reset − now`. `wait > 60s` → park the endpoint (`RATE_LIMITED`, cooldown capped ~15 min like `TOKEN_EXHAUSTED`, log the real reset), fall back immediately, no 3×60s hop; `wait ≤ 60s` → sleep-to-reset and retry once; burst (`Remaining > 0` / no Reset) keeps the current short retry. Desired stdout: `⏳ openrouter daily quota exhausted (free-models-per-day) … parking openrouter until <reset>`. Tests: extend `tests/unit/test_call_endpoint_rate_limit.py` (ms-reset long wait, body-quota-without-headers, short-wait sleep-to-retry, burst path unchanged). **Operational note:** adding $10 on OpenRouter unlocks 1000 free-model req/day; until then `openrouter/free` hits this nightly after ~50 calls.
+- [ ] **Both-endpoints-parked: stop the 60s hop** — when every candidate sits `UNAVAILABLE`/`RATE_LIMITED` (e.g. opencode key_locked + OpenRouter daily quota empty), the fallback chain + loop retries short (60s) instead of one longer backoff or a cycle pause; a minutes-level backoff matches Operator Principle #1 better than hammering two empty buckets. Depends on the quota item above.
+- [ ] **`setup.sh` venv-persistence convenience wrapper** — running `utils/setup.sh` (currently needs `source`) should leave the terminal inside the repo's activated `.venv` after an ordinary plain run: exec into an interactive bash that sources `~/.bashrc` then activates; skip when `VIRTUAL_ENV` already matches or stdin is not a TTY (CI / plain runs unaffected). Plan previously drafted off `soak/setup` (branch proposal `fix/setup-shell`); not yet built.
 
 ---
 
