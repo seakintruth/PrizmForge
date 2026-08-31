@@ -21,6 +21,7 @@ from core.db_helpers import save_conversation
 from core.endpoint_manager import EndpointConfig, EndpointStatus, get_endpoint_manager
 from core.fallback_stats import log_fallback
 from core.http_client import post_json
+from core.http_diag import print_http_error_dump
 from core.json_parser import parse_json_response
 from core.model_health import record_model_outcome
 from core.rate_limiter import RateLimiter
@@ -114,8 +115,12 @@ def call_endpoint(  # noqa: C901
     # Check if endpoint is available
     if not endpoint.health.is_available():
         wait_time = endpoint.health.time_until_available()
-        print(f"⚠️  {endpoint.name} unavailable ({endpoint.health.status.value})")
-        print(f"   Available in {wait_time}s. Trying alternate endpoint...")
+        print(f"⚠️  {endpoint.name} skipped (LOCAL health latch: {endpoint.health.status.value})")
+        print(f"   Not calling the API — cooldown remaining {wait_time}s. OpenCode CLI can still work.")
+        last_dump = getattr(endpoint.health, "last_http_dump", None)
+        if last_dump:
+            print("   Last HTTP dump from when this latch was set:")
+            print(last_dump)
 
         # Try to get fallback
         fallback = endpoint_mgr.get_fallback_model(endpoint)
@@ -226,6 +231,14 @@ def call_endpoint(  # noqa: C901
                 proxies=proxies,
             )
             _last_call_http_latency += time.time() - _req_t0
+            if resp.status_code >= 400:
+                dump = print_http_error_dump(
+                    resp,
+                    url=endpoint.base_url,
+                    model=str(model_name or ""),
+                    endpoint=endpoint.name,
+                )
+                endpoint.health.last_http_dump = dump
 
             # Attempt to extract error JSON safely
             error_data = {}
@@ -261,6 +274,14 @@ def call_endpoint(  # noqa: C901
                             proxies=proxies,
                         )
                         _last_call_http_latency += time.time() - _req_t0
+                        if resp.status_code >= 400:
+                            dump = print_http_error_dump(
+                                resp,
+                                url=endpoint.base_url,
+                                model=str(model_name or ""),
+                                endpoint=endpoint.name,
+                            )
+                            endpoint.health.last_http_dump = dump
 
                         retry_error_data = {}
                         try:
@@ -324,23 +345,6 @@ def call_endpoint(  # noqa: C901
                     retry_after = int(resp.headers.get("Retry-After", 60))
                 except (TypeError, ValueError):
                     retry_after = 60
-
-                # Diagnostics: surface rate-limit headers + server-side message so
-                # upstream throttling is visible without digging into the network.
-                _limit_headers = {
-                    "retry-after",
-                    "ratelimit-limit",
-                    "ratelimit-remaining",
-                    "ratelimit-reset",
-                    "x-ratelimit-remaining",
-                    "x-ratelimit-reset",
-                    "x-ratelimit-limit",
-                }
-                rate_headers = {k: v for k, v in resp.headers.items() if k.lower() in _limit_headers}
-                if rate_headers:
-                    print(f"   Rate-limit headers: {rate_headers}")
-                if error_data.get("message"):
-                    print(f"   Server: {str(error_data['message'])[:200]}")
 
                 if retry_after > 60:  # If wait is > 1 minute, try fallback
                     endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=2)

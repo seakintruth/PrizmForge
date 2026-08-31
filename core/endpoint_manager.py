@@ -61,6 +61,7 @@ class EndpointHealth:
         self.endpoint_name = endpoint_name
         self.status = EndpointStatus.HEALTHY
         self.last_error = None
+        self.last_http_dump = None  # memory-only; too large / sensitive for SQLite
         self.error_count = 0
         self.last_success = datetime.now()
         self.unavailable_until = None
@@ -136,6 +137,7 @@ class EndpointHealth:
         self.consecutive_failures = 0
         self.last_success = datetime.now()
         self.unavailable_until = None
+        self.last_http_dump = None
         self._save_to_db()
 
     def mark_failure(self, status: EndpointStatus, cooldown_minutes: int | None = None):
