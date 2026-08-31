@@ -68,13 +68,14 @@ class CallableFixer(cst.CSTTransformer):
 
     def leave_Annotation(self, original: cst.Annotation, updated: cst.Annotation) -> cst.Annotation:
         ann = updated.annotation
-        if m.matches(ann, m.Name("callable")):
+        # libcst no longer exposes BaseExpression.code; rebuild the node via
+        # with_changes instead of string round-tripping.
+        if isinstance(ann, cst.Subscript) and isinstance(ann.value, cst.Name) and ann.value.value == "callable":
+            self.needs_callable_import = True
+            return updated.with_changes(annotation=ann.with_changes(value=cst.Name("Callable")))
+        if isinstance(ann, cst.Name) and ann.value == "callable":
             self.needs_callable_import = True
             return updated.with_changes(annotation=cst.Name("Callable"))
-        if m.matches(ann, m.Subscript(m.Name("callable"))):
-            self.needs_callable_import = True
-            new_code = ann.code.replace("callable", "Callable")
-            return cst.Annotation(cst.parse_expression(new_code))
         return updated
 
     def leave_Param(self, original: cst.Param, updated: cst.Param) -> cst.Param:
@@ -205,10 +206,16 @@ class AddAnyAnn(cst.CSTTransformer):
         if len(updated.targets) != 1:
             return updated
         tgt = updated.targets[0].target
-        if m.matches(tgt, m.Name()) and not isinstance(updated, cst.AnnAssign):
+        # libcst dropped AnnAssign(simple=...) and multi-role assign targets;
+        # match on Name directly.
+        if isinstance(tgt, cst.Name) and not isinstance(updated, cst.AnnAssign):
             name = tgt.value
             self.add_any = True
-            ann = cst.AnnAssign(target=cst.Name(name), annotation=cst.Annotation(cst.Name("Any")), value=updated.value, simple=1)
+            ann = cst.AnnAssign(
+                target=cst.Name(name),
+                annotation=cst.Annotation(cst.Name("Any")),
+                value=updated.value,
+            )
             return ann
         return updated
 

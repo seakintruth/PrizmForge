@@ -42,7 +42,10 @@ def _get_or_create_file_id(conn: sqlite3.Connection, target_file_path: str) -> i
            VALUES (?, 1, 0, 0)""",
         (target_file_path,),
     )
-    return cursor.lastrowid
+    lastrowid = cursor.lastrowid
+    if lastrowid is None:
+        raise RuntimeError(f"failed to insert file row for {target_file_path}")
+    return lastrowid
 
 
 def _get_affected_guids_from_operation(op) -> list[str]:
@@ -188,7 +191,7 @@ def create_proposal_from_developer_output(
             "proposal.created",
             source="proposal_builder",
             task_id=task_id,
-            proposal_id=result["proposal_id"],
+            proposal_id=proposal_id,
             payload={
                 "target_file_path": result["target_file_path"],
                 "selected_mode": result.get("selected_mode"),

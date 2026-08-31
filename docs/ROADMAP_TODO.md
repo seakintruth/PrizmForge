@@ -152,11 +152,11 @@ in the OpenAI `{"data": ...}` shape; feature-owned + trivial mypy classes; RC
 suppressed with `# noqa: C901`. Gate: **905 passed** (batched, `overall_exit=0`),
 `ruff check` + `ruff format --check` clean. Open:
 
-- [ ] **Full-repo mypy cleanup (43 errors)** — non-gating (CI has no mypy; `pre_commit.sh` runs it warnings-only). Remaining by file: `tests/integration/test_golden_path.py` (12), `core/agent_schemas.py` (5), `core/endpoint_manager.py` (4), `workflow/task_runner.py` (3), `utils/run_codemodes.py` (3, libcst API drift), `utils/list_endpoint_models.py` (3), `file_editing/edit_payload.py` (3), `workflow/proposal_builder.py` (2), `tests/mocks/openai.py` (2), `agents/prioritizer_worker.py` (2), `agents/orchestrator.py` (2), `workflow/post_materialize.py` (1), `utils/query_developer_responses.py` (1). See `mypy .` for line-level detail.
-- [ ] **`run_configure` (core/models_wizard.py) C901 → real refactor** — complexity 25 > 15; currently suppressed with `# noqa: C901` (repo precedent `call_endpoint`). Extract per-prompt `_pick` steps into helpers to drop complexity.
+- [x] **Full-repo mypy cleanup (43 errors)** — non-gating (CI has no mypy; `pre_commit.sh` runs it warnings-only). Remaining by file: `tests/integration/test_golden_path.py` (12), `core/agent_schemas.py` (5), `core/endpoint_manager.py` (4), `workflow/task_runner.py` (3), `utils/run_codemodes.py` (3, libcst API drift), `utils/list_endpoint_models.py` (3), `file_editing/edit_payload.py` (3), `workflow/proposal_builder.py` (2), `tests/mocks/openai.py` (2), `agents/prioritizer_worker.py` (2), `agents/orchestrator.py` (2), `workflow/post_materialize.py` (1), `utils/query_developer_responses.py` (1). See `mypy .` for line-level detail. **Landed: `mypy .` → `Success: no issues found in 181 source files`.** Type-only fixes (annotations, `isinstance` narrowing, honest `str | None` / `dict | None` / `Any` signatures); the libcst drift in `run_codemodes.py` was fixed against the installed libcst API (`BaseExpression.code` → `with_changes`; `AnnAssign(simple=…)` dropped; assign-target isinstance narrowing) and still round-trips correctly; `_get_or_create_file_id` now raises instead of returning `None` on a failed insert; `proxy`/`models`/SQL param plumbing typed.
+- [x] **`run_configure` (core/models_wizard.py) C901 → real refactor** — complexity 25 > 15; previously suppressed with `# noqa: C901` (repo precedent `call_endpoint`). **Landed:** extracted `run_configure` into `_print_config_header`, `_fetch_catalog_if_requested`, `_pick_tiers`, `_apply_tiers`, `_edit_agent_overrides`, `_edit_prompts`, `_validate_and_write`; `run_configure` complexity 25 → 1; `# noqa: C901` dropped. Prompt sequence unchanged (`test_configure_wizard_assigns_tiers_from_answers` green).
 - [x] **RC rate-limiter-adjust unit coverage** — `_apply_decision` applies `set_max_calls` against the endpoint resolved via `EndpointManager(get_config())`; `test_apply_decision_adjusts_resolved_endpoint_rate_limiter` proves the shared `get_rate_limiter(endpoint)` limiter's `max_calls` actually changes (25 → 40) across two applications (previously the `get_rate_limiter(None)` path silently no-opped).
-- [ ] **OpenRouter `free-models-per-day` is a daily quota, not a burst 429** — `call_endpoint`'s 429 branch (`agents/base.py`) prints the `X-RateLimit-*` headers then sleeps a hard 60s (`Retry-After` default) against a bucket that resets at midnight UTC. Headers are the real signal and are parsed nowhere: `X-RateLimit-Limit: 50`, `Remaining: 0`, `Reset: 1788134400000` (ms → 2026-08-31 00:00 UTC; value > 1e12 = ms, else seconds). Soak symptom: opencode 429 ×3 → 5m `UNAVAILABLE` → OpenRouter daily `Remaining: 0` → 3×60s hops, the two dead endpoints ping-ponging all night while the mutation path idles in `time.sleep(60)`. **Fix:** parse the Reset header and classify quota vs burst — quota when `Remaining == 0`, a Reset header exists, or the body mentions `free-models-per-day`/`Add 10 credits`; then `wait = reset − now`. `wait > 60s` → park the endpoint (`RATE_LIMITED`, cooldown capped ~15 min like `TOKEN_EXHAUSTED`, log the real reset), fall back immediately, no 3×60s hop; `wait ≤ 60s` → sleep-to-reset and retry once; burst (`Remaining > 0` / no Reset) keeps the current short retry. Desired stdout: `⏳ openrouter daily quota exhausted (free-models-per-day) … parking openrouter until <reset>`. Tests: extend `tests/unit/test_call_endpoint_rate_limit.py` (ms-reset long wait, body-quota-without-headers, short-wait sleep-to-retry, burst path unchanged). **Operational note:** adding $10 on OpenRouter unlocks 1000 free-model req/day; until then `openrouter/free` hits this nightly after ~50 calls.
-- [ ] **Both-endpoints-parked: stop the 60s hop** — when every candidate sits `UNAVAILABLE`/`RATE_LIMITED` (e.g. opencode key_locked + OpenRouter daily quota empty), the fallback chain + loop retries short (60s) instead of one longer backoff or a cycle pause; a minutes-level backoff matches Operator Principle #1 better than hammering two empty buckets. Depends on the quota item above.
+- [x] **OpenRouter `free-models-per-day` is a daily quota, not a burst 429** — `call_endpoint`'s 429 branch (`agents/base.py`) prints the `X-RateLimit-*` headers then sleeps a hard 60s (`Retry-After` default) against a bucket that resets at midnight UTC. Headers are the real signal and are parsed nowhere: `X-RateLimit-Limit: 50`, `Remaining: 0`, `Reset: 1788134400000` (ms → 2026-08-31 00:00 UTC; value > 1e12 = ms, else seconds). Soak symptom: opencode 429 ×3 → 5m `UNAVAILABLE` → OpenRouter daily `Remaining: 0` → 3×60s hops, the two dead endpoints ping-ponging all night while the mutation path idles in `time.sleep(60)`. **Fix:** parse the Reset header and classify quota vs burst — quota when `Remaining == 0`, a Reset header exists, or the body mentions `free-models-per-day`/`Add 10 credits`; then `wait = reset − now`. `wait > 60s` → park the endpoint (`RATE_LIMITED`, cooldown capped ~15 min like `TOKEN_EXHAUSTED`, log the real reset), fall back immediately, no 3×60s hop; `wait ≤ 60s` → sleep-to-reset and retry once; burst (`Remaining > 0` / no Reset) keeps the current short retry. Desired stdout: `⏳ openrouter daily quota exhausted (free-models-per-day) … parking openrouter until <reset>`. Tests: extend `tests/unit/test_call_endpoint_rate_limit.py` (ms-reset long wait, body-quota-without-headers, short-wait sleep-to-retry, burst path unchanged). **Operational note:** adding $10 on OpenRouter unlocks 1000 free-model req/day; until then `openrouter/free` hits this nightly after ~50 calls. **Landed:** new `core/rate_limit_headers.py` (`parse_reset_to_epoch` — ms > 1e12, epoch ≥ 1e9, else now + value; `classify_rate_limit` → dataclass) + 429 branch classify/park/sleep-to-reset in `agents/base.py`; tests: `tests/unit/test_rate_limit_headers.py` (10) + 4 call-path tests (`test_429_quota_ms_reset_parks_and_does_not_hop`, `test_429_quota_body_token_sleeps_and_retries`, `test_429_quota_short_reset_sleeps_to_reset_then_retries`, `test_429_burst_with_ratelimit_headers_not_quota`). 49 targeted tests green.
+- [x] **Both-endpoints-parked: stop the 60s hop** — when every candidate sits `UNAVAILABLE`/`RATE_LIMITED` (e.g. opencode key_locked + OpenRouter daily quota empty), the fallback chain + loop retries short (60s) instead of one longer backoff or a cycle pause; a minutes-level backoff matches Operator Principle #1 better than hammering two empty buckets. Depends on the quota item above. **Landed:** the no-fallback skip branch in `agents/base.py` now sleeps `min(max(wait, 30), 120)` (minutes-level) and reports it (`test_skip_path_all_parked_sleeps_bounded_backoff`).
 - [x] **`setup.sh` venv-persistence convenience wrapper** — running `utils/setup.sh` plainly now `exec`s into an interactive bash that sources `~/.bashrc` then activates the repo's `.venv` (via a mktemp `--rcfile`), so the terminal lands inside the activated venv. Skipped when the script was sourced, when stdin/stdout are not a TTY (CI / pipes / cron unaffected), or when `VIRTUAL_ENV` already equals the repo venv. `bash -n` clean.
 
 ---
@@ -185,4 +185,401 @@ Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS
 2. Create-file policy: clean relative paths OK; add prefix policy only if junk root files recur.
 3. `config.json` as agent edit target: gitignored config stays human-only.
 4. Reviewer sees hook output: developer primary; orchestrator summary; reviewer optional.
-5. API/network failure streaks: pause + single CRITICAL summary after N consecutive failures (shipped — `NetworkBusyLoopGuard`, §6 retired).
+5. API/network failure streaks: pause + single CRITICAL summary after N consecutive failures (shipped — `NetworkBusyLoopGuard`).
+
+## 6. Cold-soak SQLite project ingest (NUC / 2-core / ≥8 GB)
+
+**Status:** OPEN — design only (2026-08-31). No branch yet.
+
+**Constraint (intentional):** soaks do **not** copy `.PrizmForge/`. Every soak
+start is a **cold full rebuild** of `prizmforge.db`. Do not plan cross-soak
+hash-skip, leftover `project_files.content_hash`, or “second run is cheaper.”
+The only clock that matters is **one** `cmd_init()` on a wiped DB.
+
+**Symptom:** on a 2-core NUC, soak start spends a long time in
+`🔄 Auto-indexing project files...` before iteration 1. Root is not “SQLite
+is slow”; it is how init talks to SQLite.
+
+**Hot path today**
+
+- `main.py` → `init_db()` → `cmd_init()` (`cli/commands.py`) when
+  `auto_init_on_start` is true (unattended default).
+- `os.walk(project_directory)` then, **per text file**:
+  1. `sync_file_to_database` — new connection, `INSERT OR REPLACE` full blob
+     into `project_files`, `estimate_tokens`, **commit**.
+  2. `generate_file_summary` + `save_file_summary` — **another** connection +
+     commit.
+  3. `initialize_file_lines` (`file_editing/writer.py`) — **another**
+     connection, `DELETE FROM file_lines`, then **one `INSERT` per line** in a
+     Python `for` loop (`uuid4` + md5 per line), **commit**.
+- Then a fourth connection for the deleted-file pass.
+- Then `refresh_target_indexes(..., force=True)`.
+
+`initialize_file_lines` uses `file_editing.db.get_db_connection()`, which does
+**not** apply `core.db_connection` pragmas. Those commits often run at SQLite
+default `synchronous=FULL` (fsync per file). Runtime connections already use
+`journal_mode=DELETE` + `synchronous=NORMAL` (lock-safe for soak; terrible for
+bulk load). ~40k Python source lines ⇒ tens of thousands of single-row inserts
+and three transactions per file.
+
+**Non-goals**
+
+- Do not persist `.PrizmForge/` between soaks to make init faster.
+- Do not thread-pool ingest (one SQLite writer; two cores).
+- Do not leave `synchronous=OFF` / `locking_mode=EXCLUSIVE` on after init.
+- Do not switch the live soak DB to WAL for this item unless measured on the
+  NUC; locking work assumed DELETE.
+- Do not treat “daemon owns the DB” as the fix for *this* window. Init should
+  be one exclusive bulk transaction, then hand the DB back.
+
+### 6.1 Init connection + one transaction
+
+- [ ] **`cmd_init` holds one writer** — open a single
+      `core.db_connection.get_db_connection()` (or a dedicated
+      `get_init_db_connection()`) for the whole walk. Pass `conn` into
+      `sync_file_to_database`, `save_file_summary`, and `initialize_file_lines`
+      (the last already accepts `conn=`). Commit **once** after all files + the
+      deleted-file pass.
+- [ ] **Never open `file_editing.db.get_db_connection()` during init** — that
+      helper skips bulk pragmas and defaults to FULL sync. Either route init
+      through `core.db_connection` or apply the same pragmas there (prefer the
+      former so there is one writer policy).
+- [ ] **Deleted-file pass uses the same `conn`** — no extra context manager.
+
+### 6.2 Init-only pragmas (restore before iteration 1)
+
+On the init connection, **before** the walk (8 GB floor; 2-core NUC):
+
+```sql
+PRAGMA journal_mode = MEMORY;
+PRAGMA synchronous = OFF;
+PRAGMA temp_store = MEMORY;
+PRAGMA cache_size = -524288;     -- 512 MiB page cache
+PRAGMA mmap_size = 268435456;    -- 256 MiB mmap
+PRAGMA locking_mode = EXCLUSIVE;
+PRAGMA busy_timeout = 5000;
+```
+
+After the single commit, **before** `cmd_init` returns:
+
+```sql
+PRAGMA locking_mode = NORMAL;
+PRAGMA synchronous = NORMAL;
+PRAGMA journal_mode = DELETE;
+```
+
+- `MEMORY` journal: box-crash mid-init already throws the DB away; an exception
+  mid-walk can still roll back a half-built index. Prefer this over
+  `journal_mode=OFF` first.
+- `cache_size` 512 MiB + `mmap` 256 MiB is the intended 8 GB split. Do not
+  grab multiple GB; agents + Python need the rest.
+- Document in a comment that these pragmas are **init-window only**.
+
+### 6.3 `file_lines` bulk insert
+
+- [ ] **`_initialize_lines_impl`: `executemany`** — build the row tuples in
+      Python, one `executemany` per file (or chunks of 5k–10k rows if a file
+      is huge). Same columns:
+      `(line_guid, file_id, sort_order, content, content_hash, version, is_deleted)`.
+      Keep `uuid4` + line md5; they are cheap next to per-row `execute`.
+- [ ] **Optional:** if secondary indexes on `file_lines` exist besides UNIQUE
+      `line_guid`, create them **after** the bulk load (`ANALYZE` once). Do
+      not drop UNIQUE `line_guid`.
+
+### 6.4 Same-process only (not cross-soak)
+
+- [ ] Hash short-circuit is **in-process only** (second `cmd_init()` in the
+      same soak, or a mid-soak restart that did *not* wipe the live DB).
+      Default soak still pays full rebuild. Do not advertise “next soak is
+      faster.”
+
+### 6.5 Work that is not required for iteration 1
+
+- [ ] Throttle per-file `✅ {path}` prints (every 50 files + a final tally).
+- [ ] `refresh_target_indexes(..., force=True)` runs **after** the DB commit
+      (keep it on the cold-soak bill, or `force=False` only when an in-process
+      index already exists — never assume a previous soak left one).
+- [ ] `project_files.content` + `file_summaries` may stay in the same
+      transaction; do not add extra commits. Do not drop `file_lines` (governed
+      editor). Folding `project_files` into a later metadata-only table is
+      §5.2 tech-debt, not this item.
+
+### 6.6 Files to touch
+
+- `cli/commands.py` — `cmd_init` transaction + pragma window + print throttle.
+- `file_editing/writer.py` — `_initialize_lines_impl` `executemany`.
+- `core/file_operations.py` — accept optional `conn=` on
+  `sync_file_to_database` / `save_file_summary`.
+- `core/db_connection.py` — optional `get_init_db_connection()` so soak
+  connections never inherit init pragmas.
+- `tests/unit/` — new tests (no live endpoints):
+  - init of N small files uses **one** commit path (spy `commit` / count
+    connections).
+  - `initialize_file_lines` writes expected line count + reconstructs content.
+  - after init helper returns, `PRAGMA journal_mode` is `delete` and
+    `synchronous` is not `OFF`.
+  - `file_editing.db.get_db_connection` is not used on the init path.
+
+### 6.7 Acceptance
+
+- Cold soak (no `.PrizmForge/` copied) still produces a complete `files` +
+  `file_lines` + `project_files` index; governed reconstruct matches disk.
+- Wall-clock of `cmd_init` on the NUC drops from “noticeable stall” to a short
+  burst; log the four buckets: walk+read, DB writes, deleted-file pass,
+  symbol index.
+- First orchestrator call still sees DELETE + NORMAL; no new dual-writer /
+  `database is locked` storms vs current soak baseline.
+- Gate: existing file-line / proposal / git-closed-loop tests stay green;
+  ruff clean on touched files.
+
+**Verify on the NUC, not only CI:** CI disks hide fsync cost. Time a wiped
+`cmd_init()` before and after on the same tree.
+
+
+## 7. Optional PostgreSQL via SQLAlchemy (SQLite remains default)
+
+**Status:** OPEN — design only (2026-08-31). No branch yet. Depends on §6
+(cold-soak ingest) only in the sense that **init bulk-load must stay a
+first-class path** on both backends; do not block §6 on this.
+
+**Why:** SQLite is correct for NUC soaks, hermetic tests, and wiped
+`.PrizmForge/` isolation. A shared or multi-writer deploy (later federation
+§5.1, long-lived operator DB, concurrent soaks against one store) needs a
+server engine. The product switch is **configuration**, not a fork.
+
+**Default stays SQLite.** Postgres is opt-in. CI and `utils/run_tests.sh`
+stay on SQLite unless an explicit extra job is added.
+
+### 7.1 Decision: SQLAlchemy Core first, not ORM-everywhere
+
+The schema lives as a large raw-SQL string in `core/db.py` (`init_db`,
+`_apply_schema`, `_migrate_schema`) plus two connection helpers
+(`core/db_connection.py`, `file_editing/db.py`) and dozens of
+`conn.execute("""...""")` call sites. An overnight ORM rewrite of
+`file_lines` / proposals / workers will stall the mutation path.
+
+- **Phase A:** SQLAlchemy **engine + connection** facade. Call sites keep
+  textual SQL (`sqlalchemy.text`) until each module is touched for another
+  reason.
+- **Phase B:** SQLAlchemy `MetaData` / `Table` models for schema create +
+  migrations (replace the string blob + `PRAGMA table_info` ALTER loop).
+- **Phase C (optional, later):** ORM mapped classes only where it removes
+  duplication (e.g. `edit_proposals`, `agent_feedback`). Line store and
+  archives can stay Core/`executemany` forever.
+
+Do not introduce Django, Tortoise, or a second query layer.
+
+**Dependencies (pin in extras, not required for default install):**
+
+```text
+sqlalchemy>=2.0,<3
+psycopg[binary]>=3.1    # Postgres driver only when backend=postgresql
+```
+
+Suggested extra: `pip install -e ".[postgres]"`. SQLite uses SQLAlchemy’s
+bundled `sqlite3` dialect — no extra package.
+
+### 7.2 Configuration (files, not env-only)
+
+Add a top-level `database` object to `config.json` / `example_config.json`.
+Document in `docs/CONFIGURATION.md`. Secrets stay in `api_key.json` (or a
+sibling gitignored file), never in `config.json`.
+
+```json
+"database": {
+  "backend": "sqlite",
+  "sqlite": {
+    "path": null
+  },
+  "postgresql": {
+    "host": "127.0.0.1",
+    "port": 5432,
+    "name": "prizmforge",
+    "user": "prizmforge",
+    "sslmode": "prefer",
+    "connect_timeout_s": 10
+  }
+}
+```
+
+- `backend`: `sqlite` (default) | `postgresql`. Unknown value → `ValueError`
+  at `validate_config`.
+- `sqlite.path`: `null` keeps today’s rule (`PRIZMFORGE_DB_PATH` else
+  `<project>/.PrizmForge/agents.db`).
+- Postgres password: `api_key.json` → `keys.database.password` (or
+  `keys.postgresql.password`). Mirror endpoint-key style. Empty password +
+  `backend=postgresql` → fail closed at startup.
+- Optional override URL (operator/CI only): env `PRIZMFORGE_DATABASE_URL`
+  wins over `backend`+fields. Allowed schemes: `sqlite`, `sqlite+pysqlite`,
+  `postgresql`, `postgresql+psycopg`. Reject `postgres://` ambiguity or
+  normalize it once in code.
+
+`validate_config` checks types only. Reachability is `init_db()` /
+preflight, not config parse (so unit tests can load configs without a
+server).
+
+Unattended preflight (`core/preflight.py`): if `backend=postgresql`,
+require the extra installed and a successful `SELECT 1` before soak start.
+
+### 7.3 Single engine facade
+
+Replace the split `sqlite3.connect` world with one module, e.g.
+`core/db_engine.py`:
+
+- `get_engine()` — process singleton, built from config.
+- `session_scope()` / `connection_scope()` — context manager that yields a
+  connection with `commit`/`rollback` matching `get_db_connection`.
+- `get_db_path()` remains for SQLite file location and diagnostics; Postgres
+  returns the sanitized URL (`password` redacted).
+
+**SQLite engine kwargs (preserve soak locking story after §6 init window):**
+
+- `connect_args={"timeout": 30}` (or current values).
+- `poolclass=NullPool` (or `StaticPool` + `check_same_thread=False` only if
+  a measured single-connection soak needs it). Default: **NullPool** so we
+  do not invent a second writer pool on the file DB.
+- On connect: `PRAGMA journal_mode=DELETE`, `synchronous=NORMAL`,
+  `temp_store=MEMORY`, `foreign_keys=ON` — same as `core/db_connection.py`
+  today. §6 init pragmas stay a **separate** connect event or
+  `execution_options` used only by `cmd_init`.
+
+**Postgres engine kwargs:**
+
+- `poolclass=QueuePool`, small pool (`pool_size=5`, `max_overflow=5`) on an
+  8 GB NUC; configurable later.
+- `pool_pre_ping=True`.
+- `isolation_level` default (READ COMMITTED). Do not copy SQLite’s
+  `EXCLUSIVE` / `journal_mode` onto Postgres.
+- `statement_timeout` via `SET` on connect if we see runaway queries.
+
+**Deprecate, then delete:**
+
+- `file_editing.db.get_db_connection` — must call the facade (it currently
+  skips pragmas; that is already a soak footgun).
+- Raw `sqlite3.connect` in `core/db.py` `init_db`, `core/model_health.py`,
+  workers, `utils/query_developer_responses.py`.
+- Keep `sqlite3` only inside the SQLite dialect connect hook and tests that
+  assert PRAGMA.
+
+`DatabaseRetryError` + wall-clock commit budget stay for SQLite lock/busy.
+On Postgres map deadlocks / `lock_not_available` to the same exception so
+callers do not grow a second retry vocabulary.
+
+### 7.4 Dialect-safe SQL (inventory before rewrite)
+
+Textual SQL that is **SQLite-only** today and must be parameterized or
+branched:
+
+| Pattern | SQLite today | Postgres |
+|---|---|---|
+| Surrogate keys | `INTEGER PRIMARY KEY AUTOINCREMENT` | `INTEGER GENERATED BY DEFAULT AS IDENTITY` (or `SERIAL`) |
+| Upsert | `INSERT OR REPLACE` (`project_files`, `file_summaries`) | `INSERT … ON CONFLICT (file_path) DO UPDATE SET …` |
+| Instant | `datetime('now')`, `CURRENT_TIMESTAMP` | `NOW()`, `CURRENT_TIMESTAMP` |
+| Booleans | `INTEGER 0/1` | keep `SMALLINT`/`INTEGER` in v1 (do not flip to native `BOOLEAN` mid-migration) |
+| Singleton rows | `CHECK (id = 1)` (`cli_checkpoints`, `reporter_state`) | same CHECK, or `INSERT … ON CONFLICT (id)` |
+| Introspection | `PRAGMA table_info`, `sqlite_master` | `information_schema.columns` / Alembic |
+| Bulk init | §6 `executemany` + MEMORY journal | `psycopg` `executemany` or `COPY` for `file_lines` only if measured |
+| FKs | `PRAGMA foreign_keys=ON` | always on |
+
+Rules:
+
+- No `SELECT *` new code; column lists survive dialect type drift.
+- Placeholders: SQLAlchemy `text("… WHERE file_path = :path")` bound
+  params. Ban `f"SELECT … {table}"` except for the existing export helper
+  after an allowlist.
+- `lastrowid` after `INSERT INTO files` must use
+  `inserted_primary_key` / `RETURNING file_id` on Postgres.
+- `Row` access: keep both index and key (`row["file_id"]`) via
+  `mappings()`.
+
+Phase A may wrap the worst call sites (`INSERT OR REPLACE`, `lastrowid`,
+`datetime('now')`) in `core/db_sql.py` helpers keyed by dialect name.
+
+### 7.5 Schema create + migrations
+
+Today: one SQL blob + additive `_ensure_column` for old files.
+
+Target:
+
+- [ ] **SQLAlchemy `MetaData` in `core/schema.py`** — one `Table()` per
+      existing table (start with the critical set: `files`, `file_lines`,
+      `edit_proposals`, `messages`, `tasks`, `errors`, `agent_feedback`,
+      `project_files`, `events`). Remaining tables can stay in the blob for
+      one PR if listed explicitly.
+- [ ] **`init_db()`** becomes `metadata.create_all(engine)` + dialect
+      connect pragmas (SQLite only).
+- [ ] **Alembic** (`alembic/`) for additive migrations from that point.
+      First revision = “schema as of this PR” (empty upgrade on a fresh
+      `create_all`). Stop hand-written `_ensure_column` for new columns.
+- [ ] SQLite file DBs from older soaks: still support `_migrate_schema`
+      **or** one-shot “wipe and recreate” because soaks already throw
+      `.PrizmForge/` away. Do not invent a production SQLite upgrade story
+      beyond current additive columns unless an operator keeps a durable
+      file DB.
+
+Postgres: never run `PRAGMA`. Never run §6 `journal_mode=MEMORY`. Init
+performance work for Postgres is a different checklist (`COPY` / unlogged
+`file_lines` during load, then `ALTER TABLE … SET LOGGED`) — park unless a
+soak actually uses Postgres.
+
+### 7.6 Product behavior that must not change
+
+- Default `backend=sqlite`, path under `.PrizmForge/`, wiped per soak.
+- Governed reconstruct (`file_lines` + `sort_order` + `is_deleted`) identical.
+- Tests use tmp SQLite; no Docker required for `run_tests.sh --normal`.
+- `log_error` stays non-blocking (short timeout / best-effort) on both
+  backends.
+- Dual-writer rule on SQLite is unchanged: one writer during materialize;
+  do not open a second engine against the same file.
+
+### 7.7 Phased delivery
+
+- [ ] **7.A — Config + engine + SQLite parity**  
+      `database` block, `get_engine()`, migrate `init_db` +
+      `get_db_connection` + `file_editing.db` to the facade. Behavior on
+      SQLite indistinguishable. Gate green. No Postgres CI yet.
+- [ ] **7.B — Dialect helpers + lastrowid/upsert**  
+      Fix the inventory in §7.4 at the highest-traffic writers
+      (`file_operations`, `writer.initialize_file_lines`,
+      `proposal_builder`, `db_helpers`). Unit tests run the same SQL
+      helpers against a SQLite engine.
+- [ ] **7.C — Postgres smoke (optional extra)**  
+      `tests/integration/test_postgres_smoke.py` marked `@pytest.mark.postgres`,
+      skipped without `PRIZMFORGE_DATABASE_URL`. Creates schema, indexes one
+      file, reconstructs lines, writes one proposal row. Document compose
+      snippet in `docs/soak_runbook.md` (do not make compose the default
+      soak).
+- [ ] **7.D — Alembic + MetaData**  
+      Move off the schema string. One documented `alembic upgrade head` for
+      durable Postgres; SQLite soaks still `create_all` on empty file.
+
+### 7.8 Files to touch (7.A minimum)
+
+- `core/config.py` + `docs/CONFIGURATION.md` + `example_config.json`
+- `example_api_key.json` — `keys.database.password` placeholder
+- `core/db_engine.py` (new), `core/db.py`, `core/db_connection.py`,
+  `file_editing/db.py`
+- `core/preflight.py` — Postgres reachability
+- `pyproject.toml` / install extras
+- `tests/unit/test_db_engine.py` — backend selection, URL redaction,
+  SQLite PRAGMA on connect, reject unknown backend
+- `tests/unit/test_db_retry_patience.py` — still valid on SQLite engine
+
+### 7.9 Acceptance
+
+- `backend` omitted or `"sqlite"` → bit-identical operator story to
+  current `main` (path, pragmas after init, tests).
+- `backend: "postgresql"` without password / extra / server → **fail
+  closed** with an actionable message, no silent SQLite fallback.
+- No password in logs, events, or `get_db_path()` print.
+- Ruff clean; normal gate does not require Postgres.
+- §6 init pragmas still compile and apply **only** when dialect is SQLite.
+
+### 7.10 Out of scope
+
+- Multi-tenant Postgres, read replicas, federation Stage 2.
+- Moving agent JSON blobs into JSONB in the first Postgres PR (TEXT is
+  fine; JSONB is a later migration).
+- Replacing the message bus with Redis/NATS.
+- SQLAlchemy 1.4 APIs (`Query`, `sessionmaker` legacy binds).
+

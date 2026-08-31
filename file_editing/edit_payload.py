@@ -2,7 +2,7 @@
 import json
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 
 def _validate_target_path(path: str | None, *, field_name: str = "target_file_path") -> str:
@@ -382,10 +382,10 @@ class EditPayload:
 
         try:
             return cls(
-                target_file_path=data.get("target_file_path"),
-                summary=data.get("summary"),
+                target_file_path=cast(str, data.get("target_file_path")),
+                summary=cast(str, data.get("summary")),
                 operations=ops,
-                rationale=data.get("rationale"),
+                rationale=cast(str, data.get("rationale")),
             )
         except TypeError as e:
             raise ValueError(f"Validation failed for EditPayload: Missing required top-level fields. ({e})") from e

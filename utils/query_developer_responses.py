@@ -19,6 +19,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 try:
     import sqlite3
@@ -68,7 +69,7 @@ def list_recent_developer_responses(
         cursor = conn.cursor()
 
         query_conditions = ["r.agent_name = ?"]
-        params = [agent_name]
+        params: list[Any] = [agent_name]
 
         if task_id:
             query_conditions.append("r.task_id = ?")

@@ -16,7 +16,7 @@ def call_orchestrator(
     current_turn: int,
     max_turns: int,
     time_remaining: float,
-) -> dict:
+) -> dict | None:
     """Call orchestrator with smart token-aware context & hard guardrails"""
     context_mgr = get_context_manager()
     config = get_config()

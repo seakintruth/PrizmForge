@@ -115,52 +115,61 @@ def _pick(ask: Ask, label: str, numbered: list[str], current: str | None) -> str
         return _pick(ask, label, numbered, current)
 
 
-def run_configure(  # noqa: C901
-    *,
-    cfg_path: Path,
-    raw: dict[str, Any],
-    runtime: dict[str, Any],
-    catalog: dict[str, Any],
-    ask: Ask,
-    fetch: bool | None = None,
-    write: bool = True,
-    fetcher: Callable | None = None,
-) -> dict[str, Any]:
-    """Drive the wizard. Returns the mutated raw config."""
+def _print_config_header(cfg_path: Path, raw: dict[str, Any], catalog: dict[str, Any]) -> None:
     print(f"Config: {cfg_path}")
     print_current(
         "current configuration",
         list_assignments(raw),
         extra=f"default_model = {_default_model(raw) or '(unset)'}",
     )
-
     cached_at = catalog.get("fetched_at") if isinstance(catalog, dict) else None
     print_current(
         "model catalog cache",
         extra=f"fetched_at = {cached_at or '(none)'} — enter keeps cache, does not refetch",
     )
+
+
+def _fetch_catalog_if_requested(
+    runtime: dict[str, Any],
+    catalog: dict[str, Any],
+    ask: Ask,
+    fetch: bool | None,
+    fetcher: Callable | None,
+) -> dict[str, Any]:
     if fetch is None:
         fetch = _truthy(ask("Fetch live /v1/models catalogs? [y/N] "), False)
-    if fetch:
-        print("Fetching…")
-        catalog = fetch_catalog(runtime, fetcher=fetcher, persist=True)
-        for ep, entry in (catalog.get("endpoints") or {}).items():
-            status = f"{len(entry.get('models') or [])} models" if entry.get("ok") else f"FAIL {entry.get('error')}"
-            print(f"  {ep}: {status}")
+    if not fetch:
+        return catalog
+    print("Fetching…")
+    catalog = fetch_catalog(runtime, fetcher=fetcher, persist=True)
+    for ep, entry in (catalog.get("endpoints") or {}).items():
+        status = f"{len(entry.get('models') or [])} models" if entry.get("ok") else f"FAIL {entry.get('error')}"
+        print(f"  {ep}: {status}")
+    return catalog
 
-    numbered = available_refs(runtime, catalog)
-    print_numbered(numbered)
 
+def _pick_tiers(
+    ask: Ask,
+    numbered: list[str],
+    raw: dict[str, Any],
+) -> tuple[str | None, str | None]:
     print_current("critical-tier (orchestrator/developer/reviewer/…)", _tier_snapshot(raw, "critical"))
     print_current("default_model", extra=_default_model(raw) or "(unset)")
     crit = _pick(ask, "Critical-tier model", numbered, _default_model(raw))
-
     print_current("cheap-tier (jr_reviewer/archivist/…)", _tier_snapshot(raw, "cheap"))
     cheap_vals = list(dict.fromkeys(_tier_snapshot(raw, "cheap").values()))
     cheap_current = cheap_vals[0] if len(cheap_vals) == 1 else (", ".join(cheap_vals) if cheap_vals else None)
     cheap = _pick(ask, "Cheap-tier model", numbered, cheap_current)
+    return crit, cheap
 
-    register = bool(catalog_refs(catalog))
+
+def _apply_tiers(
+    raw: dict[str, Any],
+    crit: str | None,
+    cheap: str | None,
+    register: bool,
+    catalog: dict[str, Any],
+) -> bool:
     dirty = False
     if crit:
         assign_tier(raw, "critical", crit, register=register, also_default=True, catalog=catalog)
@@ -174,66 +183,91 @@ def run_configure(  # noqa: C901
         dirty = True
     else:
         print("  cheap-tier unchanged")
+    return dirty
 
+
+def _edit_agent_overrides(
+    raw: dict[str, Any],
+    numbered: list[str],
+    ask: Ask,
+    register: bool,
+    catalog: dict[str, Any],
+) -> bool:
     print_current("per-agent overrides", list_assignments(raw))
-    if _truthy(ask("Override individual agents? [y/N] "), False):
-        known = sorted({*TIER_AGENTS["critical"], *TIER_AGENTS["cheap"], *list_assignments(raw)})
-        print("  agents: " + ", ".join(known))
-        while True:
-            name = ask("  agent name [enter = no more]: ").strip()
-            if not name:
-                break
-            current_ref = list_assignments(raw).get(name)
-            print_current(f"agent {name}", extra=f"current model = {current_ref or '(unset)'}")
-            ref = _pick(ask, f"Model for {name}", numbered, current_ref)
-            if not ref:
-                print("  unchanged")
-                continue
-            assign_agents(raw, [name], ref, register=register, catalog=catalog)
-            print(f"    {name} → {ref}")
-            dirty = True
+    if not _truthy(ask("Override individual agents? [y/N] "), False):
+        return False
+    known = sorted({*TIER_AGENTS["critical"], *TIER_AGENTS["cheap"], *list_assignments(raw)})
+    print("  agents: " + ", ".join(known))
+    dirty = False
+    while True:
+        name = ask("  agent name [enter = no more]: ").strip()
+        if not name:
+            break
+        current_ref = list_assignments(raw).get(name)
+        print_current(f"agent {name}", extra=f"current model = {current_ref or '(unset)'}")
+        ref = _pick(ask, f"Model for {name}", numbered, current_ref)
+        if not ref:
+            print("  unchanged")
+            continue
+        assign_agents(raw, [name], ref, register=register, catalog=catalog)
+        print(f"    {name} → {ref}")
+        dirty = True
+    return dirty
 
-    prompts_path = prompts_file_path(cfg_path)
-    prompts = load_raw_json(prompts_path) if prompts_path.exists() else {}
+
+def _edit_prompts(prompts: dict[str, Any], ask: Ask) -> bool:
     prompt_names = sorted(k for k in prompts if not str(k).startswith("_"))
     print_current("agent prompts", extra=", ".join(prompt_names) if prompt_names else "(none)")
-    if _truthy(ask("Edit an agent system prompt? [y/N] "), False):
-        while True:
-            name = ask("  agent to edit [enter = no more]: ").strip()
-            if not name:
-                break
-            try:
-                current = prompt_text(prompts, name)
-            except KeyError:
-                current = ""
-                print("  (new agent — no existing prompt)")
-            preview = current.replace("\n", " ")[:160]
-            print_current(
-                f"prompt {name}",
-                extra=f"{len(current)} chars: {preview}{'\u2026' if len(current) > 160 else ''}",
-            )
-            path = ask("  replacement file [enter = no change, '.' = paste]: ").strip()
-            if not path:
-                print("  unchanged")
-                continue
-            if path == ".":
-                print("  Paste prompt. End with a line containing only END")
-                lines: list[str] = []
-                while True:
-                    line = ask("")
-                    if line.strip() == "END":
-                        break
-                    lines.append(line)
-                text = "\n".join(lines).strip() + "\n"
-            else:
-                text = Path(path).read_text(encoding="utf-8")
-            if not text.strip():
-                print("  empty — unchanged")
-                continue
-            set_prompt_text(prompts, name, text)
-            print(f"    updated {name} ({len(text)} chars)")
-            dirty = True
+    if not _truthy(ask("Edit an agent system prompt? [y/N] "), False):
+        return False
+    dirty = False
+    while True:
+        name = ask("  agent to edit [enter = no more]: ").strip()
+        if not name:
+            break
+        try:
+            current = prompt_text(prompts, name)
+        except KeyError:
+            current = ""
+            print("  (new agent — no existing prompt)")
+        preview = current.replace("\n", " ")[:160]
+        print_current(
+            f"prompt {name}",
+            extra=f"{len(current)} chars: {preview}{'\u2026' if len(current) > 160 else ''}",
+        )
+        path = ask("  replacement file [enter = no change, '.' = paste]: ").strip()
+        if not path:
+            print("  unchanged")
+            continue
+        if path == ".":
+            print("  Paste prompt. End with a line containing only END")
+            lines: list[str] = []
+            while True:
+                line = ask("")
+                if line.strip() == "END":
+                    break
+                lines.append(line)
+            text = "\n".join(lines).strip() + "\n"
+        else:
+            text = Path(path).read_text(encoding="utf-8")
+        if not text.strip():
+            print("  empty — unchanged")
+            continue
+        set_prompt_text(prompts, name, text)
+        print(f"    updated {name} ({len(text)} chars)")
+        dirty = True
+    return dirty
 
+
+def _validate_and_write(
+    cfg_path: Path,
+    raw: dict[str, Any],
+    prompts: dict[str, Any],
+    prompts_path: Path,
+    dirty: bool,
+    ask: Ask,
+    write: bool,
+) -> bool:
     problems = validate_assignments(raw, prompts=prompts if prompts else None)
     if problems:
         print("Validation notes:")
@@ -258,6 +292,37 @@ def run_configure(  # noqa: C901
         print("[dry-run] skipped write")
     else:
         print("Not written — working copy only")
-
     print_resulting_config(raw, prompts if prompts else None)
+    return do_write
+
+
+def run_configure(
+    *,
+    cfg_path: Path,
+    raw: dict[str, Any],
+    runtime: dict[str, Any],
+    catalog: dict[str, Any],
+    ask: Ask,
+    fetch: bool | None = None,
+    write: bool = True,
+    fetcher: Callable | None = None,
+) -> dict[str, Any]:
+    """Drive the wizard. Returns the mutated raw config."""
+    _print_config_header(cfg_path, raw, catalog)
+    catalog = _fetch_catalog_if_requested(runtime, catalog, ask, fetch, fetcher)
+
+    numbered = available_refs(runtime, catalog)
+    print_numbered(numbered)
+
+    crit, cheap = _pick_tiers(ask, numbered, raw)
+
+    register = bool(catalog_refs(catalog))
+    dirty = _apply_tiers(raw, crit, cheap, register, catalog)
+    dirty = _edit_agent_overrides(raw, numbered, ask, register, catalog) or dirty
+
+    prompts_path = prompts_file_path(cfg_path)
+    prompts = load_raw_json(prompts_path) if prompts_path.exists() else {}
+    dirty = _edit_prompts(prompts, ask) or dirty
+
+    _validate_and_write(cfg_path, raw, prompts, prompts_path, dirty, ask, write)
     return raw
