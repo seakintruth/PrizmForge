@@ -60,7 +60,7 @@ class EndpointHealth:
     def __init__(self, endpoint_name: str | None = None):
         self.endpoint_name = endpoint_name
         self.status = EndpointStatus.HEALTHY
-self.last_error: datetime | None = None
+        self.last_error: datetime | None = None
         self.last_http_dump = None  # memory-only; too large / sensitive for SQLite
         self.error_count = 0
         self.last_success = datetime.now()

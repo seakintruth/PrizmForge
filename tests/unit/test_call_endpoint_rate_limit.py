@@ -294,11 +294,7 @@ def test_429_quota_body_token_parks_and_does_not_hop(call_endpoint_env, capfd):
     scripted = [
         _resp(
             429,
-            {
-                "error": {
-                    "message": "free-models-per-day daily quota. Add 10 credits to unlock more."
-                }
-            },
+            {"error": {"message": "free-models-per-day daily quota. Add 10 credits to unlock more."}},
             headers={"Content-Type": "application/json"},
         )
     ]

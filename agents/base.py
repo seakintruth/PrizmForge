@@ -352,7 +352,7 @@ def call_endpoint(  # noqa: C901
                 except (TypeError, ValueError):
                     retry_after = 60
 
-# Quota-vs-burst: Remaining==0 or body keywords, not Reset alone.
+                # Quota-vs-burst: Remaining==0 or body keywords, not Reset alone.
                 rl_info = classify_rate_limit(resp.headers, body_text=getattr(resp, "text", "") or "")
                 if rl_info.is_quota:
                     reset_epoch = rl_info.reset_epoch
@@ -360,11 +360,7 @@ def call_endpoint(  # noqa: C901
                     if wait > 60:
                         endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
                         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
-                        reset_label = (
-                            time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(reset_epoch))
-                            if reset_epoch is not None
-                            else "later"
-                        )
+                        reset_label = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(reset_epoch)) if reset_epoch is not None else "later"
                         print(f"   Daily quota exhausted (free-models-per-day pattern) — reset {reset_label}; parking {endpoint.name} for 15m")
                         fallback = endpoint_mgr.get_fallback_model(endpoint)
                         if fallback:
@@ -378,8 +374,13 @@ def call_endpoint(  # noqa: C901
                             )
                             print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
                             return call_endpoint(
-                                messages, max_tokens, temperature, fallback_model,
-                                retry_count, task_id, agent_name,
+                                messages,
+                                max_tokens,
+                                temperature,
+                                fallback_model,
+                                retry_count,
+                                task_id,
+                                agent_name,
                             )
                         return None, 0
                     if wait <= 0 and reset_epoch is None:
@@ -399,8 +400,13 @@ def call_endpoint(  # noqa: C901
                             )
                             print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
                             return call_endpoint(
-                                messages, max_tokens, temperature, fallback_model,
-                                retry_count, task_id, agent_name,
+                                messages,
+                                max_tokens,
+                                temperature,
+                                fallback_model,
+                                retry_count,
+                                task_id,
+                                agent_name,
                             )
                         return None, 0
                     sleep_for = max(1.0, wait)
