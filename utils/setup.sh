@@ -840,6 +840,28 @@ echo "To install the project in editable mode later, run:"
 echo "  pip install -e ."
 echo "=============================================================="
 
+# -----------------------------------------------------------------------------
+# Convenience wrapper: after a plain (non-sourced) run on a real terminal,
+# exec into an interactive bash with the repo venv ALREADY active, so the
+# caller doesn't have to remember `source .venv/bin/activate`.
+#
+# Skipped when:
+#   * the script was sourced (sourcing already activates this shell), or
+#   * stdin/stdout are not a TTY (CI, pipes, cron — plain runs unaffected), or
+#   * the repo's venv is already the active VIRTUAL_ENV.
+# -----------------------------------------------------------------------------
+if [[ "${BASH_SOURCE[0]}" == "$0" && -t 0 && -t 1 && "${VIRTUAL_ENV:-}" != "${VENV_DIR}" ]]; then
+  persist_rc="$(mktemp "${TMPDIR:-/tmp}/prizmforge-persist.XXXXXX")"
+  {
+    printf '[ -f "$HOME/.bashrc" ] && source "$HOME/.bashrc"\n'
+    printf 'source "%s/bin/activate"\n' "$VENV_DIR"
+  } > "$persist_rc"
+  echo ""
+  echo "Launching an interactive shell with this repo's venv already active..."
+  echo "Exit it (Ctrl-D or 'exit') to return to your original shell."
+  exec bash --rcfile "$persist_rc" -i
+fi
+
 # Hint for sourced execution
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   :
