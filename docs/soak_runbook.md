@@ -14,22 +14,33 @@ turn a soak's artifacts into an analysis report.
 
 ## 1. Layout
 
-All soak state lives under the git-ignored `.soak/` directory:
+All soak state lives **outside the PrizmForge source repo**, under `SOAK_ROOT`.
+The default is `PrizmForge-Soak/` one directory above the repo, so a soak never
+sits on a git-ignored path of the enclosing repo (which would defeat the shell
+developer's edit collection). Override with `SOAK_ROOT=/path`:
 
 ```
-<repo>/utils/soak-setup.sh                this script
-<repo>/.soak/SoakN/PrizmForge             controller copy  (runs ./main.py)
-<repo>/.soak/SoakN-target/PrizmForge      edit target      (the copy being mutated)
-<repo>/.soak/SoakN-target/PrizmForge/
-   .PrizmForge/agents.db                  runtime analytics DB (generated)
+<repo>/utils/soak-setup.sh                           this script
+<parent>/PrizmForge-Soak/SoakN/PrizmForge            controller copy (runs ./main.py)
+<parent>/PrizmForge-Soak/SoakN-target/PrizmForge     edit target     (the copy being mutated)
+<parent>/PrizmForge-Soak/SoakN-target/PrizmForge/
+   .PrizmForge/agents.db                             runtime analytics DB (generated)
 ```
 
 - The controller's `config.json` is rewritten so
   `project_directory = "../../SoakN-target/PrizmForge"`.
-- The controller gets a **fresh single-commit git repo** on branch
-  `soak/N` (no history is copied). The target is created without git.
+- The source repo's **`.git` history is copied** into both the controller and
+  the target, and each gets its own branch (`soak/N` for the controller,
+  `soak/N-target` for the target) at the source's HEAD. The source must be
+  clean (no tracked, uncommitted changes) so the copied working tree matches
+  HEAD — `soak-setup.sh` fails early otherwise. The target's repo is what the
+  mini-swe shell developer's git-worktree machinery needs: it lets
+  `git rev-parse` resolve to the target itself and `collect_changes()` stage +
+  diff tracked edits so governed proposals can materialize. Previously the
+  target was created *without git*, which silently produced zero collected
+  edits.
 - Analytics (`agents.db`) are generated at runtime inside the
-  **target's** `.PrizmForge/` — the state dir name is `.PrizmForge` but both
+  **target's** `.PrizMForge/` — the state dir name is `.PrizmForge` but both
   casings (`.prizmforge`) are treated identically. `main.py` stdout stays on
   the controller terminal (default buffering); nothing is written to a file.
 
@@ -37,18 +48,21 @@ All soak state lives under the git-ignored `.soak/` directory:
 
 `copy_tree` excludes, at any depth:
 
-`.soak/`, `.git/`, `.PrizmForge/`, `.prizmforge/`, `shell_trajectories/`,
+`.PrizmForge/`, `.prizmforge/`, `shell_trajectories/`,
 `*.db`, `*.db-wal`, `*.db-shm`, `__pycache__/`, `.pytest_cache/`,
 `.mypy_cache/`, `.ruff_cache/`, `*.pyc`.
 
-Why this matters:
+The source's `.git` **is** copied (so soaks start with full history and a
+clean HEAD). What is excluded:
+
 - A soak always **starts with fresh process + analytics state**. The target
-  generates its own `.PrizmForge/agents.db`, so no prior `endpoint_health`
+  generates its own `.PrizMForge/agents.db`, so no prior `endpoint_health`
   cooldowns, `resource_decisions` or token budgets are inherited — anything a
   run shows about throttling or budget is *its own* behaviour.
 - No local dev state (API locks, trajectories, secrets in DBs) leaks into a
   soak copy.
-- Copies stay small and flat; `.soak/` never nests inside itself.
+- `git status` in a soak side is clean at start (enforced by the clean-source
+  check) and each side branches from the copied HEAD.
 
 ### Retention across rounds
 
@@ -59,11 +73,11 @@ Running soak `N` first reduces every earlier soak to its **analytics only**:
   `agents.db`, reports, indexes). Where a soak produced no
   analytics it is emptied entirely.
 - Re-running the *same* `N` with `--force` first **shelves** the current
-  analytics into `.soak/archive/SoakN.../PrizmForge/.PrizmForge/` before the
-  tree is rebuilt, so history is never silently destroyed.
+  analytics into `$SOAK_ROOT/archive/SoakN.../PrizmForge/.PrizmForge/` before
+  the tree is rebuilt, so history is never silently destroyed.
 
-So the steady-state footprint of `.soak/` is a handful of analytics dirs, not
-full repo copies.
+So the steady-state footprint of `$SOAK_ROOT` is a handful of analytics dirs,
+not full repo copies.
 
 ## 3. Requirements
 
@@ -87,11 +101,15 @@ SOAK_ROOT=/path ./utils/soak-setup.sh --dry-run
 
 The script:
 1. Picks `N` (next unused, monotonic over existing `Soak*` dirs).
-2. Purges `Soak1..Soak(N-1)` to analytics (see §2).
-3. Copies source → controller and → target (with the exclusions above).
-4. Rewrites the controller `project_directory` and validates it resolves.
-5. Creates a fresh snapshot commit and checks out branch `soak/N`.
-6. Runs `main.py` with stdout on the controller terminal (default
+2. Fails early if the source repo has tracked, uncommitted changes (so the
+   copied tree matches the copied HEAD).
+3. Purges `Soak1..Soak(N-1)` to analytics (see §2).
+4. Copies source (including its `.git`) → controller and → target, excluding
+   analytics/caches.
+5. Rewrites the controller `project_directory` and validates it resolves.
+6. Checks out branch `soak/N` in the **controller** and `soak/N-target` in the
+   **target**, both at the copied HEAD.
+7. Runs `main.py` with stdout on the controller terminal (default
    buffering — no file capture).
 
 A typical start:
@@ -169,10 +187,10 @@ Suggested analysis loop:
 
 ## 7. Operations notes
 
-- **Never edit anything under `.soak/`.** It is disposable analysis state.
+- **Never edit anything under `$SOAK_ROOT`.** It is disposable analysis state.
   Changes belong in the main repo; re-`soak-setup` to bake them into a copy.
 - Soak numbering is monotonic; purged dirs still occupy their number.
 - `--force` on an existing `N` shelves that soak's analytics into
-  `.soak/archive/` first — nothing is ever destroyed out of hand.
-- Anything that starts with `.retain-` in `.soak/` is a leftover of a
+  `$SOAK_ROOT/archive/` first — nothing is ever destroyed out of hand.
+- Anything that starts with `.retain-` in `$SOAK_ROOT` is a leftover of a
   purge that was interrupted; it is safe to delete.

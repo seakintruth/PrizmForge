@@ -1,0 +1,154 @@
+{
+  "_readme": "Template for config.json. Copy this file and fill in your values. Keys starting with _ are for documentation only.",
+  "project_directory": "../SoakDbsForPrizmForge/Soak9/PrizmForge",
+  "git": false,
+  "git_auto_commit": false,
+  "default_iteration_minutes": 5,
+  "min_iterations_before_complete": 3,
+  "background_agents_enabled": true,
+  "default_model": "opencode/big-pickle",
+  "cli_mode": {
+    "mode": "unattended",
+    "unattended": {
+      "max_duration_hours": 8.0,
+      "auto_continue": true,
+      "checkpoint_interval_minutes": 15,
+      "max_iterations_per_task": 30,
+      "auto_generate_tasks": true,
+      "stop_when_backlog_empty": true,
+      "seed_tasks": [
+        "Review the repository's plans, ideas and todos. resolve what you can."
+      ]
+    }
+  },
+  "endpoints": {
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "include_model_in_payload": true,
+      "response_path": [
+        "choices",
+        0,
+        "message",
+        "content"
+      ],
+      "description": "openrouter endpoint (added by setup)",
+      "priority": 10,
+      "rate_limit_per_minute": 16,
+      "models": {
+        "openrouter/free": {}
+      }
+    },
+    "opencode": {
+      "base_url": "https://opencode.ai/zen/v1/chat/completions",
+      "include_model_in_payload": true,
+      "response_path": [
+        "choices",
+        0,
+        "message",
+        "content"
+      ],
+      "description": "opencode endpoint",
+      "priority": 10,
+      "rate_limit_per_minute": 16,
+      "models": {
+        "big-pickle": {}
+    }
+    }
+  },
+  "default_endpoint": "openrouter",
+  "fallback_settings": {
+    "enabled": true,
+    "max_fallback_attempts": 2
+  },
+  "agent_model_preferences": {
+    "orchestrator": "opencode/big-pickle",
+    "developer": "opencode/big-pickle",
+    "reviewer": "opencode/big-pickle",
+    "researcher": "opencode/big-pickle",
+    "prioritizer": "opencode/big-pickle",
+    "security_reviewer": "opencode/big-pickle",
+    "deployment_validator": "opencode/big-pickle",
+    "jr_reviewer": "opencode/big-pickle",
+    "jr_researcher": "opencode/big-pickle",
+    "tech_writer": "opencode/big-pickle",
+    "file_manager": "opencode/big-pickle",
+    "archivist": "opencode/big-pickle",
+    "project_reporter": "opencode/big-pickle",
+    "resource_controller": "opencode/big-pickle"
+  },
+  "proxy": {
+    "http": "",
+    "https": "",
+    "_note": "Leave empty to disable proxy"
+  },
+  "token_budget": {
+    "max_tokens_per_4h": 5000000
+  },
+  "reporter": {
+    "enabled": true,
+    "interval_minutes": 10
+  },
+  "resource_controller": {
+    "enabled": true,
+    "max_tokens_per_day": 20000000,
+    "model_downgrades": {
+      "default_model": "opencode/big-pickle",
+      "critical": {
+        "orchestrator": "opencode/big-pickle",
+        "developer": "opencode/big-pickle",
+        "prioritizer": "opencode/big-pickle",
+        "security_reviewer": "opencode/big-pickle"
+      },
+      "aggressive": {
+        "jr_reviewer": "opencode/big-pickle",
+        "jr_researcher": "opencode/big-pickle",
+        "tech_writer": "opencode/big-pickle"
+      }
+    }
+  },
+  "background_agents": {
+    "jr_reviewer": {
+      "enabled": true,
+      "on_modification": true,
+      "random_review": true
+    },
+    "security_reviewer": {
+      "enabled": true,
+      "on_modification": true
+    }
+  },
+  "file_editing": {
+    "preferred_modes": [
+      "guid",
+      "diff",
+      "find_replace",
+      "full_replace"
+    ],
+    "fallback_order": [
+      "guid",
+      "find_replace",
+      "full_replace"
+    ],
+    "small_file_threshold_lines": 180
+  },
+  "developer": {
+    "implementation": "shell",
+    "_note": "shell = worktree + bash loop (workflow/shell_developer.py) using mini-swe-agent ; edit_payload = legacy structured EditPayload flow"
+  },
+  "content_safety": {
+    "disallow_binary_content": true,
+    "blocked_extensions": [
+      ".exe",
+      ".dll",
+      ".bin",
+      ".iso",
+      ".msi",
+      ".dmg",
+      ".appx"
+    ]
+  },
+  "llm": {
+    "test_mode": false,
+    "_note": "Set to true or use PRIZMFORGE_TEST_MODE=1 to disable real API calls"
+  }
+}

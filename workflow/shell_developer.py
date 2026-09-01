@@ -167,8 +167,22 @@ class ShellWorktree:
         try:
             self._sub_rel = self.project_directory.relative_to(self.repo_root)
         except ValueError:
+            # git rev-parse resolves a repo that contains project_directory, so
+            # this is defensive only; fall back to repo root.
             self._sub_rel = Path(".")
-
+        # Refuse a target that the resolved repo explicitly ignores. This is the
+        # soak bug: a target under the enclosing repo but git-ignored (e.g.
+        # .soak/) cannot be staged by git worktree + collect_changes(), so
+        # governed edits there would be silently lost while the developer burns
+        # quota producing nothing. Fail loud instead.
+        ign = self._git("check-ignore", "-q", str(self.project_directory))
+        if ign.returncode == 0:
+            raise RuntimeError(
+                f"shell developer: project_directory '{self.project_directory}' is git-ignored by "
+                f"repository '{self.repo_root}'. git cannot track changes to an ignored path, so "
+                f"governed edits would never be collected. Remove the path from .gitignore or point "
+                f"project_directory at a tracked, inside-repo location."
+            )
         self._parent.mkdir(parents=True, exist_ok=True)
         workdir = Path(tempfile.mkdtemp(prefix="pf-shelldev-", dir=str(self._parent)))
         self.path = workdir / "wt"

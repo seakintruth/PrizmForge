@@ -118,6 +118,37 @@ def test_worktree_requires_git_repo(tmp_path):
         wt.create()
 
 
+def test_worktree_fails_loud_when_project_outside_repo(tmp_path):
+    # project_directory lives outside ANY git repository: the first guard
+    # (rev-parse fails) must fail loud instead of editing a tree git cannot
+    # track.
+    plain = tmp_path / "not_a_repo"
+    plain.mkdir()
+    wt = sd.ShellWorktree(plain)
+    with pytest.raises(RuntimeError, match="git repository"):
+        wt.create()
+
+
+def test_worktree_fails_loud_when_project_gitignored(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "config", "user.email", "t@example.com"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Tester"], cwd=str(repo), capture_output=True)
+    (repo / "app.py").write_text("VALUE = 1\n")
+    (repo / ".gitignore").write_text("ignored_dir/\n")
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), capture_output=True)
+    subprocess.run(["git", "commit", "-qm", "init"], cwd=str(repo), capture_output=True)
+
+    ignored = repo / "ignored_dir"
+    ignored.mkdir()
+    (ignored / "app.py").write_text("VALUE = 2\n")
+
+    wt = sd.ShellWorktree(ignored)
+    with pytest.raises(RuntimeError, match="git-ignored"):
+        wt.create()
+
+
 # =========================================================================
 # End-to-end turn with mocked LLM + reviewer
 # =========================================================================
