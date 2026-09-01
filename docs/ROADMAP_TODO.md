@@ -9,9 +9,157 @@ design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_
 
 **Last updated:** 2026-08-31
 
+## 0.0 Handle short retry after 429 or 503 errors
+
+This can stay on standard HTTP. The change is policy in PrizmForge: honor a **short advertised wait**, retry **once on the same endpoint**, then fallback. No new error type.
+
+### 0.1 Goal
+
+When a completion returns `429` or `503` with an advertised wait **≤ 600 seconds**, treat that attempt as a brief outage (including GPU warm-up):
+
+1. Parse the wait.  
+2. Latch the endpoint for that many seconds.  
+3. Sleep.  
+4. Retry the **same** endpoint and model **once**.  
+5. If that retry fails, take the existing fallback path (`get_fallback_model` / OpenRouter in your dump).
+
+Waits **above 600 seconds** stay on today’s path: `Rate limit cooldown too long` → fallback immediately. That is what `Retry-After: 42534` plus `FreeUsageLimitError` must continue to do.
+
+### 0.2 Decision table
+
+| Response | Advertised wait | Action |
+|---|---|---|
+| `200` with usable `choices[0].message.content` | — | Success; `mark_success()` |
+| `503` or `429` | 1–600 s | Wait that long, **retry same once** |
+| `503` or `429` | missing / unparseable | Use current fixed cooldown (503 → 5 min, 429 → 2 min), then retry same once |
+| `503` or `429` | **> 600 s** | Do **not** wait; fallback now |
+| `401` / `402` | — | Unchanged (`KEY_LOCKED` / `TOKEN_EXHAUSTED`) |
+| Retry after wait still `4xx`/`5xx` or empty | — | Fallback; do not wait a second time |
+
+Optional hint `X-Retry-Same: 1` may be logged; it must not be required. Classification is status + bounded `Retry-After` only.
+
+### 0.3 Where the wait comes from
+
+Prefer, in order:
+
+1. Header `Retry-After` (delta-seconds or HTTP-date)  
+2. JSON `error.retry_after_seconds` if present  
+3. Status default: `429` → 120 s, `503` → 300 s  
+
+Clamp a parsed value into `[1, 600]`. Values above 600 are **not** clamped into a 10-minute sleep; they trip the “too long → fallback” branch.
+
+Put the parser next to the existing header work in `core/rate_limit_headers.py` (or a small helper beside it). `core/http_diag.py` already prints `Retry-After`; reuse that extraction so the dump and the latch see the same number.
+
+## 0.4 Where to implement it
+
+The raw client (`core/http_client.py`) should stay a single POST. The loop belongs in the caller that already does health + fallback — `core/endpoint_manager.py` and whatever wraps `call_endpoint()` in `workflow/`.
+
+Suggested shape:
+
+```text
+attempt 1
+  POST
+  if success → record success, return
+  wait = advertised_wait(status, headers, body)
+  if wait is None or wait > 600:
+      mark_failure(...)
+      fallback
+  mark_failure(SERVER_ERROR or RATE_LIMITED, cooldown_seconds=wait)
+  log "⏳ Retry-After Ns — retry same endpoint once"
+  sleep(wait)
+
+attempt 2  (same endpoint, same payload)
+  POST
+  if success → mark_success, return
+  mark_failure(...)
+  fallback
+```
+
+`EndpointHealth.mark_failure` today takes **minutes** and ignores the header (`RATE_LIMITED` 2 min, `SERVER_ERROR` 5 min). Extend it to accept `cooldown_seconds` derived from `Retry-After`. Keep the old minute table only when no header is present.
+
+Do **not** record a warm-up `503` as a model-quality failure in `core/model_health.py` until the **retry** also fails. Otherwise one GPU swap will demote a healthy Qwen after `down_streak: 2`.
+
+### 0.5 Config
+
+Add under global fallback / endpoint settings (defaults shown):
+
+```json
+"retry_after": {
+  "honor": true,
+  "max_wait_seconds": 600,
+  "same_endpoint_retries": 1,
+  "fallback_if_wait_exceeds_max": true
+}
+```
+
+`same_endpoint_retries: 1` is the whole policy. Do not add a `warmup` flag or a new `EndpointStatus`.
+
+### 0.6 Logging (match the dump you already have)
+
+First failure:
+
+```text
+HTTP 503
+endpoint: clore_qwen
+Retry-After: 120
+⏳ Advertised wait 120s (≤ 600s) — retry same endpoint once
+```
+
+Wait too long:
+
+```text
+HTTP 429
+Retry-After: 42534
+⏳ Rate limit cooldown too long (42534s)
+→ Falling back to openrouter/openrouter/free
+```
+
+Retry still failing:
+
+```text
+HTTP 503
+same-endpoint retry exhausted
+→ Falling back to ...
+```
+
+While the latch is active, other agents should see the existing skip line (`Not calling the API — cooldown remaining Ns`) and wait on the **same** latch rather than each starting their own 600 s sleep. One shared `unavailable_until` on `EndpointHealth` already does that if the first caller sets it before sleeping.
+
+### 0.7 Tests
+
+Put them next to existing endpoint/health tests:
+
+1. `503` + `Retry-After: 90` → one sleep of 90 s (mock), second POST succeeds, **no** fallback.  
+2. `429` + `Retry-After: 42534` → no long sleep, fallback immediately.  
+3. `503` + `Retry-After: 600` → wait 600 s, retry once.  
+4. `503` + `Retry-After: 601` → fallback, no wait.  
+5. `503` with no header → default 300 s, retry once.  
+6. First `503` + wait, second `503` → fallback.  
+7. HTTP-date `Retry-After` within 600 s → honored.  
+8. Concurrent agents: only one wait; others observe the latch.  
+9. Successful retry does **not** increment `model_health` failure streak.
+
+Sleep must be injected so tests do not actually wait 600 s.
+
+### 0.8 Out of scope for this change
+
+- New error types (`ModelWarmingError`, `gpu_warming`).  
+- Raising `model_health` `down_max_seconds` to absorb warm-up; the endpoint latch is the right layer.
+
+### 0.9 Suggested sequence
+
+1. Parser + unit tests for `Retry-After` and the 600 s cap.  
+2. `mark_failure(..., cooldown_seconds=)`.  
+3. Same-endpoint retry loop around the existing POST.  
+4. Skip `record_model_outcome(ok=False)` until the retry fails.  
+5. Log lines that distinguish “wait and retry same” from “cooldown too long → fallback.”  
+6. Manual check with a stub server that returns 503 + `Retry-After: 2`, then 200.
+
+That is the full engine-side plan: standard `503`/`429` + advertised wait, honor up to 600 seconds as a one-shot same-endpoint retry, then fallback — including the 32B warm-up case without a custom response type.
+
+
 ---
 
-## 0. Deployed state & PR map
+## 1. Deployed state & PR map
 
 - `main` @ `8be697f` = **roadmap stamp for Soak9 recompute pass 2 (a9–f9)**; functional tip `6d79e5d` — see §1 (2026-08-29).
 - **Soak2 recompute pass 3 — mutation-path priority (d9/index hardening)**: Soak2 (2026-08-29 16:13–~20:30) exposed that d9 counted transport-failed sessions as stall → the developer froze for whole tasks while Resource Controller reasoned *"freeze: prioritizer + developer only"*. Fixed at root (see `## 1` pass-3 entry): failed/uncompleted sessions are **neutral**, genuine finished-zero-change sessions alone build the streak, and the latch **self-heals** every `rearm_after` iterations. README now documents **Operator Principle #1 — the mutation path is the most unblocked path**. Gate → **901 passed**.
@@ -32,76 +180,6 @@ Opening from `main` (`8be697f`) against `base: cf30bee` (`origin/main`).
 
 ---
 
-## 1. Merged residuals — PR #95 follow-ups (P-series) + soak recompute (W-series)
-
-Both series were re-derived during the 2026-08-28/29 soak review of the PR #95
-merge. **Root cause under test:** Soak9 emitted a single 1155-event developer
-burst (all files × all agents) that shared the core loop's `RateLimiter` and
-`TokenBudget` → the 429 flood that stalled the whole run.
-
-Status: **SHIPPED & MERGED** in `26566f3` (2026-08-29, gate 848 → 877).
-
-### P-series (review residuals)
-
-- [x] **P1 — Bare single-op payloads** — `EditPayload.model_validate` wraps a bare single op dict (no `operations` key); `developer_edit._normalize_payload` handles a bare `type` payload, mapping `create_file`/`full_replace` → `MODE_FULL_REPLACE` and `apply_diff` → `MODE_DIFF`; empty-ops payload raises `ValueError`. Tests: `test_developer_edit_helpers.py`, `TestBareSingleOpPayload` in `test_proposal_builder_regressions.py`.
-- [x] **P2 — Delete-then-recreate row dedupe** — `proposal_builder._get_or_create_file_id` resurrects a soft-deleted (`is_deleted=1`) file row instead of creating a duplicate; no `is_deleted` filter in the lookup. Tests: `TestDeleteThenRecreate` in `test_proposal_builder_regressions.py`.
-- [x] **P3 — Seed feedback excluded from backlog/backpressure** — seed rows (`category = 'seed_task'`) no longer count toward `backlog_metrics.unaddressed`, the task_runner COUNT/top/next-item queries, or RC `_check_feedback_backlog` tier escalation (190 real rows ≠ freeze even with 220 rows on disk). Tests: `test_backlog_growth.py`.
-- [x] **P4 — Diagnostic data window watermark** — `_print_data_window` reports the newest record timestamp per table group with correct ordering columns (events `ts`, file_write_log `completed_at`, tasks `COALESCE(completed_at, started_at)`, errors `timestamp`, edit_proposals `created_at`) and `T`-normalized rendering. Tests: `test_query_developer_responses.py`.
-- [x] **P5 — Write-log reflects the ruff gate** — the `file_write_log` row flips to `status='lint_failed'` when the in-process ruff pre-check fails (single real status, closed loop with the `edit.lint_failed` event + CRITICAL feedback). Tests: `test_lint_precheck.py`.
-- [x] **P6 — Task finalize on hard stops** — `task_runner` finalizes the task (reason `"token budget exhausted"` / `"KeyboardInterrupt"`) on budget exhaustion and Ctrl-C instead of leaving an orphaned run.
-- [x] **P7 — `log_error` argument-order + kwarg hygiene, severity-first** — every `log_error(severity, …)` call site fixed (writer, editing, proposal_builder, parallel_workers); the invalid `file_id=` keyword moved into `details={"file_id": …}`; `agents/base.py` was already kwargs-correct.
-- [x] **P8 — Failed disk unlink never hides** — `_delete_file_from_disk` OSError (e.g. unlink on a directory, permissions) now returns an `error` result so materialize logs a write-log error row instead of leaving the governed store deleted with the disk file alive. Tests: `test_delete_file_op.py`.
-- [x] **P9 — Shell turn success = EVERY gate landed** — a mixed approve/reject session returns `status="error"` (never `success`); all-rejected → `"rejected"`. Tests: `test_shell_developer.py`.
-- [x] **P10 — Reviewer call accounting is honest** — `ReviewerVerdict.calls_used` (1 normal / 2 after same-prompt retry) surfaced on the verdict; both `developer_edit.py` and `shell_developer.py` increment `reviewer_calls` from the verdict. Tests: `test_reviewer_gate.py`.
-- [x] **P11 — Non-hollow test fixes** — `test_query_developer_responses.py` tautology (`or True`) → real assertions; `test_network_busy_loop.py` exact stream-idle semantics (first record after the pause wins, later ones don't); `test_lint_precheck.py` dead `if False else` branch removed + failure marker made hermetic via a monkeypatched `subprocess.run`.
-
-### W-series (soak recompute — burst/429 protection)
-
-- [x] **W1 — Early-exit sessions still ship their WIP** — a shell session stopped by step-limit/user-signal/transport now materializes its worktree edits through the reviewer gate; the real exit status (`session_exit`) is preserved for the loop-guard. Tests: `test_shell_developer.py`.
-- [x] **W2 — Archivist batches + honest retry** — archiving batches at `_ARCHIVE_BATCH_SIZE = 20`; one same-prompt retry only on non-empty unparseable output; an empty transport response is never retried; bus rows are deleted strictly per saved batch (a junk batch keeps its originals). Tests: `test_archivist_context.py`.
-- [x] **W3 — Burn-rate escalation** — RC `optimize()` throttles to MODERATE when `current_burn_rate > rc.burn_rate_warning_per_minute` (default 40_000 tok/min; Soak9 burned 44,560) even at a healthy daily budget % — the burn is what trips the shared per-endpoint budget. Tests: `test_backlog_growth.py`.
-- [x] **W4 — (folded into W5/W6)** — burst suppression is delivered by deferred pool start + lane isolation rather than a new throttle decision.
-- [x] **W5 — Deferred background pool start** — the eager `agent_pool.start()` at cycle entry is gone; the pool starts only after the first successful materialize or after 2 turns (`_ensure_pool_started`), idempotent + FakePool-safe. Tests: `test_task_runner.py`.
-- [x] **W6 — Developer lane isolation** — during a shell session the feedback agents are paused (`set_active_agents([])`) and the previous filter (None = all-active resume) is restored in `finally`; support workers are never touched. Tests: `test_parallel_workers.py`.
-- [x] **W7 — Initial-review queue caps** — both initial-review and modified-file queues are `LIMIT`-capped by `background_agents.initial_review_max_files` (default 25) instead of enqueueing every project file per agent. Tests: `test_parallel_workers.py`.
-- [x] **W8 — Intake-soft pool backoff** — `start()` bumps the feeder to 120s when `event_queue.qsize() > background_agents.intake_soft_batch` (default 100), a pool-level slack valve that cannot deadlock a queued batch (unlike a `ThrottleDecision([])`).
-
-### Soak9 recompute pass 2 (a9–f9) — non-overlapping corrections
-
-Derived from the Soak9 branch inspection (the run executed pre-`26566f3`
-code); each fix was vetted to NOT overlap the P/W series above. **Root cause
-under test:** the run's shared rate-limited endpoint starved the foreground
-developer session while the support pool (prioritizer/archivist/reporter)
-kept streaming LLM cycles into it, and the archivist's conversation-history
-pipeline re-archived the same rows forever with prompts that had no JSON
-contract.
-
-Status: **SHIPPED & MERGED** `bc11cef` … `6d79e5d` (2026-08-29).
-
-- [x] **a9 — Prune `conversation_history` on archive save** — saved conversation batches are deleted in the same transaction (mirroring the message-bus path `DELETE FROM messages`); unsaved (junk) batches keep their rows for re-archive. Soak evidence: 6 `archived_context` snapshots with repeated identical `turn_range` starts and ~110k-char prompts. Tests: `test_archivist_context.py`.
-- [x] **b9 — Strict JSON output contract in archive prompts** — both prompt builders end with `Respond with ONLY this JSON … {"summary": …, "key_decisions": […]}`; keys match `_parse_archive_response`. Soak evidence: 12.6k–28.4k-token prose replies that the tolerant parser could not recover ("Expecting value: line 1 column 1" kept 201/206/209 msg + 597/614 conv batches unarchived). Tests: `test_archivist_context.py`.
-- [x] **c9 — Support workers yield to an active foreground session** — a counter-based `foreground_session_guard()` wraps `session.run` in the shell developer; prioritizer/archivist/reporter loops hold off via `hold_while_foreground_session_active()` (5s probe, still responsive to `stop()`), so the foreground session gets the shared endpoint. Complements W6 lane isolation (feedback agents only). Tests: `test_worker_utils.py`.
-- [x] **d9 — No-progress developer loop guard** — `NoProgressLoopGuard` counts consecutive zero-change developer turns (same signal `_finalize_task` uses for "stalled"); past `NO_PROGRESS_TURNS_THRESHOLD` (3) it posts one HIGH stall summary and redirects developer decisions to background discovery (FAILSAFE-style), including the backlog-mode redirect. Any materialized file resets the streak. Soak evidence: task_002/003/005 `files_modified=0` with "📋 Decision: developer" and "Work: 0.0s" every turn. Tests: `test_task_runner.py`.
-- [x] **e9 — Dedup unchanged prioritizer posts** — `_post_results` keeps a ranked-set signature and skips reposting when unchanged (items still marked processed). Soak evidence: identical HIGH "🎯 PRIORITIZED FEEDBACK" posts every ~60–90s (13:07:57→13:14:57). Tests: `test_prioritizer_phases.py`.
-- [x] **f9 — Coalesce background-worker transport-error telemetry** — `TransportErrorCoalescer` logs ONE HIGH per (agent, category) per 5-min window with repeats at MEDIUM, applied only to background-pool agents via `call_agent`. Soak evidence: 275 HIGH "failed to return a response" rows (prioritizer 173). Tests: `test_worker_utils.py`.
-
-### Soak2 recompute pass 3 (2026-08-29) — mutation-path priority (d9 hardening)
-
-Soak2 ran the fixed build (`89b684c`) and surfaced a regression in **d9**: under
-endpoint degradation (opencode `key_locked` ~1h, openrouter unavailable/
-rate-limited), 10 of 11 tasks stalled `files_modified=0` because the no-progress
-guard counted **transport-failed shell sessions** (`LlmUnavailable`,
-`RepeatedFormatError` — see trajectory files `task_011-turn1..3`) as zero-change
-turns. 3 dead sessions latched the guard, which then held the developer for the
-remainder of each task — directly contradicting Resource Controller's own freeze
-reasoning ("prioritizer + developer only"). The mutation path — the point of the
-loop — was the LEAST unblocked path.
-
-Status: **FIXED** at root (this PR, gate 897 → 901).
-
-- [x] **d9/MU — The mutation path is the most unblocked path** — `_is_uncompleted_session` classifies a developer turn as NEUTRAL when the session never completed (any status other than `success`/`rejected`, except the genuine "session finished but produced no file changes" which still counts); `_record_developer_progress` is fed the structured `mut` result at all three dispatch sites (`task_runner.py` shell, edit_payload, backlog redirect). The `NoProgressLoopGuard` latch now **self-heals**: `record_cycle()` re-arms it every `rearm_after` (default = threshold) iterations, so a recovered endpoint always gets a developer retry. Backlog-redirect branch no longer pauses the developer on failure-derived latches. README documents **Operator Principle #1 — the mutation path is the most unblocked path** under Core Philosophy. Tests: `TestNoProgressGuard` in `test_task_runner.py` (4 new: failed-session-neutral, genuine-finished-still-latches, success-clears, latch-rearms). Gate → **901 passed**, ruff clean.
-
----
 
 ## 2. Unattended closed-loop hardening — open residuals only
 
@@ -138,38 +216,15 @@ Capability/operator runbook: `docs/mini_swe_agent.md`. Rollback: `developer.impl
 - [ ] **Optional hardening: post-materialize `test_command` re-run** — **Decision: intentionally deferred** (Phase-4 test-driven loop + the session's own pre-proposal `test_command` already gate every edit; a mid-session full re-run risks long/flaky hangs with no closed loop consuming it). The §7.2 in-process `ruff` pre-check ships the cheap fast-feedback gate instead. Revisit only if a deploy-time validator becomes a requirement.
 - [ ] **EndpointManager / LiteLLM-overlap revisit (parked)** — if verification/model routing ever moves toward a LiteLLM-style layer, revisit `EndpointManager` overlap (mini-swe follow-up #7; see `docs/mini_swe_agent.md`). **Blocked: no such routing layer planned.**
 
----
+## 4. Annexes (strategic / parked decisions)
 
-## 4. Post-merge feat/ramp-up residuals (2026-08-30) — open items
-
-`feat/ramp-up` merged `main` (`11bfc02`, includes PR #100 soak/setup, #103
-models-cli, #105). This landed a real failing test
-(`test_parse_model_ids_openai_shape`) and surfaced repo-wide mypy debt (64
-errors → 43 after this pass). Fixed here: `parse_model_ids` now object-rows-only
-in the OpenAI `{"data": ...}` shape; feature-owned + trivial mypy classes; RC
-`_apply_decision` resolves a real endpoint via `EndpointManager(get_config())`
-(was `get_rate_limiter(None)`, silently failing); `run_configure` C901
-suppressed with `# noqa: C901`. Gate: **905 passed** (batched, `overall_exit=0`),
-`ruff check` + `ruff format --check` clean. Open:
-
-- [x] **Full-repo mypy cleanup (43 errors)** — non-gating (CI has no mypy; `pre_commit.sh` runs it warnings-only). Remaining by file: `tests/integration/test_golden_path.py` (12), `core/agent_schemas.py` (5), `core/endpoint_manager.py` (4), `workflow/task_runner.py` (3), `utils/run_codemodes.py` (3, libcst API drift), `utils/list_endpoint_models.py` (3), `file_editing/edit_payload.py` (3), `workflow/proposal_builder.py` (2), `tests/mocks/openai.py` (2), `agents/prioritizer_worker.py` (2), `agents/orchestrator.py` (2), `workflow/post_materialize.py` (1), `utils/query_developer_responses.py` (1). See `mypy .` for line-level detail. **Landed: `mypy .` → `Success: no issues found in 181 source files`.** Type-only fixes (annotations, `isinstance` narrowing, honest `str | None` / `dict | None` / `Any` signatures); the libcst drift in `run_codemodes.py` was fixed against the installed libcst API (`BaseExpression.code` → `with_changes`; `AnnAssign(simple=…)` dropped; assign-target isinstance narrowing) and still round-trips correctly; `_get_or_create_file_id` now raises instead of returning `None` on a failed insert; `proxy`/`models`/SQL param plumbing typed.
-- [x] **`run_configure` (core/models_wizard.py) C901 → real refactor** — complexity 25 > 15; previously suppressed with `# noqa: C901` (repo precedent `call_endpoint`). **Landed:** extracted `run_configure` into `_print_config_header`, `_fetch_catalog_if_requested`, `_pick_tiers`, `_apply_tiers`, `_edit_agent_overrides`, `_edit_prompts`, `_validate_and_write`; `run_configure` complexity 25 → 1; `# noqa: C901` dropped. Prompt sequence unchanged (`test_configure_wizard_assigns_tiers_from_answers` green).
-- [x] **RC rate-limiter-adjust unit coverage** — `_apply_decision` applies `set_max_calls` against the endpoint resolved via `EndpointManager(get_config())`; `test_apply_decision_adjusts_resolved_endpoint_rate_limiter` proves the shared `get_rate_limiter(endpoint)` limiter's `max_calls` actually changes (25 → 40) across two applications (previously the `get_rate_limiter(None)` path silently no-opped).
-- [x] **OpenRouter `free-models-per-day` is a daily quota, not a burst 429** — `call_endpoint`'s 429 branch (`agents/base.py`) prints the `X-RateLimit-*` headers then sleeps a hard 60s (`Retry-After` default) against a bucket that resets at midnight UTC. Headers are the real signal and are parsed nowhere: `X-RateLimit-Limit: 50`, `Remaining: 0`, `Reset: 1788134400000` (ms → 2026-08-31 00:00 UTC; value > 1e12 = ms, else seconds). Soak symptom: opencode 429 ×3 → 5m `UNAVAILABLE` → OpenRouter daily `Remaining: 0` → 3×60s hops, the two dead endpoints ping-ponging all night while the mutation path idles in `time.sleep(60)`. **Fix:** parse the Reset header and classify quota vs burst — quota when `Remaining == 0`, a Reset header exists, or the body mentions `free-models-per-day`/`Add 10 credits`; then `wait = reset − now`. `wait > 60s` → park the endpoint (`RATE_LIMITED`, cooldown capped ~15 min like `TOKEN_EXHAUSTED`, log the real reset), fall back immediately, no 3×60s hop; `wait ≤ 60s` → sleep-to-reset and retry once; burst (`Remaining > 0` / no Reset) keeps the current short retry. Desired stdout: `⏳ openrouter daily quota exhausted (free-models-per-day) … parking openrouter until <reset>`. Tests: extend `tests/unit/test_call_endpoint_rate_limit.py` (ms-reset long wait, body-quota-without-headers, short-wait sleep-to-retry, burst path unchanged). **Operational note:** adding $10 on OpenRouter unlocks 1000 free-model req/day; until then `openrouter/free` hits this nightly after ~50 calls. **Landed:** new `core/rate_limit_headers.py` (`parse_reset_to_epoch` — ms > 1e12, epoch ≥ 1e9, else now + value; `classify_rate_limit` → dataclass) + 429 branch classify/park/sleep-to-reset in `agents/base.py`; tests: `tests/unit/test_rate_limit_headers.py` (10) + 4 call-path tests (`test_429_quota_ms_reset_parks_and_does_not_hop`, `test_429_quota_body_token_sleeps_and_retries`, `test_429_quota_short_reset_sleeps_to_reset_then_retries`, `test_429_burst_with_ratelimit_headers_not_quota`). 49 targeted tests green.
-- [x] **Both-endpoints-parked: stop the 60s hop** — when every candidate sits `UNAVAILABLE`/`RATE_LIMITED` (e.g. opencode key_locked + OpenRouter daily quota empty), the fallback chain + loop retries short (60s) instead of one longer backoff or a cycle pause; a minutes-level backoff matches Operator Principle #1 better than hammering two empty buckets. Depends on the quota item above. **Landed:** the no-fallback skip branch in `agents/base.py` now sleeps `min(max(wait, 30), 120)` (minutes-level) and reports it (`test_skip_path_all_parked_sleeps_bounded_backoff`).
-- [x] **`setup.sh` venv-persistence convenience wrapper** — running `utils/setup.sh` plainly now `exec`s into an interactive bash that sources `~/.bashrc` then activates the repo's `.venv` (via a mktemp `--rcfile`), so the terminal lands inside the activated venv. Skipped when the script was sourced, when stdin/stdout are not a TTY (CI / pipes / cron unaffected), or when `VIRTUAL_ENV` already equals the repo venv. `bash -n` clean.
-
----
-
-## 5. Annexes (strategic / parked decisions)
-
-### 5.1 Forge Federation strategy — `Federation/Plan.md`
+### N.1 Forge Federation strategy — `Federation/Plan.md`
 
 Active northstar: Stage 0 (current single-Territory system) → Stage 1 (enhanced
 single-Territory, next) → Stage 2 (multi-Territory, future). Operates via short,
 YAGNI-focused sprints with bounded, measurable experiments.
 
-### 5.2 `report/plan.md` file_editing structural refactors
+### N.2 `report/plan.md` file_editing structural refactors
 
 Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS TECH-DEBT** — each is small, bounded, and independently scoped; a future sprint can pick them up without a dedicated design doc.
 
@@ -179,7 +234,7 @@ Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS
 - [ ] **CLI command leakage** — audit `cli.commands` for shelled-out / ungoverned commands that bypass the governed edit path.
 - [ ] **`__init__.py` cleanup** — remove obsolete re-exports in `file_editing/__init__.py`.
 
-### 5.3 UNATTENDED plan §15 open decisions (parked, with defaults)
+### N.3 UNATTENDED plan §15 open decisions (parked, with defaults)
 
 1. Hook failure: fix-forward (leave disk dirty; CRITICAL fix) unless `git.revert_on_hook_failure` set — current behavior is fix-forward.
 2. Create-file policy: clean relative paths OK; add prefix policy only if junk root files recur.
@@ -187,7 +242,7 @@ Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS
 4. Reviewer sees hook output: developer primary; orchestrator summary; reviewer optional.
 5. API/network failure streaks: pause + single CRITICAL summary after N consecutive failures (shipped — `NetworkBusyLoopGuard`).
 
-## 6. Cold-soak SQLite project ingest (NUC / 2-core / ≥8 GB)
+## 5. Cold-soak SQLite project ingest (NUC / 2-core / ≥8 GB)
 
 **Status:** OPEN — design only (2026-08-31). No branch yet.
 
@@ -232,7 +287,7 @@ and three transactions per file.
 - Do not treat “daemon owns the DB” as the fix for *this* window. Init should
   be one exclusive bulk transaction, then hand the DB back.
 
-### 6.1 Init connection + one transaction
+### N.1 Init connection + one transaction
 
 - [ ] **`cmd_init` holds one writer** — open a single
       `core.db_connection.get_db_connection()` (or a dedicated
@@ -246,7 +301,7 @@ and three transactions per file.
       former so there is one writer policy).
 - [ ] **Deleted-file pass uses the same `conn`** — no extra context manager.
 
-### 6.2 Init-only pragmas (restore before iteration 1)
+### N.2 Init-only pragmas (restore before iteration 1)
 
 On the init connection, **before** the walk (8 GB floor; 2-core NUC):
 
@@ -275,7 +330,7 @@ PRAGMA journal_mode = DELETE;
   grab multiple GB; agents + Python need the rest.
 - Document in a comment that these pragmas are **init-window only**.
 
-### 6.3 `file_lines` bulk insert
+### N.3 `file_lines` bulk insert
 
 - [ ] **`_initialize_lines_impl`: `executemany`** — build the row tuples in
       Python, one `executemany` per file (or chunks of 5k–10k rows if a file
@@ -286,14 +341,14 @@ PRAGMA journal_mode = DELETE;
       `line_guid`, create them **after** the bulk load (`ANALYZE` once). Do
       not drop UNIQUE `line_guid`.
 
-### 6.4 Same-process only (not cross-soak)
+### N.4 Same-process only (not cross-soak)
 
 - [ ] Hash short-circuit is **in-process only** (second `cmd_init()` in the
       same soak, or a mid-soak restart that did *not* wipe the live DB).
       Default soak still pays full rebuild. Do not advertise “next soak is
       faster.”
 
-### 6.5 Work that is not required for iteration 1
+### N.5 Work that is not required for iteration 1
 
 - [ ] Throttle per-file `✅ {path}` prints (every 50 files + a final tally).
 - [ ] `refresh_target_indexes(..., force=True)` runs **after** the DB commit
@@ -304,7 +359,7 @@ PRAGMA journal_mode = DELETE;
       editor). Folding `project_files` into a later metadata-only table is
       §5.2 tech-debt, not this item.
 
-### 6.6 Files to touch
+### N.6 Files to touch
 
 - `cli/commands.py` — `cmd_init` transaction + pragma window + print throttle.
 - `file_editing/writer.py` — `_initialize_lines_impl` `executemany`.
@@ -320,7 +375,7 @@ PRAGMA journal_mode = DELETE;
     `synchronous` is not `OFF`.
   - `file_editing.db.get_db_connection` is not used on the init path.
 
-### 6.7 Acceptance
+### N.7 Acceptance
 
 - Cold soak (no `.PrizmForge/` copied) still produces a complete `files` +
   `file_lines` + `project_files` index; governed reconstruct matches disk.
@@ -350,7 +405,7 @@ server engine. The product switch is **configuration**, not a fork.
 **Default stays SQLite.** Postgres is opt-in. CI and `utils/run_tests.sh`
 stay on SQLite unless an explicit extra job is added.
 
-### 7.1 Decision: SQLAlchemy Core first, not ORM-everywhere
+### N.1 Decision: SQLAlchemy Core first, not ORM-everywhere
 
 The schema lives as a large raw-SQL string in `core/db.py` (`init_db`,
 `_apply_schema`, `_migrate_schema`) plus two connection helpers
@@ -379,7 +434,7 @@ psycopg[binary]>=3.1    # Postgres driver only when backend=postgresql
 Suggested extra: `pip install -e ".[postgres]"`. SQLite uses SQLAlchemy’s
 bundled `sqlite3` dialect — no extra package.
 
-### 7.2 Configuration (files, not env-only)
+### N.2 Configuration (files, not env-only)
 
 Add a top-level `database` object to `config.json` / `example_config.json`.
 Document in `docs/CONFIGURATION.md`. Secrets stay in `api_key.json` (or a
@@ -421,7 +476,7 @@ server).
 Unattended preflight (`core/preflight.py`): if `backend=postgresql`,
 require the extra installed and a successful `SELECT 1` before soak start.
 
-### 7.3 Single engine facade
+### N.3 Single engine facade
 
 Replace the split `sqlite3.connect` world with one module, e.g.
 `core/db_engine.py`:
@@ -465,7 +520,7 @@ Replace the split `sqlite3.connect` world with one module, e.g.
 On Postgres map deadlocks / `lock_not_available` to the same exception so
 callers do not grow a second retry vocabulary.
 
-### 7.4 Dialect-safe SQL (inventory before rewrite)
+### N.4 Dialect-safe SQL (inventory before rewrite)
 
 Textual SQL that is **SQLite-only** today and must be parameterized or
 branched:
@@ -495,7 +550,7 @@ Rules:
 Phase A may wrap the worst call sites (`INSERT OR REPLACE`, `lastrowid`,
 `datetime('now')`) in `core/db_sql.py` helpers keyed by dialect name.
 
-### 7.5 Schema create + migrations
+### N.5 Schema create + migrations
 
 Today: one SQL blob + additive `_ensure_column` for old files.
 
@@ -522,7 +577,7 @@ performance work for Postgres is a different checklist (`COPY` / unlogged
 `file_lines` during load, then `ALTER TABLE … SET LOGGED`) — park unless a
 soak actually uses Postgres.
 
-### 7.6 Product behavior that must not change
+### N.6 Product behavior that must not change
 
 - Default `backend=sqlite`, path under `.PrizmForge/`, wiped per soak.
 - Governed reconstruct (`file_lines` + `sort_order` + `is_deleted`) identical.
@@ -532,7 +587,7 @@ soak actually uses Postgres.
 - Dual-writer rule on SQLite is unchanged: one writer during materialize;
   do not open a second engine against the same file.
 
-### 7.7 Phased delivery
+### N.7 Phased delivery
 
 - [ ] **7.A — Config + engine + SQLite parity**  
       `database` block, `get_engine()`, migrate `init_db` +
@@ -553,7 +608,7 @@ soak actually uses Postgres.
       Move off the schema string. One documented `alembic upgrade head` for
       durable Postgres; SQLite soaks still `create_all` on empty file.
 
-### 7.8 Files to touch (7.A minimum)
+### N.8 Files to touch (7.A minimum)
 
 - `core/config.py` + `docs/CONFIGURATION.md` + `example_config.json`
 - `example_api_key.json` — `keys.database.password` placeholder
@@ -565,7 +620,7 @@ soak actually uses Postgres.
   SQLite PRAGMA on connect, reject unknown backend
 - `tests/unit/test_db_retry_patience.py` — still valid on SQLite engine
 
-### 7.9 Acceptance
+### N.9 Acceptance
 
 - `backend` omitted or `"sqlite"` → bit-identical operator story to
   current `main` (path, pragmas after init, tests).
@@ -575,7 +630,7 @@ soak actually uses Postgres.
 - Ruff clean; normal gate does not require Postgres.
 - §6 init pragmas still compile and apply **only** when dialect is SQLite.
 
-### 7.10 Out of scope
+### N.10 scope
 
 - Multi-tenant Postgres, read replicas, federation Stage 2.
 - Moving agent JSON blobs into JSONB in the first Postgres PR (TEXT is
@@ -583,3 +638,4 @@ soak actually uses Postgres.
 - Replacing the message bus with Redis/NATS.
 - SQLAlchemy 1.4 APIs (`Query`, `sessionmaker` legacy binds).
 
+---
