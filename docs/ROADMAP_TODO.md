@@ -7,7 +7,7 @@ note the PR/commit.
 Shipped sections were retired from this tracker on **2026-08-29** (their
 design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`).
 
-**Last updated:** 2026-08-31
+**Last updated:** 2026-09-01
 
 ## 0.0 Handle short retry after 429 or 503 errors
 
@@ -173,6 +173,7 @@ That is the full engine-side plan: standard `503`/`429` + advertised wait, honor
 
 ## 1. Deployed state & PR map
 
+- **2026-09-01 current work** — §0.0 (short retry-after 429/503 policy) and §4 N.2 low-risk items (CLI-leakage audit, `__init__.py` cleanup) are developed on branch `feat/roadmap` on top of PR #109, pending review/merge. See §0.0 SHIPPED note and §4 N.2.
 - `main` @ `8be697f` = **roadmap stamp for Soak9 recompute pass 2 (a9–f9)**; functional tip `6d79e5d` — see §1 (2026-08-29).
 - **Soak2 recompute pass 3 — mutation-path priority (d9/index hardening)**: Soak2 (2026-08-29 16:13–~20:30) exposed that d9 counted transport-failed sessions as stall → the developer froze for whole tasks while Resource Controller reasoned *"freeze: prioritizer + developer only"*. Fixed at root (see `## 1` pass-3 entry): failed/uncompleted sessions are **neutral**, genuine finished-zero-change sessions alone build the streak, and the latch **self-heals** every `rearm_after` iterations. README now documents **Operator Principle #1 — the mutation path is the most unblocked path**. Gate → **901 passed**.
 - Previous stamps: `26566f3` = PR-95 residual batch (P1–P11 + W1–W8, §1); `198f6d8` = roadmap stamp (848 → 877); `cf30bee` = PR #96 (`fit/setup-accept-pip-path`) = current `origin/main`; `954cc14` = PR #95 merge base (Workstream A Phase 1).
@@ -240,11 +241,19 @@ YAGNI-focused sprints with bounded, measurable experiments.
 
 Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS TECH-DEBT** — each is small, bounded, and independently scoped; a future sprint can pick them up without a dedicated design doc.
 
+Low-risk items **SHIPPED 2026-09-01 (branch `feat/roadmap`)**:
+
+- [x] **CLI command leakage** — audit `cli.commands` for shelled-out / ungoverned commands that bypass the governed edit path. **Audited clean**: `cli/commands.py` uses no `subprocess`/`os.system`/`os.popen`. Its only direct disk writes are `.gitignore` (init) and CSV exports under `.PrizmForge/agents_exports/`, neither of which is a governed source-file write. Source-file mutation stays confined to `file_editing/writer.py` (`write_file_to_disk`/`_delete_file_from_disk`) and the governed `shell_developer.py` worktree path.
+- [x] **`__init__.py` cleanup** — remove obsolete re-exports in `file_editing/__init__.py`. **Done**: only `initialize_file_lines` is imported at package level (`cli/commands.py`, `tests/integration/test_file_editing_pipeline.py`); trimmed `__all__` to that one name and removed the orphaned `initialize_database` deprecation shim from `file_editing/db.py`. `file_editing.__version__` → 1.5.
+
+Mutation-path refactors — **parked; need a design doc before touching the governed-edit path** (higher regression risk, deliberately not done in the 2026-09-01 session):
+
 - [ ] **`project_files` refactor** — normalize file metadata/index rows and their update paths.
 - [ ] **Standardize errors** across file_editing — single error shape/status vocabulary instead of per-module strings.
-- [ ] **120s-sleep behavior** — the legacy fixed sleep in the editing loop: replace with event-driven wait or configurable strategy.
-- [ ] **CLI command leakage** — audit `cli.commands` for shelled-out / ungoverned commands that bypass the governed edit path.
-- [ ] **`__init__.py` cleanup** — remove obsolete re-exports in `file_editing/__init__.py`.
+
+Re-scoped (the fixed 120 s sleep is **not** in the editing loop):
+
+- [ ] **120s-sleep behavior** — the roadmap's "editing-loop" 120 s sleeps actually live in `agents/base.py` (401/KEY_LOCKED unlock wait, proxy/auth pause) and `interactive.py` (unattended recovery). Replace with the shared `EndpointHealth.unavailable_until` latch / configurable cooldown from ROADMAP §0.0.
 
 ### N.3 UNATTENDED plan §15 open decisions (parked, with defaults)
 

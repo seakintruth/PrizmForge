@@ -118,14 +118,6 @@ def log_error(
                 pass
 
 
-def initialize_database(db_path: str | None = None):
-    """
-    Deprecated. Schema initialization is now handled by core.db.init_db().
-    This function is kept for backward compatibility only.
-    """
-    print("⚠️  file_editing.initialize_database() is deprecated. Call core.db.init_db() instead.")
-
-
 def reconstruct_file_content(conn: sqlite3.Connection, file_id: int) -> str:
     """Reconstruct current file content from line table ordered by sort_order.
 
