@@ -147,7 +147,7 @@ def test_429_applies_aimd_backoff_then_ramps_on_success(call_endpoint_env):
     assert sleeps[0] >= 2.0
 
 
-def test_429_with_invalid_retry_after_header_defaults_60(call_endpoint_env, monkeypatch):
+def test_429_with_invalid_retry_after_header_defaults_120(call_endpoint_env, monkeypatch):
     base = call_endpoint_env
     scripted = [
         _resp(429, {}, headers={"Retry-After": "abc"}),
@@ -160,8 +160,8 @@ def test_429_with_invalid_retry_after_header_defaults_60(call_endpoint_env, monk
             answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
 
     assert answer == "retry figure out"
-    # Invalid header falls back to default 60; jitter backoff is strictly smaller
-    assert sleeps[0] == 60
+    # Invalid header falls back to the 429 status default (120s)
+    assert sleeps[0] == 120
 
 
 def test_429_long_cooldown_marks_unavailable_and_uses_backoff(call_endpoint_env, monkeypatch):
@@ -387,3 +387,191 @@ def test_skip_path_all_parked_sleeps_bounded_backoff(call_endpoint_env, capfd):
     out = capfd.readouterr().out
     assert "LOCAL health latch" in out
     assert "No alternate endpoints available" in out
+
+
+class _FallbackManager(_FakeManager):
+    def __init__(self):
+        super().__init__()
+        self.fallback_ep = _FakeEndpoint()
+        self.fallback_ep.name = "fallback"
+
+    def get_fallback_model(self, endpoint):
+        return ("fallback-model", self.fallback_ep)
+
+
+# =====================================================================
+# §0.0 short retry-after 429/503 policy
+# =====================================================================
+
+
+def test_503_retry_after_90_retries_same_and_succeeds(call_endpoint_env):
+    base = call_endpoint_env
+    scripted = [
+        _resp(503, {}, headers={"Retry-After": "90"}),
+        _resp(200, {"choices": [{"message": {"content": "recovered 503"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "recovered 503"
+    assert len(sleeps) == 1
+    assert sleeps[0] == 90  # honored advertised wait; retry succeeded same endpoint
+
+
+def test_429_retry_after_42534_falls_back_no_sleep(call_endpoint_env, capfd):
+    base = call_endpoint_env
+    manager = _FallbackManager()
+    scripted = [
+        _resp(429, {}, headers={"Retry-After": "42534"}),
+        _resp(200, {"choices": [{"message": {"content": "fb ok 429"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "fb ok 429"
+    assert sleeps == []  # no long sleep
+    assert "cooldown too long" in capfd.readouterr().out
+
+
+def test_503_retry_after_600_retries_once(call_endpoint_env):
+    base = call_endpoint_env
+    scripted = [
+        _resp(503, {}, headers={"Retry-After": "600"}),
+        _resp(200, {"choices": [{"message": {"content": "recovered 600"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "recovered 600"
+    assert sleeps == [600]
+
+
+def test_503_retry_after_601_falls_back_no_wait(call_endpoint_env, capfd):
+    base = call_endpoint_env
+    manager = _FallbackManager()
+    scripted = [
+        _resp(503, {}, headers={"Retry-After": "601"}),
+        _resp(200, {"choices": [{"message": {"content": "fb ok 601"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "fb ok 601"
+    assert sleeps == []
+    assert "cooldown too long" in capfd.readouterr().out
+
+
+def test_503_no_header_default_300_retries_once(call_endpoint_env):
+    base = call_endpoint_env
+    scripted = [
+        _resp(503, {}, headers={}),
+        _resp(200, {"choices": [{"message": {"content": "recovered default 300"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "recovered default 300"
+    assert sleeps == [300]
+
+
+def test_503_retry_then_second_503_falls_back(call_endpoint_env, capfd):
+    base = call_endpoint_env
+    manager = _FallbackManager()
+    scripted = [
+        _resp(503, {}, headers={"Retry-After": "90"}),
+        _resp(503, {}, headers={"Retry-After": "90"}),
+        _resp(200, {"choices": [{"message": {"content": "fb ok retry"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "fb ok retry"
+    assert len(sleeps) == 1  # one 90s wait, then the same-endpoint retry failed -> fallback
+    assert "same-endpoint retry exhausted" in capfd.readouterr().out
+
+
+def test_503_http_date_retry_after_honored(call_endpoint_env):
+    base = call_endpoint_env
+    later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(time.time() + 45))
+    scripted = [
+        _resp(503, {}, headers={"Retry-After": later}),
+        _resp(200, {"choices": [{"message": {"content": "recovered http-date"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "recovered http-date"
+    assert 40 <= sleeps[0] <= 60
+
+
+def test_concurrent_agents_observe_shared_latch_bound_backoff(call_endpoint_env, capfd):
+    """While a 503 latch (~590s) is active, another agent observes the shared
+    latch and sleeps a bounded backoff, not the full remaining wait."""
+    base = call_endpoint_env
+    fake = _FakeEndpoint()
+    fake.health = SimpleNamespace(
+        is_available=lambda: False,
+        status=SimpleNamespace(value="server_error"),
+        time_until_available=lambda: 590,
+        last_http_dump=None,
+        mark_success=lambda: None,
+        mark_failure=lambda *a, **k: None,
+    )
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert sleeps == [120]  # 590s remaining clamped to the 30..120 window
+    assert "LOCAL health latch" in capfd.readouterr().out
+
+
+def test_successful_retry_does_not_record_failure(call_endpoint_env):
+    base = call_endpoint_env
+    outcomes: list[dict] = []
+
+    def _capture(*args, **kwargs):
+        outcomes.append({"args": args, "kwargs": kwargs})
+
+    scripted = [
+        _resp(503, {}, headers={"Retry-After": "5"}),
+        _resp(200, {"choices": [{"message": {"content": "ok after 503"}}]}),
+    ]
+    sleeps: list[float] = []
+    with patch.object(base, "record_model_outcome", side_effect=_capture):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "ok after 503"
+    assert len(outcomes) == 1
+    assert outcomes[0]["kwargs"].get("ok") is True
+    assert all(kw.get("ok") is not False for kw in outcomes[0] for kw in [outcomes[0]["kwargs"]])

@@ -24,7 +24,11 @@ from core.http_client import post_json
 from core.http_diag import print_http_error_dump
 from core.json_parser import parse_json_response
 from core.model_health import record_model_outcome
-from core.rate_limit_headers import classify_rate_limit
+from core.rate_limit_headers import (
+    MAX_ADVERTISED_WAIT,
+    advertised_wait_seconds,
+    classify_rate_limit,
+)
 from core.rate_limiter import RateLimiter
 from core.token_budget import TokenBudget
 from file_editing.db import log_error
@@ -226,6 +230,14 @@ def call_endpoint(  # noqa: C901
 
     proxies = config.get("proxy")
 
+    # Same-endpoint retry policy (ROADMAP §0.0): honor a short advertised wait
+    # and retry the SAME endpoint once, then fall back. Read from config with
+    # sane defaults.
+    retry_after_cfg = config.get("retry_after", {})
+    same_endpoint_retries = int(retry_after_cfg.get("same_endpoint_retries", 1))
+    max_advertised_wait = int(retry_after_cfg.get("max_wait_seconds", MAX_ADVERTISED_WAIT))
+    same_endpoint_retries_used = 0
+
     for attempt in range(retry_count):
         _req_t0 = time.time()
         try:
@@ -339,22 +351,22 @@ def call_endpoint(  # noqa: C901
                     )
                 return None, 0
 
-            # ============= HANDLE 429 RATE LIMIT =============
-            if resp.status_code == 429:
-                print(f"⏳ Rate limited ({endpoint.name})...")
-
-                # AIMD: reduce our effective capacity so concurrent consumers of a
-                # shared upstream window do not keep stacking calls together.
-                rate_limiter.on_rate_limited()
-
-                try:
-                    retry_after = int(resp.headers.get("Retry-After", 60))
-                except (TypeError, ValueError):
-                    retry_after = 60
+            # ============= HANDLE 429 RATE LIMIT / 503 SERVER ERRORS =============
+            # Shared policy (ROADMAP §0.0): honor a short advertised wait (<= 600s)
+            # with a one-shot same-endpoint retry, then fall back. Waits above the
+            # cap fall back immediately.
+            if resp.status_code in (429, 503):
+                if resp.status_code == 429:
+                    print(f"⏳ Rate limited ({endpoint.name})...")
+                    rate_limiter.on_rate_limited()
+                    failure_status = EndpointStatus.RATE_LIMITED
+                else:
+                    print(f"⚠️  Server error {resp.status_code} ({endpoint.name})...")
+                    failure_status = EndpointStatus.SERVER_ERROR
 
                 # Quota-vs-burst: Remaining==0 or body keywords, not Reset alone.
                 rl_info = classify_rate_limit(resp.headers, body_text=getattr(resp, "text", "") or "")
-                if rl_info.is_quota:
+                if resp.status_code == 429 and rl_info.is_quota:
                     reset_epoch = rl_info.reset_epoch
                     wait = (reset_epoch - time.time()) if reset_epoch is not None else 0.0
                     if wait > 60:
@@ -414,15 +426,29 @@ def call_endpoint(  # noqa: C901
                     time.sleep(sleep_for)
                     continue
 
-                if retry_after > 60:  # If wait is > 1 minute, try fallback
-                    endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=2)
-                    record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
-                    print(f"   Rate limit cooldown too long ({retry_after}s)")
-
+                # Advertised wait: Retry-After header (delta / HTTP-date) >
+                # error.retry_after_seconds > status default (429->120, 503->300).
+                advertised = advertised_wait_seconds(
+                    resp.status_code,
+                    resp.headers,
+                    getattr(resp, "text", "") or "",
+                    max_wait=max_advertised_wait,
+                )
+                if advertised is None or advertised > max_advertised_wait:
+                    # Missing/unparseable wait, or the cooldown is too long: do not
+                    # sleep for minutes. Fall back now.
+                    endpoint.health.mark_failure(failure_status, cooldown_minutes=2)
+                    record_model_outcome(
+                        f"{endpoint.name}/{model_name}",
+                        endpoint.name,
+                        ok=False,
+                        kind="rate_limited" if resp.status_code == 429 else "server_error",
+                    )
+                    print(f"   Rate limit cooldown too long ({advertised}s)")
+                    print("   → Falling back to ...")
                     fallback = endpoint_mgr.get_fallback_model(endpoint)
                     if fallback:
                         fallback_model, fallback_endpoint = fallback
-                        # Log the fallback
                         log_fallback(
                             original_endpoint=endpoint.name,
                             fallback_endpoint=fallback_endpoint.name,
@@ -440,15 +466,54 @@ def call_endpoint(  # noqa: C901
                             task_id,
                             agent_name,
                         )
+                    return None, 0
 
-                # Otherwise wait (Retry-After + exponential backoff + jitter) and
-                # retry. The jitter desynchronizes concurrent sleepers that share
-                # the upstream window.
-                backoff = 2**attempt + random.uniform(0, 5)  # noqa: S311
-                sleep_for = max(retry_after, backoff)
-                print(f"   Sleeping {sleep_for:.1f}s...")
-                time.sleep(sleep_for)
-                continue
+                # Honor the advertised wait: latch the endpoint for that many
+                # seconds, so concurrent agents share one unavailable_until
+                # instead of each sleeping independently.
+                if same_endpoint_retries_used < same_endpoint_retries:
+                    endpoint.health.mark_failure(failure_status, cooldown_seconds=advertised)
+                    # Do NOT record a model-quality failure yet — this may just be a
+                    # brief outage / GPU warm-up. Only the failed retry demotes.
+                    print(f"⏳ Advertised wait {advertised}s (≤ {max_advertised_wait}s) — retry same endpoint once")
+                    backoff = 2**attempt + random.uniform(0, 5)  # noqa: S311
+                    sleep_for = max(advertised, backoff)
+                    print(f"   Sleeping {sleep_for:.1f}s...")
+                    time.sleep(sleep_for)
+                    same_endpoint_retries_used += 1
+                    continue
+
+                # Same-endpoint retry exhausted: mark failed and fall back.
+                endpoint.health.mark_failure(failure_status, cooldown_minutes=2)
+                record_model_outcome(
+                    f"{endpoint.name}/{model_name}",
+                    endpoint.name,
+                    ok=False,
+                    kind="rate_limited" if resp.status_code == 429 else "server_error",
+                )
+                print("   same-endpoint retry exhausted")
+                print("   → Falling back to ...")
+                fallback = endpoint_mgr.get_fallback_model(endpoint)
+                if fallback:
+                    fallback_model, fallback_endpoint = fallback
+                    log_fallback(
+                        original_endpoint=endpoint.name,
+                        fallback_endpoint=fallback_endpoint.name,
+                        reason=endpoint.health.status.value,
+                        task_id=task_id,
+                        agent_name=agent_name,
+                    )
+                    print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
+                    return call_endpoint(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        fallback_model,
+                        retry_count,
+                        task_id,
+                        agent_name,
+                    )
+                return None, 0
 
             # ============= HANDLE 402 TOKEN EXHAUSTED =============
             if resp.status_code == 402:
@@ -485,8 +550,10 @@ def call_endpoint(  # noqa: C901
                     print("❌ No alternate endpoints available")
                     return None, 0
 
-            # ============= HANDLE 5xx SERVER ERRORS =============
-            if resp.status_code >= 500:
+            # ============= HANDLE OTHER 5xx SERVER ERRORS =============
+            # 503 is handled above with the advertised-wait policy; the remaining
+            # 5xx codes (504 etc.) keep the legacy exponential-backoff retry.
+            if resp.status_code > 503 and resp.status_code < 600:
                 wait_time = (2**attempt) + (time.time() % 1)
                 print(f"⚠️  Server error {resp.status_code} ({endpoint.name}). Retry {attempt + 1}/{retry_count}")
 

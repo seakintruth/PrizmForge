@@ -140,23 +140,31 @@ class EndpointHealth:
         self.last_http_dump = None
         self._save_to_db()
 
-    def mark_failure(self, status: EndpointStatus, cooldown_minutes: int | None = None):
+    def mark_failure(
+        self,
+        status: EndpointStatus,
+        cooldown_minutes: int | None = None,
+        cooldown_seconds: int | None = None,
+    ):
         self.status = status
         self.last_error = datetime.now()
         self.error_count += 1
         self.consecutive_failures += 1
 
-        if cooldown_minutes is None:
-            if status == EndpointStatus.TOKEN_EXHAUSTED:
-                cooldown_minutes = 15
-            elif status == EndpointStatus.KEY_LOCKED:
-                cooldown_minutes = 30
-            elif status == EndpointStatus.RATE_LIMITED:
-                cooldown_minutes = 2
-            else:
-                cooldown_minutes = 5
+        if cooldown_seconds is not None:
+            self.unavailable_until = datetime.now() + timedelta(seconds=cooldown_seconds)
+        else:
+            if cooldown_minutes is None:
+                if status == EndpointStatus.TOKEN_EXHAUSTED:
+                    cooldown_minutes = 15
+                elif status == EndpointStatus.KEY_LOCKED:
+                    cooldown_minutes = 30
+                elif status == EndpointStatus.RATE_LIMITED:
+                    cooldown_minutes = 2
+                else:
+                    cooldown_minutes = 5
 
-        self.unavailable_until = datetime.now() + timedelta(minutes=cooldown_minutes)
+            self.unavailable_until = datetime.now() + timedelta(minutes=cooldown_minutes)
         self._save_to_db()
 
 

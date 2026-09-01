@@ -11,6 +11,18 @@ design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_
 
 ## 0.0 Handle short retry after 429 or 503 errors
 
+✅ **SHIPPED** (2026-09-01, branch `feat/roadmap`): `advertised_wait_seconds` in
+`core/rate_limit_headers.py` parses Retry-After (delta / HTTP-date) >
+`error.retry_after_seconds` > status default (429→120s, 503→300s), capping the
+raw value at the caller's `max_wait_seconds` (600) and returning >600
+un-clamped to trip the "cooldown too long → fallback now" branch.
+`EndpointHealth.mark_failure` accepts `cooldown_seconds`. `call_endpoint`
+handles 429 **and** 503 together: quota 429s still park 15m / sleep-to-reset;
+non-quota short advertised waits latch via `cooldown_seconds` and retry the
+**same** endpoint once (configurable `retry_after.same_endpoint_retries`),
+skipping `record_model_outcome(ok=False)` until the same-endpoint retry fails;
+waits >600 fall back immediately.
+
 This can stay on standard HTTP. The change is policy in PrizmForge: honor a **short advertised wait**, retry **once on the same endpoint**, then fallback. No new error type.
 
 ### 0.1 Goal

@@ -11,7 +11,11 @@ import time
 
 import pytest
 
-from core.rate_limit_headers import classify_rate_limit, parse_reset_to_epoch
+from core.rate_limit_headers import (
+    advertised_wait_seconds,
+    classify_rate_limit,
+    parse_reset_to_epoch,
+)
 
 
 def test_parse_ms_epoch_reset():
@@ -70,3 +74,46 @@ def test_non_dict_like_headers_safe():
     info = classify_rate_limit(None)
     assert info.is_quota is False
     assert info.remaining is None
+
+
+def test_advertised_wait_from_retry_after_header():
+    assert advertised_wait_seconds(503, {"Retry-After": "90"}) == 90
+
+
+def test_advertised_wait_from_retry_after_http_date():
+    # HTTP-date Retry-After within the window is honored.
+    later = time.strftime("%a, %d %b %Y %H:%M:%S GMT", time.gmtime(time.time() + 45))
+    wait = advertised_wait_seconds(503, {"Retry-After": later}, now=time.time())
+    assert 40 <= wait <= 45
+
+
+def test_advertised_wait_from_body_retry_after_seconds():
+    body = '{"error": {"retry_after_seconds": 30}}'
+    assert advertised_wait_seconds(503, {}, body_text=body) == 30
+
+
+def test_advertised_wait_status_defaults():
+    # 429 -> 120s, 503 -> 300s when nothing is advertised.
+    assert advertised_wait_seconds(429, {}) == 120
+    assert advertised_wait_seconds(503, {}) == 300
+
+
+def test_advertised_wait_unparseable_uses_status_default():
+    assert advertised_wait_seconds(429, {"Retry-After": "abc"}) == 120
+
+
+def test_advertised_wait_above_max_returned_uncapped():
+    # Values above the cap are returned un-clamped so the caller can branch to
+    # "cooldown too long -> fallback now".
+    assert advertised_wait_seconds(429, {"Retry-After": "42534"}) == 42534
+    assert advertised_wait_seconds(503, {"Retry-After": "601"}) == 601
+
+
+def test_advertised_wait_unknown_status_returns_none():
+    assert advertised_wait_seconds(500, {}) is None
+    assert advertised_wait_seconds(200, {}) is None
+
+
+def test_advertised_wait_clamps_min_to_one():
+    assert advertised_wait_seconds(429, {"Retry-After": "0"}) == 1
+    assert advertised_wait_seconds(503, {"Retry-After": "-5"}) == 1
