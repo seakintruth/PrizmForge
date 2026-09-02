@@ -342,7 +342,7 @@ With `cli_mode.mode = semi_attended`, `python main.py` supports typed commands:
 | `Unknown model` warnings every lookup | Config typo in `agent_model_preferences`/`default_model`; verify against `endpoints[].models`. |
 | No seed work on turn 1 | `seed_task` missing or empty; check `cli_mode.unattended`. |
 | Constant CRITICAL git failures | Pre-commit hook blocks every commit — the loop is reading the hook excerpt and fixing forward; fix the root blocker or run with `git: false` on a copy. |
-| Endpoint down all night | The loop parks and falls back; see `health` / `--model-health`. OpenRouter `free-models-per-day` nights are a daily quota, not a burst — see roadmap §4 (product fix: top up the account). |
+| Endpoint down all night | The loop parks and falls back; see `health` / `--model-health`. OpenRouter `free-models-per-day` nights are a daily quota, not a burst — see roadmap §5 (product fix: top up the account). |
 | Backlog keeps growing | Backpressure tiers are engaging by design; `BACKLOG OVERRIDE` means a single active item. Keep `seed_task` rows out of the cap (already excluded). |
 | `test_command` discards edits | `on_test_failure: discard` (fail closed) is intended; use `propose_anyway` only if you accept breaking changes past a failed test gate. |
 
