@@ -226,7 +226,7 @@ This is the only way agents can reference lines for editing.
 
 **All database tables are defined in a single location**: `core/db.py` → `init_db()`.
 
-The legacy `file_editing/schema.py` has been deprecated. All governed editing tables (`files`, `file_lines`, `edit_proposals`, etc.) have been consolidated into the main schema for consistency and easier testing.
+Governed editing tables (`files`, `file_lines`, `edit_proposals`, etc.) live in this same `init_db()` schema. The former `file_editing/schema.py` was removed after consolidation; do not reintroduce a second schema module.
 
 The system uses a single SQLite database. The path can be overridden via the `PRIZMFORGE_DB_PATH` environment variable (especially useful during testing).
 
