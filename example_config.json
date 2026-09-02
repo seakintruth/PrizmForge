@@ -1,6 +1,6 @@
 {
   "_readme": "Template for config.json. Copy this file and fill in your values. Keys starting with _ are for documentation only. This example uses OpenCode + OpenRouter/free endpoints; keys live in api_key.json.",
-  "project_directory": "../ExampleProject",
+  "project_directory": "../../ExampleProject",
   "git": false,
   "git_auto_commit": false,
   "default_iteration_minutes": 5,
