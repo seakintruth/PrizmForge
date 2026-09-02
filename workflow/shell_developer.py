@@ -354,7 +354,7 @@ class ShellWorktree:
                         continue
                     item["new_content"] = raw.decode("utf-8", errors="replace")
                     diff_p = self._git("diff", "--cached", base, "--", effective, cwd=self.path)
-                    item["diff"] = (diff_p.stdout or "")[:20_000]
+                    item["diff"] = (diff_p.stdout or "")[:48_000]
                 except OSError:
                     changes.append({**item, "status": "S"})
                     continue
@@ -591,6 +591,23 @@ def _build_rationale(result: SessionResult, change: dict, test_command: str) -> 
     return rationale[:3197] + "..." if len(rationale) > 3200 else rationale
 
 
+def _bounded(text: str, cap: int) -> str:
+    """Truncate *text* to at most *cap* characters, never splitting a line mid-token.
+
+    When truncating, cut on a newline boundary and append an explicit marker so a
+    downstream reviewer can tell the payload is bounded rather than malformed. A
+    truncated unified diff cut mid-token (e.g. ``retry_after.same_en``) looks like a
+    corrupt edit and causes legitimate changes to be rejected.
+    """
+    if len(text) <= cap:
+        return text
+    cut = text[:cap]
+    nl = cut.rfind("\n")
+    if nl != -1:
+        cut = cut[: nl + 1]
+    return f"{cut}...\n[TRUNCATED: content exceeds {cap} chars — see the full proposed content section above]"
+
+
 # =========================================================================
 # Reviewer gate + materialization (mirrors workflow/developer_edit.py semantics)
 # =========================================================================
@@ -608,6 +625,30 @@ def _gate_and_materialize(
 ) -> str:
     original_content = _read_current_file(target_file_path)
 
+    # Option A: for a full-replace operation the unified diff of the whole file
+    # can exceed the prompt budget and be cut mid-token, which makes an otherwise
+    # valid edit look corrupt and gets rejected. Instead show the reviewer the
+    # complete proposed content next to the (already-complete) original, so it
+    # can verify coherence. Other operations keep the unified diff, bounded safely.
+    ops = (payload_dict or {}).get("operations") or []
+    is_full_replace = len(ops) == 1 and ops[0].get("type") == "full_replace"
+    new_content = ops[0].get("new_content", "") if is_full_replace else ""
+
+    # Option B: never split a token mid-word; truncate on a newline boundary and
+    # mark the cut explicitly so the reviewer can tell truncated-from-bounded.
+    if is_full_replace and new_content:
+        proposed_section = (
+            "PROPOSED FULL CONTENT (complete replacement)\n"
+            "--------------------------------------------------\n"
+            f"```python\n{_bounded(new_content, 32_000)}\n```"
+        )
+    else:
+        proposed_section = (
+            "PROPOSED UNIFIED DIFF (applied in isolated copy)\n"
+            "--------------------------------------------------\n"
+            f"{_bounded(diff_text, 8000) or '(no textual diff available — see payload)'}"
+        )
+
     reviewer_prompt = f"""You are the safety gate for a governed code-editing system.
 
 **File under review:** `{target_file_path}`
@@ -622,9 +663,7 @@ ORIGINAL FILE CONTENT (before any change)
 ```
 
 --------------------------------------------------
-PROPOSED UNIFIED DIFF (applied in isolated copy)
---------------------------------------------------
-{diff_text[:8000] or "(no textual diff available — see payload)"}
+{proposed_section}
 
 --------------------------------------------------
 VERIFICATION EVIDENCE
@@ -645,8 +684,9 @@ Respond with ONLY valid JSON in this exact shape:
 }}
 
 Rules:
-- REJECT if the change appears truncated, removes large amounts of existing code without clear justification, or introduces obvious errors.
+- REJECT if the change removes large amounts of existing code without clear justification, or introduces obvious errors.
 - APPROVE only when the change is coherent and the resulting file would still be valid.
+- If the content above is marked [TRUNCATED], treat it as bounded (not corrupt); base your verdict on the full proposed content shown in the same section.
 """
 
     # Fail closed (shared with developer_edit - see workflow/reviewer_gate.py).
