@@ -39,6 +39,9 @@
       "rate_limit_per_minute": 100,
       "models": {
         "openrouter/free": {
+          "max_output_tokens": 65536,
+          "max_context_tokens": 200000,
+          "temperature": 0.7,
           "description": "OpenRouter free-model router"
         }
       }
@@ -57,6 +60,9 @@
       "rate_limit_per_minute": 80,
       "models": {
         "big-pickle": {
+          "max_output_tokens": 65536,
+          "max_context_tokens": 200000,
+          "temperature": 0.7,
           "description": "OpenCode big-pickle"
         }
       }
@@ -68,8 +74,10 @@
     "max_fallback_attempts": 2
   },
   "retry_after": {
+    "honor": true,
     "max_wait_seconds": 600,
-    "same_endpoint_retries": 1
+    "same_endpoint_retries": 1,
+    "fallback_if_wait_exceeds_max": true
   },
   "agent_model_preferences": {
     "orchestrator": "opencode/big-pickle",
