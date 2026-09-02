@@ -1,5 +1,5 @@
 {
-  "_readme": "Template for config.json. Copy this file and fill in your values. Keys starting with _ are for documentation only.",
+  "_readme": "Template for config.json. Copy this file and fill in your values. Keys starting with _ are for documentation only. This example uses OpenCode + OpenRouter/free endpoints; keys live in api_key.json.",
   "project_directory": "../ExampleProject",
   "git": false,
   "git_auto_commit": false,
@@ -9,7 +9,7 @@
     "high_grace_iterations": 3
   },
   "background_agents_enabled": true,
-  "default_model": "gemini/gemini-3.1-pro-preview",
+  "default_model": "opencode/big-pickle",
   "cli_mode": {
     "mode": "unattended",
     "unattended": {
@@ -18,12 +18,15 @@
       "checkpoint_interval_minutes": 15,
       "max_iterations_per_task": 30,
       "auto_generate_tasks": true,
-      "stop_when_backlog_empty": true
+      "stop_when_backlog_empty": true,
+      "seed_tasks": [
+        "Review the repository's plans, ideas and todos. resolve what you can."
+      ]
     }
   },
   "endpoints": {
-    "gemini": {
-      "base_url": "https://api.genai.mil/v1/chat/completions",
+    "openrouter": {
+      "base_url": "https://openrouter.ai/api/v1/chat/completions",
       "include_model_in_payload": true,
       "response_path": [
         "choices",
@@ -31,26 +34,17 @@
         "message",
         "content"
       ],
-      "description": "Primary Gemini endpoint",
+      "description": "OpenRouter endpoint (free-model fallback)",
       "priority": 10,
       "rate_limit_per_minute": 100,
       "models": {
-        "gemini-3.7-flash": {
-          "max_output_tokens": 65536,
-          "max_context_tokens": 1048576,
-          "temperature": 0.7,
-          "description": "Fast default model"
-        },
-        "gemini-3.1-pro-preview": {
-          "max_output_tokens": 65536,
-          "max_context_tokens": 1048576,
-          "temperature": 0.5,
-          "description": "Higher capability model"
+        "openrouter/free": {
+          "description": "OpenRouter free-model router"
         }
       }
     },
-    "beta_genai": {
-      "base_url": "https://api-beta.genai.mil/v1/chat/completions",
+    "opencode": {
+      "base_url": "https://opencode.ai/zen/v1/chat/completions",
       "include_model_in_payload": true,
       "response_path": [
         "choices",
@@ -58,26 +52,17 @@
         "message",
         "content"
       ],
-      "description": "Beta endpoint for future models (Grok, GPT, etc.)",
+      "description": "OpenCode endpoint",
       "priority": 20,
       "rate_limit_per_minute": 80,
       "models": {
-        "grok-4.3-fast": {
-          "max_output_tokens": 32768,
-          "max_context_tokens": 128000,
-          "temperature": 0.7,
-          "description": "Fast Grok model (placeholder)"
-        },
-        "gpt-5.4": {
-          "max_output_tokens": 65536,
-          "max_context_tokens": 200000,
-          "temperature": 0.6,
-          "description": "GPT model (placeholder)"
+        "big-pickle": {
+          "description": "OpenCode big-pickle"
         }
       }
     }
   },
-  "default_endpoint": "gemini",
+  "default_endpoint": "openrouter",
   "fallback_settings": {
     "enabled": true,
     "max_fallback_attempts": 2
@@ -87,20 +72,20 @@
     "same_endpoint_retries": 1
   },
   "agent_model_preferences": {
-    "orchestrator": "gemini/gemini-3.1-pro-preview",
-    "developer": "gemini/gemini-3.1-pro-preview",
-    "reviewer": "gemini/gemini-3.1-pro-preview",
-    "researcher": "gemini/gemini-3.1-pro-preview",
-    "prioritizer": "gemini/gemini-3.1-pro-preview",
-    "security_reviewer": "gemini/gemini-3.1-pro-preview",
-    "deployment_validator": "gemini/gemini-3.1-pro-preview",
-    "jr_reviewer": "gemini/gemini-3.7-flash",
-    "jr_researcher": "gemini/gemini-3.7-flash",
-    "tech_writer": "gemini/gemini-3.7-flash",
-    "file_manager": "gemini/gemini-3.7-flash",
-    "archivist": "gemini/gemini-3.7-flash",
-    "project_reporter": "gemini/gemini-3.7-flash",
-    "resource_controller": "gemini/gemini-3.7-flash"
+    "orchestrator": "opencode/big-pickle",
+    "developer": "opencode/big-pickle",
+    "reviewer": "opencode/big-pickle",
+    "researcher": "opencode/big-pickle",
+    "prioritizer": "opencode/big-pickle",
+    "security_reviewer": "opencode/big-pickle",
+    "deployment_validator": "opencode/big-pickle",
+    "jr_reviewer": "opencode/big-pickle",
+    "jr_researcher": "opencode/big-pickle",
+    "tech_writer": "opencode/big-pickle",
+    "file_manager": "opencode/big-pickle",
+    "archivist": "opencode/big-pickle",
+    "project_reporter": "opencode/big-pickle",
+    "resource_controller": "opencode/big-pickle"
   },
   "proxy": {
     "http": "",
@@ -118,17 +103,17 @@
     "enabled": true,
     "max_tokens_per_day": 2000000,
     "model_downgrades": {
-      "default_model": "gemini/gemini-3.7-flash",
+      "default_model": "opencode/big-pickle",
       "critical": {
-        "orchestrator": "gemini/gemini-3.1-pro-preview",
-        "developer": "gemini/gemini-3.1-pro-preview",
-        "prioritizer": "gemini/gemini-3.1-pro-preview",
-        "security_reviewer": "gemini/gemini-3.1-pro-preview"
+        "orchestrator": "opencode/big-pickle",
+        "developer": "opencode/big-pickle",
+        "prioritizer": "opencode/big-pickle",
+        "security_reviewer": "opencode/big-pickle"
       },
       "aggressive": {
-        "jr_reviewer": "gemini/gemini-3.7-flash",
-        "jr_researcher": "gemini/gemini-3.7-flash",
-        "tech_writer": "gemini/gemini-3.7-flash"
+        "jr_reviewer": "opencode/big-pickle",
+        "jr_researcher": "opencode/big-pickle",
+        "tech_writer": "opencode/big-pickle"
       }
     }
   },
@@ -146,12 +131,12 @@
   "file_editing": {
     "preferred_modes": [
       "guid",
+      "diff",
       "find_replace",
       "full_replace"
     ],
     "fallback_order": [
       "guid",
-      "diff",
       "find_replace",
       "full_replace"
     ],
