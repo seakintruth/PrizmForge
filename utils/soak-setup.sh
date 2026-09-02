@@ -333,6 +333,8 @@ if [[ $NO_RUN -eq 1 ]]; then
   exit 0
 fi
 
+cd "$CONTROLLER"
+
 if [[ ! -f ./main.py ]]; then
   echo "No ./main.py in $CONTROLLER" >&2
   exit 1
