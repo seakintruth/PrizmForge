@@ -28,7 +28,7 @@
 # Starting SoakN purges previous soaks (Soak1..SoakN-1) down to their
 # analytics component (.PrizmForge/ with agents.db + reports + indexes) only.
 #
-# After copy: cd <SOAK_ROOT>/SoakN/PrizmForge, git checkout -b soak/N, ./main.py
+# After copy: cd <SOAK_ROOT>/SoakN/PrizmForge, git checkout -B soak/N, ./main.py
 #
 # Usage (from anywhere; paths resolve from this script):
 #   ./utils/soak-setup.sh              # next unused N, then start main.py
@@ -316,7 +316,7 @@ init_soak_repo() {
       exit 1
     fi
     git -c user.name="PrizmForge Soak$SOAK_N" -c user.email="soak@local" \
-      checkout -q -b "$branch"
+      checkout -q -B "$branch"
   )
 }
 

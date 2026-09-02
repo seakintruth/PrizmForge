@@ -43,7 +43,7 @@ Waits **above 600 seconds** stay on today’s path: `Rate limit cooldown too lon
 |---|---|---|
 | `200` with usable `choices[0].message.content` | — | Success; `mark_success()` |
 | `503` or `429` | 1–600 s | Wait that long, **retry same once** |
-| `503` or `429` | missing / unparseable | Use current fixed cooldown (503 → 5 min, 429 → 2 min), then retry same once |
+| `503` or `429` | missing / unparseable | Use the status default wait (429 → 120 s, 503 → 300 s), then retry same once |
 | `503` or `429` | **> 600 s** | Do **not** wait; fallback now |
 | `401` / `402` | — | Unchanged (`KEY_LOCKED` / `TOKEN_EXHAUSTED`) |
 | Retry after wait still `4xx`/`5xx` or empty | — | Fallback; do not wait a second time |
@@ -173,7 +173,7 @@ That is the full engine-side plan: standard `503`/`429` + advertised wait, honor
 
 ## 1. Deployed state & PR map
 
-- **2026-09-01 current work** — §0.0 (short retry-after 429/503 policy) and §4 N.2 low-risk items (CLI-leakage audit, `__init__.py` cleanup) are developed on branch `feat/roadmap` on top of PR #109, pending review/merge. See §0.0 SHIPPED note and §4 N.2.
+- **2026-09-01 current work** — §0.0 (short retry-after 429/503 policy) and §4.2 low-risk items (CLI-leakage audit, `__init__.py` cleanup) are developed on branch `feat/roadmap` on top of PR #109, pending review/merge. See §0.0 SHIPPED note and §4.2.
 - `main` @ `8be697f` = **roadmap stamp for Soak9 recompute pass 2 (a9–f9)**; functional tip `6d79e5d` — see §1 (2026-08-29).
 - **Soak2 recompute pass 3 — mutation-path priority (d9/index hardening)**: Soak2 (2026-08-29 16:13–~20:30) exposed that d9 counted transport-failed sessions as stall → the developer froze for whole tasks while Resource Controller reasoned *"freeze: prioritizer + developer only"*. Fixed at root (see `## 1` pass-3 entry): failed/uncompleted sessions are **neutral**, genuine finished-zero-change sessions alone build the streak, and the latch **self-heals** every `rearm_after` iterations. README now documents **Operator Principle #1 — the mutation path is the most unblocked path**. Gate → **901 passed**.
 - Previous stamps: `26566f3` = PR-95 residual batch (P1–P11 + W1–W8, §1); `198f6d8` = roadmap stamp (848 → 877); `cf30bee` = PR #96 (`fit/setup-accept-pip-path`) = current `origin/main`; `954cc14` = PR #95 merge base (Workstream A Phase 1).
@@ -200,7 +200,9 @@ All shipped workstreams (A–F) are recorded in `docs/UNATTENDED_CLOSED_LOOP_CAP
 
 - [ ] **Live failing-hook smoke run on a copy** — run with a deliberately failing hook; confirm CRITICAL feedback → developer fix-forward proposal → materialized and addressed, all visible in events/errors/feedback. **Blocked: live runtime/endpoints** (in-process failure paths have deterministic unit proofs in `tests/unit/test_git_closed_loop.py`).
 - [ ] **PR #94 body nit** (manual GitHub edit): body still cites `tests/unit/test_writer_git_closed_loop.py`; should cite `tests/unit/test_git_closed_loop.py`. **Blocked: GitHub/manual editor access** (cosmetic, merged-PR body).
-- [ ] **Ignored-path handling in the git closed loop** — a git-governed target that is gitignored (e.g. `config.json`) needs an explicit branch: skip git or fail with a clear "path is gitignored" message, never silent success. **Default parked (§5.3 decision 3: gitignored config stays human-only).** Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §3.7.
+- [ ] **Ignored-path handling in the git closed loop** — a git-governed target that is gitignored (e.g. `config.json`) needs an explicit
+branch: skip git or fail with a clear "path is gitignored" message, never silent
+success. **Default parked (§4.3 decision 3: gitignored config stays human-only).** Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §3.7.
 - [ ] **Diagnostic dump shows a forced-hook-failure path** — at least one non-success path visible under events/errors after an intentional hook failure; the `git_fail` counter is already present in task summaries. **Blocked: Workstream F dump sections (`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §8.2).**
 
 ---
@@ -231,13 +233,13 @@ Capability/operator runbook: `docs/mini_swe_agent.md`. Rollback: `developer.impl
 
 ## 4. Annexes (strategic / parked decisions)
 
-### N.1 Forge Federation strategy — `Federation/Plan.md`
+### 4.1 Forge Federation strategy — `Federation/Plan.md`
 
 Active northstar: Stage 0 (current single-Territory system) → Stage 1 (enhanced
 single-Territory, next) → Stage 2 (multi-Territory, future). Operates via short,
 YAGNI-focused sprints with bounded, measurable experiments.
 
-### N.2 `report/plan.md` file_editing structural refactors
+### 4.2 `report/plan.md` file_editing structural refactors
 
 Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS TECH-DEBT** — each is small, bounded, and independently scoped; a future sprint can pick them up without a dedicated design doc.
 
@@ -255,7 +257,7 @@ Re-scoped (the fixed 120 s sleep is **not** in the editing loop):
 
 - [ ] **120s-sleep behavior** — the roadmap's "editing-loop" 120 s sleeps actually live in `agents/base.py` (401/KEY_LOCKED unlock wait, proxy/auth pause) and `interactive.py` (unattended recovery). Replace with the shared `EndpointHealth.unavailable_until` latch / configurable cooldown from ROADMAP §0.0.
 
-### N.3 UNATTENDED plan §15 open decisions (parked, with defaults)
+### 4.3 UNATTENDED plan §15 open decisions (parked, with defaults)
 
 1. Hook failure: fix-forward (leave disk dirty; CRITICAL fix) unless `git.revert_on_hook_failure` set — current behavior is fix-forward.
 2. Create-file policy: clean relative paths OK; add prefix policy only if junk root files recur.
@@ -308,7 +310,7 @@ and three transactions per file.
 - Do not treat “daemon owns the DB” as the fix for *this* window. Init should
   be one exclusive bulk transaction, then hand the DB back.
 
-### N.1 Init connection + one transaction
+### 5.1 Init connection + one transaction
 
 - [ ] **`cmd_init` holds one writer** — open a single
       `core.db_connection.get_db_connection()` (or a dedicated
@@ -322,7 +324,7 @@ and three transactions per file.
       former so there is one writer policy).
 - [ ] **Deleted-file pass uses the same `conn`** — no extra context manager.
 
-### N.2 Init-only pragmas (restore before iteration 1)
+### 5.2 Init-only pragmas (restore before iteration 1)
 
 On the init connection, **before** the walk (8 GB floor; 2-core NUC):
 
@@ -351,7 +353,7 @@ PRAGMA journal_mode = DELETE;
   grab multiple GB; agents + Python need the rest.
 - Document in a comment that these pragmas are **init-window only**.
 
-### N.3 `file_lines` bulk insert
+### 5.3 `file_lines` bulk insert
 
 - [ ] **`_initialize_lines_impl`: `executemany`** — build the row tuples in
       Python, one `executemany` per file (or chunks of 5k–10k rows if a file
@@ -362,14 +364,14 @@ PRAGMA journal_mode = DELETE;
       `line_guid`, create them **after** the bulk load (`ANALYZE` once). Do
       not drop UNIQUE `line_guid`.
 
-### N.4 Same-process only (not cross-soak)
+### 5.4 Same-process only (not cross-soak)
 
 - [ ] Hash short-circuit is **in-process only** (second `cmd_init()` in the
       same soak, or a mid-soak restart that did *not* wipe the live DB).
       Default soak still pays full rebuild. Do not advertise “next soak is
       faster.”
 
-### N.5 Work that is not required for iteration 1
+### 5.5 Work that is not required for iteration 1
 
 - [ ] Throttle per-file `✅ {path}` prints (every 50 files + a final tally).
 - [ ] `refresh_target_indexes(..., force=True)` runs **after** the DB commit
@@ -380,7 +382,7 @@ PRAGMA journal_mode = DELETE;
       editor). Folding `project_files` into a later metadata-only table is
       §5.2 tech-debt, not this item.
 
-### N.6 Files to touch
+### 5.6 Files to touch
 
 - `cli/commands.py` — `cmd_init` transaction + pragma window + print throttle.
 - `file_editing/writer.py` — `_initialize_lines_impl` `executemany`.
@@ -396,7 +398,7 @@ PRAGMA journal_mode = DELETE;
     `synchronous` is not `OFF`.
   - `file_editing.db.get_db_connection` is not used on the init path.
 
-### N.7 Acceptance
+### 5.7 Acceptance
 
 - Cold soak (no `.PrizmForge/` copied) still produces a complete `files` +
   `file_lines` + `project_files` index; governed reconstruct matches disk.
@@ -426,7 +428,7 @@ server engine. The product switch is **configuration**, not a fork.
 **Default stays SQLite.** Postgres is opt-in. CI and `utils/run_tests.sh`
 stay on SQLite unless an explicit extra job is added.
 
-### N.1 Decision: SQLAlchemy Core first, not ORM-everywhere
+### 7.1 Decision: SQLAlchemy Core first, not ORM-everywhere
 
 The schema lives as a large raw-SQL string in `core/db.py` (`init_db`,
 `_apply_schema`, `_migrate_schema`) plus two connection helpers
@@ -455,7 +457,7 @@ psycopg[binary]>=3.1    # Postgres driver only when backend=postgresql
 Suggested extra: `pip install -e ".[postgres]"`. SQLite uses SQLAlchemy’s
 bundled `sqlite3` dialect — no extra package.
 
-### N.2 Configuration (files, not env-only)
+### 7.2 Configuration (files, not env-only)
 
 Add a top-level `database` object to `config.json` / `example_config.json`.
 Document in `docs/CONFIGURATION.md`. Secrets stay in `api_key.json` (or a
@@ -497,7 +499,7 @@ server).
 Unattended preflight (`core/preflight.py`): if `backend=postgresql`,
 require the extra installed and a successful `SELECT 1` before soak start.
 
-### N.3 Single engine facade
+### 7.3 Single engine facade
 
 Replace the split `sqlite3.connect` world with one module, e.g.
 `core/db_engine.py`:
@@ -541,7 +543,7 @@ Replace the split `sqlite3.connect` world with one module, e.g.
 On Postgres map deadlocks / `lock_not_available` to the same exception so
 callers do not grow a second retry vocabulary.
 
-### N.4 Dialect-safe SQL (inventory before rewrite)
+### 7.4 Dialect-safe SQL (inventory before rewrite)
 
 Textual SQL that is **SQLite-only** today and must be parameterized or
 branched:
@@ -571,7 +573,7 @@ Rules:
 Phase A may wrap the worst call sites (`INSERT OR REPLACE`, `lastrowid`,
 `datetime('now')`) in `core/db_sql.py` helpers keyed by dialect name.
 
-### N.5 Schema create + migrations
+### 7.5 Schema create + migrations
 
 Today: one SQL blob + additive `_ensure_column` for old files.
 
@@ -598,7 +600,7 @@ performance work for Postgres is a different checklist (`COPY` / unlogged
 `file_lines` during load, then `ALTER TABLE … SET LOGGED`) — park unless a
 soak actually uses Postgres.
 
-### N.6 Product behavior that must not change
+### 7.6 Product behavior that must not change
 
 - Default `backend=sqlite`, path under `.PrizmForge/`, wiped per soak.
 - Governed reconstruct (`file_lines` + `sort_order` + `is_deleted`) identical.
@@ -608,7 +610,7 @@ soak actually uses Postgres.
 - Dual-writer rule on SQLite is unchanged: one writer during materialize;
   do not open a second engine against the same file.
 
-### N.7 Phased delivery
+### 7.7 Phased delivery
 
 - [ ] **7.A — Config + engine + SQLite parity**  
       `database` block, `get_engine()`, migrate `init_db` +
@@ -629,7 +631,7 @@ soak actually uses Postgres.
       Move off the schema string. One documented `alembic upgrade head` for
       durable Postgres; SQLite soaks still `create_all` on empty file.
 
-### N.8 Files to touch (7.A minimum)
+### 7.8 Files to touch (7.A minimum)
 
 - `core/config.py` + `docs/CONFIGURATION.md` + `example_config.json`
 - `example_api_key.json` — `keys.database.password` placeholder
@@ -641,7 +643,7 @@ soak actually uses Postgres.
   SQLite PRAGMA on connect, reject unknown backend
 - `tests/unit/test_db_retry_patience.py` — still valid on SQLite engine
 
-### N.9 Acceptance
+### 7.9 Acceptance
 
 - `backend` omitted or `"sqlite"` → bit-identical operator story to
   current `main` (path, pragmas after init, tests).
@@ -649,9 +651,9 @@ soak actually uses Postgres.
   closed** with an actionable message, no silent SQLite fallback.
 - No password in logs, events, or `get_db_path()` print.
 - Ruff clean; normal gate does not require Postgres.
-- §6 init pragmas still compile and apply **only** when dialect is SQLite.
+- §5 init pragmas still compile and apply **only** when dialect is SQLite.
 
-### N.10 scope
+### 7.10 scope
 
 - Multi-tenant Postgres, read replicas, federation Stage 2.
 - Moving agent JSON blobs into JSONB in the first Postgres PR (TEXT is

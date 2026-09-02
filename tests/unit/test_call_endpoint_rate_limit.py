@@ -54,6 +54,7 @@ class _FakeEndpoint:
     def __init__(self):
         self.health = SimpleNamespace(
             is_available=lambda: True,
+            status=SimpleNamespace(value=EndpointStatus.HEALTHY.value),
             mark_success=lambda: None,
             mark_failure=lambda *a, **k: None,
         )
@@ -526,6 +527,54 @@ def test_503_http_date_retry_after_honored(call_endpoint_env):
 
     assert answer == "recovered http-date"
     assert 40 <= sleeps[0] <= 60
+
+
+def test_500_retries_with_legacy_backoff_not_503_default(call_endpoint_env):
+    """500 must use the OTHER-5xx exponential backoff, not fall through to
+    raise_for_status()/UNAVAILABLE, and not pick up the 503 default 300s wait."""
+    base = call_endpoint_env
+    scripted = [
+        _resp(500, {}),
+        _resp(200, {"choices": [{"message": {"content": "recovered 500"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "recovered 500"
+    assert len(sleeps) == 1
+    # Legacy backoff is 2**attempt + fractional jitter -> [1.0, 2.0), NOT the
+    # 503 default 300s (or any recorded model failure before the retry).
+    assert 1.0 <= sleeps[0] < 2.0
+
+
+def test_502_falls_back_after_retries_exhausted(call_endpoint_env, capfd):
+    """Other-5xx codes (502) exhaust per-attempt backoff then fall back rather
+    than being swallowed as UNAVAILABLE by raise_for_status()."""
+    base = call_endpoint_env
+    manager = _FallbackManager()
+    scripted = [
+        _resp(502, {}),
+        _resp(502, {}),
+        _resp(502, {}),
+        _resp(200, {"choices": [{"message": {"content": "fb ok 502"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "fb ok 502"
+    # Attempts 0/1 sleep the legacy backoff; attempt 2 (last) falls back.
+    assert len(sleeps) == 2
+    assert all(1.0 <= s < 8.0 for s in sleeps)
+    out = capfd.readouterr().out
+    assert "Server unreachable. Falling back to" in out
+    assert "unexpected error" not in out
 
 
 def test_concurrent_agents_observe_shared_latch_bound_backoff(call_endpoint_env, capfd):

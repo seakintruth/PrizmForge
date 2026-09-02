@@ -83,10 +83,8 @@
     "max_fallback_attempts": 2
   },
   "retry_after": {
-    "honor": true,
     "max_wait_seconds": 600,
-    "same_endpoint_retries": 1,
-    "fallback_if_wait_exceeds_max": true
+    "same_endpoint_retries": 1
   },
   "agent_model_preferences": {
     "orchestrator": "gemini/gemini-3.1-pro-preview",

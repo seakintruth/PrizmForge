@@ -444,8 +444,7 @@ def call_endpoint(  # noqa: C901
                         ok=False,
                         kind="rate_limited" if resp.status_code == 429 else "server_error",
                     )
-                    print(f"   Rate limit cooldown too long ({advertised}s)")
-                    print("   → Falling back to ...")
+                    print(f"   Rate limit cooldown too long ({advertised}s)" if advertised is not None else "   Rate limit cooldown too long / unparseable")
                     fallback = endpoint_mgr.get_fallback_model(endpoint)
                     if fallback:
                         fallback_model, fallback_endpoint = fallback
@@ -492,7 +491,6 @@ def call_endpoint(  # noqa: C901
                     kind="rate_limited" if resp.status_code == 429 else "server_error",
                 )
                 print("   same-endpoint retry exhausted")
-                print("   → Falling back to ...")
                 fallback = endpoint_mgr.get_fallback_model(endpoint)
                 if fallback:
                     fallback_model, fallback_endpoint = fallback
@@ -551,9 +549,12 @@ def call_endpoint(  # noqa: C901
                     return None, 0
 
             # ============= HANDLE OTHER 5xx SERVER ERRORS =============
-            # 503 is handled above with the advertised-wait policy; the remaining
-            # 5xx codes (504 etc.) keep the legacy exponential-backoff retry.
-            if resp.status_code > 503 and resp.status_code < 600:
+            # 503 is handled above with the advertised-wait policy; all remaining
+            # 5xx codes (500-502, 504-599) keep the legacy exponential-backoff
+            # retry. Without the != 503 carve-out, 500-502 fell through to
+            # raise_for_status() and zapped responses as UNAVAILABLE instead of
+            # retrying with backoff.
+            if 500 <= resp.status_code < 600 and resp.status_code != 503:
                 wait_time = (2**attempt) + (time.time() % 1)
                 print(f"⚠️  Server error {resp.status_code} ({endpoint.name}). Retry {attempt + 1}/{retry_count}")
 
