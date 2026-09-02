@@ -7,7 +7,11 @@ note the PR/commit.
 Shipped sections were retired from this tracker on **2026-08-29** (their
 design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`).
 
-**Last updated:** 2026-09-01
+**Last updated:** 2026-09-02
+
+## Resolved this pass (2026-09-02)
+
+- Tracker hygiene only: §0.0 (short 429/503 Retry-After, same-endpoint retry) is already **SHIPPED** (2026-09-01, `feat/roadmap`). This pass does not reopen it.
 
 ## 0.0 Handle short retry after 429 or 503 errors
 

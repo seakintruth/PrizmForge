@@ -57,6 +57,32 @@ def test_change_to_operation_mapping():
     assert sd.change_to_operation({"status": "S", "path": "big.bin"}) is None
 
 
+def test_bounded_keeps_short_text_untouched():
+    assert sd._bounded("hello world", 100) == "hello world"
+
+
+def test_bounded_cuts_on_newline_boundary_with_marker():
+    # Content longer than the cap ends mid-line; _bounded must never split a
+    # token and must flag the cut explicitly so a reviewer treats it as bounded
+    # rather than corrupt.
+    text = "line one\nline two\nline three midword\n"
+    result = sd._bounded(text, 15)
+    assert not result.lstrip().startswith("...")  # the cut text comes first
+    assert "[TRUNCATED" in result
+    # The visible prefix must end at a newline (no partially-rendered token).
+    prefix = result.split("...\n[TRUNCATED")[0]
+    assert prefix.endswith("\n")
+
+
+def test_bounded_no_newline_inside_cut_adds_marker_without_fake_token():
+    # A giant single-line token: there is no newline to cut at, so we must not
+    # present a mid-token fragment as if it were the whole token.
+    result = sd._bounded("x" * 1000, 20)
+    assert "[TRUNCATED" in result
+    # The returned prefix is a strict prefix of the input (never augmented mid-token).
+    assert result.startswith("x" * 20)
+
+
 # =========================================================================
 # Worktree lifecycle (real git)
 # =========================================================================
@@ -204,7 +230,71 @@ def test_turn_success_materializes_approved_proposal(shell_env, isolated_project
 
     agent_name, prompt = shell_env["state"]["reviewer_prompts"][0]
     assert agent_name == "reviewer"
-    assert "-VALUE = 1" in prompt or "+VALUE = 42" in prompt
+    # full_replace surfaces the complete proposed content (Option A) rather than
+    # a unified diff, so check for the new content rather than +/- diff markers.
+    assert "PROPOSED FULL CONTENT" in prompt
+    assert "VALUE = 42" in prompt
+    # Small files fit the cap: complete content, no truncation marker line.
+    assert "[TRUNCATED: content exceeds" not in prompt
+
+
+def test_gate_presents_full_content_for_full_replace(shell_env):
+    # A full-replace of a large file must reach the reviewer as complete proposed
+    # content, never as a unified diff cut mid-token (which previously caused
+    # spurious "truncated" rejections). Very large files are bounded, not corrupt:
+    # the cut lands on a newline boundary and is explicitly marked.
+    big_content = "".join(f"section {i}\n" + "x" * 2000 + "\n" for i in range(200))
+    payload = {
+        "target_file_path": "app.py",
+        "operations": [{"type": "full_replace", "new_content": big_content}],
+    }
+    result = sd.SessionResult(exit_status="Finished", summary="rewrote app.py", messages=[])
+
+    sd._gate_and_materialize(
+        proposal_id="P-full-replace",
+        payload_dict=payload,
+        target_file_path="app.py",
+        diff_text="(raw diff, far larger than any prompt cap)",
+        result=result,
+        fallback_used=False,
+        task_id="T-full-replace",
+        progress={},
+        current_turn=1,
+    )
+
+    agent_name, prompt = shell_env["state"]["reviewer_prompts"][0]
+    assert agent_name == "reviewer"
+    assert "PROPOSED FULL CONTENT" in prompt
+    assert "PROPOSED UNIFIED DIFF" not in prompt  # full content replaces the diff
+    # The leading section is present; the cut is explicitly marked as bounded.
+    assert "section 0" in prompt
+    assert "[TRUNCATED: content exceeds" in prompt
+
+
+def test_gate_keeps_unified_diff_for_non_full_replace(shell_env):
+    # Non-full-replace ops (e.g. create_file) still surface the unified diff.
+    payload = {
+        "target_file_path": "new_file.py",
+        "operations": [{"type": "create_file", "initial_content": ["print('hello')"], "target_file_path": "new_file.py"}],
+    }
+    result = sd.SessionResult(exit_status="Finished", summary="added file", messages=[])
+
+    sd._gate_and_materialize(
+        proposal_id="P-create",
+        payload_dict=payload,
+        target_file_path="new_file.py",
+        diff_text="--- a/new_file.py\n+++ b/new_file.py\n@@ -1 +1 @@\n+print('hello')",
+        result=result,
+        fallback_used=False,
+        task_id="T-create",
+        progress={},
+        current_turn=1,
+    )
+
+    agent_name, prompt = shell_env["state"]["reviewer_prompts"][0]
+    assert agent_name == "reviewer"
+    assert "PROPOSED UNIFIED DIFF" in prompt
+    assert "PROPOSED FULL CONTENT" not in prompt
 
 
 def test_turn_rejection_reports_rejected_status(shell_env, monkeypatch):

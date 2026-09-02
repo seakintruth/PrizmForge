@@ -282,12 +282,15 @@ Behavior notes:
 
 ## `feedback`
 
-Backlog aging for unattended runs.
+Backlog aging and backpressure for unattended runs. All keys optional.
 
-| Key | Type | Description |
-|-----|------|-------------|
-| `max_age_days_low` | int | Dismiss old LOW items |
-| `max_unaddressed` | int | Cap total open feedback |
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `max_age_days_low` | int | 7 | Dismiss old LOW items |
+| `max_unaddressed` | int | 200 | Cap total open feedback (MEDIUM items trimmed when over cap) |
+| `stuck_threshold` | int | 3 | Times an item may be handed to the developer before it is marked stuck (clamped to ≥2) |
+| `tiers` | object | `{soft_start: 50, hard_start: 100, freeze_at: 200}` | Backpressure thresholds used by `workflow/backlog.py` |
+| `dedupe` | object | `{enabled: true, window_minutes: 30}` | Collapse duplicate intake within the window |
 
 ---
 

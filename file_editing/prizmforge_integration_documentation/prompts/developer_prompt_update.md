@@ -63,5 +63,3 @@ Failure to follow this format will result in the proposal being rejected.
 | Developer Prompt Guidance   | ✅ Updated | Includes correct field names and schema requirements |
 
 Everything is now consistent with your current `edit_proposals` schema.
-
-Would you like me to proceed with **Sprint 9** (Testing, Hardening & Documentation)?
