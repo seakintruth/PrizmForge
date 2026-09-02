@@ -10,6 +10,20 @@ Do not re-add shipped items or their PR maps.
 
 **Last updated:** 2026-09-02
 
+## Section priorities
+
+| Section | Priority | Why |
+|---|---|---|
+| §0 Current state & next focus | — | Intro / index only |
+| §1 Cold-soak SQLite ingest | **HIGH** | Actionable now (no live-endpoint dependency); biggest recurring soak-start win. |
+| §2 Optional PostgreSQL | **LOW** | Deferred by design; only needed for multi-writer/federation deploys not planned yet. |
+| §3 Closed-loop hardening residuals | **MEDIUM** | Real UAT gaps, but blocked on live endpoints / GitHub access. |
+| §4 Mini-swe agent open items | **MEDIUM** | Core validation is high-value but blocked on live endpoints; rest deferred/parked. |
+| §5 Annexes / parked decisions | **LOW** | Intentional tech-debt; no urgency. |
+| §6 New work this pass | **HIGH** | Soak-derived actionable fixes live here; tick as they land. |
+
+**Legend:** HIGH = do next (actionable, unblocked) · MEDIUM = trackable, blocked on external deps (live endpoints / GitHub / containers) · LOW = deferred or parked by design.
+
 ## 0. Current state & next focus
 
 - **Branch** `feat/roadmap` is merged into `main` / `origin/main` (2026-09-02).
@@ -487,5 +501,29 @@ Placeholder for actionable items that surface from the Soak7 review and
 future soak analyses. When a soak reveals a concrete, verified defect or
 regression, add a dated, file-referenced entry here and tick it once fixed.
 Do not add speculative or endpoint-dependent items.
+
+Soak7 (2026-09-02) so far produced 54 `jr_reviewer` feedback items but **0
+materialized edits** (task_001 shell session hit its `step_limit=30` mid-review;
+remaining errors were API/Network + quota noise). Triage: most items are
+false-positive or working-as-designed (see below). Two are genuinely actionable:
+
+- [ ] **Quote SQL identifiers in `cli/commands.py` DB exports** — `cmd_export_db`,
+      `cmd_export_specific_tables`, `table_has_task_id` interpolate raw
+      `{table_name}` into SQL/`PRAGMA` (`cli/commands.py:356,359,399,490,493`).
+      Add a `_quote_identifier()` helper (double-quote + escape embedded `"`).
+      (But : `sqlite_master name=?` check already parameterized.)
+- [ ] **Robust DDL splitting in `core/db.py` `_apply_schema`** — current
+      `endswith(";")` per-line split breaks if a `;` appears inside a comment
+      or string literal. Replace with a comment/string-aware scanner; no new
+      dependency (`sqlparse` not required).
+
+**Deliberate / false-positive — no change:**
+- `core/db.py` `journal_mode=OFF` + `synchronous=OFF` + FK-disabled-during-apply:
+  intentional init-window & mount tradeoffs — already covered by §1 and §2 here.
+- `core/db_helpers.py` "SQL injection" (ids 39–43): parameterized — f-strings only
+  assemble `?` placeholders or a constant `task_filter`; not injectable.
+- `agent_schemas/*.json` items (ids 17–38): sample-output → formal-JSON-Schema
+  would regress `get_schema_example()` (`core/agent_schemas.py:312`); excluded.
+- `cli/__init__.py` empty / `datetime.now()`×3 / cosmetic nits: harmless.
 
 ---
