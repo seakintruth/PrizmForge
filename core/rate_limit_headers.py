@@ -10,6 +10,7 @@ instead of sleeping 3x60s on an empty window.
 
 from __future__ import annotations
 
+import email.utils
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -23,7 +24,95 @@ _EPOCH_FLOOR = 1_000_000_000
 _REMAINING_KEYS = ("x-ratelimit-remaining", "ratelimit-remaining")
 _RESET_KEYS = ("x-ratelimit-reset", "ratelimit-reset")
 
+# The 600 s ceiling (10 minutes). Advertised waits above this trip the
+# "cooldown too long -> fallback now" branch instead of a long in-process sleep.
+MAX_ADVERTISED_WAIT = 600
+
+# Default wait when the header/body is missing or unparseable (ROADMAP §0.0
+# decision table): 429 -> 120 s, 503 -> 300 s.
+DEFAULT_STATUS_WAIT = {429: 120, 503: 300}
+
 _QUOTA_BODY_TOKENS = ("free-models-per-day", "add 10 credits", "daily quota")
+
+
+def advertised_wait_seconds(
+    status: int,
+    headers: object,
+    body_text: str = "",
+    *,
+    now: float | None = None,
+    max_wait: int = MAX_ADVERTISED_WAIT,
+) -> int | None:
+    """Return the advertised retry wait in seconds for a 429/503 response.
+
+    Resolution order (ROADMAP §0.3):
+      1. ``Retry-After`` header (delta-seconds or HTTP-date).
+      2. JSON ``error.retry_after_seconds`` in the body.
+      3. Status default (429 -> 120 s, 503 -> 300 s).
+
+    Returns the raw advertised value clamped into ``[1, max_wait]``, or ``None``
+    when the wait is missing/unparseable and there is no status default. Values
+    strictly above ``max_wait`` are returned un-clamped so the caller can
+    distinguish "honor this wait" from "too long -> fallback now".
+    """
+    delta = _parse_retry_after_header(headers, now=now)
+    if delta is not None:
+        return delta if delta > max_wait else max(1, delta)
+
+    body_delta = _parse_body_retry_after(body_text)
+    if body_delta is not None:
+        return body_delta if body_delta > max_wait else max(1, body_delta)
+
+    default = DEFAULT_STATUS_WAIT.get(status)
+    if default is not None:
+        return max(1, default)
+    return None
+
+
+def _parse_retry_after_header(headers: object, *, now: float | None = None) -> int | None:
+    if headers is None:
+        return None
+    raw = None
+    for key, value in cast("Mapping[object, object]", headers).items():
+        if str(key).lower() == "retry-after":
+            raw = str(value)
+            break
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    now = time.time() if now is None else now
+    try:
+        return max(1, int(float(raw)))
+    except (TypeError, ValueError):
+        pass
+    try:
+        parsed = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if parsed is None:
+        return None
+    return max(1, int(parsed.timestamp() - now))
+
+
+def _parse_body_retry_after(body_text: str) -> int | None:
+    if not body_text:
+        return None
+    try:
+        body = cast(dict, __import__("json").loads(body_text))
+    except Exception:
+        return None
+    error = body.get("error")
+    if not isinstance(error, dict):
+        return None
+    value = error.get("retry_after_seconds")
+    if value is None:
+        return None
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return None
 
 
 @dataclass

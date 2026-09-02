@@ -1,24 +1,34 @@
 #!/usr/bin/env bash
-# Start the next in-repo PrizmForge soak (see docs/soak_runbook.md).
+# Start the next PrizmForge soak (see docs/soak_runbook.md).
 #
-# Layout (all under the project, gitignored via .soak/):
+# Soak state lives OUTSIDE the PrizmForge source repo, one directory above it,
+# under PrizmForge-Soak/ by default (override with SOAK_ROOT or --soak-root).
+# Keeping it out of the repo avoids a git-ignored-path collision with the
+# mini-swe shell developer: the edit target must be its own git repository for
+# git-worktree change collection to work.
+#
+# Layout (under SOAK_ROOT = <repo>/../PrizmForge-Soak by default):
 #   <repo>/utils/soak-setup.sh
-#   <repo>/.soak/SoakN/PrizmForge          controller (runs ./main.py)
-#   <repo>/.soak/SoakN-target/PrizmForge   edit target
+#   <parent>/PrizmForge-Soak/SoakN/PrizmForge          controller (runs ./main.py)
+#   <parent>/PrizmForge-Soak/SoakN-target/PrizmForge   edit target
 #
 # Controller config.json is rewritten to:
 #   "project_directory": "../../SoakN-target/PrizmForge"
 #
-# Copies EXCLUDE .soak/, .git/, .PrizmForge/ and .prizmforge/,
-# shell_trajectories/, sqlite DB files and caches — a soak always starts
-# with fresh process + analytics state (the target generates its own
-# .PrizmForge/agents.db at runtime). main.py stdout stays on the terminal
-# (default buffering).
+# The source repo's .git history IS copied into each soak, and .PrizmForge/,
+# .prizmforge/, shell_trajectories/, sqlite DB files and caches are excluded —
+# so a soak starts with fresh process + analytics state (the target generates
+# its own .PrizmForge/agents.db at runtime) but keeps full git history. The
+# source repo must be clean (no tracked, uncommitted changes) so the copied
+# tree matches HEAD. Each soak side gets its own branch (soak/N /
+# soak/N-target) at HEAD; the target's repo is what the shell developer's
+# worktree machinery needs to collect and materialize governed edits. main.py
+# stdout stays on the terminal (default buffering).
 #
 # Starting SoakN purges previous soaks (Soak1..SoakN-1) down to their
 # analytics component (.PrizmForge/ with agents.db + reports + indexes) only.
 #
-# After copy: cd .soak/SoakN/PrizmForge, git checkout -b soak/N, ./main.py
+# After copy: cd <SOAK_ROOT>/SoakN/PrizmForge, git checkout -B soak/N, ./main.py
 #
 # Usage (from anywhere; paths resolve from this script):
 #   ./utils/soak-setup.sh              # next unused N, then start main.py
@@ -33,7 +43,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_REPO="$(cd "${SOURCE_REPO:-$SCRIPT_DIR/..}" && pwd)"
-SOAK_ROOT="${SOAK_ROOT:-$SOURCE_REPO/.soak}"
+SOAK_ROOT="${SOAK_ROOT:-$SOURCE_REPO/../PrizmForge-Soak}"
+
 
 DRY_RUN=0
 FORCE=0
@@ -53,7 +64,7 @@ while [[ $# -gt 0 ]]; do
     --force) FORCE=1; shift ;;
     --source)
       SOURCE_REPO="$(cd "$2" && pwd)"
-      SOAK_ROOT="${SOAK_ROOT:-$SOURCE_REPO/.soak}"
+      SOAK_ROOT="${SOAK_ROOT:-$SOURCE_REPO/../PrizmForge-Soak}"
       shift 2
       ;;
     --soak-root)
@@ -113,7 +124,7 @@ purge_container() {
 }
 
 # Reduce every earlier soak (Soak1..SoakN-1, controller + target) to its
-# analytics component only, so .soak/ never accumulates full repo copies.
+# analytics component only, so SOAK_ROOT never accumulates full repo copies.
 purge_previous_soaks() {
   local current="$1" d base k
   shopt -s nullglob
@@ -189,15 +200,34 @@ if [[ -e "$CONTROLLER" || -e "$TARGET_ROOT" ]]; then
   fi
 fi
 
+# A soak copy is only consistent with its git history if the source repo's
+# working tree matches HEAD. Since we now copy the source's .git, require the
+# source to be clean (ignoring untracked files — config.json / api_key.json and
+# analytics/caches are git-ignored and expected) so every soak starts with a
+# clean `git status`, matching HEAD.
+check_clean_source() {
+  local dirty
+  dirty="$(git -C "$SOURCE_REPO" status --porcelain | grep -v '^??' || true)"
+  if [[ -n "$dirty" ]]; then
+    echo "Source repo has uncommitted (tracked) changes; a soak would start with a working" >&2
+    echo "tree that does not match HEAD, so the copied .git history would be inconsistent." >&2
+    echo "Commit or stash before starting a soak:" >&2
+    echo "$dirty" >&2
+    exit 1
+  fi
+}
+
 if [[ $DRY_RUN -eq 1 ]]; then
+  echo "[dry-run] would require source repo $SOURCE_REPO to be clean (no tracked, uncommitted changes)"
   echo "[dry-run] would purge prior soaks (Soak< $SOAK_N) down to analytics (.PrizmForge) only"
   echo "[dry-run] would copy source → controller and target"
-  echo "[dry-run]   excluding .soak/, .git/, .PrizmForge/, .prizmforge/, shell_trajectories/, *.db*, caches"
+  echo "[dry-run]   copying .git/ history + working tree (excluding analytics/caches); then branch soak/N / soak/N-target at HEAD"
   echo "[dry-run] would set $CONTROLLER_CFG project_directory = $REL_PROJECT"
-  echo "[dry-run] would cd $CONTROLLER && git checkout -b $SOAK_BRANCH"
-  echo "[dry-run] would run ./main.py (stdout → terminal)"
+  echo "[dry-run] would cd $CONTROLLER && ./main.py (stdout → terminal)"
   exit 0
 fi
+
+check_clean_source
 
 mkdir -p "$SOAK_ROOT" "$TARGET_ROOT"
 
@@ -207,12 +237,13 @@ archive_current_soak
 copy_tree() {
   local src="$1" dest="$2"
   mkdir -p "$(dirname "$dest")"
-  # Never copy .soak, .git, analytics state or caches into a soak — this is
-  # how the layout stays flat and every soak starts with fresh state.
+  # Copy the working tree PLUS the source repo's .git (so soaks start with the
+  # true history and a HEAD that matches the copied tree — the caller enforces a
+  # clean source before this runs). Never copy .soak, analytics state or caches;
+  # those are generated fresh per soak.
   if command -v rsync >/dev/null 2>&1; then
     rsync -a --delete \
       --exclude '.soak/' \
-      --exclude '.git/' \
       --exclude '.PrizmForge/' \
       --exclude '.prizmforge/' \
       --exclude 'shell_trajectories/' \
@@ -229,7 +260,7 @@ copy_tree() {
     rm -rf "$dest"
     mkdir -p "$dest"
     cp -a "$src"/. "$dest"/
-    rm -rf "$dest/.soak" "$dest/.git" "$dest/.PrizmForge" "$dest/.prizmforge"
+    rm -rf "$dest/.soak" "$dest/.PrizmForge" "$dest/.prizmforge"
     find "$dest" -type d \
       \( -name .PrizmForge -o -name .prizmforge -o -name shell_trajectories \) \
       -prune -exec rm -rf {} +
@@ -270,24 +301,31 @@ if not resolved.is_dir():
 print(f"Resolved target: {resolved}")
 PY
 
-cd "$CONTROLLER"
+# init_repo <dir> <branch> <label>: give a soak copy its OWN working branch at
+# the source's HEAD. The .git history is copied from the source (see copy_tree +
+# check_clean_source), so this just creates/checks out the soak branch. A repo is
+# required for the mini-swe shell developer's git-worktree machinery to collect &
+# materialize governed edits (without it, git rev-parse falls through to an
+# enclosing repo where the target is git-ignored and edits are silently lost).
+init_soak_repo() {
+  local dir="$1" branch="$2" label="$3"
+  (
+    cd "$dir"
+    if [[ ! -d .git ]]; then
+      echo "ERROR: $label has no .git (copy_tree should have copied it from $SOURCE_REPO)" >&2
+      exit 1
+    fi
+    git -c user.name="PrizmForge Soak$SOAK_N" -c user.email="soak@local" \
+      checkout -q -B "$branch"
+  )
+}
 
-if [[ ! -d .git ]]; then
-  echo "Creating a fresh soak snapshot commit (no repo history copied)"
-  git init -q -b main 2>/dev/null || { git init -q; git branch -m main 2>/dev/null || true; }
-  git add -A >/dev/null
-  git -c user.name="PrizmForge Soak$SOAK_N" -c user.email="soak@local" \
-    commit -m "Soak${SOAK_N} snapshot" >/dev/null
-fi
-
-if git show-ref --verify --quiet "refs/heads/${SOAK_BRANCH}"; then
-  git checkout -q "$SOAK_BRANCH"
-else
-  git checkout -q -b "$SOAK_BRANCH"
-fi
+init_soak_repo "$CONTROLLER" "$SOAK_BRANCH" "controller"
+init_soak_repo "$TARGET" "${SOAK_BRANCH}-target" "target"
 
 echo
 echo "Soak${SOAK_N} ready at $CONTROLLER (branch $SOAK_BRANCH)"
+echo "Soak${SOAK_N} target ready at $TARGET (branch ${SOAK_BRANCH}-target)"
 
 if [[ $NO_RUN -eq 1 ]]; then
   echo "Skipping ./main.py (--no-run)."

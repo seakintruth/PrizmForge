@@ -6,7 +6,9 @@ config.json
 # Exclude the agents.db sqlite database
 agents.db
 
-# Soak directory used for simulation runs
+# Soak directory (defensive; soak-setup.sh now defaults to PrizmForge-Soak/ one
+# directory OUTSIDE the repo so the mini-swe shell developer's edit collection
+# is not defeated by gitignoring the target)
 .soak/
 
 # Python
