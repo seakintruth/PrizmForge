@@ -64,6 +64,19 @@ def test_quota_via_body_tokens_without_headers():
     assert info.reset_epoch is None
 
 
+def test_quota_via_free_usage_limit_error_type():
+    # OpenRouter free-tier daily cap: error.type == FreeUsageLimitError, no
+    # Reset / Remaining headers. Must classify as quota, not a short burst.
+    body = (
+        '{"type": "error", "error": {"type": "FreeUsageLimitError", "message": "Error from provider (Console): Rate limit exceeded. Please try again later."}}'
+    )
+    info = classify_rate_limit({}, body_text=body)
+    assert info.is_quota is True
+    assert info.body_quota is True
+    assert info.remaining is None
+    assert info.reset_epoch is None
+
+
 def test_headers_case_insensitive():
     info = classify_rate_limit({"X-RATELIMIT-REMAINING": "0", "X-RATELIMIT-RESET": "45"})
     assert info.is_quota is True

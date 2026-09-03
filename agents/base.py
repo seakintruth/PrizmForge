@@ -120,12 +120,12 @@ def call_endpoint(  # noqa: C901
     # Check if endpoint is available
     if not endpoint.health.is_available():
         wait_time = endpoint.health.time_until_available()
-        print(f"⚠️  {endpoint.name} skipped (LOCAL health latch: {endpoint.health.status.value})")
-        print(f"   Not calling the API — cooldown remaining {wait_time}s. OpenCode CLI can still work.")
-        last_dump = getattr(endpoint.health, "last_http_dump", None)
-        if last_dump:
-            print("   Last HTTP dump from when this latch was set:")
-            print(last_dump)
+        # The HTTP dump is printed once when the latch is SET (mark_failure
+        # path stores print_http_error_dump's output). Re-printing it on every
+        # skip turns one 429 into megabytes of identical stdout, so later skips
+        # get a single compact line instead (ROADMAP §6.2).
+        print(f"⚠️  {endpoint.name} skipped (LOCAL health latch: {endpoint.health.status.value}) — {int(wait_time)}s left")
+        print("   Not calling the API — cooldown remaining. OpenCode CLI can still work.")
 
         # Try to get fallback
         fallback = endpoint_mgr.get_fallback_model(endpoint)

@@ -263,3 +263,72 @@ def test_get_health_summary_shape(manager):
     assert "primary" in summary
     assert "secondary" in summary
     assert summary["primary"]["status"] == "healthy"
+
+
+# ---------------------------------------------------------------------------
+# §6.3 (soak-derived): when every configured endpoint is latched, the global
+# support-worker freeze turns on so background workers stop burning quota;
+# when any endpoint recovers it turns back off. Uses a single-endpoint config
+# so the registry reflects exactly one latch decision deterministically.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolate_freeze_registry(monkeypatch):
+    from agents.worker_utils import set_support_frozen
+    from core import endpoint_manager as epm
+
+    epm._clear_managers_registry()
+    set_support_frozen(False)
+
+
+def test_mark_failure_latches_only_endpoint_freezes_support():
+    from agents.worker_utils import set_support_frozen, support_frozen
+    from core.endpoint_manager import _sync_support_freeze
+
+    set_support_frozen(False)
+    cfg = {
+        "default_endpoint": "only",
+        "_api_keys": {"only": {"api_key": "k"}},
+        "endpoints": {
+            "only": {
+                "base_url": "http://only.example/v1/chat/completions",
+                "api_key_name": "k",
+                "models": {"m": {}},
+            }
+        },
+    }
+    m = EndpointManager(cfg)
+    assert not support_frozen()
+    m.endpoints["only"].health.mark_failure(EndpointStatus.TOKEN_EXHAUSTED)
+    _sync_support_freeze()
+    assert support_frozen()
+
+
+def test_mark_success_on_only_endpoint_resumes_support():
+    from agents.worker_utils import set_support_frozen, support_frozen
+
+    set_support_frozen(True)
+    cfg = {
+        "default_endpoint": "only",
+        "_api_keys": {"only": {"api_key": "k"}},
+        "endpoints": {
+            "only": {
+                "base_url": "http://only.example/v1/chat/completions",
+                "api_key_name": "k",
+                "models": {"m": {}},
+            }
+        },
+    }
+    m = EndpointManager(cfg)
+    m.endpoints["only"].health.mark_success()
+    assert not support_frozen()
+
+
+def test_mixed_config_stays_unfrozen_when_one_healthy(ep_config):
+    from agents.worker_utils import support_frozen
+
+    m = EndpointManager(ep_config)
+    # Fail primary only; secondary remains healthy -> transport not fully frozen.
+    m.endpoints["primary"].health.mark_failure(EndpointStatus.TOKEN_EXHAUSTED)
+    assert not support_frozen()

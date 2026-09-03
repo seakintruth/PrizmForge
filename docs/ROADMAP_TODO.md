@@ -273,9 +273,11 @@ hardening but are **not** the soak failure and are optional:
 
 ## 6. Soak-derived endpoint latch / fallback
 
-**Status:** OPEN — from Soak7 iteration 22 log (63.6m elapsed, Work: 0.0s).
-Independent of free-tier quota. These four fire on paid endpoints the first
-time a primary 429/503 parks and another endpoint is still healthy.
+**Status:** §6.1/§6.2/§6.3/§6.4 implemented (all four; checkboxes ticked; 980 unit tests pass,
+ruff clean) — pending next-soak acceptance. From Soak7 iteration 22 log (63.6m
+elapsed, Work: 0.0s). Independent of free-tier quota. These four fire on paid
+endpoints the first time a primary 429/503 parks and another endpoint is
+still healthy.
 
 **Symptom:** OpenRouter already latched (`LOCAL health latch: rate_limited`,
 `Remaining: 0`). Support agents (prioritizer, jr_reviewer, archivist,
@@ -296,47 +298,49 @@ Latch skip (`endpoint.health.is_available() is False`) must call
 POST-failure branches fall back; the skip branch sleeps 30–120s and
 returns `None`.
 
-- [ ] In `agents/base.py` `call_endpoint`, the unavailable-skip path:
+- [x] In `agents/base.py` `call_endpoint`, the unavailable-skip path:
       try fallback endpoint/model; if one exists, recurse/`call_endpoint`
       on it (same signature as the 429/503 fallback).
-- [ ] If every candidate is latched, *then* print `No alternate endpoints
+- [x] If every candidate is latched, *then* print `No alternate endpoints
       available` and use the existing bounded sleep (`min(max(wait, 30), 120)`).
-- [ ] Test: primary latched, fallback healthy → one POST to fallback, no
-      “no alternate” line (`tests/unit/test_call_endpoint_rate_limit.py`).
-- [ ] Test: both latched → bounded sleep, no live POST.
+- [x] Test: primary latched, fallback healthy → one POST to fallback, no
+      “no alternate” line (`test_latched_primary_falls_back_to_healthy_endpoint`
+      in `tests/unit/test_call_endpoint_rate_limit.py`).
+- [x] Test: both latched → bounded sleep, no live POST.
+      (`test_skip_path_all_parked_sleeps_bounded_backoff`)
 
 ### 6.2 Print the HTTP dump once per latch, not per agent call
 
 `print_http_error_dump` on every skip turned one 429 into megabytes of
 identical stdout. Paid bursts will do the same.
 
-- [ ] Dump (status, redacted headers, parsed error, body truncate) only
+- [x] Dump (status, redacted headers, parsed error, body truncate) only
       when `mark_failure` *sets* a new `unavailable_until` (or when the
       stored dump changes).
-- [ ] Later skips: one line
+- [x] Later skips: one line
       `⚠️  {endpoint} skipped (LOCAL health latch: {status}) — {Ns}s left`.
       Do not reprint `Last HTTP dump from when this latch was set:`.
-- [ ] Optional: keep the dump on `EndpointHealth.last_http_dump` for
+- [x] Optional: keep the dump on `EndpointHealth.last_http_dump` for
       debug / a verbose flag; default soak stdout stays quiet.
-- [ ] Test: two skip-path calls under the same latch → dump appears once
-      (`capfd`).
+- [x] Test: two skip-path calls under the same latch → dump appears once
+      (`capfd`) (`test_local_latch_skip_prints_dump_without_calling_api`).
 
 ### 6.3 Freeze support agents while the shared latch is active
 
 jr_reviewer format-retries and archivist batches burned the only remaining
 OpenCode attempts while orchestrator/developer did no work.
 
-- [ ] When every configured endpoint is latched **or** the active
+- [x] When every configured endpoint is latched **or** the active
       endpoint for the foreground model is latched and no fallback is
       healthy: `set_active_agents` to orchestrator + developer only
       (reuse the shell-session lane pause in `workflow/parallel_workers.py`
       / `task_runner.py`).
-- [ ] Resume the previous filter when any endpoint `mark_success`s or
+- [x] Resume the previous filter when any endpoint `mark_success`s or
       `unavailable_until` expires.
-- [ ] Do not enqueue jr_reviewer JSON retries on an empty transport
+- [x] Do not enqueue jr_reviewer JSON retries on an empty transport
       caused by a latch skip (`Empty response (endpoint issue) — skipping
       format retries` should be the last line, not attempt 2 and 3).
-- [ ] Test: latch both endpoints → prioritizer/archivist/jr_reviewer not
+- [x] Test: latch both endpoints → prioritizer/archivist/jr_reviewer not
       called; after `mark_success` they run again.
 
 ### 6.4 `FreeUsageLimitError` is quota, not a 120s warm-up
@@ -351,16 +355,16 @@ No `Retry-After`. Current code uses the 429 status default (120s),
 `Advertised wait 120s — retry same endpoint once`. That is the burst /
 GPU-warm path. Console/IP daily caps need the quota path.
 
-- [ ] In `classify_rate_limit` (or a sibling on the parsed body):
+- [x] In `classify_rate_limit` (or a sibling on the parsed body):
       `is_quota = True` when `error.type == "FreeUsageLimitError"` or
       top-level `"type": "FreeUsageLimitError"`, even with no Reset /
       Remaining headers.
-- [ ] Quota branch unchanged: park (`RATE_LIMITED`, existing ~15 min cap
+- [x] Quota branch unchanged: park (`RATE_LIMITED`, existing ~15 min cap
       or sleep-to-reset if a Reset exists), fallback immediately, **no**
       same-endpoint 120s honor.
-- [ ] Advertised-wait 120/300s remains only for 429/503 that are *not*
+- [x] Advertised-wait 120/300s remains only for 429/503 that are *not*
       quota.
-- [ ] Test: OpenCode-shaped body, no `Retry-After` → no 120s sleep, fallback
+- [x] Test: OpenCode-shaped body, no `Retry-After` → no 120s sleep, fallback
       or park (`test_call_endpoint_rate_limit.py` +
       `test_rate_limit_headers.py`).
 
@@ -370,8 +374,11 @@ GPU-warm path. Console/IP daily caps need the quota path.
 - `core/rate_limit_headers.py` — `FreeUsageLimitError` → `is_quota`.
 - `core/http_diag.py` / `core/endpoint_manager.py` — dump stored on latch
   set, not on every skip.
-- `workflow/parallel_workers.py` / `workflow/task_runner.py` — support
-  freeze while all endpoints latched.
+- `agents/worker_utils.py` + `core/endpoint_manager.py` — support
+  freeze while all endpoints latched (held via
+  `hold_while_foreground_session_active`; latch path sets the flag).
+- `agents/parallel_workers.py` — empty-transport jr_reviewer format-retry
+  skip (already present).
 - Tests as listed; ruff clean; no live endpoints.
 
 **Acceptance (next soak, paid or free):** one 429 parks an endpoint;

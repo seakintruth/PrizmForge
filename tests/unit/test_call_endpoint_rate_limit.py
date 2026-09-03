@@ -21,6 +21,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -240,9 +241,11 @@ def test_local_latch_skip_prints_dump_without_calling_api(call_endpoint_env, cap
     out = capfd.readouterr().out
     assert "LOCAL health latch" in out
     assert "Not calling the API" in out
-    assert "Last HTTP dump from when this latch was set:" in out
-    assert "HTTP 429" in out
-    assert "body: prior" in out
+    # ROADMAP §6.2: the dump is printed once when the latch is set, not on
+    # every skip. A skipped call shows a compact one-liner instead.
+    assert "s left" in out
+    assert "Last HTTP dump from when this latch was set:" not in out
+    assert "body: prior" not in out
     assert answer is None
     assert sleeps[0] == 120  # 272s wait clamped to the 30..120 backoff window
 
@@ -601,6 +604,63 @@ def test_concurrent_agents_observe_shared_latch_bound_backoff(call_endpoint_env,
     assert answer is None
     assert sleeps == [120]  # 590s remaining clamped to the 30..120 window
     assert "LOCAL health latch" in capfd.readouterr().out
+
+
+def test_latched_primary_falls_back_to_healthy_endpoint(call_endpoint_env, capfd):
+    """ROADMAP §6.1: a latched primary must fall back to a healthy endpoint
+    (same path as a live POST) instead of printing 'no alternate' — the skip
+    branch only reports no-alternate once EVERY candidate is latched."""
+    base = call_endpoint_env
+    primary_latched = _FakeEndpoint()
+    primary_latched.health = SimpleNamespace(
+        is_available=lambda: False,
+        status=SimpleNamespace(value="server_error"),
+        time_until_available=lambda: 272,
+        last_http_dump=None,
+        mark_success=lambda: None,
+        mark_failure=lambda *a, **k: None,
+    )
+    fallback_healthy = _FakeEndpoint()
+    fallback_healthy.name = "fallback"
+
+    class _SkipFallbackManager:
+        endpoints: ClassVar[dict] = {"primary": primary_latched, "fallback": fallback_healthy}
+
+        def normalize_model_reference(self, raw):
+            if raw == "fallback-model":
+                return SimpleNamespace(endpoint_name="fallback", model_name="fallback-model")
+            return SimpleNamespace(endpoint_name="primary", model_name="mock-model")
+
+        def validate_model(self, ref):
+            return ref.split("/")[-1]
+
+        def build_payload(self, endpoint, model_name, messages, max_tokens, temperature):
+            return {"model": model_name, "messages": messages, "max_tokens": max_tokens or 512, "temperature": temperature or 0.0}
+
+        def get_api_key(self, endpoint):
+            return "test-key-not-placeholder"
+
+        def get_fallback_model(self, endpoint):
+            if endpoint.name == "primary":
+                return ("fallback-model", fallback_healthy)
+            return None  # fallback is healthy; no further fallback
+
+    scripted = [
+        _resp(200, {"choices": [{"message": {"content": "fb ok via skip"}}]}),
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: _SkipFallbackManager()):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "fb ok via skip"
+    assert sleeps == []  # healthy fallback => no cooldown sleep
+    out = capfd.readouterr().out
+    assert "LOCAL health latch" in out
+    assert "→ Falling back to fallback/fallback-model" in out
+    assert "No alternate endpoints available" not in out
 
 
 def test_successful_retry_does_not_record_failure(call_endpoint_env):
