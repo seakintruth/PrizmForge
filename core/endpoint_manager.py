@@ -12,18 +12,25 @@ from core.db_connection import get_db_connection
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# §6.3 (soak-derived): process-global registry of live endpoint managers used
-# to decide whether the shared transport is frozen (every configured endpoint
-# latched). When it is, background support workers are held via
-# workers_utils.set_support_frozen(); they resume as soon as any endpoint
-# recovers (mark_success / unavailable_until expiry).
+# §6.3 (soak-derived): process-global state deciding whether the shared
+# transport is frozen (every configured endpoint latched). When it is,
+# background support workers are held via worker_utils.set_support_frozen();
+# they resume as soon as any endpoint recovers (mark_success /
+# unavailable_until expiry).
+#
+# Only the production endpoint_manager singleton is tracked, so transient
+# EndpointManager(cfg) instances (resource controller, models catalog, tests)
+# never leak a stale latched entry that would freeze a live soak forever.
 # ---------------------------------------------------------------------------
 
 _MANAGERS: list["EndpointManager"] = []
 _MANAGERS_LOCK = threading.Lock()
+_freeze_syncing = False
+_freeze_syncing_lock = threading.Lock()
 
 
 def _register_manager(manager: "EndpointManager") -> None:
+    """Track a manager for the all-latched freeze decision (singleton + tests)."""
     with _MANAGERS_LOCK:
         if manager not in _MANAGERS:
             _MANAGERS.append(manager)
@@ -36,7 +43,7 @@ def _clear_managers_registry() -> None:
 
 
 def _all_endpoints_latched() -> bool:
-    """True iff every configured endpoint across all live managers is latched."""
+    """True iff every tracked endpoint across all live managers is latched."""
     with _MANAGERS_LOCK:
         entries: list[tuple[EndpointManager, EndpointConfig]] = [(m, ep) for m in _MANAGERS for ep in m.endpoints.values()]
     if not entries:
@@ -52,13 +59,23 @@ def _sync_support_freeze() -> None:
 
     Freeze only when every configured endpoint is latched, so a mixed
     (some-healthy) config never pauses support workers that could reach a
-    working endpoint. worker_utils is imported lazily to avoid a startup
-    circular import (agents.worker_utils -> agents/__init__ -> ... ->
-    core.endpoint_manager).
+    working endpoint. Reentrancy-guarded: is_available() calls back into this
+    while _all_endpoints_latched() inspects health. worker_utils is imported
+    lazily to avoid a startup circular import (agents.worker_utils ->
+    agents/__init__ -> ... -> core.endpoint_manager).
     """
-    from agents.worker_utils import set_support_frozen
+    global _freeze_syncing
+    with _freeze_syncing_lock:
+        if _freeze_syncing:
+            return
+        _freeze_syncing = True
+    try:
+        from agents.worker_utils import set_support_frozen
 
-    set_support_frozen(_all_endpoints_latched())
+        set_support_frozen(_all_endpoints_latched())
+    finally:
+        with _freeze_syncing_lock:
+            _freeze_syncing = False
 
 
 class EndpointStatus(Enum):
@@ -171,6 +188,10 @@ class EndpointHealth:
             logger.warning(f"Failed to save endpoint health to DB: {e}")
 
     def is_available(self) -> bool:
+        # §6.3: probing on every availability check re-evaluates the
+        # support-worker freeze, so an unavailable_until that merely elapses
+        # (no mark_success mark) still unfreezes support promptly.
+        _sync_support_freeze()
         if self.unavailable_until is None:
             return True
         return datetime.now() >= self.unavailable_until
@@ -239,8 +260,6 @@ class EndpointManager:
         for name, endpoint_config in config.get("endpoints", {}).items():
             self.endpoints[name] = EndpointConfig(name, endpoint_config)
             logger.info(f"Loaded endpoint: {name}")
-
-        _register_manager(self)
 
         default_name = config.get("default_endpoint")
         self.default_endpoint = self.endpoints.get(default_name) if isinstance(default_name, str) else None
@@ -589,6 +608,7 @@ def get_endpoint_manager() -> EndpointManager:
 
         config = get_config()
         _endpoint_manager = EndpointManager(config)
+    _register_manager(_endpoint_manager)
     return _endpoint_manager
 
 

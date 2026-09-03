@@ -332,11 +332,15 @@ OpenCode attempts while orchestrator/developer did no work.
 
 - [x] When every configured endpoint is latched **or** the active
       endpoint for the foreground model is latched and no fallback is
-      healthy: `set_active_agents` to orchestrator + developer only
-      (reuse the shell-session lane pause in `workflow/parallel_workers.py`
-      / `task_runner.py`).
+      healthy: freeze background agents to orchestrator + developer only.
+      Implemented via a shared freeze flag (`_sync_support_freeze` from
+      `core/endpoint_manager.py`) honored by the support-worker hold loop
+      (`agents/worker_utils.py`, prioritizer/archivist/reporter) and by the
+      feedback-agent loop (`agents/parallel_workers.py` `_worker_loop`,
+      jr_reviewer etc.).
 - [x] Resume the previous filter when any endpoint `mark_success`s or
-      `unavailable_until` expires.
+      `unavailable_until` expires (`is_available()` re-probes every check,
+      so expiry without a mark_success still unfreezes).
 - [x] Do not enqueue jr_reviewer JSON retries on an empty transport
       caused by a latch skip (`Empty response (endpoint issue) — skipping
       format retries` should be the last line, not attempt 2 and 3).
@@ -386,7 +390,7 @@ stdout shows **one** dump; other agents skip in one line; orchestrator
 or developer still reaches a healthy fallback; `Work:` is not 0.0s for
 the rest of the run solely because support workers held the latch.
 
-## Perssistant Notes:
+## Persistent Notes:
 **Deliberate / false-positive — no change:**
 - `core/db.py` `journal_mode=OFF` + `synchronous=OFF` + FK-disabled-during-apply:
   intentional init-window & mount tradeoffs — already covered by §1 here.

@@ -250,6 +250,60 @@ def test_local_latch_skip_prints_dump_without_calling_api(call_endpoint_env, cap
     assert sleeps[0] == 120  # 272s wait clamped to the 30..120 backoff window
 
 
+class _LatchesAfterFailureHealth(SimpleNamespace):
+    def __init__(self):
+        super().__init__(
+            parked=[],
+            _latched=False,
+            status=SimpleNamespace(value="rate_limited"),
+        )
+
+    def is_available(self):
+        return not self._latched
+
+    def time_until_available(self):
+        return 272 if self._latched else 0
+
+    def mark_success(self):
+        self._latched = False
+
+    def mark_failure(self, status, cooldown_minutes=None, **kwargs):
+        self._latched = True
+        self.parked.append((status, cooldown_minutes))
+
+
+def test_429_dump_prints_once_per_latch_then_skip_is_one_line(call_endpoint_env, capfd):
+    """ROADMAP §6.2: the HTTP dump appears once when the latch is SET; a later
+    call under the same latch prints only the compact one-liner (no reprint)."""
+    base = call_endpoint_env
+    health = _LatchesAfterFailureHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+
+    scripted = [
+        _resp(429, {"error": {"message": "free-models-per-day daily quota. Add 10 credits to unlock more."}}),
+    ]
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch("time.sleep", side_effect=sleeps.append):
+                # 1st call: 429 sets the latch -> dump prints once.
+                ans1, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+                # 2nd call: same latch -> skip path, no dump reprint.
+                ans2, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert ans1 is None and ans2 is None
+    assert health.parked  # 429 recorded a failure (latch set)
+    out = capfd.readouterr().out
+    assert "free-models-per-day" in out  # the dump did print on the set
+    assert out.count("HTTP 429") == 1  # ...one dump, once, across both calls
+    assert "Last HTTP dump from when this latch was set:" not in out
+    assert "skipped (LOCAL health latch" in out  # second call used the one-liner
+
+
 def test_429_quota_ms_reset_parks_and_does_not_hop(call_endpoint_env, capfd):
     """Distant daily-quota reset (ms) parks the endpoint instead of the 60s hop."""
     base = call_endpoint_env
