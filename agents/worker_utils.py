@@ -73,14 +73,41 @@ def foreground_session_guard():
 
 
 def hold_while_foreground_session_active(is_running: Callable[[], bool]) -> bool:
-    """Wait out an active foreground session; return whether the caller should continue.
+    """Wait out an active foreground session or a latched-all transport; return continuation.
 
     Probes every 5s so ``stop()`` is still responsive. No-ops immediately when
-    no foreground session is active.
+    neither a foreground session is active nor the shared transport is frozen
+    (§6.3: all configured endpoints latched => support workers hold so they do
+    not burn the last quota carries; orchestrator/developer keep working).
     """
-    while is_running() and foreground_session_active():
+    while is_running() and (foreground_session_active() or support_frozen()):
         interruptible_sleep(5, is_running)
     return is_running()
+
+
+# ---------------------------------------------------------------------------
+# §6.3 (soak-derived): when every configured endpoint is latched, freeze
+# background support workers (prioritizer/archivist/reporter) so a frozen
+# endpoint cannot burn the last remaining quota carries. The latch path
+# flips this flag via set_support_frozen(); hold_while_foreground_session_active
+# (used by the support-worker loops) then waits until any endpoint recovers.
+# ---------------------------------------------------------------------------
+
+_frozen_lock = threading.Lock()
+_support_frozen = False
+
+
+def support_frozen() -> bool:
+    """True while the shared transport is frozen (all endpoints latched)."""
+    with _frozen_lock:
+        return _support_frozen
+
+
+def set_support_frozen(frozen: bool) -> None:
+    """Freeze (True) or resume (False) background support workers globally."""
+    global _support_frozen
+    with _frozen_lock:
+        _support_frozen = bool(frozen)
 
 
 # ---------------------------------------------------------------------------

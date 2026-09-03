@@ -1,280 +1,47 @@
 # PrizmForge Roadmap / TODO
 
-Single source of truth for open work items. Detailed design lives in the
+Single source of truth for **open** work items. Detailed design lives in the
 linked documents; this file tracks status. Tick checkboxes as items land and
 note the PR/commit.
 
-Shipped sections were retired from this tracker on **2026-08-29** (their
-design + acceptance evidence live in the linked docs — see `UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`).
+Completed / shipped items are **pruned from this tracker** — completion notes
+and acceptance evidence live in git history and `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`.
+Do not re-add shipped items or their PR maps.
 
 **Last updated:** 2026-09-02
 
-## Resolved this pass (2026-09-02)
+## Section priorities
 
-- Tracker hygiene only: §0.0 (short 429/503 Retry-After, same-endpoint retry) is already **SHIPPED** (2026-09-01, `feat/roadmap`). This pass does not reopen it.
-
-## 0.0 Handle short retry after 429 or 503 errors
-
-✅ **SHIPPED** (2026-09-01, branch `feat/roadmap`): `advertised_wait_seconds` in
-`core/rate_limit_headers.py` parses Retry-After (delta / HTTP-date) >
-`error.retry_after_seconds` > status default (429→120s, 503→300s), capping the
-raw value at the caller's `max_wait_seconds` (600) and returning >600
-un-clamped to trip the "cooldown too long → fallback now" branch.
-`EndpointHealth.mark_failure` accepts `cooldown_seconds`. `call_endpoint`
-handles 429 **and** 503 together: quota 429s still park 15m / sleep-to-reset;
-non-quota short advertised waits latch via `cooldown_seconds` and retry the
-**same** endpoint once (configurable `retry_after.same_endpoint_retries`),
-skipping `record_model_outcome(ok=False)` until the same-endpoint retry fails;
-waits >600 fall back immediately.
-
-This can stay on standard HTTP. The change is policy in PrizmForge: honor a **short advertised wait**, retry **once on the same endpoint**, then fallback. No new error type.
-
-### 0.1 Goal
-
-When a completion returns `429` or `503` with an advertised wait **≤ 600 seconds**, treat that attempt as a brief outage (including GPU warm-up):
-
-1. Parse the wait.  
-2. Latch the endpoint for that many seconds.  
-3. Sleep.  
-4. Retry the **same** endpoint and model **once**.  
-5. If that retry fails, take the existing fallback path (`get_fallback_model` / OpenRouter in your dump).
-
-Waits **above 600 seconds** stay on today’s path: `Rate limit cooldown too long` → fallback immediately. That is what `Retry-After: 42534` plus `FreeUsageLimitError` must continue to do.
-
-### 0.2 Decision table
-
-| Response | Advertised wait | Action |
+| Section | Priority | Why |
 |---|---|---|
-| `200` with usable `choices[0].message.content` | — | Success; `mark_success()` |
-| `503` or `429` | 1–600 s | Wait that long, **retry same once** |
-| `503` or `429` | missing / unparseable | Use the status default wait (429 → 120 s, 503 → 300 s), then retry same once |
-| `503` or `429` | **> 600 s** | Do **not** wait; fallback now |
-| `401` / `402` | — | Unchanged (`KEY_LOCKED` / `TOKEN_EXHAUSTED`) |
-| Retry after wait still `4xx`/`5xx` or empty | — | Fallback; do not wait a second time |
-
-Optional hint `X-Retry-Same: 1` may be logged; it must not be required. Classification is status + bounded `Retry-After` only.
-
-### 0.3 Where the wait comes from
-
-Prefer, in order:
-
-1. Header `Retry-After` (delta-seconds or HTTP-date)  
-2. JSON `error.retry_after_seconds` if present  
-3. Status default: `429` → 120 s, `503` → 300 s  
-
-Clamp a parsed value into `[1, 600]`. Values above 600 are **not** clamped into a 10-minute sleep; they trip the “too long → fallback” branch.
-
-Put the parser next to the existing header work in `core/rate_limit_headers.py` (or a small helper beside it). `core/http_diag.py` already prints `Retry-After`; reuse that extraction so the dump and the latch see the same number.
-
-## 0.4 Where to implement it
-
-The raw client (`core/http_client.py`) should stay a single POST. The loop belongs in the caller that already does health + fallback — `core/endpoint_manager.py` and whatever wraps `call_endpoint()` in `workflow/`.
-
-Suggested shape:
-
-```text
-attempt 1
-  POST
-  if success → record success, return
-  wait = advertised_wait(status, headers, body)
-  if wait is None or wait > 600:
-      mark_failure(...)
-      fallback
-  mark_failure(SERVER_ERROR or RATE_LIMITED, cooldown_seconds=wait)
-  log "⏳ Retry-After Ns — retry same endpoint once"
-  sleep(wait)
-
-attempt 2  (same endpoint, same payload)
-  POST
-  if success → mark_success, return
-  mark_failure(...)
-  fallback
-```
-
-`EndpointHealth.mark_failure` today takes **minutes** and ignores the header (`RATE_LIMITED` 2 min, `SERVER_ERROR` 5 min). Extend it to accept `cooldown_seconds` derived from `Retry-After`. Keep the old minute table only when no header is present.
-
-Do **not** record a warm-up `503` as a model-quality failure in `core/model_health.py` until the **retry** also fails. Otherwise one GPU swap will demote a healthy Qwen after `down_streak: 2`.
-
-### 0.5 Config
-
-Add under global fallback / endpoint settings (defaults shown):
-
-```json
-"retry_after": {
-  "honor": true,
-  "max_wait_seconds": 600,
-  "same_endpoint_retries": 1,
-  "fallback_if_wait_exceeds_max": true
-}
-```
-
-`same_endpoint_retries: 1` is the whole policy. Do not add a `warmup` flag or a new `EndpointStatus`.
-
-### 0.6 Logging (match the dump you already have)
-
-First failure:
-
-```text
-HTTP 503
-endpoint: clore_qwen
-Retry-After: 120
-⏳ Advertised wait 120s (≤ 600s) — retry same endpoint once
-```
-
-Wait too long:
-
-```text
-HTTP 429
-Retry-After: 42534
-⏳ Rate limit cooldown too long (42534s)
-→ Falling back to openrouter/openrouter/free
-```
-
-Retry still failing:
-
-```text
-HTTP 503
-same-endpoint retry exhausted
-→ Falling back to ...
-```
-
-While the latch is active, other agents should see the existing skip line (`Not calling the API — cooldown remaining Ns`) and wait on the **same** latch rather than each starting their own 600 s sleep. One shared `unavailable_until` on `EndpointHealth` already does that if the first caller sets it before sleeping.
-
-### 0.7 Tests
-
-Put them next to existing endpoint/health tests:
-
-1. `503` + `Retry-After: 90` → one sleep of 90 s (mock), second POST succeeds, **no** fallback.  
-2. `429` + `Retry-After: 42534` → no long sleep, fallback immediately.  
-3. `503` + `Retry-After: 600` → wait 600 s, retry once.  
-4. `503` + `Retry-After: 601` → fallback, no wait.  
-5. `503` with no header → default 300 s, retry once.  
-6. First `503` + wait, second `503` → fallback.  
-7. HTTP-date `Retry-After` within 600 s → honored.  
-8. Concurrent agents: only one wait; others observe the latch.  
-9. Successful retry does **not** increment `model_health` failure streak.
-
-Sleep must be injected so tests do not actually wait 600 s.
-
-### 0.8 Out of scope for this change
-
-- New error types (`ModelWarmingError`, `gpu_warming`).  
-- Raising `model_health` `down_max_seconds` to absorb warm-up; the endpoint latch is the right layer.
-
-### 0.9 Suggested sequence
-
-1. Parser + unit tests for `Retry-After` and the 600 s cap.  
-2. `mark_failure(..., cooldown_seconds=)`.  
-3. Same-endpoint retry loop around the existing POST.  
-4. Skip `record_model_outcome(ok=False)` until the retry fails.  
-5. Log lines that distinguish “wait and retry same” from “cooldown too long → fallback.”  
-6. Manual check with a stub server that returns 503 + `Retry-After: 2`, then 200.
-
-That is the full engine-side plan: standard `503`/`429` + advertised wait, honor up to 600 seconds as a one-shot same-endpoint retry, then fallback — including the 32B warm-up case without a custom response type.
-
-
----
-
-## 1. Deployed state & PR map
-
-- **2026-09-01 current work** — §0.0 (short retry-after 429/503 policy) and §4.2 low-risk items (CLI-leakage audit, `__init__.py` cleanup) are developed on branch `feat/roadmap` on top of PR #109, pending review/merge. See §0.0 SHIPPED note and §4.2.
-- `main` @ `8be697f` = **roadmap stamp for Soak9 recompute pass 2 (a9–f9)**; functional tip `6d79e5d` — see §1 (2026-08-29).
-- **Soak2 recompute pass 3 — mutation-path priority (d9/index hardening)**: Soak2 (2026-08-29 16:13–~20:30) exposed that d9 counted transport-failed sessions as stall → the developer froze for whole tasks while Resource Controller reasoned *"freeze: prioritizer + developer only"*. Fixed at root (see `## 1` pass-3 entry): failed/uncompleted sessions are **neutral**, genuine finished-zero-change sessions alone build the streak, and the latch **self-heals** every `rearm_after` iterations. README now documents **Operator Principle #1 — the mutation path is the most unblocked path**. Gate → **901 passed**.
-- Previous stamps: `26566f3` = PR-95 residual batch (P1–P11 + W1–W8, §1); `198f6d8` = roadmap stamp (848 → 877); `cf30bee` = PR #96 (`fit/setup-accept-pip-path`) = current `origin/main`; `954cc14` = PR #95 merge base (Workstream A Phase 1).
-- Full normal gate: **877 passed** at `26566f3`; recompute pass 2 re-verified after `bc11cef`, `4821f4d`, `ae822ed`, `70d1b95`, `1646e91`, `6d79e5d` → **897 passed** (`bash utils/run_tests.sh --normal -j 4`, +20 tests, 2026-08-29), ruff clean. Pre-commit hooks (black/isort/ruff/flake8/mypy) green on every commit.
-- `main` is **10 commits ahead of `origin/main`** (`cf30bee`), all pending the next PR.
-
-### Next PR — PR-95 residuals + Soak9 recompute pass 2 (P1–P11, W1–W8, a9–f9)
-
-Opening from `main` (`8be697f`) against `base: cf30bee` (`origin/main`).
-
-- **Title (suggested):** `fix: PR-95 residual batch (P1–P11, W1–W8) + Soak9 recompute pass 2 (a9–f9)`
-- **Head:** `8be697f` · **Base:** `origin/main` (`cf30bee`) · 10 commits.
-- **Part 1 — PR-95 residuals (`26566f3` + `198f6d8`):** P1–P11 review residuals (bare single-op payloads, delete-then-recreate dedupe, seed-feedback exclusion, data-window watermark, write-log ruff gate, task finalize on hard stops, `log_error` argument hygiene, failed-unlink visibility, shell turn success semantics, honest reviewer-call accounting, non-hollow test fixes) and W1–W8 soak hardening (WIP-shipping on early exit, archivist batches + honest retry, burn-rate escalation, deferred pool start, developer lane isolation, review-queue caps, intake-soft pool backoff). Gate 848 → 877.
-- **Part 2 — Soak9 recompute pass 2 (`bc11cef` … `8be697f`):** a9 archive-row prune, b9 strict JSON archive contract, c9 foreground-session backoff for support workers, d9 no-progress developer guard, e9 prioritizer post dedup, f9 background transport-error coalescing — full detail per item in §1. Gate 877 → 897 (+20 tests).
-- **Merge notes:** only code-churn pan is the shared `agents/base.py` `call_agent` failure block (f9) — low collision risk; test files are additive (`test_worker_utils.py`, `test_task_runner.py`, `test_prioritizer_phases.py`, `test_archivist_context.py`).
-- **Verification:** full normal gate `bash utils/run_tests.sh --normal -j 4` = **897 passed**; `ruff check .` clean; pre-commit hooks green on every commit. No live-endpoint dependencies (all in-process, hermetic).
-
----
-
-
-## 2. Unattended closed-loop hardening — open residuals only
-
-All shipped workstreams (A–F) are recorded in `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`; the tracker keeps only what is still open.
-
-- [ ] **Live failing-hook smoke run on a copy** — run with a deliberately failing hook; confirm CRITICAL feedback → developer fix-forward proposal → materialized and addressed, all visible in events/errors/feedback. **Blocked: live runtime/endpoints** (in-process failure paths have deterministic unit proofs in `tests/unit/test_git_closed_loop.py`).
-- [ ] **PR #94 body nit** (manual GitHub edit): body still cites `tests/unit/test_writer_git_closed_loop.py`; should cite `tests/unit/test_git_closed_loop.py`. **Blocked: GitHub/manual editor access** (cosmetic, merged-PR body).
-- [ ] **Ignored-path handling in the git closed loop** — a git-governed target that is gitignored (e.g. `config.json`) needs an explicit
-branch: skip git or fail with a clear "path is gitignored" message, never silent
-success. **Default parked (§4.3 decision 3: gitignored config stays human-only).** Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §3.7.
-- [ ] **Diagnostic dump shows a forced-hook-failure path** — at least one non-success path visible under events/errors after an intentional hook failure; the `git_fail` counter is already present in task summaries. **Blocked: Workstream F dump sections (`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §8.2).**
-
----
-
-## 3. Mini-swe agent (shell developer) — shipped + open items
-
-### Shipped (2026-08-23 → 2026-08-28; gates 616 → 623 → 693 → 724, plus 2026-08-29 closed-loop residuals)
-
-**SHIPPED & MERGED**: native mini-swe-agent port as the shell developer
-(`workflow/shell_developer.py`, MIT attribution + material differences in
-`THIRD_PARTY_NOTICES.md`). Original 5-item plan landed in full:
-
-1. Native port of the mini-swe-agent core loop (worktree + bash).
-2. Disposable `git worktree` isolation per session; real bash edits + post-session `test_command` verification.
-3. Session output converted to governed EditPayload proposals → Reviewer → materialize.
-4. Wired into the task loop behind `developer.implementation` (`"shell"` default, `"edit_payload"` legacy fallback).
-5. Packaging/tooling (`setup.sh` git prereq; `export_project_zip.py` excludes runtime artifacts).
-
-Capability/operator runbook: `docs/mini_swe_agent.md`. Rollback: `developer.implementation: "edit_payload"` (no code change).
-
-### Open items
-
-- [ ] **Real-model end-to-end validation + tuning** — live endpoints, prompt/limit tuning. **Blocked: live endpoints.**
-- [ ] **Manual cold-start smoke** — seed task consumed on turn 1 (no `background` for two rounds), no `⚠️ Unknown model` lines. **Blocked: live endpoints.**
-- [ ] **Enclave sandboxing** — shell runs are not confined to the worktree (container/approved-workstation controls for enclave deployment). **Blocked: operational/container controls.**
-- [ ] **Optional hardening: post-materialize `test_command` re-run** — **Decision: intentionally deferred** (Phase-4 test-driven loop + the session's own pre-proposal `test_command` already gate every edit; a mid-session full re-run risks long/flaky hangs with no closed loop consuming it). The §7.2 in-process `ruff` pre-check ships the cheap fast-feedback gate instead. Revisit only if a deploy-time validator becomes a requirement.
-- [ ] **EndpointManager / LiteLLM-overlap revisit (parked)** — if verification/model routing ever moves toward a LiteLLM-style layer, revisit `EndpointManager` overlap (mini-swe follow-up #7; see `docs/mini_swe_agent.md`). **Blocked: no such routing layer planned.**
-
-## 4. Annexes (strategic / parked decisions)
-
-### 4.1 Forge Federation strategy — `Federation/Plan.md`
-
-Active northstar: Stage 0 (current single-Territory system) → Stage 1 (enhanced
-single-Territory, next) → Stage 2 (multi-Territory, future). Operates via short,
-YAGNI-focused sprints with bounded, measurable experiments.
-
-### 4.2 `report/plan.md` file_editing structural refactors
-
-Review-flagged structural items. **Decision (2026-08-29): FOLDED INTO BACKLOG AS TECH-DEBT** — each is small, bounded, and independently scoped; a future sprint can pick them up without a dedicated design doc.
-
-Low-risk items **SHIPPED 2026-09-01 (branch `feat/roadmap`)**:
-
-- [x] **CLI command leakage** — audit `cli.commands` for shelled-out / ungoverned commands that bypass the governed edit path. **Audited clean**: `cli/commands.py` uses no `subprocess`/`os.system`/`os.popen`. Its only direct disk writes are `.gitignore` (init) and CSV exports under `.PrizmForge/agents_exports/`, neither of which is a governed source-file write. Source-file mutation stays confined to `file_editing/writer.py` (`write_file_to_disk`/`_delete_file_from_disk`) and the governed `shell_developer.py` worktree path.
-- [x] **`__init__.py` cleanup** — remove obsolete re-exports in `file_editing/__init__.py`. **Done**: only `initialize_file_lines` is imported at package level (`cli/commands.py`, `tests/integration/test_file_editing_pipeline.py`); trimmed `__all__` to that one name and removed the orphaned `initialize_database` deprecation shim from `file_editing/db.py`. `file_editing.__version__` → 1.5.
-
-Mutation-path refactors — **parked; need a design doc before touching the governed-edit path** (higher regression risk, deliberately not done in the 2026-09-01 session):
-
-- [ ] **`project_files` refactor** — normalize file metadata/index rows and their update paths.
-- [ ] **Standardize errors** across file_editing — single error shape/status vocabulary instead of per-module strings.
-
-Re-scoped (the fixed 120 s sleep is **not** in the editing loop):
-
-- [ ] **120s-sleep behavior** — the roadmap's "editing-loop" 120 s sleeps actually live in `agents/base.py` (401/KEY_LOCKED unlock wait, proxy/auth pause) and `interactive.py` (unattended recovery). Replace with the shared `EndpointHealth.unavailable_until` latch / configurable cooldown from ROADMAP §0.0.
-
-### 4.3 UNATTENDED plan §15 open decisions (parked, with defaults)
-
-1. Hook failure: fix-forward (leave disk dirty; CRITICAL fix) unless `git.revert_on_hook_failure` set — current behavior is fix-forward.
-2. Create-file policy: clean relative paths OK; add prefix policy only if junk root files recur.
-3. `config.json` as agent edit target: gitignored config stays human-only.
-4. Reviewer sees hook output: developer primary; orchestrator summary; reviewer optional.
-5. API/network failure streaks: pause + single CRITICAL summary after N consecutive failures (shipped — `NetworkBusyLoopGuard`).
-
-## 5. Cold-soak SQLite project ingest (NUC / 2-core / ≥8 GB)
+| §0 Current state & next focus | — | Intro / index only |
+| §1 Cold-soak SQLite ingest | **HIGH** | Actionable now (no live-endpoint dependency); biggest recurring soak-start win. |
+| §2 Closed-loop hardening residuals | **MEDIUM** | Real UAT gaps, but blocked on live endpoints / GitHub access. |
+| §3 Mini-swe agent open items | **MEDIUM** | Core validation is high-value but blocked on live endpoints; rest deferred/parked. |
+| §4 Annexes / parked decisions | **LOW** | Intentional tech-debt; no urgency. |
+| §5 New work this pass | **HIGH** | Soak-derived actionable fixes live here; tick as they land. |
+| §6 Soak-derived endpoint latch / fallback| **HIGH** | Update endpoint latches |
+
+**Legend:** HIGH = do next (actionable, unblocked) · MEDIUM = trackable, blocked on external deps (live endpoints / GitHub / containers) · LOW = deferred or parked by design.
+
+## 0. Current state & next focus
+
+- **Branch** `feat/roadmap` is merged into `main` / `origin/main` (2026-09-02).
+  The most recent shipped work on that branch: short Retry-After 429/503 policy
+  (last updated 2026-09-01), CLI-leakage audit + `__init__.py` cleanup, doc
+  edits verified by soak, and the shell-developer reviewer diff-truncation fix.
+  All completion notes are in git — see `git log` on `feat/roadmap` / `main`.
+- **Next-up**: §1 cold-soak SQLite ingest (OPEN — design only, no branch yet).
+  Then §5 soak-derived items. Note: Soak7 produced **0 materialized edits** because
+  its shell session exhausted the free-model quota (HTTP 403 / goal limit), not a
+  code defect — so there is no verified mutation-path finding to act on yet.
+
+## 1. Cold-soak SQLite project ingest (NUC / 2-core / ≥8 GB)
 
 **Status:** OPEN — design only (2026-08-31). No branch yet.
 
 **Constraint (intentional):** soaks do **not** copy `.PrizmForge/`. Every soak
-start is a **cold full rebuild** of `prizmforge.db`. Do not plan cross-soak
+start is a **cold full rebuild** of `.PrizmForge/agents.db`. Do not plan cross-soak
 hash-skip, leftover `project_files.content_hash`, or “second run is cheaper.”
 The only clock that matters is **one** `cmd_init()` on a wiped DB.
 
@@ -314,7 +81,7 @@ and three transactions per file.
 - Do not treat “daemon owns the DB” as the fix for *this* window. Init should
   be one exclusive bulk transaction, then hand the DB back.
 
-### 5.1 Init connection + one transaction
+### 1.1 Init connection + one transaction
 
 - [ ] **`cmd_init` holds one writer** — open a single
       `core.db_connection.get_db_connection()` (or a dedicated
@@ -328,7 +95,7 @@ and three transactions per file.
       former so there is one writer policy).
 - [ ] **Deleted-file pass uses the same `conn`** — no extra context manager.
 
-### 5.2 Init-only pragmas (restore before iteration 1)
+### 1.2 Init-only pragmas (restore before iteration 1)
 
 On the init connection, **before** the walk (8 GB floor; 2-core NUC):
 
@@ -357,7 +124,7 @@ PRAGMA journal_mode = DELETE;
   grab multiple GB; agents + Python need the rest.
 - Document in a comment that these pragmas are **init-window only**.
 
-### 5.3 `file_lines` bulk insert
+### 1.3 `file_lines` bulk insert
 
 - [ ] **`_initialize_lines_impl`: `executemany`** — build the row tuples in
       Python, one `executemany` per file (or chunks of 5k–10k rows if a file
@@ -368,14 +135,14 @@ PRAGMA journal_mode = DELETE;
       `line_guid`, create them **after** the bulk load (`ANALYZE` once). Do
       not drop UNIQUE `line_guid`.
 
-### 5.4 Same-process only (not cross-soak)
+### 1.4 Same-process only (not cross-soak)
 
 - [ ] Hash short-circuit is **in-process only** (second `cmd_init()` in the
       same soak, or a mid-soak restart that did *not* wipe the live DB).
       Default soak still pays full rebuild. Do not advertise “next soak is
       faster.”
 
-### 5.5 Work that is not required for iteration 1
+### 1.5 Work that is not required for iteration 1
 
 - [ ] Throttle per-file `✅ {path}` prints (every 50 files + a final tally).
 - [ ] `refresh_target_indexes(..., force=True)` runs **after** the DB commit
@@ -384,9 +151,9 @@ PRAGMA journal_mode = DELETE;
 - [ ] `project_files.content` + `file_summaries` may stay in the same
       transaction; do not add extra commits. Do not drop `file_lines` (governed
       editor). Folding `project_files` into a later metadata-only table is
-      §5.2 tech-debt, not this item.
+      tech-debt, not this item.
 
-### 5.6 Files to touch
+### 1.6 Files to touch
 
 - `cli/commands.py` — `cmd_init` transaction + pragma window + print throttle.
 - `file_editing/writer.py` — `_initialize_lines_impl` `executemany`.
@@ -402,7 +169,7 @@ PRAGMA journal_mode = DELETE;
     `synchronous` is not `OFF`.
   - `file_editing.db.get_db_connection` is not used on the init path.
 
-### 5.7 Acceptance
+### 1.7 Acceptance
 
 - Cold soak (no `.PrizmForge/` copied) still produces a complete `files` +
   `file_lines` + `project_files` index; governed reconstruct matches disk.
@@ -418,251 +185,221 @@ PRAGMA journal_mode = DELETE;
 `cmd_init()` before and after on the same tree.
 
 
-## 7. Optional PostgreSQL via SQLAlchemy (SQLite remains default)
+## 2. Unattended closed-loop hardening — open residuals only
 
-**Status:** OPEN — design only (2026-08-31). No branch yet. Depends on §6
-(cold-soak ingest) only in the sense that **init bulk-load must stay a
-first-class path** on both backends; do not block §6 on this.
+All shipped workstreams (A–F) are recorded in `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`; the tracker keeps only what is still open.
 
-**Why:** SQLite is correct for NUC soaks, hermetic tests, and wiped
-`.PrizmForge/` isolation. A shared or multi-writer deploy (later federation
-§5.1, long-lived operator DB, concurrent soaks against one store) needs a
-server engine. The product switch is **configuration**, not a fork.
-
-**Default stays SQLite.** Postgres is opt-in. CI and `utils/run_tests.sh`
-stay on SQLite unless an explicit extra job is added.
-
-### 7.1 Decision: SQLAlchemy Core first, not ORM-everywhere
-
-The schema lives as a large raw-SQL string in `core/db.py` (`init_db`,
-`_apply_schema`, `_migrate_schema`) plus two connection helpers
-(`core/db_connection.py`, `file_editing/db.py`) and dozens of
-`conn.execute("""...""")` call sites. An overnight ORM rewrite of
-`file_lines` / proposals / workers will stall the mutation path.
-
-- **Phase A:** SQLAlchemy **engine + connection** facade. Call sites keep
-  textual SQL (`sqlalchemy.text`) until each module is touched for another
-  reason.
-- **Phase B:** SQLAlchemy `MetaData` / `Table` models for schema create +
-  migrations (replace the string blob + `PRAGMA table_info` ALTER loop).
-- **Phase C (optional, later):** ORM mapped classes only where it removes
-  duplication (e.g. `edit_proposals`, `agent_feedback`). Line store and
-  archives can stay Core/`executemany` forever.
-
-Do not introduce Django, Tortoise, or a second query layer.
-
-**Dependencies (pin in extras, not required for default install):**
-
-```text
-sqlalchemy>=2.0,<3
-psycopg[binary]>=3.1    # Postgres driver only when backend=postgresql
-```
-
-Suggested extra: `pip install -e ".[postgres]"`. SQLite uses SQLAlchemy’s
-bundled `sqlite3` dialect — no extra package.
-
-### 7.2 Configuration (files, not env-only)
-
-Add a top-level `database` object to `config.json` / `example_config.json`.
-Document in `docs/CONFIGURATION.md`. Secrets stay in `api_key.json` (or a
-sibling gitignored file), never in `config.json`.
-
-```json
-"database": {
-  "backend": "sqlite",
-  "sqlite": {
-    "path": null
-  },
-  "postgresql": {
-    "host": "127.0.0.1",
-    "port": 5432,
-    "name": "prizmforge",
-    "user": "prizmforge",
-    "sslmode": "prefer",
-    "connect_timeout_s": 10
-  }
-}
-```
-
-- `backend`: `sqlite` (default) | `postgresql`. Unknown value → `ValueError`
-  at `validate_config`.
-- `sqlite.path`: `null` keeps today’s rule (`PRIZMFORGE_DB_PATH` else
-  `<project>/.PrizmForge/agents.db`).
-- Postgres password: `api_key.json` → `keys.database.password` (or
-  `keys.postgresql.password`). Mirror endpoint-key style. Empty password +
-  `backend=postgresql` → fail closed at startup.
-- Optional override URL (operator/CI only): env `PRIZMFORGE_DATABASE_URL`
-  wins over `backend`+fields. Allowed schemes: `sqlite`, `sqlite+pysqlite`,
-  `postgresql`, `postgresql+psycopg`. Reject `postgres://` ambiguity or
-  normalize it once in code.
-
-`validate_config` checks types only. Reachability is `init_db()` /
-preflight, not config parse (so unit tests can load configs without a
-server).
-
-Unattended preflight (`core/preflight.py`): if `backend=postgresql`,
-require the extra installed and a successful `SELECT 1` before soak start.
-
-### 7.3 Single engine facade
-
-Replace the split `sqlite3.connect` world with one module, e.g.
-`core/db_engine.py`:
-
-- `get_engine()` — process singleton, built from config.
-- `session_scope()` / `connection_scope()` — context manager that yields a
-  connection with `commit`/`rollback` matching `get_db_connection`.
-- `get_db_path()` remains for SQLite file location and diagnostics; Postgres
-  returns the sanitized URL (`password` redacted).
-
-**SQLite engine kwargs (preserve soak locking story after §6 init window):**
-
-- `connect_args={"timeout": 30}` (or current values).
-- `poolclass=NullPool` (or `StaticPool` + `check_same_thread=False` only if
-  a measured single-connection soak needs it). Default: **NullPool** so we
-  do not invent a second writer pool on the file DB.
-- On connect: `PRAGMA journal_mode=DELETE`, `synchronous=NORMAL`,
-  `temp_store=MEMORY`, `foreign_keys=ON` — same as `core/db_connection.py`
-  today. §6 init pragmas stay a **separate** connect event or
-  `execution_options` used only by `cmd_init`.
-
-**Postgres engine kwargs:**
-
-- `poolclass=QueuePool`, small pool (`pool_size=5`, `max_overflow=5`) on an
-  8 GB NUC; configurable later.
-- `pool_pre_ping=True`.
-- `isolation_level` default (READ COMMITTED). Do not copy SQLite’s
-  `EXCLUSIVE` / `journal_mode` onto Postgres.
-- `statement_timeout` via `SET` on connect if we see runaway queries.
-
-**Deprecate, then delete:**
-
-- `file_editing.db.get_db_connection` — must call the facade (it currently
-  skips pragmas; that is already a soak footgun).
-- Raw `sqlite3.connect` in `core/db.py` `init_db`, `core/model_health.py`,
-  workers, `utils/query_developer_responses.py`.
-- Keep `sqlite3` only inside the SQLite dialect connect hook and tests that
-  assert PRAGMA.
-
-`DatabaseRetryError` + wall-clock commit budget stay for SQLite lock/busy.
-On Postgres map deadlocks / `lock_not_available` to the same exception so
-callers do not grow a second retry vocabulary.
-
-### 7.4 Dialect-safe SQL (inventory before rewrite)
-
-Textual SQL that is **SQLite-only** today and must be parameterized or
-branched:
-
-| Pattern | SQLite today | Postgres |
-|---|---|---|
-| Surrogate keys | `INTEGER PRIMARY KEY AUTOINCREMENT` | `INTEGER GENERATED BY DEFAULT AS IDENTITY` (or `SERIAL`) |
-| Upsert | `INSERT OR REPLACE` (`project_files`, `file_summaries`) | `INSERT … ON CONFLICT (file_path) DO UPDATE SET …` |
-| Instant | `datetime('now')`, `CURRENT_TIMESTAMP` | `NOW()`, `CURRENT_TIMESTAMP` |
-| Booleans | `INTEGER 0/1` | keep `SMALLINT`/`INTEGER` in v1 (do not flip to native `BOOLEAN` mid-migration) |
-| Singleton rows | `CHECK (id = 1)` (`cli_checkpoints`, `reporter_state`) | same CHECK, or `INSERT … ON CONFLICT (id)` |
-| Introspection | `PRAGMA table_info`, `sqlite_master` | `information_schema.columns` / Alembic |
-| Bulk init | §6 `executemany` + MEMORY journal | `psycopg` `executemany` or `COPY` for `file_lines` only if measured |
-| FKs | `PRAGMA foreign_keys=ON` | always on |
-
-Rules:
-
-- No `SELECT *` new code; column lists survive dialect type drift.
-- Placeholders: SQLAlchemy `text("… WHERE file_path = :path")` bound
-  params. Ban `f"SELECT … {table}"` except for the existing export helper
-  after an allowlist.
-- `lastrowid` after `INSERT INTO files` must use
-  `inserted_primary_key` / `RETURNING file_id` on Postgres.
-- `Row` access: keep both index and key (`row["file_id"]`) via
-  `mappings()`.
-
-Phase A may wrap the worst call sites (`INSERT OR REPLACE`, `lastrowid`,
-`datetime('now')`) in `core/db_sql.py` helpers keyed by dialect name.
-
-### 7.5 Schema create + migrations
-
-Today: one SQL blob + additive `_ensure_column` for old files.
-
-Target:
-
-- [ ] **SQLAlchemy `MetaData` in `core/schema.py`** — one `Table()` per
-      existing table (start with the critical set: `files`, `file_lines`,
-      `edit_proposals`, `messages`, `tasks`, `errors`, `agent_feedback`,
-      `project_files`, `events`). Remaining tables can stay in the blob for
-      one PR if listed explicitly.
-- [ ] **`init_db()`** becomes `metadata.create_all(engine)` + dialect
-      connect pragmas (SQLite only).
-- [ ] **Alembic** (`alembic/`) for additive migrations from that point.
-      First revision = “schema as of this PR” (empty upgrade on a fresh
-      `create_all`). Stop hand-written `_ensure_column` for new columns.
-- [ ] SQLite file DBs from older soaks: still support `_migrate_schema`
-      **or** one-shot “wipe and recreate” because soaks already throw
-      `.PrizmForge/` away. Do not invent a production SQLite upgrade story
-      beyond current additive columns unless an operator keeps a durable
-      file DB.
-
-Postgres: never run `PRAGMA`. Never run §6 `journal_mode=MEMORY`. Init
-performance work for Postgres is a different checklist (`COPY` / unlogged
-`file_lines` during load, then `ALTER TABLE … SET LOGGED`) — park unless a
-soak actually uses Postgres.
-
-### 7.6 Product behavior that must not change
-
-- Default `backend=sqlite`, path under `.PrizmForge/`, wiped per soak.
-- Governed reconstruct (`file_lines` + `sort_order` + `is_deleted`) identical.
-- Tests use tmp SQLite; no Docker required for `run_tests.sh --normal`.
-- `log_error` stays non-blocking (short timeout / best-effort) on both
-  backends.
-- Dual-writer rule on SQLite is unchanged: one writer during materialize;
-  do not open a second engine against the same file.
-
-### 7.7 Phased delivery
-
-- [ ] **7.A — Config + engine + SQLite parity**  
-      `database` block, `get_engine()`, migrate `init_db` +
-      `get_db_connection` + `file_editing.db` to the facade. Behavior on
-      SQLite indistinguishable. Gate green. No Postgres CI yet.
-- [ ] **7.B — Dialect helpers + lastrowid/upsert**  
-      Fix the inventory in §7.4 at the highest-traffic writers
-      (`file_operations`, `writer.initialize_file_lines`,
-      `proposal_builder`, `db_helpers`). Unit tests run the same SQL
-      helpers against a SQLite engine.
-- [ ] **7.C — Postgres smoke (optional extra)**  
-      `tests/integration/test_postgres_smoke.py` marked `@pytest.mark.postgres`,
-      skipped without `PRIZMFORGE_DATABASE_URL`. Creates schema, indexes one
-      file, reconstructs lines, writes one proposal row. Document compose
-      snippet in `docs/soak_runbook.md` (do not make compose the default
-      soak).
-- [ ] **7.D — Alembic + MetaData**  
-      Move off the schema string. One documented `alembic upgrade head` for
-      durable Postgres; SQLite soaks still `create_all` on empty file.
-
-### 7.8 Files to touch (7.A minimum)
-
-- `core/config.py` + `docs/CONFIGURATION.md` + `example_config.json`
-- `example_api_key.json` — `keys.database.password` placeholder
-- `core/db_engine.py` (new), `core/db.py`, `core/db_connection.py`,
-  `file_editing/db.py`
-- `core/preflight.py` — Postgres reachability
-- `pyproject.toml` / install extras
-- `tests/unit/test_db_engine.py` — backend selection, URL redaction,
-  SQLite PRAGMA on connect, reject unknown backend
-- `tests/unit/test_db_retry_patience.py` — still valid on SQLite engine
-
-### 7.9 Acceptance
-
-- `backend` omitted or `"sqlite"` → bit-identical operator story to
-  current `main` (path, pragmas after init, tests).
-- `backend: "postgresql"` without password / extra / server → **fail
-  closed** with an actionable message, no silent SQLite fallback.
-- No password in logs, events, or `get_db_path()` print.
-- Ruff clean; normal gate does not require Postgres.
-- §5 init pragmas still compile and apply **only** when dialect is SQLite.
-
-### 7.10 scope
-
-- Multi-tenant Postgres, read replicas, federation Stage 2.
-- Moving agent JSON blobs into JSONB in the first Postgres PR (TEXT is
-  fine; JSONB is a later migration).
-- Replacing the message bus with Redis/NATS.
-- SQLAlchemy 1.4 APIs (`Query`, `sessionmaker` legacy binds).
+- [ ] **Live failing-hook smoke run on a copy** — run with a deliberately failing hook; confirm CRITICAL feedback → developer fix-forward proposal → materialized and addressed, all visible in events/errors/feedback. **Blocked: live runtime/endpoints** (in-process failure paths have deterministic unit proofs in `tests/unit/test_git_closed_loop.py`).
+- [ ] **PR #94 body nit** (manual GitHub edit): body still cites `tests/unit/test_writer_git_closed_loop.py`; should cite `tests/unit/test_git_closed_loop.py`. **Blocked: GitHub/manual editor access** (cosmetic, merged-PR body).
+- [ ] **Ignored-path handling in the git closed loop** — a git-governed target that is gitignored (e.g. `config.json`) needs an explicit
+  branch: skip git or fail with a clear "path is gitignored" message, never silent
+  success. **Default parked (§4 decision 3: gitignored config stays human-only).** Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §3.7.
+- [ ] **Diagnostic dump shows a forced-hook-failure path** — at least one non-success path visible under events/errors after an intentional hook failure; the `git_fail` counter is already present in task summaries. **Blocked: Workstream F dump sections (`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §8.2).**
 
 ---
+
+## 3. Mini-swe agent (shell developer) — open items only
+
+The native port itself (core loop, disposable worktree, governed proposal
+conversion, `developer.implementation: "shell"` wiring, packaging) is
+**shipped and merged** — full detail in `docs/mini_swe_agent.md`. Only still-open
+items are tracked here.
+
+- [ ] **Real-model end-to-end validation + tuning** — live endpoints, prompt/limit tuning. **Blocked: live endpoints.**
+- [ ] **Manual cold-start smoke** — seed task consumed on turn 1 (no `background` for two rounds), no `⚠️ Unknown model` lines. **Blocked: live endpoints.**
+- [ ] **Enclave sandboxing** — shell runs are not confined to the worktree (container/approved-workstation controls for enclave deployment). **Blocked: operational/container controls.**
+- [ ] **Optional hardening: post-materialize `test_command` re-run** — **Decision: intentionally deferred** (Phase-4 test-driven loop + the session's own pre-proposal `test_command` already gate every edit; a mid-session full re-run risks long/flaky hangs with no closed loop consuming it). The in-process `ruff` pre-check ships the cheap fast-feedback gate instead. Revisit only if a deploy-time validator becomes a requirement.
+- [ ] **EndpointManager / LiteLLM-overlap revisit (parked)** — if verification/model routing ever moves toward a LiteLLM-style layer, revisit `EndpointManager` overlap (mini-swe follow-up #7; see `docs/mini_swe_agent.md`). **Blocked: no such routing layer planned.**
+
+---
+
+## 4. Annexes (strategic / parked decisions)
+
+### 4.1 Forge Federation strategy — `Federation/Plan.md`
+
+Active northstar: Stage 0 (current single-Territory system) → Stage 1 (enhanced
+single-Territory, next) → Stage 2 (multi-Territory, future). Operates via short,
+YAGNI-focused sprints with bounded, measurable experiments.
+
+### 4.2 `report/plan.md` structural refactors (backlog / tech-debt)
+
+Review-flagged structural items, each small, bounded, and independently scoped.
+**NOTE:** The prior low-risk pair (CLI-leakage audit, `__init__.py` cleanup) is
+**shipped** and pruned — its acceptance is in git. These are the still-open
+mutation-path refactors and the re-scoped sleep item.
+
+Mutation-path refactors — **parked; need a design doc before touching the governed-edit path** (higher regression risk):
+
+- [ ] **`project_files` refactor** — normalize file metadata/index rows and their update paths.
+- [ ] **Standardize errors** across file_editing — single error shape/status vocabulary instead of per-module strings.
+
+Re-scoped (the fixed 120 s sleep is **not** in the editing loop):
+
+- [ ] **120s-sleep behavior** — the roadmap's "editing-loop" 120 s sleeps actually live in `agents/base.py` (401/KEY_LOCKED unlock wait, proxy/auth pause) and `interactive.py` (unattended recovery). Replace with the shared `EndpointHealth.unavailable_until` latch / configurable cooldown from the shipped retry-after policy (see `core/rate_limit_headers.py`).
+
+### 4.3 UNATTENDED plan open decisions (parked, with defaults)
+
+1. Hook failure: fix-forward (leave disk dirty; CRITICAL fix) unless `git.revert_on_hook_failure` set — current behavior is fix-forward.
+2. Create-file policy: clean relative paths OK; add prefix policy only if junk root files recur.
+3. `config.json` as agent edit target: gitignored config stays human-only.
+4. Reviewer sees hook output: developer primary; orchestrator summary; reviewer optional.
+5. API/network failure streaks: pause + single CRITICAL summary after N consecutive failures (shipped — `NetworkBusyLoopGuard`).
+
+---
+
+## 5. New work this pass (from soak-review)
+
+Placeholder for actionable items that surface from the Soak7 review and
+future soak analyses. When a soak reveals a concrete, verified defect or
+regression, add a dated, file-referenced entry here and tick it once fixed.
+Do not add speculative or endpoint-dependent items.
+
+Soak7 (2026-09-02) produced 54 `jr_reviewer` feedback items but **0
+materialized edits**. Root cause of the 0 materializes: the task_001 shell
+session exhausted the **free-model quota** (HTTP 403 / goal limit) before it
+could propose — a resource constraint, **not** a code defect. Remaining noise
+was API/Network + quota. Triaged below; the two SQL nits are cheap, unblocked
+hardening but are **not** the soak failure and are optional:
+
+- [ ] **OPTIONAL — Quote SQL identifiers in `cli/commands.py` DB exports** — `cmd_export_db`,
+      `cmd_export_specific_tables`, `table_has_task_id` interpolate raw
+      `{table_name}` into SQL/`PRAGMA` (`cli/commands.py:356,359,399,490,493`).
+      Add a `_quote_identifier()` helper (double-quote + escape embedded `"`).
+      (The `sqlite_master name=?` existence check is already parameterized.)
+- [ ] **OPTIONAL — Robust DDL splitting in `core/db.py` `_apply_schema`** — current
+      `endswith(";")` per-line split breaks if a `;` appears inside a comment
+      or string literal. Replace with a comment/string-aware scanner; no new
+      dependency (`sqlparse` not required).
+
+## 6. Soak-derived endpoint latch / fallback
+
+**Status:** §6.1/§6.2/§6.3/§6.4 implemented (all four; checkboxes ticked; 980 unit tests pass,
+ruff clean) — pending next-soak acceptance. From Soak7 iteration 22 log (63.6m
+elapsed, Work: 0.0s). Independent of free-tier quota. These four fire on paid
+endpoints the first time a primary 429/503 parks and another endpoint is
+still healthy.
+
+**Symptom:** OpenRouter already latched (`LOCAL health latch: rate_limited`,
+`Remaining: 0`). Support agents (prioritizer, jr_reviewer, archivist,
+reporter) reprint the full last HTTP dump and print `No alternate endpoints
+available — recheck in 120s`. Orchestrator retry *does* fall back to
+`opencode/big-pickle`. Developer work stays `0.0s`.
+
+**Non-goals**
+- Do not spoof OpenCode CLI `User-Agent` / `x-opencode-*` headers.
+- Do not treat OpenRouter `free-models-per-day` as a product bug (paid
+  credits / a non-free default are the operator fix).
+- Do not reopen the shipped short Retry-After 429/503 policy (§0.0).
+
+### 6.1 Skip-path must use the same fallback as a live POST
+
+Latch skip (`endpoint.health.is_available() is False`) must call
+`get_fallback_model()` before declaring “no alternate.” Today only some
+POST-failure branches fall back; the skip branch sleeps 30–120s and
+returns `None`.
+
+- [x] In `agents/base.py` `call_endpoint`, the unavailable-skip path:
+      try fallback endpoint/model; if one exists, recurse/`call_endpoint`
+      on it (same signature as the 429/503 fallback).
+- [x] If every candidate is latched, *then* print `No alternate endpoints
+      available` and use the existing bounded sleep (`min(max(wait, 30), 120)`).
+- [x] Test: primary latched, fallback healthy → one POST to fallback, no
+      “no alternate” line (`test_latched_primary_falls_back_to_healthy_endpoint`
+      in `tests/unit/test_call_endpoint_rate_limit.py`).
+- [x] Test: both latched → bounded sleep, no live POST.
+      (`test_skip_path_all_parked_sleeps_bounded_backoff`)
+
+### 6.2 Print the HTTP dump once per latch, not per agent call
+
+`print_http_error_dump` on every skip turned one 429 into megabytes of
+identical stdout. Paid bursts will do the same.
+
+- [x] Dump (status, redacted headers, parsed error, body truncate) only
+      when `mark_failure` *sets* a new `unavailable_until` (or when the
+      stored dump changes).
+- [x] Later skips: one line
+      `⚠️  {endpoint} skipped (LOCAL health latch: {status}) — {Ns}s left`.
+      Do not reprint `Last HTTP dump from when this latch was set:`.
+- [x] Optional: keep the dump on `EndpointHealth.last_http_dump` for
+      debug / a verbose flag; default soak stdout stays quiet.
+- [x] Test: two skip-path calls under the same latch → dump appears once
+      (`capfd`) (`test_local_latch_skip_prints_dump_without_calling_api`).
+
+### 6.3 Freeze support agents while the shared latch is active
+
+jr_reviewer format-retries and archivist batches burned the only remaining
+OpenCode attempts while orchestrator/developer did no work.
+
+- [x] When every configured endpoint is latched **or** the active
+      endpoint for the foreground model is latched and no fallback is
+      healthy: freeze background agents to orchestrator + developer only.
+      Implemented via a shared freeze flag (`_sync_support_freeze` from
+      `core/endpoint_manager.py`) honored by the support-worker hold loop
+      (`agents/worker_utils.py`, prioritizer/archivist/reporter) and by the
+      feedback-agent loop (`agents/parallel_workers.py` `_worker_loop`,
+      jr_reviewer etc.).
+- [x] Resume the previous filter when any endpoint `mark_success`s or
+      `unavailable_until` expires (`is_available()` re-probes every check,
+      so expiry without a mark_success still unfreezes).
+- [x] Do not enqueue jr_reviewer JSON retries on an empty transport
+      caused by a latch skip (`Empty response (endpoint issue) — skipping
+      format retries` should be the last line, not attempt 2 and 3).
+- [x] Test: latch both endpoints → prioritizer/archivist/jr_reviewer not
+      called; after `mark_success` they run again.
+
+### 6.4 `FreeUsageLimitError` is quota, not a 120s warm-up
+
+OpenCode 429 body:
+
+```json
+{"type":"error","error":{"type":"FreeUsageLimitError","message":"Error from provider (Console): Rate limit exceeded. Please try again later."}}
+```
+
+No `Retry-After`. Current code uses the 429 status default (120s),
+`Advertised wait 120s — retry same endpoint once`. That is the burst /
+GPU-warm path. Console/IP daily caps need the quota path.
+
+- [x] In `classify_rate_limit` (or a sibling on the parsed body):
+      `is_quota = True` when `error.type == "FreeUsageLimitError"` or
+      top-level `"type": "FreeUsageLimitError"`, even with no Reset /
+      Remaining headers.
+- [x] Quota branch unchanged: park (`RATE_LIMITED`, existing ~15 min cap
+      or sleep-to-reset if a Reset exists), fallback immediately, **no**
+      same-endpoint 120s honor.
+- [x] Advertised-wait 120/300s remains only for 429/503 that are *not*
+      quota.
+- [x] Test: OpenCode-shaped body, no `Retry-After` → no 120s sleep, fallback
+      or park (`test_call_endpoint_rate_limit.py` +
+      `test_rate_limit_headers.py`).
+
+### 6.5 Files / acceptance
+
+- `agents/base.py` — skip-path fallback; dump-once; quota vs wait.
+- `core/rate_limit_headers.py` — `FreeUsageLimitError` → `is_quota`.
+- `core/http_diag.py` / `core/endpoint_manager.py` — dump stored on latch
+  set, not on every skip.
+- `agents/worker_utils.py` + `core/endpoint_manager.py` — support
+  freeze while all endpoints latched (held via
+  `hold_while_foreground_session_active`; latch path sets the flag).
+- `agents/parallel_workers.py` — empty-transport jr_reviewer format-retry
+  skip (already present).
+- Tests as listed; ruff clean; no live endpoints.
+
+**Acceptance (next soak, paid or free):** one 429 parks an endpoint;
+stdout shows **one** dump; other agents skip in one line; orchestrator
+or developer still reaches a healthy fallback; `Work:` is not 0.0s for
+the rest of the run solely because support workers held the latch.
+
+## Persistent Notes:
+**Deliberate / false-positive — no change:**
+- `core/db.py` `journal_mode=OFF` + `synchronous=OFF` + FK-disabled-during-apply:
+  intentional init-window & mount tradeoffs — already covered by §1 here.
+- `core/db_helpers.py` "SQL injection" (ids 39–43): parameterized — f-strings only
+  assemble `?` placeholders or a constant `task_filter`; not injectable.
+- `agent_schemas/*.json` items (ids 17–38): sample-output → formal-JSON-Schema
+  would regress `get_schema_example()` (`core/agent_schemas.py:312`); excluded.
+- `cli/__init__.py` empty / `datetime.now()`×3 / cosmetic nits: harmless.
+
+---
+
+

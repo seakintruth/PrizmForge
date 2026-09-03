@@ -32,7 +32,13 @@ MAX_ADVERTISED_WAIT = 600
 # decision table): 429 -> 120 s, 503 -> 300 s.
 DEFAULT_STATUS_WAIT = {429: 120, 503: 300}
 
-_QUOTA_BODY_TOKENS = ("free-models-per-day", "add 10 credits", "daily quota")
+_QUOTA_BODY_TOKENS = (
+    "free-models-per-day",
+    "add 10 credits",
+    "daily quota",
+    # Provider error types that are quota exhaustion, not a transient burst.
+    "freeusagelimiterror",
+)
 
 
 def advertised_wait_seconds(
@@ -151,7 +157,8 @@ def classify_rate_limit(headers: object, body_text: str = "") -> RateLimitInfo:
 
     Quota when either:
       * the Remaining header is present and <= 0, or
-      * the body mentions ``free-models-per-day`` / ``Add 10 credits`` / ``daily quota``.
+      * the body mentions ``free-models-per-day`` / ``Add 10 credits`` / ``daily quota``,
+        or an ``error.type`` of ``FreeUsageLimitError`` (provider daily cap).
 
     A Reset header alone is not quota (burst windows also send Reset).
     Everything else is a burst and keeps the short Retry-After backoff.

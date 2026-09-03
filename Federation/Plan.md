@@ -109,3 +109,28 @@ This phase will only be pursued after Phase 1 and Phase 2 demonstrate clear valu
 ---
 
 This plan is intentionally lightweight and meant to evolve. It prioritizes pragmatic improvement of the current system while keeping the door open for the longer-term Forge Federation vision.
+
+---
+
+## Persistence & multi-writer (design note)
+
+SQLite is the default and stays so. Postgres / SQLAlchemy is a **design note
+for a future trigger** — federation Stage 2, a long-lived shared operator DB,
+or concurrent multi-writer soaks — **not current work**. Do not open this
+until §1 ingest has measured numbers on the NUC.
+
+- **Approach if triggered:** SQLAlchemy **Core first** — one engine facade
+  (`core/db_engine.py`), keep textual SQL, migrate schema via `MetaData` /
+  Alembic later. Never ORM-everywhere and never a second query layer
+  (Django / Tortoise).
+- **Hard requirement:** §1 init bulk-load must stay a first-class path on both
+  backends; do not invent a second writer pool on the file DB (NullPool).
+- **Key dialect gotchas carried over:** `INSERT OR REPLACE` → `ON CONFLICT`,
+  `datetime('now')` → `NOW()`, `AUTOINCREMENT` → `IDENTITY`,
+  `lastrowid` → `RETURNING`; PRAGMA only on SQLite (no `journal_mode` on
+  Postgres).
+- **Out of scope even when triggered:** JSONB in the first PR, multi-tenant /
+  read-replicas, replacing the message bus.
+
+Formerly tracked as a full tracker section; collapsed here as a design note.
+

@@ -15,7 +15,7 @@ from agents.base import call_agent
 from agents.prioritizer_worker import get_prioritizer_worker
 from agents.reporter_worker import get_reporter_worker
 from agents.response_cleaner import clean_llm_response
-from agents.worker_utils import interruptible_sleep
+from agents.worker_utils import interruptible_sleep, support_frozen
 from core.config import get_config
 from core.db import get_db_path
 from core.db_helpers import post_message, save_agent_feedback
@@ -490,6 +490,13 @@ class BackgroundAgentPool:
     def _worker_loop(self, agent_name: str):
         """Main worker loop for a FEEDBACK agent"""
         while self.running:
+            # §6.3: while every configured endpoint is latched, freeze
+            # feedback agents (jr_reviewer, etc.) too — not just the support
+            # workers — so they stop burning the last quota carries.
+            if support_frozen():
+                interruptible_sleep(5.0, lambda: self.running)
+                continue
+
             if self.active_agents_filter is not None:
                 if len(self.active_agents_filter) == 0:
                     interruptible_sleep(1.0, lambda: self.running)

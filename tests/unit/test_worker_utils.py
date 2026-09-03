@@ -12,6 +12,8 @@ from agents.worker_utils import (
     foreground_session_guard,
     hold_while_foreground_session_active,
     interruptible_sleep,
+    set_support_frozen,
+    support_frozen,
 )
 
 
@@ -123,6 +125,52 @@ def test_hold_breaks_when_stopped_during_hold(monkeypatch):
         monkeypatch.setattr("agents.worker_utils.interruptible_sleep", stop_simulating_sleep)
         assert hold_while_foreground_session_active(lambda: flags["running"]) is False
     finally:
+        while foreground_session_active():
+            end_foreground_session()
+
+
+# ---------------------------------------------------------------------------
+# §6.3 (soak-derived): freezing the shared transport (all endpoints latched)
+# must hold the support workers the same way the c9 foreground gate does, and
+# resume once any endpoint recovers.
+# ---------------------------------------------------------------------------
+
+
+def test_support_frozen_flag_roundtrip():
+    try:
+        assert not support_frozen()
+        set_support_frozen(True)
+        assert support_frozen()
+        set_support_frozen(False)
+        assert not support_frozen()
+    finally:
+        set_support_frozen(False)
+
+
+def test_hold_waits_while_transport_frozen(monkeypatch):
+    flags = {"running": True}
+    try:
+        set_support_frozen(True)
+
+        def resume(_seconds, _is_running):
+            set_support_frozen(False)
+
+        monkeypatch.setattr("agents.worker_utils.interruptible_sleep", resume)
+        assert hold_while_foreground_session_active(lambda: flags["running"]) is True
+        assert not support_frozen()
+    finally:
+        set_support_frozen(False)
+
+
+def test_hold_returns_immediately_when_no_foreground_and_not_frozen(monkeypatch):
+    def explode(*_args, **_kwargs):
+        raise AssertionError("should not sleep when neither gate is active")
+
+    monkeypatch.setattr("agents.worker_utils.interruptible_sleep", explode)
+    try:
+        assert hold_while_foreground_session_active(lambda: True) is True
+    finally:
+        set_support_frozen(False)
         while foreground_session_active():
             end_foreground_session()
 
