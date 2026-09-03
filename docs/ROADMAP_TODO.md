@@ -16,11 +16,10 @@ Do not re-add shipped items or their PR maps.
 |---|---|---|
 | §0 Current state & next focus | — | Intro / index only |
 | §1 Cold-soak SQLite ingest | **HIGH** | Actionable now (no live-endpoint dependency); biggest recurring soak-start win. |
-| §2 Optional PostgreSQL | **LOW** | Deferred by design; only needed for multi-writer/federation deploys not planned yet. |
-| §3 Closed-loop hardening residuals | **MEDIUM** | Real UAT gaps, but blocked on live endpoints / GitHub access. |
-| §4 Mini-swe agent open items | **MEDIUM** | Core validation is high-value but blocked on live endpoints; rest deferred/parked. |
-| §5 Annexes / parked decisions | **LOW** | Intentional tech-debt; no urgency. |
-| §6 New work this pass | **HIGH** | Soak-derived actionable fixes live here; tick as they land. |
+| §2 Closed-loop hardening residuals | **MEDIUM** | Real UAT gaps, but blocked on live endpoints / GitHub access. |
+| §3 Mini-swe agent open items | **MEDIUM** | Core validation is high-value but blocked on live endpoints; rest deferred/parked. |
+| §4 Annexes / parked decisions | **LOW** | Intentional tech-debt; no urgency. |
+| §5 New work this pass | **HIGH** | Soak-derived actionable fixes live here; tick as they land. |
 
 **Legend:** HIGH = do next (actionable, unblocked) · MEDIUM = trackable, blocked on external deps (live endpoints / GitHub / containers) · LOW = deferred or parked by design.
 
@@ -31,16 +30,17 @@ Do not re-add shipped items or their PR maps.
   (last updated 2026-09-01), CLI-leakage audit + `__init__.py` cleanup, doc
   edits verified by soak, and the shell-developer reviewer diff-truncation fix.
   All completion notes are in git — see `git log` on `feat/roadmap` / `main`.
-- **Next-up candidates** (below): §1 cold-soak SQLite ingest and §2 optional
-  PostgreSQL are both **OPEN — design only, no branch yet**. They are the two
-  largest open items and do not depend on live endpoints.
+- **Next-up**: §1 cold-soak SQLite ingest (OPEN — design only, no branch yet).
+  Then §5 soak-derived items. Note: Soak7 produced **0 materialized edits** because
+  its shell session exhausted the free-model quota (HTTP 403 / goal limit), not a
+  code defect — so there is no verified mutation-path finding to act on yet.
 
 ## 1. Cold-soak SQLite project ingest (NUC / 2-core / ≥8 GB)
 
 **Status:** OPEN — design only (2026-08-31). No branch yet.
 
 **Constraint (intentional):** soaks do **not** copy `.PrizmForge/`. Every soak
-start is a **cold full rebuild** of `prizmforge.db`. Do not plan cross-soak
+start is a **cold full rebuild** of `.PrizmForge/agents.db`. Do not plan cross-soak
 hash-skip, leftover `project_files.content_hash`, or “second run is cheaper.”
 The only clock that matters is **one** `cmd_init()` on a wiped DB.
 
@@ -184,256 +184,7 @@ PRAGMA journal_mode = DELETE;
 `cmd_init()` before and after on the same tree.
 
 
-## 2. Optional PostgreSQL via SQLAlchemy (SQLite remains default)
-
-**Status:** OPEN — design only (2026-08-31). No branch yet. Depends on §1
-(cold-soak ingest) only in the sense that **init bulk-load must stay a
-first-class path** on both backends; do not block §1 on this.
-
-**Why:** SQLite is correct for NUC soaks, hermetic tests, and wiped
-`.PrizmForge/` isolation. A shared or multi-writer deploy (later federation,
-long-lived operator DB, concurrent soaks against one store) needs a server
-engine. The product switch is **configuration**, not a fork.
-
-**Default stays SQLite.** Postgres is opt-in. CI and `utils/run_tests.sh`
-stay on SQLite unless an explicit extra job is added.
-
-### 2.1 Decision: SQLAlchemy Core first, not ORM-everywhere
-
-The schema lives as a large raw-SQL string in `core/db.py` (`init_db`,
-`_apply_schema`, `_migrate_schema`) plus two connection helpers
-(`core/db_connection.py`, `file_editing/db.py`) and dozens of
-`conn.execute("""...""")` call sites. An overnight ORM rewrite of
-`file_lines` / proposals / workers will stall the mutation path.
-
-- **Phase A:** SQLAlchemy **engine + connection** facade. Call sites keep
-  textual SQL (`sqlalchemy.text`) until each module is touched for another
-  reason.
-- **Phase B:** SQLAlchemy `MetaData` / `Table` models for schema create +
-  migrations (replace the string blob + `PRAGMA table_info` ALTER loop).
-- **Phase C (optional, later):** ORM mapped classes only where it removes
-  duplication (e.g. `edit_proposals`, `agent_feedback`). Line store and
-  archives can stay Core/`executemany` forever.
-
-Do not introduce Django, Tortoise, or a second query layer.
-
-**Dependencies (pin in extras, not required for default install):**
-
-```text
-sqlalchemy>=2.0,<3
-psycopg[binary]>=3.1    # Postgres driver only when backend=postgresql
-```
-
-Suggested extra: `pip install -e ".[postgres]"`. SQLite uses SQLAlchemy’s
-bundled `sqlite3` dialect — no extra package.
-
-### 2.2 Configuration (files, not env-only)
-
-Add a top-level `database` object to `config.json` / `example_config.json`.
-Document in `docs/CONFIGURATION.md`. Secrets stay in `api_key.json` (or a
-sibling gitignored file), never in `config.json`.
-
-```json
-"database": {
-  "backend": "sqlite",
-  "sqlite": {
-    "path": null
-  },
-  "postgresql": {
-    "host": "127.0.0.1",
-    "port": 5432,
-    "name": "prizmforge",
-    "user": "prizmforge",
-    "sslmode": "prefer",
-    "connect_timeout_s": 10
-  }
-}
-```
-
-- `backend`: `sqlite` (default) | `postgresql`. Unknown value → `ValueError`
-  at `validate_config`.
-- `sqlite.path`: `null` keeps today’s rule (`PRIZMFORGE_DB_PATH` else
-  `<project>/.PrizmForge/agents.db`).
-- Postgres password: `api_key.json` → `keys.database.password` (or
-  `keys.postgresql.password`). Mirror endpoint-key style. Empty password +
-  `backend=postgresql` → fail closed at startup.
-- Optional override URL (operator/CI only): env `PRIZMFORGE_DATABASE_URL`
-  wins over `backend`+fields. Allowed schemes: `sqlite`, `sqlite+pysqlite`,
-  `postgresql`, `postgresql+psycopg`. Reject `postgres://` ambiguity or
-  normalize it once in code.
-
-`validate_config` checks types only. Reachability is `init_db()` /
-preflight, not config parse (so unit tests can load configs without a
-server).
-
-Unattended preflight (`core/preflight.py`): if `backend=postgresql`,
-require the extra installed and a successful `SELECT 1` before soak start.
-
-### 2.3 Single engine facade
-
-Replace the split `sqlite3.connect` world with one module, e.g.
-`core/db_engine.py`:
-
-- `get_engine()` — process singleton, built from config.
-- `session_scope()` / `connection_scope()` — context manager that yields a
-  connection with `commit`/`rollback` matching `get_db_connection`.
-- `get_db_path()` remains for SQLite file location and diagnostics; Postgres
-  returns the sanitized URL (`password` redacted).
-
-**SQLite engine kwargs (preserve soak locking story after §1 init window):**
-
-- `connect_args={"timeout": 30}` (or current values).
-- `poolclass=NullPool` (or `StaticPool` + `check_same_thread=False` only if
-  a measured single-connection soak needs it). Default: **NullPool** so we
-  do not invent a second writer pool on the file DB.
-- On connect: `PRAGMA journal_mode=DELETE`, `synchronous=NORMAL`,
-  `temp_store=MEMORY`, `foreign_keys=ON` — same as `core/db_connection.py`
-  today. §1 init pragmas stay a **separate** connect event or
-  `execution_options` used only by `cmd_init`.
-
-**Postgres engine kwargs:**
-
-- `poolclass=QueuePool`, small pool (`pool_size=5`, `max_overflow=5`) on an
-  8 GB NUC; configurable later.
-- `pool_pre_ping=True`.
-- `isolation_level` default (READ COMMITTED). Do not copy SQLite’s
-  `EXCLUSIVE` / `journal_mode` onto Postgres.
-- `statement_timeout` via `SET` on connect if we see runaway queries.
-
-**Deprecate, then delete:**
-
-- `file_editing.db.get_db_connection` — must call the facade (it currently
-  skips pragmas; that is already a soak footgun).
-- Raw `sqlite3.connect` in `core/db.py` `init_db`, `core/model_health.py`,
-  workers, `utils/query_developer_responses.py`.
-- Keep `sqlite3` only inside the SQLite dialect connect hook and tests that
-  assert PRAGMA.
-
-`DatabaseRetryError` + wall-clock commit budget stay for SQLite lock/busy.
-On Postgres map deadlocks / `lock_not_available` to the same exception so
-callers do not grow a second retry vocabulary.
-
-### 2.4 Dialect-safe SQL (inventory before rewrite)
-
-Textual SQL that is **SQLite-only** today and must be parameterized or
-branched:
-
-| Pattern | SQLite today | Postgres |
-|---|---|---|
-| Surrogate keys | `INTEGER PRIMARY KEY AUTOINCREMENT` | `INTEGER GENERATED BY DEFAULT AS IDENTITY` (or `SERIAL`) |
-| Upsert | `INSERT OR REPLACE` (`project_files`, `file_summaries`) | `INSERT … ON CONFLICT (file_path) DO UPDATE SET …` |
-| Instant | `datetime('now')`, `CURRENT_TIMESTAMP` | `NOW()`, `CURRENT_TIMESTAMP` |
-| Booleans | `INTEGER 0/1` | keep `SMALLINT`/`INTEGER` in v1 (do not flip to native `BOOLEAN` mid-migration) |
-| Singleton rows | `CHECK (id = 1)` (`cli_checkpoints`, `reporter_state`) | same CHECK, or `INSERT … ON CONFLICT (id)` |
-| Introspection | `PRAGMA table_info`, `sqlite_master` | `information_schema.columns` / Alembic |
-| Bulk init | §1 `executemany` + MEMORY journal | `psycopg` `executemany` or `COPY` for `file_lines` only if measured |
-| FKs | `PRAGMA foreign_keys=ON` | always on |
-
-Rules:
-
-- No `SELECT *` new code; column lists survive dialect type drift.
-- Placeholders: SQLAlchemy `text("… WHERE file_path = :path")` bound
-  params. Ban `f"SELECT … {table}"` except for the existing export helper
-  after an allowlist.
-- `lastrowid` after `INSERT INTO files` must use
-  `inserted_primary_key` / `RETURNING file_id` on Postgres.
-- `Row` access: keep both index and key (`row["file_id"]`) via
-  `mappings()`.
-
-Phase A may wrap the worst call sites (`INSERT OR REPLACE`, `lastrowid`,
-`datetime('now')`) in `core/db_sql.py` helpers keyed by dialect name.
-
-### 2.5 Schema create + migrations
-
-Today: one SQL blob + additive `_ensure_column` for old files.
-
-Target:
-
-- [ ] **SQLAlchemy `MetaData` in `core/schema.py`** — one `Table()` per
-      existing table (start with the critical set: `files`, `file_lines`,
-      `edit_proposals`, `messages`, `tasks`, `errors`, `agent_feedback`,
-      `project_files`, `events`). Remaining tables can stay in the blob for
-      one PR if listed explicitly.
-- [ ] **`init_db()`** becomes `metadata.create_all(engine)` + dialect
-      connect pragmas (SQLite only).
-- [ ] **Alembic** (`alembic/`) for additive migrations from that point.
-      First revision = “schema as of this PR” (empty upgrade on a fresh
-      `create_all`). Stop hand-written `_ensure_column` for new columns.
-- [ ] SQLite file DBs from older soaks: still support `_migrate_schema`
-      **or** one-shot “wipe and recreate” because soaks already throw
-      `.PrizmForge/` away. Do not invent a production SQLite upgrade story
-      beyond current additive columns unless an operator keeps a durable
-      file DB.
-
-Postgres: never run `PRAGMA`. Never run §1 `journal_mode=MEMORY`. Init
-performance work for Postgres is a different checklist (`COPY` / unlogged
-`file_lines` during load, then `ALTER TABLE … SET LOGGED`) — park unless a
-soak actually uses Postgres.
-
-### 2.6 Product behavior that must not change
-
-- Default `backend=sqlite`, path under `.PrizmForge/`, wiped per soak.
-- Governed reconstruct (`file_lines` + `sort_order` + `is_deleted`) identical.
-- Tests use tmp SQLite; no Docker required for `run_tests.sh --normal`.
-- `log_error` stays non-blocking (short timeout / best-effort) on both
-  backends.
-- Dual-writer rule on SQLite is unchanged: one writer during materialize;
-  do not open a second engine against the same file.
-
-### 2.7 Phased delivery
-
-- [ ] **2.A — Config + engine + SQLite parity**  
-      `database` block, `get_engine()`, migrate `init_db` +
-      `get_db_connection` + `file_editing.db` to the facade. Behavior on
-      SQLite indistinguishable. Gate green. No Postgres CI yet.
-- [ ] **2.B — Dialect helpers + lastrowid/upsert**  
-      Fix the inventory in §2.4 at the highest-traffic writers
-      (`file_operations`, `writer.initialize_file_lines`,
-      `proposal_builder`, `db_helpers`). Unit tests run the same SQL
-      helpers against a SQLite engine.
-- [ ] **2.C — Postgres smoke (optional extra)**  
-      `tests/integration/test_postgres_smoke.py` marked `@pytest.mark.postgres`,
-      skipped without `PRIZMFORGE_DATABASE_URL`. Creates schema, indexes one
-      file, reconstructs lines, writes one proposal row. Document compose
-      snippet in `docs/soak_runbook.md` (do not make compose the default
-      soak).
-- [ ] **2.D — Alembic + MetaData**  
-      Move off the schema string. One documented `alembic upgrade head` for
-      durable Postgres; SQLite soaks still `create_all` on empty file.
-
-### 2.8 Files to touch (2.A minimum)
-
-- `core/config.py` + `docs/CONFIGURATION.md` + `example_config.json`
-- `example_api_key.json` — `keys.database.password` placeholder
-- `core/db_engine.py` (new), `core/db.py`, `core/db_connection.py`,
-  `file_editing/db.py`
-- `core/preflight.py` — Postgres reachability
-- `pyproject.toml` / install extras
-- `tests/unit/test_db_engine.py` — backend selection, URL redaction,
-  SQLite PRAGMA on connect, reject unknown backend
-- `tests/unit/test_db_retry_patience.py` — still valid on SQLite engine
-
-### 2.9 Acceptance
-
-- `backend` omitted or `"sqlite"` → bit-identical operator story to
-  current `main` (path, pragmas after init, tests).
-- `backend: "postgresql"` without password / extra / server → **fail
-  closed** with an actionable message, no silent SQLite fallback.
-- No password in logs, events, or `get_db_path()` print.
-- Ruff clean; normal gate does not require Postgres.
-- §1 init pragmas still compile and apply **only** when dialect is SQLite.
-
-### 2.10 Out of scope
-
-- Multi-tenant Postgres, read replicas, federation Stage 2.
-- Moving agent JSON blobs into JSONB in the first Postgres PR (TEXT is
-  fine; JSONB is a later migration).
-- Replacing the message bus with Redis/NATS.
-- SQLAlchemy 1.4 APIs (`Query`, `sessionmaker` legacy binds).
-
----
-
-## 3. Unattended closed-loop hardening — open residuals only
+## 2. Unattended closed-loop hardening — open residuals only
 
 All shipped workstreams (A–F) are recorded in `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`; the tracker keeps only what is still open.
 
@@ -441,12 +192,12 @@ All shipped workstreams (A–F) are recorded in `docs/UNATTENDED_CLOSED_LOOP_CAP
 - [ ] **PR #94 body nit** (manual GitHub edit): body still cites `tests/unit/test_writer_git_closed_loop.py`; should cite `tests/unit/test_git_closed_loop.py`. **Blocked: GitHub/manual editor access** (cosmetic, merged-PR body).
 - [ ] **Ignored-path handling in the git closed loop** — a git-governed target that is gitignored (e.g. `config.json`) needs an explicit
   branch: skip git or fail with a clear "path is gitignored" message, never silent
-  success. **Default parked (§5 decision 3: gitignored config stays human-only).** Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §3.7.
+  success. **Default parked (§4 decision 3: gitignored config stays human-only).** Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §3.7.
 - [ ] **Diagnostic dump shows a forced-hook-failure path** — at least one non-success path visible under events/errors after an intentional hook failure; the `git_fail` counter is already present in task summaries. **Blocked: Workstream F dump sections (`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md` §8.2).**
 
 ---
 
-## 4. Mini-swe agent (shell developer) — open items only
+## 3. Mini-swe agent (shell developer) — open items only
 
 The native port itself (core loop, disposable worktree, governed proposal
 conversion, `developer.implementation: "shell"` wiring, packaging) is
@@ -461,15 +212,15 @@ items are tracked here.
 
 ---
 
-## 5. Annexes (strategic / parked decisions)
+## 4. Annexes (strategic / parked decisions)
 
-### 5.1 Forge Federation strategy — `Federation/Plan.md`
+### 4.1 Forge Federation strategy — `Federation/Plan.md`
 
 Active northstar: Stage 0 (current single-Territory system) → Stage 1 (enhanced
 single-Territory, next) → Stage 2 (multi-Territory, future). Operates via short,
 YAGNI-focused sprints with bounded, measurable experiments.
 
-### 5.2 `report/plan.md` structural refactors (backlog / tech-debt)
+### 4.2 `report/plan.md` structural refactors (backlog / tech-debt)
 
 Review-flagged structural items, each small, bounded, and independently scoped.
 **NOTE:** The prior low-risk pair (CLI-leakage audit, `__init__.py` cleanup) is
@@ -485,7 +236,7 @@ Re-scoped (the fixed 120 s sleep is **not** in the editing loop):
 
 - [ ] **120s-sleep behavior** — the roadmap's "editing-loop" 120 s sleeps actually live in `agents/base.py` (401/KEY_LOCKED unlock wait, proxy/auth pause) and `interactive.py` (unattended recovery). Replace with the shared `EndpointHealth.unavailable_until` latch / configurable cooldown from the shipped retry-after policy (see `core/rate_limit_headers.py`).
 
-### 5.3 UNATTENDED plan open decisions (parked, with defaults)
+### 4.3 UNATTENDED plan open decisions (parked, with defaults)
 
 1. Hook failure: fix-forward (leave disk dirty; CRITICAL fix) unless `git.revert_on_hook_failure` set — current behavior is fix-forward.
 2. Create-file policy: clean relative paths OK; add prefix policy only if junk root files recur.
@@ -495,31 +246,33 @@ Re-scoped (the fixed 120 s sleep is **not** in the editing loop):
 
 ---
 
-## 6. New work this pass (from soak-review)
+## 5. New work this pass (from soak-review)
 
 Placeholder for actionable items that surface from the Soak7 review and
 future soak analyses. When a soak reveals a concrete, verified defect or
 regression, add a dated, file-referenced entry here and tick it once fixed.
 Do not add speculative or endpoint-dependent items.
 
-Soak7 (2026-09-02) so far produced 54 `jr_reviewer` feedback items but **0
-materialized edits** (task_001 shell session hit its `step_limit=30` mid-review;
-remaining errors were API/Network + quota noise). Triage: most items are
-false-positive or working-as-designed (see below). Two are genuinely actionable:
+Soak7 (2026-09-02) produced 54 `jr_reviewer` feedback items but **0
+materialized edits**. Root cause of the 0 materializes: the task_001 shell
+session exhausted the **free-model quota** (HTTP 403 / goal limit) before it
+could propose — a resource constraint, **not** a code defect. Remaining noise
+was API/Network + quota. Triaged below; the two SQL nits are cheap, unblocked
+hardening but are **not** the soak failure and are optional:
 
-- [ ] **Quote SQL identifiers in `cli/commands.py` DB exports** — `cmd_export_db`,
+- [ ] **OPTIONAL — Quote SQL identifiers in `cli/commands.py` DB exports** — `cmd_export_db`,
       `cmd_export_specific_tables`, `table_has_task_id` interpolate raw
       `{table_name}` into SQL/`PRAGMA` (`cli/commands.py:356,359,399,490,493`).
       Add a `_quote_identifier()` helper (double-quote + escape embedded `"`).
-      (But : `sqlite_master name=?` check already parameterized.)
-- [ ] **Robust DDL splitting in `core/db.py` `_apply_schema`** — current
+      (The `sqlite_master name=?` existence check is already parameterized.)
+- [ ] **OPTIONAL — Robust DDL splitting in `core/db.py` `_apply_schema`** — current
       `endswith(";")` per-line split breaks if a `;` appears inside a comment
       or string literal. Replace with a comment/string-aware scanner; no new
       dependency (`sqlparse` not required).
 
 **Deliberate / false-positive — no change:**
 - `core/db.py` `journal_mode=OFF` + `synchronous=OFF` + FK-disabled-during-apply:
-  intentional init-window & mount tradeoffs — already covered by §1 and §2 here.
+  intentional init-window & mount tradeoffs — already covered by §1 here.
 - `core/db_helpers.py` "SQL injection" (ids 39–43): parameterized — f-strings only
   assemble `?` placeholders or a constant `task_filter`; not injectable.
 - `agent_schemas/*.json` items (ids 17–38): sample-output → formal-JSON-Schema
