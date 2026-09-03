@@ -20,6 +20,7 @@ Do not re-add shipped items or their PR maps.
 | §3 Mini-swe agent open items | **MEDIUM** | Core validation is high-value but blocked on live endpoints; rest deferred/parked. |
 | §4 Annexes / parked decisions | **LOW** | Intentional tech-debt; no urgency. |
 | §5 New work this pass | **HIGH** | Soak-derived actionable fixes live here; tick as they land. |
+| §6 Soak-derived endpoint latch / fallback| **HIGH** | Update endpoint latches |
 
 **Legend:** HIGH = do next (actionable, unblocked) · MEDIUM = trackable, blocked on external deps (live endpoints / GitHub / containers) · LOW = deferred or parked by design.
 
@@ -270,6 +271,115 @@ hardening but are **not** the soak failure and are optional:
       or string literal. Replace with a comment/string-aware scanner; no new
       dependency (`sqlparse` not required).
 
+## 6. Soak-derived endpoint latch / fallback
+
+**Status:** OPEN — from Soak7 iteration 22 log (63.6m elapsed, Work: 0.0s).
+Independent of free-tier quota. These four fire on paid endpoints the first
+time a primary 429/503 parks and another endpoint is still healthy.
+
+**Symptom:** OpenRouter already latched (`LOCAL health latch: rate_limited`,
+`Remaining: 0`). Support agents (prioritizer, jr_reviewer, archivist,
+reporter) reprint the full last HTTP dump and print `No alternate endpoints
+available — recheck in 120s`. Orchestrator retry *does* fall back to
+`opencode/big-pickle`. Developer work stays `0.0s`.
+
+**Non-goals**
+- Do not spoof OpenCode CLI `User-Agent` / `x-opencode-*` headers.
+- Do not treat OpenRouter `free-models-per-day` as a product bug (paid
+  credits / a non-free default are the operator fix).
+- Do not reopen the shipped short Retry-After 429/503 policy (§0.0).
+
+### 6.1 Skip-path must use the same fallback as a live POST
+
+Latch skip (`endpoint.health.is_available() is False`) must call
+`get_fallback_model()` before declaring “no alternate.” Today only some
+POST-failure branches fall back; the skip branch sleeps 30–120s and
+returns `None`.
+
+- [ ] In `agents/base.py` `call_endpoint`, the unavailable-skip path:
+      try fallback endpoint/model; if one exists, recurse/`call_endpoint`
+      on it (same signature as the 429/503 fallback).
+- [ ] If every candidate is latched, *then* print `No alternate endpoints
+      available` and use the existing bounded sleep (`min(max(wait, 30), 120)`).
+- [ ] Test: primary latched, fallback healthy → one POST to fallback, no
+      “no alternate” line (`tests/unit/test_call_endpoint_rate_limit.py`).
+- [ ] Test: both latched → bounded sleep, no live POST.
+
+### 6.2 Print the HTTP dump once per latch, not per agent call
+
+`print_http_error_dump` on every skip turned one 429 into megabytes of
+identical stdout. Paid bursts will do the same.
+
+- [ ] Dump (status, redacted headers, parsed error, body truncate) only
+      when `mark_failure` *sets* a new `unavailable_until` (or when the
+      stored dump changes).
+- [ ] Later skips: one line
+      `⚠️  {endpoint} skipped (LOCAL health latch: {status}) — {Ns}s left`.
+      Do not reprint `Last HTTP dump from when this latch was set:`.
+- [ ] Optional: keep the dump on `EndpointHealth.last_http_dump` for
+      debug / a verbose flag; default soak stdout stays quiet.
+- [ ] Test: two skip-path calls under the same latch → dump appears once
+      (`capfd`).
+
+### 6.3 Freeze support agents while the shared latch is active
+
+jr_reviewer format-retries and archivist batches burned the only remaining
+OpenCode attempts while orchestrator/developer did no work.
+
+- [ ] When every configured endpoint is latched **or** the active
+      endpoint for the foreground model is latched and no fallback is
+      healthy: `set_active_agents` to orchestrator + developer only
+      (reuse the shell-session lane pause in `workflow/parallel_workers.py`
+      / `task_runner.py`).
+- [ ] Resume the previous filter when any endpoint `mark_success`s or
+      `unavailable_until` expires.
+- [ ] Do not enqueue jr_reviewer JSON retries on an empty transport
+      caused by a latch skip (`Empty response (endpoint issue) — skipping
+      format retries` should be the last line, not attempt 2 and 3).
+- [ ] Test: latch both endpoints → prioritizer/archivist/jr_reviewer not
+      called; after `mark_success` they run again.
+
+### 6.4 `FreeUsageLimitError` is quota, not a 120s warm-up
+
+OpenCode 429 body:
+
+```json
+{"type":"error","error":{"type":"FreeUsageLimitError","message":"Error from provider (Console): Rate limit exceeded. Please try again later."}}
+```
+
+No `Retry-After`. Current code uses the 429 status default (120s),
+`Advertised wait 120s — retry same endpoint once`. That is the burst /
+GPU-warm path. Console/IP daily caps need the quota path.
+
+- [ ] In `classify_rate_limit` (or a sibling on the parsed body):
+      `is_quota = True` when `error.type == "FreeUsageLimitError"` or
+      top-level `"type": "FreeUsageLimitError"`, even with no Reset /
+      Remaining headers.
+- [ ] Quota branch unchanged: park (`RATE_LIMITED`, existing ~15 min cap
+      or sleep-to-reset if a Reset exists), fallback immediately, **no**
+      same-endpoint 120s honor.
+- [ ] Advertised-wait 120/300s remains only for 429/503 that are *not*
+      quota.
+- [ ] Test: OpenCode-shaped body, no `Retry-After` → no 120s sleep, fallback
+      or park (`test_call_endpoint_rate_limit.py` +
+      `test_rate_limit_headers.py`).
+
+### 6.5 Files / acceptance
+
+- `agents/base.py` — skip-path fallback; dump-once; quota vs wait.
+- `core/rate_limit_headers.py` — `FreeUsageLimitError` → `is_quota`.
+- `core/http_diag.py` / `core/endpoint_manager.py` — dump stored on latch
+  set, not on every skip.
+- `workflow/parallel_workers.py` / `workflow/task_runner.py` — support
+  freeze while all endpoints latched.
+- Tests as listed; ruff clean; no live endpoints.
+
+**Acceptance (next soak, paid or free):** one 429 parks an endpoint;
+stdout shows **one** dump; other agents skip in one line; orchestrator
+or developer still reaches a healthy fallback; `Work:` is not 0.0s for
+the rest of the run solely because support workers held the latch.
+
+## Perssistant Notes:
 **Deliberate / false-positive — no change:**
 - `core/db.py` `journal_mode=OFF` + `synchronous=OFF` + FK-disabled-during-apply:
   intentional init-window & mount tradeoffs — already covered by §1 here.
@@ -280,3 +390,5 @@ hardening but are **not** the soak failure and are optional:
 - `cli/__init__.py` empty / `datetime.now()`×3 / cosmetic nits: harmless.
 
 ---
+
+
