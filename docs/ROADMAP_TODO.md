@@ -1,4 +1,576 @@
 # PrizmForge Roadmap / TODO
+# FIRST PASS
+
+## Plan: Stabilize PrizmForge Soak Execution and Observability
+
+### Objective
+
+Enable unattended soak runs to reliably:
+
+1. Execute shell-developer commands in the intended worktree.
+2. Produce governed proposals and file mutations when justified.
+3. Avoid feedback backlog overload and SQLite contention.
+4. Persist enough telemetry to diagnose failures without reading raw trajectory files.
+5. Close task lifecycle records cleanly.
+
+---
+
+## Phase 0 — Preserve Evidence and Establish a Baseline
+
+**Priority:** Immediate  
+**Owner:** Developer  
+**Success criterion:** Current Soak3 artifacts remain available for regression tests.
+
+1. Preserve the current trajectory files:
+
+```text
+PrizmForge-Soak/Soak3-target/PrizmForge/.PrizmForge/shell_trajectories/
+```
+
+2. Preserve the target database:
+
+```text
+PrizmForge-Soak/Soak3-target/PrizmForge/.PrizmForge/agents.db
+```
+
+3. Add regression fixtures from representative failures:
+   - prose-only response;
+   - unterminated Bash fence;
+   - valid closed Bash fence;
+   - finish token inside a Bash block;
+   - valid finish token plus summary;
+   - model claiming the repository/file does not exist before issuing a command.
+
+4. Add a regression test named similarly to:
+
+```text
+tests/unit/test_shell_developer_protocol_recovery.py
+```
+
+---
+
+## Phase 1 — Fix Shell Developer Protocol Handling
+
+**Priority:** Highest  
+**Primary files:** `workflow/shell_developer.py`, mini-SWE prompt construction, shell-response parser  
+**Success criterion:** A shell developer can inspect `workflow/__init__.py`, run a command, and either make a valid change or cleanly finish.
+
+### 1.1 Standardize the protocol
+
+Use one canonical completion token:
+
+```text
+FINISH_EDIT_SESSION
+```
+
+Do not support competing conventions such as:
+
+```text
+<finish>
+```
+
+The accepted forms should be exactly:
+
+````text
+```bash
+pwd && ls -la
+```
+````
+
+or:
+
+```text
+FINISH_EDIT_SESSION
+Summary: No justified change was required after review.
+```
+
+### 1.2 Make the prompt example-driven
+
+End the shell developer system prompt with this content:
+
+````text
+RESPONSE FORMAT — REQUIRED
+
+Return exactly one of these forms.
+
+To execute one command:
+
+```bash
+pwd && ls -la
+```
+
+To finish:
+
+FINISH_EDIT_SESSION
+Summary: <short summary>
+
+Rules:
+- A command reply must include both the opening ```bash line and closing ``` line.
+- Emit exactly one command block per reply.
+- Do not add prose outside a command block.
+- Do not put FINISH_EDIT_SESSION in a code block.
+- Do not ask the user to upload files or provide repository contents.
+- You have shell access to the project checkout.
+- Begin every task with:
+
+```bash
+pwd && ls -la && find . -maxdepth 2 -type f | head -100
+```
+````
+
+### 1.3 Add narrow malformed-fence recovery
+
+The current model frequently returns:
+
+````text
+```bash
+ls -la
+````
+
+without the closing fence.
+
+Implement a conservative normalizer before rejecting a response:
+
+```python
+def normalize_shell_reply(reply: str) -> str:
+    reply = reply.strip()
+
+    if reply.startswith("```bash\n") and not reply.endswith("\n```"):
+        command = reply[len("```bash\n") :].strip()
+
+        if command and "```" not in command:
+            return f"```bash\n{command}\n```"
+
+    return reply
+```
+
+Do **not** auto-repair:
+- prose mixed with commands;
+- multiple fences;
+- an empty command;
+- XML/JSON tool calls;
+- finish tokens inside command blocks.
+
+### 1.4 Prevent unsafe “missing file” replacement behavior
+
+Add a developer prompt rule:
+
+```text
+Never create a task-named path merely because it cannot be found. Before
+creating any missing file or directory, inspect the checkout with pwd, ls, and
+find. If the requested file is absent after inspection, end the session using
+FINISH_EDIT_SESSION and explain that no safe change was made.
+```
+
+This prevents unsafe output such as:
+
+```bash
+mkdir -p workflow
+touch workflow/__init__.py
+```
+
+when the developer is simply confused about its workspace.
+
+### 1.5 Improve parser diagnostics
+
+Return structured invalid-format reasons:
+
+```python
+{
+    "reason": "unterminated_bash_fence",
+    "response_excerpt": "```bash\nls -la",
+    "expected": "closed_bash_block_or_finish_token",
+}
+```
+
+This will make failures actionable without manually reading trajectory JSON.
+
+---
+
+## Phase 2 — Verify the Developer Worktree and Command Execution Path
+
+**Priority:** Highest  
+**Primary files:** `workflow/shell_developer.py`, worktree/session-launch code  
+**Success criterion:** The first valid command runs from the expected project root and sees `workflow/__init__.py`.
+
+### 2.1 Add mandatory initial-workspace evidence
+
+Before the developer may edit any file, require successful execution of:
+
+```bash
+pwd && git rev-parse --show-toplevel && ls -la && test -f workflow/__init__.py
+```
+
+Capture and persist:
+
+- process working directory;
+- Git worktree root;
+- command exit code;
+- stdout/stderr excerpts;
+- whether the requested task path exists.
+
+### 2.2 Fail explicitly if the session is in the wrong directory
+
+If the command result does not identify the intended worktree, terminate with a specific error:
+
+```text
+shell developer workspace validation failed:
+expected workflow/__init__.py under project root but it was not found
+```
+
+Do not continue through three model-format retries if the real issue is an invalid worktree/cwd.
+
+### 2.3 Add tests
+
+Test cases:
+
+1. Correct worktree exposes `workflow/__init__.py`.
+2. Empty temporary directory fails workspace validation.
+3. Worktree path is not inherited from the parent repository.
+4. Windows/Git Bash path handling still invokes commands in the correct directory.
+5. A valid Bash response actually executes and produces captured output.
+
+---
+
+## Phase 3 — Add Shell Session Observability
+
+**Priority:** High  
+**Primary files:** `workflow/shell_developer.py`, `core/db.py`, `core/events.py`, model-health integration  
+**Success criterion:** `query_developer_responses.py --diagnostic` explains every shell session without needing trajectory-file inspection.
+
+### 3.1 Persist developer model responses
+
+Store shell developer exchanges in the same response/conversation table used by ordinary agents.
+
+Required fields:
+
+```text
+task_id
+agent_name = developer
+model
+session_id
+step_number
+prompt
+response
+response_format_status
+command
+command_exit_code
+timestamp
+```
+
+### 3.2 Persist shell failure events
+
+Record these as structured errors/events:
+
+| Condition | Suggested category |
+|---|---|
+| Prose response | `shell_protocol_prose_response` |
+| Unterminated Bash fence | `shell_protocol_unterminated_fence` |
+| Invalid finish response | `shell_protocol_invalid_finish` |
+| Three invalid replies | `shell_protocol_repeated_format_error` |
+| Correct finish but no mutation | `shell_session_no_mutation` |
+| Wrong working directory | `shell_workspace_validation_failed` |
+| Command returned non-zero | `shell_command_failed` |
+
+### 3.3 Record model-health outcomes
+
+Each call should produce a model-health record:
+
+```text
+transport_success
+provider_response_success
+protocol_valid
+command_executed
+command_success
+session_outcome
+```
+
+A response can be transport-successful but protocol-invalid. Do not label that condition as an API failure.
+
+### 3.4 Fix diagnostic classifier terminology
+
+Update the trajectory inspector:
+
+| Current label | Replacement |
+|---|---|
+| `HAS_BASH_BLOCK` | `VALID_BASH_BLOCK` |
+| N/A | `UNTERMINATED_BASH_BLOCK` |
+| `HAS_FINISH_TOKEN` | `VALID_FINISH_SESSION` |
+| `NO_PROTOCOL_MARKER` | `PROSE_OR_UNSUPPORTED_FORMAT` |
+
+Only classify a valid Bash command block when:
+
+```python
+text.strip().startswith("```bash\n") and text.strip().endswith("\n```")
+```
+
+Do not classify a parser error message containing the literal text ```` ```bash ```` as a valid Bash response.
+
+---
+
+## Phase 4 — Constrain Background Review and Feedback Growth
+
+**Priority:** High  
+**Primary files:** background worker dispatch, feedback ingestion, `workflow/backlog.py`, prioritizer  
+**Success criterion:** A single-file seed task does not generate a repository-wide 33-item feedback backlog.
+
+### 4.1 Scope initial review to the task target
+
+For a seed task naming:
+
+```text
+workflow/__init__.py
+```
+
+initial background review should begin with:
+
+```text
+workflow/__init__.py
+```
+
+Optionally include direct dependencies only if explicitly configured.
+
+Do not automatically enqueue broad files such as:
+
+```text
+workflow/task_runner.py
+workflow/proposal_builder.py
+utils/pre_commit.sh
+utils/models_cli.py
+```
+
+unless the task is explicitly repository-wide.
+
+### 4.2 Filter non-actionable observations
+
+Do not create feedback items for praise or confirmation statements such as:
+
+```text
+The function correctly handles...
+SQL queries properly use parameterized queries...
+Robust fallback logic...
+```
+
+Require each submitted feedback item to include:
+
+```text
+problem statement
+specific file path
+severity
+evidence
+concrete suggested action
+```
+
+### 4.3 Cap initial worker fan-out
+
+Recommended initial limits:
+
+```text
+initial peer-review files: 5
+feedback items per reviewer cycle: 3
+maximum unaddressed feedback before pause: 10
+maximum feedback items sent to prioritizer: 10
+```
+
+### 4.4 Prioritize mutation-capable work
+
+When a seed task exists, prioritize it ahead of broad reviewer feedback. Do not repeatedly dispatch the developer against the same vague seed task if prior shell sessions failed before executing commands.
+
+---
+
+## Phase 5 — Stabilize SQLite Persistence
+
+**Priority:** High  
+**Primary files:** `core/db_connection.py`, `core/db.py`, `core/token_budget.py`, archival and endpoint-health writers  
+**Success criterion:** Background activity does not produce `database is locked` during normal operation.
+
+### 5.1 Standardize database connection settings
+
+Every SQLite connection should use:
+
+```python
+sqlite3.connect(
+    db_path,
+    timeout=30,
+)
+```
+
+and run:
+
+```sql
+PRAGMA journal_mode=WAL;
+PRAGMA busy_timeout=30000;
+PRAGMA synchronous=NORMAL;
+PRAGMA foreign_keys=ON;
+```
+
+### 5.2 Keep write transactions short
+
+Do not hold database transactions open during:
+
+- API calls;
+- shell commands;
+- parsing;
+- LLM response handling;
+- file indexing;
+- test execution.
+
+Only open the write transaction after the work result exists.
+
+### 5.3 Retry short write operations
+
+Use bounded retry with jitter for lock/busy errors only. Do not retry the entire agent operation due to a failed telemetry write.
+
+### 5.4 Move toward one database writer
+
+Use an internal event/write queue:
+
+```text
+workers -> persistence queue -> single DB writer -> SQLite
+```
+
+Prioritize this for:
+
+- endpoint health;
+- token budget;
+- conversation archival;
+- feedback ingestion;
+- lifecycle events;
+- model-health outcomes.
+
+---
+
+## Phase 6 — Repair Task Lifecycle Handling
+
+**Priority:** Medium  
+**Primary files:** `workflow/task_runner.py`, shutdown handling, task state helpers  
+**Success criterion:** No abandoned tasks remain `in_progress` after a run stops.
+
+### 6.1 Close every task state
+
+Task outcomes should be one of:
+
+```text
+completed
+failed
+deferred
+cancelled
+timed_out
+no_change_required
+```
+
+### 6.2 Handle interruption safely
+
+On `KeyboardInterrupt`, timeout, shell protocol failure, or unrecoverable startup failure:
+
+```python
+mark_task_status(
+    task_id,
+    "failed",
+    reason="shell developer protocol failure after retry limit",
+)
+```
+
+For a valid session with no justified change:
+
+```python
+mark_task_status(
+    task_id,
+    "no_change_required",
+    reason="review completed; no safe change justified",
+)
+```
+
+### 6.3 Avoid direct database edits for historical Soak3
+
+Use the existing task-state helper or administrative command to resolve the stale task. Do not manually alter SQLite unless no supported maintenance path exists.
+
+---
+
+## Phase 7 — Windows/Git Bash Output Reliability
+
+**Priority:** Medium  
+**Primary files:** `utils/diagnose_soak.sh`, utility launch scripts  
+**Success criterion:** Reports can be redirected to files without `UnicodeEncodeError`.
+
+Keep these exports in `diagnose_soak.sh` before Python calls:
+
+```bash
+export PYTHONUTF8=1
+export PYTHONIOENCODING="utf-8"
+```
+
+Use report capture as:
+
+```bash
+./utils/diagnose_soak.sh \
+  --python /c/git/programs/Python31209/python.exe \
+  > ../reports/soak.txt 2>&1
+```
+
+Add a regression test that invokes the report tool with redirected output under Windows-compatible Python.
+
+---
+
+## Recommended Implementation Sequence
+
+| Order | Work item | Exit criterion |
+|---:|---|---|
+| 1 | Shell protocol fixtures and parser tests | Valid/invalid/unterminated response cases covered |
+| 2 | Prompt contract and required initial command | First response is a valid closed Bash block |
+| 3 | Narrow unterminated-fence normalizer | ` ```bash\nls -la ` executes only when safe |
+| 4 | Worktree/cwd validation | Developer sees `workflow/__init__.py` |
+| 5 | Shell session DB events and response persistence | Diagnostics show shell replies and failures |
+| 6 | Reduce initial background review fan-out | Single-file task stays single-file initially |
+| 7 | Feedback quality filter | Praise is not stored as remediation feedback |
+| 8 | SQLite WAL/busy timeout/retry hardening | No normal-operation lock failures |
+| 9 | Single DB writer queue | High-concurrency soak remains stable |
+| 10 | Task finalization paths | No stale `in_progress` tasks |
+
+---
+
+## Validation Run
+
+Use a short, isolated run after Phases 1–4:
+
+```json
+{
+  "background_agents_enabled": false,
+  "reporter": {
+    "enabled": false,
+    "interval_minutes": 10
+  },
+  "resource_controller": {
+    "enabled": false
+  },
+  "cli_mode": {
+    "mode": "unattended",
+    "unattended": {
+      "max_duration_hours": 0.25,
+      "max_iterations_per_task": 3,
+      "auto_generate_tasks": false,
+      "stop_when_backlog_empty": true,
+      "seed_tasks": [
+        "Inspect workflow/__init__.py. Make one small, justified improvement if needed. Do not create missing files. If no change is justified, finish with FINISH_EDIT_SESSION and a summary."
+      ]
+    }
+  }
+}
+```
+
+**Pass criteria:**
+
+1. First shell command reports the expected worktree root.
+2. `workflow/__init__.py` is visible to the developer.
+3. At least one valid shell command executes.
+4. Trajectory data and database response records agree.
+5. Task does not remain `in_progress`.
+6. No broad reviewer backlog is created.
+7. The final status is either:
+   - a valid proposal/write, or
+   - `no_change_required` with a persisted rationale.
+
+# FOLLOWING PASS
 
 Single source of truth for **open** work items. Detailed design lives in the
 linked documents; this file tracks status. Tick checkboxes as items land and
