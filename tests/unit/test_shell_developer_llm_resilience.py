@@ -237,3 +237,36 @@ def test_serialize_exposes_failure_metadata(monkeypatch):
     assert blob["model_stats"]["failure_kinds"] == {"server_error": 2, "timeout": 2}
     assert blob["last_llm_failure"]["kind"] == "timeout"
     assert blob["last_llm_failure"]["model_ref"] == "openrouter/openrouter/free"
+
+
+# ---------------------------------------------------------------------------
+# Real model-health round trip — NOT monkeypatched through _recent_failure_kind.
+# The Soak11 post-mortem caught _recent_failure_kind calling the
+# get_db_connection() context manager without ``with``, so it ALWAYS raised and
+# every shell failure printed "(unknown)". These tests exercise the actual
+# write-then-read path against a real file so that regression cannot hide
+# behind a mocked call_endpoint / monkeypatched classifier again.
+# ---------------------------------------------------------------------------
+def _real_health_db(monkeypatch, tmp_path):
+    monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(tmp_path / "agents.db"))
+    monkeypatch.setattr("core.model_health.get_config", lambda: {"model_health": {"enabled": True}})
+
+
+def test_recent_failure_kind_reads_recorded_event_real_db(monkeypatch, tmp_path):
+    _real_health_db(monkeypatch, tmp_path)
+
+    sd.record_model_outcome("openrouter/openrouter/free", endpoint="openrouter", ok=False, kind="rate_limited")
+
+    assert sd._recent_failure_kind("openrouter/openrouter/free", max_age_s=999999) == "rate_limited"
+
+
+def test_recent_failure_kind_real_db_missing_refs_return_empty(monkeypatch, tmp_path):
+    _real_health_db(monkeypatch, tmp_path)
+
+    sd.record_model_outcome("openrouter/openrouter/free", endpoint="openrouter", ok=False, kind="rate_limited")
+    sd.record_model_outcome("openrouter/openrouter/free", endpoint="openrouter", ok=True)
+
+    assert sd._recent_failure_kind(None) == ""
+    assert sd._recent_failure_kind("never/used-ref", max_age_s=999999) == ""
+    # A later successful event must not erase the most recent failure kind.
+    assert sd._recent_failure_kind("openrouter/openrouter/free", max_age_s=999999) == "rate_limited"
