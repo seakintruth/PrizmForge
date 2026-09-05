@@ -22,6 +22,49 @@ _CANONICAL_CATEGORIES = (
 # Process/bookkeeping categories that pass through untouched.
 _PROCESS_CATEGORIES = ("seed_task", "review_rejection", "uncategorized")
 
+# Phase 4.2 (soak recompute): praise/confirmation statements that must not
+# create feedback items. Matched against the message before any problem
+# language is present, and only when the item also lacks a suggested action.
+_PRAISE_ONLY_PATTERNS = (
+    r"the function correctly handles",
+    r"sql queries properly use",
+    r"robust fallback logic",
+    r"well written",
+    r"looks good",
+    r"looks fine",
+    r"works as expected",
+    r"lgtm",
+    r"no issues found",
+    r"no problems found",
+    r"great job",
+    r"well done",
+    r"nice work",
+    r"good work",
+    r"excellent work",
+    r"clean code",
+    r"correctly (handles|uses|implements)",
+    r"properly (handles|uses|implements|escapes)",
+)
+
+
+def is_praise_only_feedback(message: str, suggestion: str | None = None) -> bool:
+    """True when a candidate feedback item is praise/confirmation without an
+    actionable problem: it contains no problem language and either matches a
+    praise-only phrase or offers no concrete suggested action. Reused by the
+    review ingestion path and the prioritizer quality filter (Phase 4.2).
+    """
+    msg = (message or "").lower().strip()
+    if not msg:
+        return True
+    if _PRAISE_ONLY_ERROR_TOKEN_RE.search(msg):
+        return False
+    if not (suggestion or "").strip():
+        return True
+    return any(re.search(pattern, msg) for pattern in _PRAISE_ONLY_PATTERNS)
+
+
+_PRAISE_ONLY_ERROR_TOKEN_RE = re.compile(r"\b(but|however|issue|bug|problem|fails|breaks|broken|incorrect|wrong|error|missing|leaky|risk)\b")
+
 _CATEGORY_ALIASES = {
     # security
     "vulnerability": "security",

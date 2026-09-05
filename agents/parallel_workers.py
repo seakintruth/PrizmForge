@@ -2,6 +2,7 @@
 
 import queue
 import random
+import re
 import sqlite3
 import threading
 import time
@@ -18,7 +19,7 @@ from agents.response_cleaner import clean_llm_response
 from agents.worker_utils import interruptible_sleep, support_frozen
 from core.config import get_config
 from core.db import get_db_path
-from core.db_helpers import post_message, save_agent_feedback
+from core.db_helpers import is_praise_only_feedback, post_message, save_agent_feedback
 from core.file_operations import compute_file_hash, format_file_with_guids
 from core.json_parser import parse_json_response
 from file_editing.db import log_error
@@ -224,30 +225,49 @@ class BackgroundAgentPool:
         """Queue project files for initial review when task starts.
 
         W7 (soak recompute, 2026-08-29): capped by
-        ``background_agents.initial_review_max_files`` (default 25). Soak9
+        ``background_agents.initial_review_max_files`` (default 5). Soak9
         queued ALL 231 files for all 3 agents (693 events) plus 462 modified
         -file events in one burst, all sharing the core loop's RateLimiter and
         TokenBudget, which is what produced the 429 flood.
+
+        Phase 4.1 (soak recompute): when the active task's seed feedback names
+        an indexed file, initial review begins with ONLY that file target so a
+        single-file seed task does not generate a repository-wide feedback
+        backlog. Broad peers (task_runner, proposal_builder, pre_commit.sh,
+        models_cli) are never enqueued as part of the initial burst.
         """
         try:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
-            max_files = int(self.agent_configs.get("initial_review_max_files", 25))
-
-            cursor.execute(
-                """
-                SELECT
-                    pf.file_path, pf.content, pf.content_hash, pf.last_modified,
-                    pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
-                FROM project_files pf
-                LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
-                WHERE pf.is_binary = 0
-                ORDER BY pf.last_modified DESC
-                LIMIT ?
-            """,
-                (max_files,),
-            )
+            max_files = int(self.agent_configs.get("initial_review_max_files", 5))
+            target_file = self._resolve_seed_target_path(cursor)
+            if target_file:
+                cursor.execute(
+                    """
+                    SELECT
+                        pf.file_path, pf.content, pf.content_hash, pf.last_modified,
+                        pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
+                    FROM project_files pf
+                    LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
+                    WHERE pf.is_binary = 0 AND pf.file_path = ?
+                    """,
+                    (target_file,),
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT
+                        pf.file_path, pf.content, pf.content_hash, pf.last_modified,
+                        pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
+                    FROM project_files pf
+                    LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
+                    WHERE pf.is_binary = 0
+                    ORDER BY pf.last_modified DESC
+                    LIMIT ?
+                    """,
+                    (max_files,),
+                )
 
             all_files = cursor.fetchall()
             conn.close()
@@ -269,6 +289,40 @@ class BackgroundAgentPool:
         except Exception as e:
             print(f"    Error queuing files for initial review: {e}")
 
+    def _resolve_seed_target_path(self, cursor) -> str | None:
+        """Best-effort extraction of the task-target file path from seed feedback.
+
+        Returns the single indexed, non-binary file path named by the seed task
+        for this pool task, or None when there is no seed item (or no indexed
+        match). Candidates are file-like tokens from the seed message, tested
+        longest-first so a deep path beats a shared prefix.
+        """
+        if not self.task_id:
+            return None
+        try:
+            row = cursor.execute(
+                """
+                SELECT message FROM agent_feedback
+                WHERE task_id = ? AND category = 'seed_task' AND addressed = 0
+                ORDER BY timestamp DESC LIMIT 1
+                """,
+                (self.task_id,),
+            ).fetchone()
+        except sqlite3.Error as e:
+            print(f"    Seed target lookup skipped: {e}")
+            return None
+        if not row or not row[0]:
+            return None
+        candidates = sorted(set(re.findall(r"[\w./-]+\.\w+", row[0])), key=len, reverse=True)
+        for candidate in candidates:
+            hit = cursor.execute(
+                "SELECT 1 FROM project_files WHERE is_binary = 0 AND file_path = ?",
+                (candidate,),
+            ).fetchone()
+            if hit:
+                return candidate
+        return None
+
     def _queue_modified_files(self):
         """Queue files modified since last review - only to modification_agents"""
         try:
@@ -277,7 +331,7 @@ class BackgroundAgentPool:
 
             queued_count = 0
 
-            max_files = int(self.agent_configs.get("initial_review_max_files", 25))
+            max_files = int(self.agent_configs.get("initial_review_max_files", 5))
 
             for agent_name in self.modification_agents:
                 cursor.execute(
@@ -359,6 +413,18 @@ class BackgroundAgentPool:
         try:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
+
+            # Phase 4.3 (soak recompute): pause the random feeder once
+            # unaddressed feedback exceeds the cap so the backlog stops
+            # growing (success criterion: no repository-wide feedback flood).
+            if self.task_id:
+                from workflow.backlog import count_unaddressed_feedback
+
+                max_unaddressed = int(self.agent_configs.get("max_unaddressed_feedback_before_pause", 10))
+                if count_unaddressed_feedback(conn, self.task_id) > max_unaddressed:
+                    conn.close()
+                    print(f"    Pausing random file feeder: unaddressed feedback exceeds {max_unaddressed} (Phase 4.3)")
+                    return
 
             cursor.execute("""
                 SELECT
@@ -666,8 +732,17 @@ class BackgroundAgentPool:
                     return
 
             saved_count = 0
+            max_per_cycle = int(self.agent_configs.get("feedback_items_per_reviewer_cycle", 3))
             for item in items:
+                if saved_count >= max_per_cycle:
+                    print(f"    {agent_name}: cycle cap reached ({max_per_cycle}/response); skipping remaining items")
+                    break
                 if not isinstance(item, dict):
+                    continue
+
+                item_path = item.get("file_path") or item.get("file") or event.file_path
+                if not item_path:
+                    print(f"    {agent_name}: skipping item without a specific file path (Phase 4.2)")
                     continue
 
                 priority = (item.get("priority") or item.get("severity") or item.get("level") or "MEDIUM").upper()
@@ -694,9 +769,13 @@ class BackgroundAgentPool:
                 if not message or len(str(message)) < 10:
                     continue
 
+                if is_praise_only_feedback(str(message), str(suggestion) if suggestion else None):
+                    print(f"    {agent_name}: discarding praise-only/confirmation item (Phase 4.2): {str(message)[:80]}")
+                    continue
+
                 save_agent_feedback(
                     agent_name,
-                    event.file_path,
+                    item_path,
                     priority,
                     category,
                     str(message)[:1000],
@@ -710,7 +789,7 @@ class BackgroundAgentPool:
                     post_message(
                         agent_name,
                         "orchestrator",
-                        f"[{priority}] {event.file_path}: {str(message)[:100]}",
+                        f"[{priority}] {item_path}: {str(message)[:100]}",
                         event.task_id,
                         priority,
                     )
