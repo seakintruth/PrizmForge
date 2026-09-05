@@ -313,8 +313,11 @@ class PrioritizerWorker:
                 prio_cfg = config.get("prioritizer_worker", {}) or {}
                 max_items = int(prio_cfg.get("max_feedback_items_to_prioritizer", 10))
 
-                # Get unaddressed feedback (newest first lets seed items, which
-                # are registered at task start, capture the cap fairly).
+                # Get unaddressed feedback. Seed rows are written at task
+                # start (oldest). A plain newest-first ORDER BY lets newer
+                # reviewer rows fill the cap and the seed never enters, so the
+                # Phase 4.4 boost has no item to apply to. Pull seed_task rows
+                # first, then fill the remaining slots newest-first.
                 cursor.execute(
                     """
                     SELECT
@@ -323,7 +326,7 @@ class PrioritizerWorker:
                     FROM agent_feedback
                     WHERE task_id = ?
                     AND addressed = 0
-                    ORDER BY timestamp DESC
+                    ORDER BY CASE WHEN category = 'seed_task' THEN 0 ELSE 1 END, timestamp DESC
                     LIMIT ?
                 """,
                     (self.current_task_id, max_items),

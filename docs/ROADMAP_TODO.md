@@ -580,7 +580,7 @@ Completed / shipped items are **pruned from this tracker** — completion notes
 and acceptance evidence live in git history and `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`.
 Do not re-add shipped items or their PR maps.
 
-**Last updated:** 2026-09-02
+**Last updated:** 2026-09-05
 
 ## Section priorities
 
@@ -598,11 +598,15 @@ Do not re-add shipped items or their PR maps.
 
 ## 0. Current state & next focus
 
-- **Branch** `feat/roadmap` is merged into `main` / `origin/main` (2026-09-02).
-  The most recent shipped work on that branch: short Retry-After 429/503 policy
-  (last updated 2026-09-01), CLI-leakage audit + `__init__.py` cleanup, doc
-  edits verified by soak, and the shell-developer reviewer diff-truncation fix.
-  All completion notes are in git — see `git log` on `feat/roadmap` / `main`.
+- **Branch** `feat/soak-improvements` is **PR #115, in review (2026-09-05)**. It
+  is built directly on `main` (PR #113 soak-diag tip) so it contains everything
+  from the now-removed stale branches (`feat/roadmap`, `feat/roadmap-open-items`,
+  `feat/http-error-diag`, `soak/14` — all merged via PRs #108–#113) plus Pass 1
+  Phases 0–4 and the Soak10 fix. Completion notes are in git — see `git log` on
+  `main`.
+- **PR #115 review gate**: two merge-blocking reviewer findings (seed task must
+  survive the prioritizer intake cap; praise filter must not be "no suggestion ⇒
+  drop") are fixed in the branch head. Details + non-blocking nits: §5.
 - **Next-up**: §1 cold-soak SQLite ingest (OPEN — design only, no branch yet).
   Then §5 soak-derived items. Note: Soak7 produced **0 materialized edits** because
   its shell session exhausted the free-model quota (HTTP 403 / goal limit), not a
@@ -618,7 +622,7 @@ Do not re-add shipped items or their PR maps.
     the archive `model` column stayed NULL; (4) Phase 4.2's praise filter
     dismissed the `[SEED TASK]` directive and status messages, leaving 0 valid
     prioritizer items.
-  - FIXED (commits f08bd17..HEAD on `feat/soak-improvements`): record the two
+  - FIXED (commits f08bd17..HEAD on `feat/soak-improvements`, in PR #115 review): record the two
     silent failure kinds (`no_alternate_endpoint`, `token_budget`); shell
     `_llm` re-resolves the model like `call_agent` each attempt (explicit
     override > RC throttle > agent prefs) and retries transient kinds
@@ -867,6 +871,24 @@ hardening but are **not** the soak failure and are optional:
       `endswith(";")` per-line split breaks if a `;` appears inside a comment
       or string literal. Replace with a comment/string-aware scanner; no new
       dependency (`sqlparse` not required).
+
+### Soak10 → PR #115 review gate (2026-09-05)
+
+PR #115 (`feat/soak-improvements`) is under review. Two reviewer findings are
+**merge-blocking**; both are fixed in the branch head (ticked below). The nits
+do not block the merge and are tracked for the next soak.
+
+- [x] **Seed task must survive the prioritizer intake cap** — `agents/prioritizer_worker.py` `_get_all_feedback()` ordered `ORDER BY timestamp DESC LIMIT 10`. Seed rows are written at task start (oldest); ten newer reviewer items fill the cap and the seed never enters, so the Phase 4.4 8.0 boost is never applied. Fixed: `ORDER BY CASE WHEN category = 'seed_task' THEN 0 ELSE 1 END, timestamp DESC`. Regression: `test_prio_intake_seed_survives_newer_reviewer_cap`.
+- [x] **Praise filter must not be "no suggestion ⇒ drop"** — `core/db_helpers.py` `is_praise_only_feedback()` returned `True` whenever the item had no suggestion, discarding real findings whose action lives in the message. Now it requires a praise phrase AND no problem/error token (a missing suggestion is irrelevant; the `suggestion` parameter is kept for the callers). Tests in `tests/unit/test_pass1_feedback_constraints.py`.
+
+Nits (do not block — tracked):
+
+- [ ] `<finish>` token is intentionally dead (`workflow/shell_protocol.py`). Models that still emit it burn format retries. Watch the next soak; if it recurs, accept it as an alias for one release.
+- [ ] `classify_shell_reply` labels any reply containing ` ```bash ` that is not a closed block `UNTERMINATED_BASH_BLOCK` — error text that *quotes* the format gets mislabeled. Conservative (never calls invalid text valid); acceptable.
+- [ ] `is_valid_bash_block` requires ` ```bash\n `; a model emitting ` ```bash\r\n ` fails. Cheap fix: strip `\r` during normalize; do if the next soak shows it.
+- [ ] **CONFIRMED (2026-09-05): `record_model_outcome(ok=False)` on latch-skip / budget DOES increment model-quality demotion** — `core/model_health.py` `compute_stats` counts every `ok=False` event's `streak` / `failure_ratio` regardless of `kind`, so `no_alternate_endpoint` / `token_budget` (quota/latch, not model-quality failures) can trip `evaluate_demotion` / `_compute_down_until` and demote a healthy model on paid soaks. Exclude non-model-quality kinds from streak / failure-ratio accumulation before the next paid soak.
+- [ ] Phase 2 workspace check is prompt-only (`workflow/shell_developer.py` asks the first command to be `pwd && git rev-parse --show-toplevel && ls -la`). A wrong cwd still spends format retries. Fine for PR #115; do NOT tick "fail closed if `workflow/__init__.py` missing".
+- [ ] Seed-path regex `[\w./-]+\.\w+` (`agents/parallel_workers.py` `_resolve_seed_target_path`) can bind `config.json` when a seed mentions it. Longest-wins ordering + `project_files` existence lookup bounds the damage; acceptable.
 
 ## 6. Soak-derived endpoint latch / fallback
 

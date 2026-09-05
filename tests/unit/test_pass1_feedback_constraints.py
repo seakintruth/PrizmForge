@@ -38,9 +38,27 @@ def test_actionable_problem_with_suggestion_is_accepted():
     )
 
 
-def test_actionable_but_no_suggestion_rejected():
-    # 4.2 requires a concrete suggested action.
-    assert is_praise_only_feedback("The retry loop can busy-wait under load", None) is True
+def test_actionable_but_no_suggestion_is_kept():
+    # Soak10 review gate: a missing suggestion is NOT sufficient to call an
+    # item praise-only. The message states a real problem and matches no praise
+    # phrase, so it must survive even without a suggestion field.
+    assert is_praise_only_feedback("The retry loop can busy-wait under load", None) is False
+
+
+def test_error_token_overrides_praise_phrase():
+    # A praise phrase plus problem language is a real finding, not praise.
+    assert (
+        is_praise_only_feedback(
+            "The function correctly handles null inputs but the loop can busy-wait under load",
+            "pause before retrying",
+        )
+        is False
+    )
+
+
+def test_praise_phrase_still_rejected_without_problem_language():
+    # Praise patterns still drop items even when a suggestion is present.
+    assert is_praise_only_feedback("well written, clean code", "refactor") is True
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +225,43 @@ def test_prio_intake_capped_and_seed_boosted(temp_db, monkeypatch):
     # Seed boost: the seed_task item carries the mutation-capable boost.
     seed = [i for i in feedback_items if i.category == "seed_task"]
     assert seed and seed[0].bias_multiplier >= 8.0
+
+
+def test_prio_intake_seed_survives_newer_reviewer_cap(temp_db, monkeypatch):
+    """Regression (Soak10 review gate): seed feedback is written at task start
+    with the oldest timestamp. A newest-first ORDER BY + LIMIT fills the cap
+    with newer reviewer rows and the seed never enters, so the Phase 4.4 8.0
+    boost is never applied. Seed_task rows must be pulled ahead of the cap."""
+    from agents.prioritizer_worker import PrioritizerWorker
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute("""
+            INSERT INTO agent_feedback
+            (id, agent_name, file_path, priority, category, message, task_id, addressed, timestamp)
+            VALUES (1, 'system', NULL, 'HIGH', 'seed_task', '[SEED TASK] workflow/__init__.py',
+                    't_prio_seed', 0, '2026-01-01 00:00:00')
+            """)
+        for i in range(12):
+            conn.execute(
+                """
+                INSERT INTO agent_feedback
+                (id, agent_name, file_path, priority, category, message, task_id, addressed, timestamp)
+                VALUES (?, 'jr_reviewer', 'a.py', 'MEDIUM', 'bug',
+                        'newer actionable finding with suggestion', 't_prio_seed', 0, datetime('now'))
+                """,
+                (1000 + i,),
+            )
+
+    monkeypatch.setattr("agents.prioritizer_worker.get_config", lambda: {})
+    worker = PrioritizerWorker()
+    worker.current_task_id = "t_prio_seed"
+    items = worker._get_all_feedback()
+
+    feedback_items = [i for i in items if i.item_type == "feedback"]
+    assert len(feedback_items) <= 10
+    seeds = [i for i in feedback_items if i.category == "seed_task"]
+    assert seeds and seeds[0].bias_multiplier >= 8.0
 
 
 # ---------------------------------------------------------------------------
