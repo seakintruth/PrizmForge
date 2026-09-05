@@ -22,7 +22,6 @@ The legacy structured EditPayload developer path remains available via
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import subprocess
 import tempfile
@@ -40,11 +39,12 @@ from core.db_helpers import post_message
 from core.events import publish_event
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
+from workflow import shell_protocol
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict
 
-FINISH_TOKEN = "FINISH_EDIT_SESSION"
-BASH_BLOCK_RE = re.compile(r"```bash\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+FINISH_TOKEN = shell_protocol.FINISH_TOKEN
+BASH_BLOCK_RE = shell_protocol.BASH_BLOCK_RE
 MAX_RATIONALE_CHARS = 3000
 
 
@@ -95,40 +95,58 @@ SYSTEM_PROMPT = """You are the Developer agent of an autonomous software enginee
 You are working in a disposable copy of the project repository. Your job is to complete \
 the given task by editing files directly with shell commands, then verifying your work.
 
-Protocol for every reply:
-- Think briefly, then emit exactly ONE bash command inside a ```bash fenced block. \
+RESPONSE FORMAT — REQUIRED:
+- Think briefly, then emit EXACTLY ONE bash command inside a single ```bash fenced block. \
 It will be executed with the project copy as the working directory.
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
 - When the task is fully done and verified, reply with {finish_token} on its own line \
 followed by a short summary of what changed. Do not emit a bash block in that final reply.
+- A closed bash block looks exactly like this (opening line, the command, closing line):
+
+```bash
+pwd && ls -la
+```
+
+- Your FIRST command must always be the initial-workspace evidence command below:
+  pwd && git rev-parse --show-toplevel && ls -la
+  This proves which directory you are in and that the repository root is reachable before \
+you touch anything.
 
 Never attempt to interact outside this working copy; changes outside it are discarded."""
 
 
 def build_instance_prompt(task_text: str) -> str:
-    return f"TASK:\n{task_text}\n\nBegin by inspecting the relevant files, then implement the change and verify it."
+    return (
+        f"TASK:\n{task_text}\n\n"
+        "Begin by inspecting the relevant files, then implement the change and verify it. "
+        "If the task target file does not exist, do NOT create or guess a task-named path. "
+        f"Unless you can find a safe, in-repo change that directly satisfies the task, reply "
+        f"with only {FINISH_TOKEN} and a clear summary of why no safe change was made."
+    )
 
 
 # =========================================================================
 # Response parsing
 # =========================================================================
 def extract_bash_command(response: str) -> str | None:
-    """Return the last ```bash fenced command in the response, if any."""
-    matches = BASH_BLOCK_RE.findall(response or "")
-    for block in reversed(matches):
-        cmd = block.strip()
-        if cmd:
-            return cmd
-    return None
+    """Return the last ```bash fenced command in the response, if any.
+
+    A lone unterminated opening fence is recovered first (see
+    ``shell_protocol.normalize_shell_reply``) so a truncated reply can still be
+    executed rather than wasting a format-error retry.
+    """
+    return shell_protocol.extract_bash_command(response)
 
 
 def extract_finish(response: str) -> str | None:
     """Return the finish summary when FINISH_EDIT_SESSION is present."""
-    if FINISH_TOKEN not in (response or ""):
-        return None
-    summary_lines = [line for line in response.splitlines() if FINISH_TOKEN not in line]
-    return "\n".join(summary_lines).strip()
+    return shell_protocol.extract_finish(response)
+
+
+def classify_shell_reply(response: str) -> str:
+    """Classify a reply into a protocol category (shared trajectory/classifier)."""
+    return shell_protocol.classify_shell_reply(response)
 
 
 # =========================================================================
@@ -513,14 +531,20 @@ class ShellDeveloperSession:
 
             if command is None:
                 consecutive_format_errors += 1
+                diag = shell_protocol.diagnose_shell_reply(response)
+                print(f"   ⚠️  Shell protocol (reason={diag['reason']})")
                 if self.cfg.max_consecutive_format_errors > 0 and consecutive_format_errors >= self.cfg.max_consecutive_format_errors:
                     r.exit_status = "RepeatedFormatError"
-                    r.summary = "no ```bash block or finish token in consecutive replies"
+                    r.summary = f"no ```bash block or finish token in consecutive replies (reason={diag['reason']})"
                     break
                 self.messages.append(
                     {
                         "role": "user",
-                        "content": (f"FormatError: reply must contain either a single ```bash fenced command or the token {FINISH_TOKEN} with a summary."),
+                        "content": (
+                            f"FormatError (reason={diag['reason']}): reply must contain either a single "
+                            f"```bash fenced command or the token {FINISH_TOKEN} with a summary. "
+                            f"Expected: {diag['expected']}."
+                        ),
                     }
                 )
                 continue

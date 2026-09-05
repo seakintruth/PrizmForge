@@ -241,7 +241,7 @@ inspect_trajectories() {
     return 0
   fi
 
-  "$PYTHON_EXEC" - "$trajectory_dir" "$TASK_ID" "$TRAJECTORY_LIMIT" <<'PY'
+  "$PYTHON_EXEC" - "$trajectory_dir" "$TASK_ID" "$TRAJECTORY_LIMIT" "$SOURCE_REPO" <<'PY'
 from __future__ import annotations
 
 import json
@@ -252,6 +252,8 @@ from typing import Any
 trajectory_dir = Path(sys.argv[1])
 task_id = sys.argv[2]
 limit = int(sys.argv[3])
+source_repo = sys.argv[4] if len(sys.argv) > 4 else str(Path(__file__).parent.parent)
+sys.path.insert(0, source_repo)
 
 files = sorted(
     trajectory_dir.glob(f"{task_id}-*.json"),
@@ -306,25 +308,24 @@ def truncate(text: str, width: int = 1800) -> str:
     return text
 
 def classify_protocol(text: str) -> str:
+    from workflow.shell_protocol import classify_shell_reply
+
+    category = classify_shell_reply(text)
+    mapping = {
+        "VALID_BASH_BLOCK": "HAS_BASH_BLOCK",
+        "UNTERMINATED_BASH_BLOCK": "UNTERMINATED_BASH_BLOCK",
+        "VALID_FINISH_SESSION": "HAS_FINISH_TOKEN",
+        "PROSE_OR_UNSUPPORTED_FORMAT": "PROSE_OR_UNSUPPORTED_FORMAT",
+    }
+
+    markers = [mapping.get(category, category)]
     lower = text.lower()
-    markers = []
-
-    if "```bash" in lower:
-        markers.append("HAS_BASH_BLOCK")
-    elif "```" in text:
-        markers.append("NON_BASH_CODE_FENCE")
-
-    if "<finish>" in lower:
-        markers.append("HAS_FINISH_TOKEN")
 
     if "repeatedformaterror" in lower:
         markers.append("FORMAT_ERROR_TEXT")
 
     if "no file changes" in lower:
         markers.append("NO_FILE_CHANGES_TEXT")
-
-    if not markers:
-        markers.append("NO_PROTOCOL_MARKER")
 
     return ", ".join(markers)
 
