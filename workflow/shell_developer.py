@@ -22,29 +22,31 @@ The legacy structured EditPayload developer path remains available via
 from __future__ import annotations
 
 import json
-import re
 import shlex
 import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from agents.base import call_endpoint
 from agents.worker_utils import foreground_session_guard
+from core.archival import archive_raw_response
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.events import publish_event
+from core.model_health import record_model_outcome
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
+from workflow import shell_protocol
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict
 
-FINISH_TOKEN = "FINISH_EDIT_SESSION"
-BASH_BLOCK_RE = re.compile(r"```bash\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+FINISH_TOKEN = shell_protocol.FINISH_TOKEN
+BASH_BLOCK_RE = shell_protocol.BASH_BLOCK_RE
 MAX_RATIONALE_CHARS = 3000
 
 
@@ -63,6 +65,8 @@ class ShellDeveloperConfig:
     test_command: str = ""
     on_test_failure: str = "discard"  # "discard" | "propose_anyway"
     model: str | None = None
+    llm_failure_max_retries: int = 3
+    llm_retry_backoff_seconds: int = 15
     worktree_parent: str = ""  # empty → system temp dir
 
     @classmethod
@@ -79,6 +83,8 @@ class ShellDeveloperConfig:
             test_command=str(cfg.get("test_command", "") or ""),
             on_test_failure=str(cfg.get("on_test_failure", "discard") or "discard"),
             model=cfg.get("model") or None,
+            llm_failure_max_retries=int(cfg.get("llm_failure_max_retries", 3)),
+            llm_retry_backoff_seconds=int(cfg.get("llm_retry_backoff_seconds", 15)),
             worktree_parent=str(cfg.get("worktree_parent", "") or ""),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
@@ -95,40 +101,58 @@ SYSTEM_PROMPT = """You are the Developer agent of an autonomous software enginee
 You are working in a disposable copy of the project repository. Your job is to complete \
 the given task by editing files directly with shell commands, then verifying your work.
 
-Protocol for every reply:
-- Think briefly, then emit exactly ONE bash command inside a ```bash fenced block. \
+RESPONSE FORMAT — REQUIRED:
+- Think briefly, then emit EXACTLY ONE bash command inside a single ```bash fenced block. \
 It will be executed with the project copy as the working directory.
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
 - When the task is fully done and verified, reply with {finish_token} on its own line \
 followed by a short summary of what changed. Do not emit a bash block in that final reply.
+- A closed bash block looks exactly like this (opening line, the command, closing line):
+
+```bash
+pwd && ls -la
+```
+
+- Your FIRST command must always be the initial-workspace evidence command below:
+  pwd && git rev-parse --show-toplevel && ls -la
+  This proves which directory you are in and that the repository root is reachable before \
+you touch anything.
 
 Never attempt to interact outside this working copy; changes outside it are discarded."""
 
 
 def build_instance_prompt(task_text: str) -> str:
-    return f"TASK:\n{task_text}\n\nBegin by inspecting the relevant files, then implement the change and verify it."
+    return (
+        f"TASK:\n{task_text}\n\n"
+        "Begin by inspecting the relevant files, then implement the change and verify it. "
+        "If the task target file does not exist, do NOT create or guess a task-named path. "
+        f"Unless you can find a safe, in-repo change that directly satisfies the task, reply "
+        f"with only {FINISH_TOKEN} and a clear summary of why no safe change was made."
+    )
 
 
 # =========================================================================
 # Response parsing
 # =========================================================================
 def extract_bash_command(response: str) -> str | None:
-    """Return the last ```bash fenced command in the response, if any."""
-    matches = BASH_BLOCK_RE.findall(response or "")
-    for block in reversed(matches):
-        cmd = block.strip()
-        if cmd:
-            return cmd
-    return None
+    """Return the last ```bash fenced command in the response, if any.
+
+    A lone unterminated opening fence is recovered first (see
+    ``shell_protocol.normalize_shell_reply``) so a truncated reply can still be
+    executed rather than wasting a format-error retry.
+    """
+    return shell_protocol.extract_bash_command(response)
 
 
 def extract_finish(response: str) -> str | None:
     """Return the finish summary when FINISH_EDIT_SESSION is present."""
-    if FINISH_TOKEN not in (response or ""):
-        return None
-    summary_lines = [line for line in response.splitlines() if FINISH_TOKEN not in line]
-    return "\n".join(summary_lines).strip()
+    return shell_protocol.extract_finish(response)
+
+
+def classify_shell_reply(response: str) -> str:
+    """Classify a reply into a protocol category (shared trajectory/classifier)."""
+    return shell_protocol.classify_shell_reply(response)
 
 
 # =========================================================================
@@ -404,6 +428,38 @@ class SessionResult:
     test_exit_code: int | None = None
     test_output: str = ""
     messages: list[dict] = field(default_factory=list)
+    # Soak10 follow-up: transport-level LLM call accounting (including internal
+    # retries) so the trajectory can say how many calls FAILED and why.
+    llm_attempts: int = 0
+    llm_failure_kinds: dict[str, int] = field(default_factory=dict)
+    last_llm_failure: dict[str, Any] | None = None
+
+
+# Failure kinds that a bounded backoff+retry cannot fix — give up immediately
+# instead of burning retries (mirrors call_endpoint's own handling).
+PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_budget", "token_exhausted", "bad_payload"}
+
+
+def _recent_failure_kind(model_ref: str | None, max_age_s: int = 30) -> str:
+    """Return the failure kind the most recent model-health event recorded for
+    a model reference (or "" if none). call_endpoint writes every failure
+    synchronously before returning None, so this classifies the None instead of
+    guessing whether it was rate-limiting, a latch, or a token budget."""
+    if not model_ref:
+        return ""
+    try:
+        conn = get_db_connection()
+        try:
+            cutoff = datetime.now().isoformat(timespec="seconds") - timedelta(seconds=max_age_s)
+            row = conn.execute(
+                "SELECT kind FROM model_health_events WHERE model_ref = ? AND ok = 0 AND ts >= ? ORDER BY ts DESC LIMIT 1",
+                (model_ref, cutoff),
+            ).fetchone()
+            return str(row[0]) if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
 
 
 class ShellDeveloperSession:
@@ -420,15 +476,72 @@ class ShellDeveloperSession:
         self.result = SessionResult()
         self._start = time.time()
         self._deferred_finish_count = 0
+        # Resolved model ref ("endpoint/model") actually used for LLM calls;
+        # set on the first _llm call (cfg.model may be None).
+        self.resolved_model: str | None = None
+
+    def _resolve_developer_model(self) -> str | None:
+        """Resolve the model for this session exactly like call_agent does
+        (agents/base.py:819-856): explicit override > resource-controller
+        throttle override > agent_model_preferences. Unknown overrides are
+        ignored rather than trusted blindly, so the shell session rides the
+        same model the other agents are currently using (Soak10 follow-up)."""
+        from core.endpoint_manager import get_endpoint_manager
+
+        endpoint_mgr = get_endpoint_manager()
+        override = self.cfg.model
+        if not override:
+            try:
+                from agents.resource_controller_worker import get_resource_controller
+
+                rc_override = get_resource_controller().get_model_override("developer")
+                if rc_override:
+                    override = rc_override
+                    print(f"  🎛️  Resource controller: using {rc_override} for developer shell")
+            except Exception as e:
+                print(f"  ⚠️  Resource controller model override check failed: {e}")
+
+        if override and not endpoint_mgr.model_reference_exists(override):
+            print(f"  ⚠️  Ignoring unknown model override {override!r} for developer shell; using configured preference")
+            override = None
+
+        choice = endpoint_mgr.normalize_model_reference(override) if override else endpoint_mgr.resolve_agent_model("developer")
+        if choice.endpoint_name and choice.model_name:
+            return f"{choice.endpoint_name}/{choice.model_name}"
+        return choice.model_name
 
     def _llm(self) -> str | None:
-        text, _tokens = call_endpoint(
-            self.messages,
-            task_id=self.task_id,
-            agent_name="developer",
-            model=self.cfg.model,
-        )
-        return text
+        """Call the LLM with bounded, failure-kind-aware retries (Soak10 follow-up).
+
+        call_endpoint already retries per-endpoint and falls back across
+        endpoints; this layer adds a session-level retry so a single transient
+        failure (rate-limit / 5xx / timeout / health latch) cannot kill the
+        session. The kind recorded in model_health_events decides whether a
+        short backoff + retry is worthwhile; permanent kinds (bad key, token
+        budget, ...) give up immediately. The model is re-resolved between
+        attempts so retries follow the resource-controller's current steering.
+        """
+        for attempt in range(self.cfg.llm_failure_max_retries + 1):
+            model_ref = self._resolve_developer_model() or self.cfg.model
+            self.resolved_model = model_ref
+            text, _tokens = call_endpoint(
+                self.messages,
+                task_id=self.task_id,
+                agent_name="developer",
+                model=model_ref,
+            )
+            self.result.llm_attempts += 1
+            if text:
+                return text
+            kind = _recent_failure_kind(model_ref) or "unknown"
+            self.result.llm_failure_kinds[kind] = self.result.llm_failure_kinds.get(kind, 0) + 1
+            self.result.last_llm_failure = {"kind": kind, "model_ref": model_ref, "attempt": attempt + 1}
+            if kind in PERMANENT_FAILURE_KINDS or attempt >= self.cfg.llm_failure_max_retries:
+                break
+            backoff_s = max(int(self.cfg.llm_retry_backoff_seconds) * (attempt + 1), 1)
+            print(f"   ⏳ Shell developer LLM failure ({kind}); backing off {backoff_s}s (attempt {attempt + 1}/{self.cfg.llm_failure_max_retries + 1})")
+            time.sleep(backoff_s)
+        return None
 
     def _observation(self, exit_code: int, output: str) -> dict:
         trimmed = output
@@ -439,6 +552,55 @@ class ShellDeveloperSession:
             "role": "user",
             "content": f"[exit code {exit_code}]\n{trimmed}" if trimmed else f"[exit code {exit_code}, no output]",
         }
+
+    def _record_step(
+        self,
+        *,
+        response: str,
+        command: str | None,
+        command_exit_code: int | None,
+        response_format_status: str | None,
+        step_number: int,
+        error_reason: str | None = None,
+    ) -> None:
+        """Archive one shell developer step for observability (Pass 1 Phase 3.1)."""
+        prompt = ""
+        for message in reversed(self.messages):
+            if message.get("role") == "user":
+                prompt = message.get("content", "") or ""
+                break
+        valid = response_format_status in (shell_protocol.VALID_BASH_BLOCK, shell_protocol.VALID_FINISH_SESSION)
+        try:
+            archive_raw_response(
+                task_id=self.task_id,
+                agent_name="developer",
+                prompt=str(prompt)[-4000:],
+                response=str(response)[-8000:],
+                parse_success=valid,
+                parse_error=error_reason,
+                model=self.resolved_model,
+                step_number=step_number,
+                response_format_status=response_format_status,
+                command=command,
+                command_exit_code=command_exit_code,
+            )
+        except Exception as e:
+            print(f"   ⚠️  Shell step archival skipped: {e}")
+
+    def _emit_command_failed_if_needed(self, exit_code: int, command: str, step_number: int) -> None:
+        if exit_code != 0:
+            _publish_shell_event(
+                "shell_command_failed",
+                task_id=self.task_id,
+                payload={"command": command, "exit_code": exit_code, "step_number": step_number},
+            )
+
+    def _record_model_health(self, *, ok: bool, kind: str) -> None:
+        """Record one shell-session model-health outcome (never raises)."""
+        try:
+            record_model_outcome(self.resolved_model, ok=ok, kind=kind)
+        except Exception as e:
+            print(f"   ⚠️  Model-health record skipped: {e}")
 
     def _effective_command_timeout(self) -> int:
         """Cap one bash command by the remaining wall-clock budget.
@@ -475,12 +637,22 @@ class ShellDeveloperSession:
             r.n_model_calls += 1
             if not response:
                 r.exit_status = "LlmUnavailable"
-                r.summary = "LLM endpoint unavailable or token budget exhausted"
+                if r.last_llm_failure:
+                    r.summary = (
+                        "LLM endpoint unavailable after "
+                        f"{r.last_llm_failure['attempt']} attempt(s) "
+                        f"(kind={r.last_llm_failure['kind']}, model={r.last_llm_failure.get('model_ref')})"
+                    )
+                else:
+                    r.summary = "LLM endpoint unavailable or token budget exhausted"
                 break
             self.messages.append({"role": "assistant", "content": response})
 
             summary = extract_finish(response)
             command = extract_bash_command(response)
+
+            is_protocol_valid = command is not None or summary is not None
+            self._record_model_health(ok=is_protocol_valid, kind="protocol_valid" if is_protocol_valid else "protocol_invalid")
 
             if summary is not None and command is not None:
                 # The model tried to run a final command AND finish in one reply
@@ -490,6 +662,16 @@ class ShellDeveloperSession:
                 self._deferred_finish_count += 1
                 exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
                 self.messages.append(self._observation(exit_code, output))
+                self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
+                self._record_model_health(ok=True, kind="command_executed")
+                self._record_model_health(ok=exit_code == 0, kind="command_success")
+                self._record_step(
+                    response=response,
+                    command=command,
+                    command_exit_code=exit_code,
+                    response_format_status=shell_protocol.VALID_BASH_BLOCK,
+                    step_number=r.n_model_calls,
+                )
                 if self._deferred_finish_count >= 3:
                     r.exit_status = "Finished"
                     r.summary = f"[finish forced after {self._deferred_finish_count} deferred finishes] {summary}"
@@ -509,18 +691,54 @@ class ShellDeveloperSession:
             if summary is not None:
                 r.exit_status = "Finished"
                 r.summary = summary
+                self._record_step(
+                    response=response,
+                    command=None,
+                    command_exit_code=None,
+                    response_format_status=shell_protocol.VALID_FINISH_SESSION,
+                    step_number=r.n_model_calls,
+                )
                 break
 
             if command is None:
                 consecutive_format_errors += 1
+                diag = shell_protocol.diagnose_shell_reply(response)
+                print(f"   ⚠️  Shell protocol (reason={diag['reason']})")
+                event_type = {
+                    "prose_or_unsupported_format": "shell_protocol_prose_response",
+                    "unterminated_bash_fence": "shell_protocol_unterminated_fence",
+                    "finish_token_inside_command_block": "shell_protocol_invalid_finish",
+                }.get(diag["reason"], "shell_protocol_prose_response")
+                _publish_shell_event(
+                    event_type,
+                    task_id=self.task_id,
+                    payload={"reason": diag["reason"], "step_number": r.n_model_calls},
+                )
+                self._record_step(
+                    response=response,
+                    command=None,
+                    command_exit_code=None,
+                    response_format_status=shell_protocol.classify_shell_reply(response),
+                    step_number=r.n_model_calls,
+                    error_reason=diag["reason"],
+                )
                 if self.cfg.max_consecutive_format_errors > 0 and consecutive_format_errors >= self.cfg.max_consecutive_format_errors:
                     r.exit_status = "RepeatedFormatError"
-                    r.summary = "no ```bash block or finish token in consecutive replies"
+                    r.summary = f"no ```bash block or finish token in consecutive replies (reason={diag['reason']})"
+                    _publish_shell_event(
+                        "shell_protocol_repeated_format_error",
+                        task_id=self.task_id,
+                        payload={"reason": diag["reason"], "step_number": r.n_model_calls},
+                    )
                     break
                 self.messages.append(
                     {
                         "role": "user",
-                        "content": (f"FormatError: reply must contain either a single ```bash fenced command or the token {FINISH_TOKEN} with a summary."),
+                        "content": (
+                            f"FormatError (reason={diag['reason']}): reply must contain either a single "
+                            f"```bash fenced command or the token {FINISH_TOKEN} with a summary. "
+                            f"Expected: {diag['expected']}."
+                        ),
                     }
                 )
                 continue
@@ -528,21 +746,41 @@ class ShellDeveloperSession:
             consecutive_format_errors = 0
             exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
             self.messages.append(self._observation(exit_code, output))
+            self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
+            self._record_model_health(ok=True, kind="command_executed")
+            self._record_model_health(ok=exit_code == 0, kind="command_success")
+            self._record_step(
+                response=response,
+                command=command,
+                command_exit_code=exit_code,
+                response_format_status=shell_protocol.classify_shell_reply(response),
+                step_number=r.n_model_calls,
+            )
 
         # Optional post-session verification against the edited worktree.
         if r.exit_status == "Finished" and self.cfg.test_command:
             code, output = self.wt.run_test_command(self.cfg.test_command, self.cfg.test_timeout_seconds)
             r.test_exit_code = code
             r.test_output = output[-self.cfg.max_output_chars :]
+        self._record_model_health(ok=r.exit_status == "Finished", kind="session_outcome")
         return r
 
     def serialize(self) -> dict:
         last = self.messages[-1] if self.messages else {}
+        failed_calls = sum(self.result.llm_failure_kinds.values())
         return {
             "trajectory_format": "prizmforge-shell-developer-1.0",
             "exit_status": self.result.exit_status,
             "submission_summary": self.result.summary,
-            "model_stats": {"api_calls": self.result.n_model_calls},
+            "model_stats": {
+                "api_calls": self.result.llm_attempts or self.result.n_model_calls,
+                "llm_attempts": self.result.llm_attempts,
+                "resolved_model": self.resolved_model,
+                "successful_calls": max(self.result.llm_attempts - failed_calls, 0),
+                "failed_calls": failed_calls,
+                "failure_kinds": dict(self.result.llm_failure_kinds),
+            },
+            "last_llm_failure": self.result.last_llm_failure,
             "verification": {
                 "test_command": self.cfg.test_command,
                 "test_exit_code": self.result.test_exit_code,
@@ -803,6 +1041,38 @@ def _gate_and_materialize_changes(
     return statuses, proposal_ids, gates_by_path
 
 
+def _publish_shell_event(event_type: str, *, task_id: str, payload: dict) -> None:
+    """Publish one shell observability event (guarded, never raises)."""
+    try:
+        publish_event(event_type, source="shell_developer", task_id=task_id, payload=payload)
+    except Exception as e:
+        print(f"   ⚠️  Shell event publish skipped ({event_type}): {e}")
+
+
+def _handle_session_without_changes(
+    *,
+    task_id: str,
+    result: SessionResult,
+    progress: dict,
+) -> None:
+    """Record observability + messaging when a session produced no file changes."""
+    progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+    if result.exit_status == "Finished":
+        _publish_shell_event(
+            "shell_session_no_mutation",
+            task_id=task_id,
+            payload={"exit_status": result.exit_status, "summary": result.summary},
+        )
+    else:
+        post_message(
+            "developer",
+            "orchestrator",
+            f"Shell developer session ended early ({result.exit_status}): {result.summary}",
+            task_id,
+            "HIGH",
+        )
+
+
 # =========================================================================
 # Public turn entry point (mirrors run_developer_mutation contract)
 # =========================================================================
@@ -833,6 +1103,11 @@ def run_shell_developer_turn(
     except RuntimeError as e:
         print(f"   ❌ Shell developer: {e}")
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+        _publish_shell_event(
+            "shell_workspace_validation_failed",
+            task_id=task_id,
+            payload={"message": str(e)},
+        )
         return {"status": "error", "message": str(e)}
 
     print(f"   🐚 Shell developer session (step_limit={cfg.step_limit}, verify={'yes' if cfg.test_command else 'no'})")
@@ -901,15 +1176,11 @@ def run_shell_developer_turn(
 
         changes = worktree.collect_changes()
         if not changes:
-            progress["edit_failures"] = progress.get("edit_failures", 0) + 1
-            if result.exit_status != "Finished":
-                post_message(
-                    "developer",
-                    "orchestrator",
-                    f"Shell developer session ended early ({result.exit_status}): {result.summary}",
-                    task_id,
-                    "HIGH",
-                )
+            _handle_session_without_changes(
+                task_id=task_id,
+                result=result,
+                progress=progress,
+            )
             return {
                 "status": "error",
                 "message": (

@@ -246,6 +246,57 @@ class TestAgentPoolActiveControl:
         pool._queue_all_files_for_initial_review()
         assert pool.event_queue.qsize() <= 7 * max(1, len(pool.modification_agents))
 
+    def test_initial_review_scoped_to_seed_target(self, pool_env, temp_db):
+        # Phase 4.1 / Soak recompute: a single-file seed task must not fan out
+        # repository-wide. When the seed feedback names an indexed file, initial
+        # review begins with ONLY that file, not the broad peers.
+        import sqlite3
+        from datetime import datetime
+
+        from agents.parallel_workers import get_db_path
+
+        now = datetime.now().isoformat()
+        seed_path = "workflow/__init__.py"
+        broad_paths = [
+            "workflow/task_runner.py",
+            "workflow/proposal_builder.py",
+            "utils/pre_commit.sh",
+            "utils/models_cli.py",
+        ]
+        conn = sqlite3.connect(get_db_path())
+        for _i, path in enumerate([seed_path, *broad_paths]):
+            conn.execute(
+                """
+                INSERT INTO project_files
+                (file_path, content, content_hash, last_modified, size_bytes,
+                 file_type, indexed_at, is_binary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+                """,
+                (path, "x = 1", "hash", now, 20, "py", now),
+            )
+        conn.execute(
+            """
+            INSERT INTO agent_feedback
+            (agent_name, file_path, priority, category, message, suggestion,
+             task_id, file_event_id, timestamp)
+            VALUES ('system', NULL, 'HIGH', 'seed_task', ?, NULL, ?, 'evt', ?)
+            """,
+            (f"[SEED TASK] {seed_path}", "task_scoped", now),
+        )
+        conn.commit()
+        conn.close()
+
+        pool = BackgroundAgentPool()
+        pool.task_id = "task_scoped"
+        pool.agent_configs["initial_review_max_files"] = 25
+        pool._queue_all_files_for_initial_review()
+
+        queued_paths = {f.file_path for f in list(pool.event_queue.queue) if f.operation == "initial_review"}
+        assert queued_paths == {seed_path}
+        assert not (set(broad_paths) & queued_paths)
+        # Queue never exceeds the fan-out cap even though peers exist.
+        assert all(f.priority <= 3 for f in pool.event_queue.queue)
+
     def test_set_feeder_interval(self):
         pool = BackgroundAgentPool()
         pool.set_feeder_interval(60.0)

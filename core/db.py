@@ -124,6 +124,16 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     ):
         _ensure_column(conn, "agent_feedback", col, coltype)
 
+    # agent_responses_archive: Pass 1 shell observability (Phase 3.1)
+    for col, coltype in (
+        ("model", "TEXT"),
+        ("step_number", "INTEGER"),
+        ("response_format_status", "TEXT"),
+        ("command", "TEXT"),
+        ("command_exit_code", "INTEGER"),
+    ):
+        _ensure_column(conn, "agent_responses_archive", col, coltype)
+
 
 def init_db():
     """Initialize database with complete schema"""

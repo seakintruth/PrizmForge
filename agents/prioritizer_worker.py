@@ -12,7 +12,7 @@ from agents.base import call_agent
 from agents.worker_utils import hold_while_foreground_session_active
 from core.config import get_config
 from core.db_connection import get_db_connection
-from core.db_helpers import post_message
+from core.db_helpers import is_praise_only_feedback, post_message
 from core.events import publish_event
 from core.index_context import load_index_text, load_symbol_json_context
 from core.json_parser import parse_json_response
@@ -143,61 +143,59 @@ class PrioritizerWorker:
                 traceback.print_exc()
                 time.sleep(30)
 
+    def _evaluate_item_quality(self, item: FeedbackItem) -> tuple[bool, str | None]:
+        """Return (is_low_quality, reason) for a single feedback item."""
+        # Soak10 regression fix: seed tasks and system/status messages are
+        # control-plane, not reviewer findings — never praise-filtered or
+        # dismissed by low-quality heuristics.
+        if item.category == "seed_task" or item.item_type == "message":
+            return False, None
+
+        message_lower = item.message.lower().strip()
+        suggestion_lower = (item.suggestion or "").lower().strip()
+
+        for pattern in self._low_quality_patterns():
+            if re.match(pattern, message_lower, re.IGNORECASE):
+                return True, f"Generic placeholder: '{item.message[:30]}'"
+
+        if message_lower in ["issue here", "todo", "fix this"] and suggestion_lower in [
+            "fix here",
+            "todo",
+            "fix this",
+        ]:
+            return True, "Both message and suggestion are placeholders"
+
+        if message_lower == item.category.lower():
+            return True, f"Message just repeats category: '{item.category}'"
+
+        if is_praise_only_feedback(item.message, item.suggestion):
+            return True, f"Praise/confirmation without actionable problem: '{item.message[:60]}'"
+
+        return False, None
+
+    def _low_quality_patterns(self) -> list[str]:
+        return [
+            r"^issue here$",
+            r"^fix here$",
+            r"^todo",
+            r"^placeholder",
+            r"^issue$",
+            r"^bug$",
+            r"^error$",
+            r"^.{1,14}$",
+            r"^[a-z_]+$",
+        ]
+
     def _filter_low_quality_feedback(self, items: list[FeedbackItem]) -> tuple[list[FeedbackItem], int]:
         """
         Filter out and auto-dismiss low-quality feedback.
         Returns (valid_items, dismissed_count)
         """
-        low_quality_patterns = [
-            # Placeholder text
-            r"^issue here$",
-            r"^fix here$",
-            r"^todo",
-            r"^placeholder",
-            # Too generic
-            r"^issue$",
-            r"^bug$",
-            r"^error$",
-            # Too short (less than 15 chars)
-            r"^.{1,14}$",
-            # Just variable names
-            r"^[a-z_]+$",
-        ]
-
         valid_items = []
         dismissed_items = []
 
         for item in items:
-            # Check message quality
-            message_lower = item.message.lower().strip()
-            suggestion_lower = (item.suggestion or "").lower().strip()
-
-            is_low_quality = False
-            reason = None
-
-            # Pattern matching
-            for pattern in low_quality_patterns:
-                if re.match(pattern, message_lower, re.IGNORECASE):
-                    is_low_quality = True
-                    reason = f"Generic placeholder: '{item.message[:30]}'"
-                    break
-
-            # Check if both message and suggestion are placeholders
-            if not is_low_quality:
-                if message_lower in [
-                    "issue here",
-                    "todo",
-                    "fix this",
-                ] and suggestion_lower in ["fix here", "todo", "fix this"]:
-                    is_low_quality = True
-                    reason = "Both message and suggestion are placeholders"
-
-            # Check if message is just repeating the category
-            if not is_low_quality:
-                if message_lower == item.category.lower():
-                    is_low_quality = True
-                    reason = f"Message just repeats category: '{item.category}'"
-
+            is_low_quality, reason = self._evaluate_item_quality(item)
             if is_low_quality:
                 dismissed_items.append((item, reason))
             else:
@@ -301,12 +299,25 @@ class PrioritizerWorker:
         self._post_results(final_ranked)
 
     def _get_all_feedback(self) -> list[FeedbackItem]:
-        """Get ALL unaddressed feedback (no limit)"""
+        """Get unaddressed feedback (capped, seed tasks boosted).
+
+        Phase 4.3 (soak recompute): feedback handed to the prioritizer is
+        capped at ``prioritizer_worker.max_feedback_items_to_prioritizer``
+        (default 10). Phase 4.4: seed_task items are boosted so a task target
+        is ranked ahead of broad reviewer feedback.
+        """
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
+                config = get_config() or {}
+                prio_cfg = config.get("prioritizer_worker", {}) or {}
+                max_items = int(prio_cfg.get("max_feedback_items_to_prioritizer", 10))
 
-                # Get ALL unaddressed feedback
+                # Get unaddressed feedback. Seed rows are written at task
+                # start (oldest). A plain newest-first ORDER BY lets newer
+                # reviewer rows fill the cap and the seed never enters, so the
+                # Phase 4.4 boost has no item to apply to. Pull seed_task rows
+                # first, then fill the remaining slots newest-first.
                 cursor.execute(
                     """
                     SELECT
@@ -315,9 +326,10 @@ class PrioritizerWorker:
                     FROM agent_feedback
                     WHERE task_id = ?
                     AND addressed = 0
-                    ORDER BY timestamp DESC
+                    ORDER BY CASE WHEN category = 'seed_task' THEN 0 ELSE 1 END, timestamp DESC
+                    LIMIT ?
                 """,
-                    (self.current_task_id,),
+                    (self.current_task_id, max_items),
                 )
 
                 feedback_rows = cursor.fetchall()
@@ -343,6 +355,10 @@ class PrioritizerWorker:
             # Convert feedback — namespace id as fb_N to avoid collisions with messages
             for row in feedback_rows:
                 bias = 5.0 if row[1] == "human" else 1.0
+                # Phase 4.4: seed tasks (the task target) rank above broad
+                # reviewer feedback so the developer addresses the seed first.
+                if row[4] == "seed_task":
+                    bias = max(bias, 8.0)
 
                 items.append(
                     FeedbackItem(

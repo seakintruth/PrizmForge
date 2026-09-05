@@ -22,6 +22,51 @@ _CANONICAL_CATEGORIES = (
 # Process/bookkeeping categories that pass through untouched.
 _PROCESS_CATEGORIES = ("seed_task", "review_rejection", "uncategorized")
 
+# Phase 4.2 (soak recompute): praise/confirmation statements that must not
+# create feedback items. Matched against the message before any problem
+# language is present. A missing suggested action is NOT sufficient to label
+# an item praise-only (reviewers often put the action in the message); the
+# message itself must match a praise phrase.
+_PRAISE_ONLY_PATTERNS = (
+    r"the function correctly handles",
+    r"sql queries properly use",
+    r"robust fallback logic",
+    r"well written",
+    r"looks good",
+    r"looks fine",
+    r"works as expected",
+    r"lgtm",
+    r"no issues found",
+    r"no problems found",
+    r"great job",
+    r"well done",
+    r"nice work",
+    r"good work",
+    r"excellent work",
+    r"clean code",
+    r"correctly (handles|uses|implements)",
+    r"properly (handles|uses|implements|escapes)",
+)
+
+
+def is_praise_only_feedback(message: str, suggestion: str | None = None) -> bool:
+    """True when a candidate feedback item is praise/confirmation, not a
+    reviewer finding: it contains no problem language and matches a praise-only
+    phrase. A missing ``suggestion`` is NOT sufficient to drop the item —
+    reviewers often put the action in the message (Phase 4.2 requires a problem
+    + path + action, not a "suggestion key must exist" gate). The parameter is
+    kept for the callers' API; it does not affect the verdict.
+    """
+    msg = (message or "").lower().strip()
+    if not msg:
+        return True
+    if _PRAISE_ONLY_ERROR_TOKEN_RE.search(msg):
+        return False
+    return any(re.search(pattern, msg) for pattern in _PRAISE_ONLY_PATTERNS)
+
+
+_PRAISE_ONLY_ERROR_TOKEN_RE = re.compile(r"\b(but|however|issue|bug|problem|fails|breaks|broken|incorrect|wrong|error|missing|leaky|risk)\b")
+
 _CATEGORY_ALIASES = {
     # security
     "vulnerability": "security",
