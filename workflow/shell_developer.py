@@ -38,6 +38,7 @@ from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.events import publish_event
+from core.model_health import record_model_outcome
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
 from workflow import shell_protocol
@@ -501,6 +502,13 @@ class ShellDeveloperSession:
                 payload={"command": command, "exit_code": exit_code, "step_number": step_number},
             )
 
+    def _record_model_health(self, *, ok: bool, kind: str) -> None:
+        """Record one shell-session model-health outcome (never raises)."""
+        try:
+            record_model_outcome(self.cfg.model, ok=ok, kind=kind)
+        except Exception as e:
+            print(f"   ⚠️  Model-health record skipped: {e}")
+
     def _effective_command_timeout(self) -> int:
         """Cap one bash command by the remaining wall-clock budget.
 
@@ -543,6 +551,9 @@ class ShellDeveloperSession:
             summary = extract_finish(response)
             command = extract_bash_command(response)
 
+            is_protocol_valid = command is not None or summary is not None
+            self._record_model_health(ok=is_protocol_valid, kind="protocol_valid" if is_protocol_valid else "protocol_invalid")
+
             if summary is not None and command is not None:
                 # The model tried to run a final command AND finish in one reply
                 # (e.g. "run tests, then FINISH"). Since verification depends on the
@@ -552,6 +563,8 @@ class ShellDeveloperSession:
                 exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
                 self.messages.append(self._observation(exit_code, output))
                 self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
+                self._record_model_health(ok=True, kind="command_executed")
+                self._record_model_health(ok=exit_code == 0, kind="command_success")
                 self._record_step(
                     response=response,
                     command=command,
@@ -634,6 +647,8 @@ class ShellDeveloperSession:
             exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
             self.messages.append(self._observation(exit_code, output))
             self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
+            self._record_model_health(ok=True, kind="command_executed")
+            self._record_model_health(ok=exit_code == 0, kind="command_success")
             self._record_step(
                 response=response,
                 command=command,
@@ -647,6 +662,7 @@ class ShellDeveloperSession:
             code, output = self.wt.run_test_command(self.cfg.test_command, self.cfg.test_timeout_seconds)
             r.test_exit_code = code
             r.test_output = output[-self.cfg.max_output_chars :]
+        self._record_model_health(ok=r.exit_status == "Finished", kind="session_outcome")
         return r
 
     def serialize(self) -> dict:

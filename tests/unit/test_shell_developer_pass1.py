@@ -291,6 +291,41 @@ def test_session_no_mutation_publishes_event(isolated_project, monkeypatch):
 
 
 # =========================================================================
+# Phase 3.3 — Record model-health outcomes per shell call
+# =========================================================================
+def test_protocol_valid_and_command_outcomes_recorded(monkeypatch):
+    kinds = []
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+    monkeypatch.setattr(sd, "record_model_outcome", lambda model_ref, **kw: kinds.append(kw["kind"]))
+
+    session = _session_with_replies(["```bash\necho hi\n```"])
+    session.wt = _FakeWorktree(exit_code=0, output="hi\n")
+    result = session.run("task")
+
+    assert result.exit_status in ("Finished", "") or result.n_model_calls >= 1
+    assert "protocol_valid" in kinds
+    assert "command_executed" in kinds
+    assert "command_success" in kinds
+    assert "session_outcome" in kinds
+
+
+def test_protocol_invalid_and_command_failure_outcomes_recorded(monkeypatch):
+    kinds = []
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+    monkeypatch.setattr(sd, "record_model_outcome", lambda model_ref, **kw: kinds.append((kw["kind"], kw.get("ok"))))
+
+    session = _session_with_replies(["Just prose."])
+    session.cfg.max_consecutive_format_errors = 1
+    session.cfg.step_limit = 5
+    result = session.run("task")
+
+    assert result.exit_status == "RepeatedFormatError"
+    records = [k for k, _ in kinds]
+    assert "protocol_invalid" in records
+    assert "session_outcome" in records
+
+
+# =========================================================================
 # Helpers
 # =========================================================================
 def _session_with_replies(script: list[str]):
