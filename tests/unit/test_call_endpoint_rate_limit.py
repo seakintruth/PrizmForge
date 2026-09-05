@@ -452,8 +452,17 @@ class _FallbackManager(_FakeManager):
         super().__init__()
         self.fallback_ep = _FakeEndpoint()
         self.fallback_ep.name = "fallback"
+        self.endpoints = {"primary": self.endpoints["primary"], "fallback": self.fallback_ep}
 
-    def get_fallback_model(self, endpoint):
+    def normalize_model_reference(self, raw):
+        raw = str(raw or "")
+        if "fallback" in raw:
+            return SimpleNamespace(endpoint_name="fallback", model_name="fallback-model")
+        return _Choice()
+
+    def get_fallback_model(self, endpoint, exclude=None):
+        if endpoint.name == "fallback" or (exclude and "fallback" in exclude):
+            return None
         return ("fallback-model", self.fallback_ep)
 
 

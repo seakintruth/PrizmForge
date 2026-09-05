@@ -31,8 +31,13 @@ def log_fallback(
                 ),
             )
 
+    except RecursionError:
+        return
     except Exception as e:
-        print(f"⚠️  Failed to log fallback: {e}")
+        try:
+            print(f"⚠️  Failed to log fallback: {e}")
+        except Exception:
+            return
 
 
 def get_fallback_stats() -> dict:

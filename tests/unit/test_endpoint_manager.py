@@ -343,8 +343,10 @@ def test_mixed_config_stays_unfrozen_when_one_healthy(ep_config):
 
 
 def test_unavailable_until_expiry_unfreezes_support():
-    """§6.3 blocker: when unavailable_until merely elapses (no mark_success),
-    is_available() must re-probe and clear the freeze so support resumes."""
+    """§8.1 / §6.3: when unavailable_until elapses (no mark_success),
+    is_available() stays a latch check; the freeze tick on
+    get_available_endpoints unfreezes support.
+    """
     from agents.worker_utils import set_support_frozen, support_frozen
     from core.endpoint_manager import _register_manager
 
@@ -364,7 +366,8 @@ def test_unavailable_until_expiry_unfreezes_support():
     _register_manager(m)
     m.endpoints["only"].health.mark_failure(EndpointStatus.TOKEN_EXHAUSTED)
     assert support_frozen()
-    # Simulate the cooldown window elapsing without any mark_success call.
     m.endpoints["only"].health.unavailable_until = None
-    assert m.endpoints["only"].health.is_available()  # triggers the probe
+    assert m.endpoints["only"].health.is_available()
+    assert support_frozen()  # is_available must not probe freeze
+    m.get_available_endpoints()
     assert not support_frozen()
