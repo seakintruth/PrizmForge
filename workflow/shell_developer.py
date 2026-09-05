@@ -448,16 +448,13 @@ def _recent_failure_kind(model_ref: str | None, max_age_s: int = 30) -> str:
     if not model_ref:
         return ""
     try:
-        conn = get_db_connection()
-        try:
-            cutoff = datetime.now().isoformat(timespec="seconds") - timedelta(seconds=max_age_s)
+        with get_db_connection() as conn:
+            cutoff = (datetime.now() - timedelta(seconds=max_age_s)).isoformat(timespec="seconds")
             row = conn.execute(
                 "SELECT kind FROM model_health_events WHERE model_ref = ? AND ok = 0 AND ts >= ? ORDER BY ts DESC LIMIT 1",
                 (model_ref, cutoff),
             ).fetchone()
             return str(row[0]) if row else ""
-        finally:
-            conn.close()
     except Exception:
         return ""
 
