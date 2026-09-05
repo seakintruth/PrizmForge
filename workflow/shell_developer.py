@@ -27,7 +27,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +65,8 @@ class ShellDeveloperConfig:
     test_command: str = ""
     on_test_failure: str = "discard"  # "discard" | "propose_anyway"
     model: str | None = None
+    llm_failure_max_retries: int = 3
+    llm_retry_backoff_seconds: int = 15
     worktree_parent: str = ""  # empty → system temp dir
 
     @classmethod
@@ -81,6 +83,8 @@ class ShellDeveloperConfig:
             test_command=str(cfg.get("test_command", "") or ""),
             on_test_failure=str(cfg.get("on_test_failure", "discard") or "discard"),
             model=cfg.get("model") or None,
+            llm_failure_max_retries=int(cfg.get("llm_failure_max_retries", 3)),
+            llm_retry_backoff_seconds=int(cfg.get("llm_retry_backoff_seconds", 15)),
             worktree_parent=str(cfg.get("worktree_parent", "") or ""),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
@@ -424,6 +428,38 @@ class SessionResult:
     test_exit_code: int | None = None
     test_output: str = ""
     messages: list[dict] = field(default_factory=list)
+    # Soak10 follow-up: transport-level LLM call accounting (including internal
+    # retries) so the trajectory can say how many calls FAILED and why.
+    llm_attempts: int = 0
+    llm_failure_kinds: dict[str, int] = field(default_factory=dict)
+    last_llm_failure: dict[str, Any] | None = None
+
+
+# Failure kinds that a bounded backoff+retry cannot fix — give up immediately
+# instead of burning retries (mirrors call_endpoint's own handling).
+PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_budget", "token_exhausted", "bad_payload"}
+
+
+def _recent_failure_kind(model_ref: str | None, max_age_s: int = 30) -> str:
+    """Return the failure kind the most recent model-health event recorded for
+    a model reference (or "" if none). call_endpoint writes every failure
+    synchronously before returning None, so this classifies the None instead of
+    guessing whether it was rate-limiting, a latch, or a token budget."""
+    if not model_ref:
+        return ""
+    try:
+        conn = get_db_connection()
+        try:
+            cutoff = datetime.now().isoformat(timespec="seconds") - timedelta(seconds=max_age_s)
+            row = conn.execute(
+                "SELECT kind FROM model_health_events WHERE model_ref = ? AND ok = 0 AND ts >= ? ORDER BY ts DESC LIMIT 1",
+                (model_ref, cutoff),
+            ).fetchone()
+            return str(row[0]) if row else ""
+        finally:
+            conn.close()
+    except Exception:
+        return ""
 
 
 class ShellDeveloperSession:
@@ -440,15 +476,72 @@ class ShellDeveloperSession:
         self.result = SessionResult()
         self._start = time.time()
         self._deferred_finish_count = 0
+        # Resolved model ref ("endpoint/model") actually used for LLM calls;
+        # set on the first _llm call (cfg.model may be None).
+        self.resolved_model: str | None = None
+
+    def _resolve_developer_model(self) -> str | None:
+        """Resolve the model for this session exactly like call_agent does
+        (agents/base.py:819-856): explicit override > resource-controller
+        throttle override > agent_model_preferences. Unknown overrides are
+        ignored rather than trusted blindly, so the shell session rides the
+        same model the other agents are currently using (Soak10 follow-up)."""
+        from core.endpoint_manager import get_endpoint_manager
+
+        endpoint_mgr = get_endpoint_manager()
+        override = self.cfg.model
+        if not override:
+            try:
+                from agents.resource_controller_worker import get_resource_controller
+
+                rc_override = get_resource_controller().get_model_override("developer")
+                if rc_override:
+                    override = rc_override
+                    print(f"  🎛️  Resource controller: using {rc_override} for developer shell")
+            except Exception as e:
+                print(f"  ⚠️  Resource controller model override check failed: {e}")
+
+        if override and not endpoint_mgr.model_reference_exists(override):
+            print(f"  ⚠️  Ignoring unknown model override {override!r} for developer shell; using configured preference")
+            override = None
+
+        choice = endpoint_mgr.normalize_model_reference(override) if override else endpoint_mgr.resolve_agent_model("developer")
+        if choice.endpoint_name and choice.model_name:
+            return f"{choice.endpoint_name}/{choice.model_name}"
+        return choice.model_name
 
     def _llm(self) -> str | None:
-        text, _tokens = call_endpoint(
-            self.messages,
-            task_id=self.task_id,
-            agent_name="developer",
-            model=self.cfg.model,
-        )
-        return text
+        """Call the LLM with bounded, failure-kind-aware retries (Soak10 follow-up).
+
+        call_endpoint already retries per-endpoint and falls back across
+        endpoints; this layer adds a session-level retry so a single transient
+        failure (rate-limit / 5xx / timeout / health latch) cannot kill the
+        session. The kind recorded in model_health_events decides whether a
+        short backoff + retry is worthwhile; permanent kinds (bad key, token
+        budget, ...) give up immediately. The model is re-resolved between
+        attempts so retries follow the resource-controller's current steering.
+        """
+        for attempt in range(self.cfg.llm_failure_max_retries + 1):
+            model_ref = self._resolve_developer_model() or self.cfg.model
+            self.resolved_model = model_ref
+            text, _tokens = call_endpoint(
+                self.messages,
+                task_id=self.task_id,
+                agent_name="developer",
+                model=model_ref,
+            )
+            self.result.llm_attempts += 1
+            if text:
+                return text
+            kind = _recent_failure_kind(model_ref) or "unknown"
+            self.result.llm_failure_kinds[kind] = self.result.llm_failure_kinds.get(kind, 0) + 1
+            self.result.last_llm_failure = {"kind": kind, "model_ref": model_ref, "attempt": attempt + 1}
+            if kind in PERMANENT_FAILURE_KINDS or attempt >= self.cfg.llm_failure_max_retries:
+                break
+            backoff_s = max(int(self.cfg.llm_retry_backoff_seconds) * (attempt + 1), 1)
+            print(f"   ⏳ Shell developer LLM failure ({kind}); backing off {backoff_s}s (attempt {attempt + 1}/{self.cfg.llm_failure_max_retries + 1})")
+            time.sleep(backoff_s)
+        return None
 
     def _observation(self, exit_code: int, output: str) -> dict:
         trimmed = output
@@ -485,7 +578,7 @@ class ShellDeveloperSession:
                 response=str(response)[-8000:],
                 parse_success=valid,
                 parse_error=error_reason,
-                model=self.cfg.model,
+                model=self.resolved_model,
                 step_number=step_number,
                 response_format_status=response_format_status,
                 command=command,
@@ -505,7 +598,7 @@ class ShellDeveloperSession:
     def _record_model_health(self, *, ok: bool, kind: str) -> None:
         """Record one shell-session model-health outcome (never raises)."""
         try:
-            record_model_outcome(self.cfg.model, ok=ok, kind=kind)
+            record_model_outcome(self.resolved_model, ok=ok, kind=kind)
         except Exception as e:
             print(f"   ⚠️  Model-health record skipped: {e}")
 
@@ -544,7 +637,14 @@ class ShellDeveloperSession:
             r.n_model_calls += 1
             if not response:
                 r.exit_status = "LlmUnavailable"
-                r.summary = "LLM endpoint unavailable or token budget exhausted"
+                if r.last_llm_failure:
+                    r.summary = (
+                        "LLM endpoint unavailable after "
+                        f"{r.last_llm_failure['attempt']} attempt(s) "
+                        f"(kind={r.last_llm_failure['kind']}, model={r.last_llm_failure.get('model_ref')})"
+                    )
+                else:
+                    r.summary = "LLM endpoint unavailable or token budget exhausted"
                 break
             self.messages.append({"role": "assistant", "content": response})
 
@@ -667,11 +767,20 @@ class ShellDeveloperSession:
 
     def serialize(self) -> dict:
         last = self.messages[-1] if self.messages else {}
+        failed_calls = sum(self.result.llm_failure_kinds.values())
         return {
             "trajectory_format": "prizmforge-shell-developer-1.0",
             "exit_status": self.result.exit_status,
             "submission_summary": self.result.summary,
-            "model_stats": {"api_calls": self.result.n_model_calls},
+            "model_stats": {
+                "api_calls": self.result.llm_attempts or self.result.n_model_calls,
+                "llm_attempts": self.result.llm_attempts,
+                "resolved_model": self.resolved_model,
+                "successful_calls": max(self.result.llm_attempts - failed_calls, 0),
+                "failed_calls": failed_calls,
+                "failure_kinds": dict(self.result.llm_failure_kinds),
+            },
+            "last_llm_failure": self.result.last_llm_failure,
             "verification": {
                 "test_command": self.cfg.test_command,
                 "test_exit_code": self.result.test_exit_code,

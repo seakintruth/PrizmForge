@@ -207,3 +207,65 @@ def test_prio_intake_capped_and_seed_boosted(temp_db, monkeypatch):
     # Seed boost: the seed_task item carries the mutation-capable boost.
     seed = [i for i in feedback_items if i.category == "seed_task"]
     assert seed and seed[0].bias_multiplier >= 8.0
+
+
+# ---------------------------------------------------------------------------
+# Soak10 follow-up — Phase 4.2 regression: seed tasks + messages are control-plane
+# ---------------------------------------------------------------------------
+def test_prio_quality_filter_keeps_seed_tasks_and_messages(temp_db, monkeypatch):
+    """Regression: the praise-only guard must NOT dismiss the seed task or
+    system/status messages (both have no suggestion/problem token but are not
+    reviewer findings). Soak10 logged 0 valid items when both were dismissed."""
+    from agents.prioritizer_worker import FeedbackItem, PrioritizerWorker
+
+    monkeypatch.setattr("agents.prioritizer_worker.get_config", lambda: {})
+    worker = PrioritizerWorker()
+
+    items = [
+        FeedbackItem(
+            id="fb_1",
+            raw_id=700,
+            item_type="feedback",
+            from_agent="system",
+            file_path=None,
+            priority="HIGH",
+            category="seed_task",
+            message="[SEED TASK] Review the repository's plans, ideas and todos. resolve what you can.",
+            suggestion="",
+            timestamp=None,
+            bias_multiplier=8.0,
+        ),
+        FeedbackItem(
+            id="msg_1",
+            raw_id=701,
+            item_type="message",
+            from_agent="orchestrator",
+            file_path="<message>",
+            priority="MEDIUM",
+            category="message",
+            message="Shell developer session ended early (LlmUnavailable)",
+            suggestion="",
+            timestamp=None,
+            bias_multiplier=1.0,
+        ),
+        FeedbackItem(
+            id="fb_2",
+            raw_id=702,
+            item_type="feedback",
+            from_agent="jr_reviewer",
+            file_path="a.py",
+            priority="MEDIUM",
+            category="bug",
+            message="Nice work on the parser!",
+            suggestion="",
+            timestamp=None,
+            bias_multiplier=1.0,
+        ),
+    ]
+
+    valid, dismissed = worker._filter_low_quality_feedback(items)
+
+    assert dismissed == 1
+    ids = [i.id for i in valid]
+    assert "fb_1" in ids and "msg_1" in ids
+    assert "fb_2" not in ids

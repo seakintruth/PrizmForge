@@ -145,6 +145,12 @@ class PrioritizerWorker:
 
     def _evaluate_item_quality(self, item: FeedbackItem) -> tuple[bool, str | None]:
         """Return (is_low_quality, reason) for a single feedback item."""
+        # Soak10 regression fix: seed tasks and system/status messages are
+        # control-plane, not reviewer findings — never praise-filtered or
+        # dismissed by low-quality heuristics.
+        if item.category == "seed_task" or item.item_type == "message":
+            return False, None
+
         message_lower = item.message.lower().strip()
         suggestion_lower = (item.suggestion or "").lower().strip()
 

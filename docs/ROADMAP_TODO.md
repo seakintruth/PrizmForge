@@ -607,6 +607,31 @@ Do not re-add shipped items or their PR maps.
   Then §5 soak-derived items. Note: Soak7 produced **0 materialized edits** because
   its shell session exhausted the free-model quota (HTTP 403 / goal limit), not a
   code defect — so there is no verified mutation-path finding to act on yet.
+- **Soak10 recompute (2026-09-05, on `feat/soak-improvements`)**:
+  - ROOT CAUSES: (1) the shell developer treated a single `None` LLM return as
+    terminal (`LlmUnavailable`) instead of backing off/retrying; (2) two
+    `call_endpoint` None-return paths (all-latched "no alternate endpoints" and
+    token-budget carve-out) recorded **no** model-health failure, so the
+    trajectory could not say whether the fatal call was rate-limiting, a health
+    latch, or budget; (3) `cfg.model` was `None`, so Phase 3.3
+    `record_model_outcome(None, ...)` silently dropped every session record and
+    the archive `model` column stayed NULL; (4) Phase 4.2's praise filter
+    dismissed the `[SEED TASK]` directive and status messages, leaving 0 valid
+    prioritizer items.
+  - FIXED (commits f08bd17..HEAD on `feat/soak-improvements`): record the two
+    silent failure kinds (`no_alternate_endpoint`, `token_budget`); shell
+    `_llm` re-resolves the model like `call_agent` each attempt (explicit
+    override > RC throttle > agent prefs) and retries transient kinds
+    (`rate_limited` / 5xx / timeout / latch) with linear backoff up to
+    `shell_developer.llm_failure_max_retries` (default 3, 15s base), while
+    permanent kinds (key_locked / token_budget / ...) give up immediately;
+    Phase 3.1 archive + Phase 3.3 health records now use the resolved model;
+    trajectory `model_stats`/`last_llm_failure` capture resolved model, attempt
+    counts, and failure kinds; prioritizer praise filter exempts
+    `seed_task`/message items.
+  - RESIDUAL (track for next soak): after retries exhaust the session still
+    exits `LlmUnavailable` truthfully (by design); consider surfacing the
+    per-call advertised Retry-After on `rate_limited` events.
 
 ## 1. Cold-soak SQLite project ingest (NUC / 2-core / ≥8 GB)
 

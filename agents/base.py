@@ -157,6 +157,10 @@ def call_endpoint(  # noqa: C901
             backoff_s = min(max(int(wait_time), 30), 120)
             print(f"   ❌ No alternate endpoints available — recheck in {backoff_s}s")
             time.sleep(backoff_s)
+            # Pass 1 soak follow-up: this silent None used to skip health
+            # recording, so post-mortems could not tell latch-skips from
+            # rate-limit failures. Record it so callers can classify.
+            record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="no_alternate_endpoint")
             return None, 0
 
     # Build payload for this endpoint
@@ -190,6 +194,10 @@ def call_endpoint(  # noqa: C901
                 task_id,
                 agent_name,
             )
+        # Pass 1 soak follow-up: record this silent None so callers can
+        # classify budget denials (the shell developer backs off/retries only
+        # for transient kinds).
+        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="token_budget")
         return None, 0
 
     # Get API key for this endpoint

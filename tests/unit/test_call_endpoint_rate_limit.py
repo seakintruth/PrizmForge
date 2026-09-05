@@ -738,3 +738,52 @@ def test_successful_retry_does_not_record_failure(call_endpoint_env):
     assert len(outcomes) == 1
     assert outcomes[0]["kwargs"].get("ok") is True
     assert all(kw.get("ok") is not False for kw in outcomes[0] for kw in [outcomes[0]["kwargs"]])
+
+
+def test_token_budget_overflow_no_fallback_records_failure(call_endpoint_env, monkeypatch):
+    """Soak10 follow-up: the token-budget carve-out must record a model-health
+    failure so the shell developer can classify (not guess) the None return."""
+    base = call_endpoint_env
+    outcomes: list[dict] = []
+
+    class _NoBudget:
+        def can_spend(self, tokens):
+            return False
+
+    monkeypatch.setattr(base, "get_token_budget", lambda: _NoBudget())
+    monkeypatch.setattr(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}))
+
+    answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert outcomes and outcomes[0]["ok"] is False
+    assert outcomes[0]["kind"] == "token_budget"
+
+
+def test_all_parked_no_alternate_records_failure(call_endpoint_env, monkeypatch, capfd):
+    """Soak10 follow-up: the all-latched no-alternate path must record a
+    model-health failure (this was the silent None-return the soak hit)."""
+    base = call_endpoint_env
+    fake = _FakeEndpoint()
+    fake.health = SimpleNamespace(
+        is_available=lambda: False,
+        status=SimpleNamespace(value="rate_limited"),
+        time_until_available=lambda: 300,
+        mark_success=lambda: None,
+        mark_failure=lambda *a, **k: None,
+    )
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+
+    outcomes: list[dict] = []
+    monkeypatch.setattr(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}))
+
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert outcomes and outcomes[0]["ok"] is False
+    assert outcomes[0]["kind"] == "no_alternate_endpoint"
+    assert "No alternate endpoints available" in capfd.readouterr().out
