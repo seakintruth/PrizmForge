@@ -38,7 +38,9 @@ def is_valid_bash_block(text: str | None) -> bool:
 def is_unterminated_bash_block(text: str | None) -> bool:
     """True for an opening bash fence that is never closed (and not otherwise valid)."""
     stripped = (text or "").strip()
-    return stripped.startswith("```bash\n") and not is_valid_bash_block(text)
+    if is_valid_bash_block(text):
+        return False
+    return stripped.startswith("```bash") and not stripped.endswith("```")
 
 
 def classify_shell_reply(text: str | None) -> str:

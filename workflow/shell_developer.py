@@ -33,6 +33,7 @@ from typing import Any
 
 from agents.base import call_endpoint
 from agents.worker_utils import foreground_session_guard
+from core.archival import archive_raw_response
 from core.config import get_config
 from core.db_connection import get_db_connection
 from core.db_helpers import post_message
@@ -458,6 +459,48 @@ class ShellDeveloperSession:
             "content": f"[exit code {exit_code}]\n{trimmed}" if trimmed else f"[exit code {exit_code}, no output]",
         }
 
+    def _record_step(
+        self,
+        *,
+        response: str,
+        command: str | None,
+        command_exit_code: int | None,
+        response_format_status: str | None,
+        step_number: int,
+        error_reason: str | None = None,
+    ) -> None:
+        """Archive one shell developer step for observability (Pass 1 Phase 3.1)."""
+        prompt = ""
+        for message in reversed(self.messages):
+            if message.get("role") == "user":
+                prompt = message.get("content", "") or ""
+                break
+        valid = response_format_status in (shell_protocol.VALID_BASH_BLOCK, shell_protocol.VALID_FINISH_SESSION)
+        try:
+            archive_raw_response(
+                task_id=self.task_id,
+                agent_name="developer",
+                prompt=str(prompt)[-4000:],
+                response=str(response)[-8000:],
+                parse_success=valid,
+                parse_error=error_reason,
+                model=self.cfg.model,
+                step_number=step_number,
+                response_format_status=response_format_status,
+                command=command,
+                command_exit_code=command_exit_code,
+            )
+        except Exception as e:
+            print(f"   ⚠️  Shell step archival skipped: {e}")
+
+    def _emit_command_failed_if_needed(self, exit_code: int, command: str, step_number: int) -> None:
+        if exit_code != 0:
+            _publish_shell_event(
+                "shell_command_failed",
+                task_id=self.task_id,
+                payload={"command": command, "exit_code": exit_code, "step_number": step_number},
+            )
+
     def _effective_command_timeout(self) -> int:
         """Cap one bash command by the remaining wall-clock budget.
 
@@ -508,6 +551,14 @@ class ShellDeveloperSession:
                 self._deferred_finish_count += 1
                 exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
                 self.messages.append(self._observation(exit_code, output))
+                self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
+                self._record_step(
+                    response=response,
+                    command=command,
+                    command_exit_code=exit_code,
+                    response_format_status=shell_protocol.VALID_BASH_BLOCK,
+                    step_number=r.n_model_calls,
+                )
                 if self._deferred_finish_count >= 3:
                     r.exit_status = "Finished"
                     r.summary = f"[finish forced after {self._deferred_finish_count} deferred finishes] {summary}"
@@ -527,15 +578,45 @@ class ShellDeveloperSession:
             if summary is not None:
                 r.exit_status = "Finished"
                 r.summary = summary
+                self._record_step(
+                    response=response,
+                    command=None,
+                    command_exit_code=None,
+                    response_format_status=shell_protocol.VALID_FINISH_SESSION,
+                    step_number=r.n_model_calls,
+                )
                 break
 
             if command is None:
                 consecutive_format_errors += 1
                 diag = shell_protocol.diagnose_shell_reply(response)
                 print(f"   ⚠️  Shell protocol (reason={diag['reason']})")
+                event_type = {
+                    "prose_or_unsupported_format": "shell_protocol_prose_response",
+                    "unterminated_bash_fence": "shell_protocol_unterminated_fence",
+                    "finish_token_inside_command_block": "shell_protocol_invalid_finish",
+                }.get(diag["reason"], "shell_protocol_prose_response")
+                _publish_shell_event(
+                    event_type,
+                    task_id=self.task_id,
+                    payload={"reason": diag["reason"], "step_number": r.n_model_calls},
+                )
+                self._record_step(
+                    response=response,
+                    command=None,
+                    command_exit_code=None,
+                    response_format_status=shell_protocol.classify_shell_reply(response),
+                    step_number=r.n_model_calls,
+                    error_reason=diag["reason"],
+                )
                 if self.cfg.max_consecutive_format_errors > 0 and consecutive_format_errors >= self.cfg.max_consecutive_format_errors:
                     r.exit_status = "RepeatedFormatError"
                     r.summary = f"no ```bash block or finish token in consecutive replies (reason={diag['reason']})"
+                    _publish_shell_event(
+                        "shell_protocol_repeated_format_error",
+                        task_id=self.task_id,
+                        payload={"reason": diag["reason"], "step_number": r.n_model_calls},
+                    )
                     break
                 self.messages.append(
                     {
@@ -552,6 +633,14 @@ class ShellDeveloperSession:
             consecutive_format_errors = 0
             exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
             self.messages.append(self._observation(exit_code, output))
+            self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
+            self._record_step(
+                response=response,
+                command=command,
+                command_exit_code=exit_code,
+                response_format_status=shell_protocol.classify_shell_reply(response),
+                step_number=r.n_model_calls,
+            )
 
         # Optional post-session verification against the edited worktree.
         if r.exit_status == "Finished" and self.cfg.test_command:
@@ -827,6 +916,38 @@ def _gate_and_materialize_changes(
     return statuses, proposal_ids, gates_by_path
 
 
+def _publish_shell_event(event_type: str, *, task_id: str, payload: dict) -> None:
+    """Publish one shell observability event (guarded, never raises)."""
+    try:
+        publish_event(event_type, source="shell_developer", task_id=task_id, payload=payload)
+    except Exception as e:
+        print(f"   ⚠️  Shell event publish skipped ({event_type}): {e}")
+
+
+def _handle_session_without_changes(
+    *,
+    task_id: str,
+    result: SessionResult,
+    progress: dict,
+) -> None:
+    """Record observability + messaging when a session produced no file changes."""
+    progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+    if result.exit_status == "Finished":
+        _publish_shell_event(
+            "shell_session_no_mutation",
+            task_id=task_id,
+            payload={"exit_status": result.exit_status, "summary": result.summary},
+        )
+    else:
+        post_message(
+            "developer",
+            "orchestrator",
+            f"Shell developer session ended early ({result.exit_status}): {result.summary}",
+            task_id,
+            "HIGH",
+        )
+
+
 # =========================================================================
 # Public turn entry point (mirrors run_developer_mutation contract)
 # =========================================================================
@@ -857,6 +978,11 @@ def run_shell_developer_turn(
     except RuntimeError as e:
         print(f"   ❌ Shell developer: {e}")
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+        _publish_shell_event(
+            "shell_workspace_validation_failed",
+            task_id=task_id,
+            payload={"message": str(e)},
+        )
         return {"status": "error", "message": str(e)}
 
     print(f"   🐚 Shell developer session (step_limit={cfg.step_limit}, verify={'yes' if cfg.test_command else 'no'})")
@@ -925,15 +1051,11 @@ def run_shell_developer_turn(
 
         changes = worktree.collect_changes()
         if not changes:
-            progress["edit_failures"] = progress.get("edit_failures", 0) + 1
-            if result.exit_status != "Finished":
-                post_message(
-                    "developer",
-                    "orchestrator",
-                    f"Shell developer session ended early ({result.exit_status}): {result.summary}",
-                    task_id,
-                    "HIGH",
-                )
+            _handle_session_without_changes(
+                task_id=task_id,
+                result=result,
+                progress=progress,
+            )
             return {
                 "status": "error",
                 "message": (

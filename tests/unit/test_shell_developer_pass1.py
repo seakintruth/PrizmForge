@@ -8,6 +8,8 @@ exported parsing helpers.
 
 from __future__ import annotations
 
+import subprocess
+
 from workflow import shell_developer as sd
 from workflow import shell_protocol as sp
 
@@ -58,9 +60,10 @@ def test_extract_bash_command_unterminated_matches_protocol():
 # =========================================================================
 # Phase 1.5 — Structured parser diagnostics
 # =========================================================================
-def test_format_error_diagnostic_reason_recorded():
+def test_format_error_diagnostic_reason_recorded(monkeypatch):
     # Driving a session into a format error surfaces a structured reason in the
     # exit summary (the observable protocol-diagnostics contract).
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
     session = _session_with_replies(["This is just prose, no command and no finish."])
     session.cfg.max_consecutive_format_errors = 1
     session.cfg.step_limit = 5
@@ -69,10 +72,12 @@ def test_format_error_diagnostic_reason_recorded():
     assert "reason=prose_or_unsupported_format" in result.summary
 
 
-def test_format_error_correction_message_carries_reason_below_threshold():
+def test_format_error_correction_message_carries_reason_below_threshold(monkeypatch):
     # Below the consecutive-error threshold the model is corrected with the
     # structured reason; only on the final error does the session exit.
-    session = _session_with_replies(["This is just prose, no command and no finish."])
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+    prose = "This is just prose, no command and no finish."
+    session = _session_with_replies([prose, prose, prose])
     session.cfg.max_consecutive_format_errors = 3
     session.cfg.step_limit = 5
     result = session.run("task")
@@ -86,6 +91,203 @@ def test_diagnose_shell_reply_unterminated_reason():
     diag = sp.diagnose_shell_reply("```bash\nls -la\n")
     assert diag["reason"] == "unterminated_bash_fence"
     assert diag["expected"] == "closed_bash_block_or_finish_token"
+
+
+# =========================================================================
+# Phase 3.1 — Persist developer model responses (observability)
+# =========================================================================
+def test_session_archives_command_step(monkeypatch):
+    """A command reply is archived with its command + exit code + format status."""
+    captured = []
+    calls = {"n": 0}
+
+    def fake_archive(**kwargs):
+        captured.append(kwargs)
+        calls["n"] += 1
+
+    monkeypatch.setattr(sd, "archive_raw_response", fake_archive)
+
+    session = _session_with_replies(["```bash\necho hi\n```"])
+    session.wt = _FakeWorktree(exit_code=5, output="hi\n")
+    session.run("task")
+
+    assert calls["n"] == 1
+    record = captured[0]
+    assert record["agent_name"] == "developer"
+    assert record["command"] == "echo hi"
+    assert record["command_exit_code"] == 5
+    assert record["response_format_status"] == sp.VALID_BASH_BLOCK
+    assert record["parse_success"] is True
+    assert record["response"] == "```bash\necho hi\n```"
+    assert record["step_number"] == 1
+
+
+def test_session_archives_finish_step(monkeypatch):
+    captured = []
+    calls = {"n": 0}
+
+    def fake_archive(**kwargs):
+        captured.append(kwargs)
+        calls["n"] += 1
+
+    monkeypatch.setattr(sd, "archive_raw_response", fake_archive)
+
+    session = _session_with_replies([f"{sd.FINISH_TOKEN}\nDone."])
+    session.run("task")
+
+    assert calls["n"] == 1
+    record = captured[0]
+    assert record["response_format_status"] == sp.VALID_FINISH_SESSION
+    assert record["command"] is None
+    assert record["command_exit_code"] is None
+    assert record["parse_success"] is True
+
+
+def test_session_archives_format_error_step(monkeypatch):
+    captured = []
+    calls = {"n": 0}
+
+    def fake_archive(**kwargs):
+        captured.append(kwargs)
+        calls["n"] += 1
+
+    monkeypatch.setattr(sd, "archive_raw_response", fake_archive)
+
+    session = _session_with_replies(["This is just prose, no command and no finish."])
+    session.cfg.max_consecutive_format_errors = 1
+    session.cfg.step_limit = 5
+    session.run("task")
+
+    assert calls["n"] == 1
+    record = captured[0]
+    assert record["response_format_status"] == sp.PROSE_OR_UNSUPPORTED_FORMAT
+    assert record["parse_success"] is False
+    assert record["parse_error"] == "prose_or_unsupported_format"
+    assert record["command"] is None
+
+
+# =========================================================================
+# Phase 3.2 — Persist shell failure events
+# =========================================================================
+def test_prose_response_publishes_prose_event(monkeypatch):
+    events = []
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+    monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
+
+    session = _session_with_replies(["Just prose, nothing else."])
+    session.cfg.max_consecutive_format_errors = 2
+    session.cfg.step_limit = 5
+    session.run("task")
+
+    types = [a[0] for a, _ in events]
+    assert "shell_protocol_prose_response" in types
+
+
+def test_unterminated_fence_publishes_event(monkeypatch):
+    events = []
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+    monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
+    # An opening fence with an empty command is unterminated AND not recoverable.
+    session = _session_with_replies(["```bash\n\n"])
+    session.cfg.max_consecutive_format_errors = 2
+    session.cfg.step_limit = 5
+    session.run("task")
+
+    types = [a[0] for a, _ in events]
+    assert "shell_protocol_unterminated_fence" in types
+
+
+def test_repeated_format_error_publishes_event(monkeypatch):
+    events = []
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+    monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
+
+    prose = "Just prose, nothing else."
+    session = _session_with_replies([prose, prose, prose])
+    session.cfg.max_consecutive_format_errors = 3
+    session.cfg.step_limit = 5
+    result = session.run("task")
+
+    assert result.exit_status == "RepeatedFormatError"
+    types = [a[0] for a, _ in events]
+    assert "shell_protocol_repeated_format_error" in types
+
+
+def test_command_failure_publishes_event(monkeypatch):
+    events = []
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+    monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
+
+    session = _session_with_replies(["```bash\nexit 3\n```"])
+    session.wt = _FakeWorktree(exit_code=3, output="boom\n")
+    session.run("task")
+
+    types = [a[0] for a, _ in events]
+    assert "shell_command_failed" in types
+    payload = next(kw["payload"] for a, kw in events if a[0] == "shell_command_failed")
+    assert payload["exit_code"] == 3
+    assert payload["command"] == "exit 3"
+
+
+def test_workspace_validation_failure_publishes_event(isolated_project, monkeypatch):
+    """A worktree that cannot be created must emit shell_workspace_validation_failed."""
+    events = []
+    monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+
+    result = sd.run_shell_developer_turn(
+        task_id="T-ws-fail",
+        instructions="do it",
+        user_command="do it",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+    # The isolated project dir is not a git repo → worktree create() fails loud.
+    assert result["status"] == "error"
+    types = [a[0] for a, _ in events]
+    assert "shell_workspace_validation_failed" in types
+
+
+def test_session_no_mutation_publishes_event(isolated_project, monkeypatch):
+    """A Finished session that produced no file changes emits shell_session_no_mutation."""
+    from pathlib import Path
+
+    events = []
+    monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
+    monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
+
+    project = Path(isolated_project["project"])
+    (project / "README.md").write_text("seed\n")
+    for args in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "Tester"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-qm", "init"],
+    ):
+        subprocess.run(args, cwd=str(project), capture_output=True, text=True, timeout=30)
+
+    def fake_call_endpoint(messages, **kwargs):
+        return f"Nothing to change.\n{sd.FINISH_TOKEN}\nNo edits needed.", 10
+
+    monkeypatch.setattr(sd, "call_endpoint", fake_call_endpoint)
+
+    result = sd.run_shell_developer_turn(
+        task_id="T-no-mut",
+        instructions="Inspect but change nothing",
+        user_command="Inspect but change nothing",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+    assert result["status"] == "error"
+    types = [a[0] for a, _ in events]
+    assert "shell_session_no_mutation" in types
 
 
 # =========================================================================
@@ -107,9 +309,9 @@ def _patch_call_endpoint(session, script: list[str]):
     script = script or []
 
     def fake_llm(self):
-        if not script:
+        if state["calls"] >= len(script):
             return None
-        idx = min(state["calls"], len(script) - 1)
+        idx = state["calls"]
         state["calls"] += 1
         return script[idx]
 
@@ -117,8 +319,12 @@ def _patch_call_endpoint(session, script: list[str]):
 
 
 class _FakeWorktree:
+    def __init__(self, exit_code: int = 0, output: str = "ok"):
+        self._exit_code = exit_code
+        self._output = output
+
     def run_command(self, command, timeout=120):
-        return 0, "ok"
+        return self._exit_code, self._output
 
     def run_test_command(self, command, timeout=600):
         return 0, "ok"
