@@ -164,6 +164,7 @@ def call_env(monkeypatch):
     )
     base._rate_limiter = None
     base._token_budget = None
+    base._token_budgets = {}
     return base
 
 
@@ -238,7 +239,7 @@ def test_budget_ping_pong_cannot_exceed_depth(call_env):
     mgr = _PingPongManager(a, b)
 
     class _NoBudget:
-        def can_spend(self, tokens):
+        def can_spend(self, tokens, endpoint=None, **kwargs):
             return False
 
         def add_usage(self, tokens):
@@ -247,7 +248,7 @@ def test_budget_ping_pong_cannot_exceed_depth(call_env):
     outcomes: list[dict] = []
     sleeps: list[float] = []
     with patch.object(base, "get_endpoint_manager", lambda: mgr):
-        with patch.object(base, "get_token_budget", lambda: _NoBudget()):
+        with patch.object(base, "get_token_budget", lambda endpoint=None: _NoBudget()):
             with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw})):
                 with patch("agents.base.post_json", side_effect=AssertionError("must not POST when budget is dead")):
                     with patch("time.sleep", side_effect=sleeps.append):

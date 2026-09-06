@@ -63,6 +63,32 @@ def test_migrate_adds_task_id_and_mode_columns(temp_db, monkeypatch):
     conn.close()
 
 
+def test_migrate_adds_token_log_endpoint_name(temp_db, monkeypatch):
+    """§8.1a: existing token_log tables gain endpoint_name."""
+    import sqlite3
+
+    from core import db as db_mod
+
+    db_path = Path(temp_db)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("DROP TABLE IF EXISTS token_log")
+    conn.execute("CREATE TABLE token_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, tokens_used INTEGER)")
+    conn.execute("INSERT INTO token_log (timestamp, tokens_used) VALUES ('2026-01-01T00:00:00', 12)")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(db_path))
+    db_mod.init_db()
+
+    conn = sqlite3.connect(str(db_path))
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(token_log)").fetchall()}
+    assert "endpoint_name" in cols
+    row = conn.execute("SELECT tokens_used, endpoint_name FROM token_log").fetchone()
+    assert row[0] == 12
+    assert row[1] is None
+    conn.close()
+
+
 def test_ensure_column_is_idempotent(temp_db):
     """Second migration pass must not raise."""
     from core.db import _migrate_schema, get_db_path

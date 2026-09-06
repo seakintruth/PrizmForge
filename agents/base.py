@@ -35,7 +35,7 @@ from core.rate_limit_headers import (
     classify_rate_limit,
 )
 from core.rate_limiter import RateLimiter
-from core.token_budget import TokenBudget
+from core.token_budget import TokenBudget, token_cap_for_endpoint
 from file_editing.db import log_error
 
 # Background agents that call_agent() as part of a parallel/support pool.
@@ -52,6 +52,7 @@ _BACKGROUND_TRANSPORT_AGENTS = {
 # Initialize
 _rate_limiter = None
 _token_budget = None
+_token_budgets: dict[str, TokenBudget] = {}
 
 # Active-work tracking: HTTP latency (seconds) of the most recent call_endpoint
 # invocation. Rate-limit sleeps and DB lock backoffs are excluded so iteration
@@ -70,13 +71,50 @@ def get_rate_limiter(endpoint: EndpointConfig) -> RateLimiter:
     return _rate_limiter
 
 
-def get_token_budget() -> TokenBudget:
-    """Get token budget singleton"""
-    global _token_budget
-    if _token_budget is None:
+def _endpoint_budget_key(endpoint: EndpointConfig | str | None) -> str:
+    if endpoint is None:
+        return "_global"
+    if isinstance(endpoint, str):
+        return endpoint or "_global"
+    return getattr(endpoint, "name", None) or "_global"
+
+
+def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudget:
+    """Return the 4h TokenBudget for ``endpoint.name`` (or the process default).
+
+    Caps: ``endpoints.<name>.token_budget.max_tokens_per_4h``, else top-level
+    ``token_budget.max_tokens_per_4h``. Company and public Gemini do not share
+    a bucket (ROADMAP §8.1a).
+    """
+    global _token_budget, _token_budgets
+    name = _endpoint_budget_key(endpoint)
+    budget = _token_budgets.get(name)
+    if budget is None:
         config = get_config()
-        _token_budget = TokenBudget(get_db_path(), config["token_budget"]["max_tokens_per_4h"])
-    return _token_budget
+        cap = token_cap_for_endpoint(config, None if name == "_global" else name)
+        budget = TokenBudget(get_db_path(), cap, endpoint_name=None if name == "_global" else name)
+        _token_budgets[name] = budget
+        _token_budget = budget
+    return budget
+
+
+def any_token_budget_remaining(tokens: int = 1) -> bool:
+    """True if any currently available endpoint still has 4h budget room."""
+    try:
+        endpoints = list(get_endpoint_manager().endpoints.values())
+    except Exception:
+        endpoints = []
+    if not endpoints:
+        return get_token_budget().can_spend(tokens, quiet=True)
+    for ep in endpoints:
+        try:
+            available = ep.health.is_available()
+        except Exception as e:
+            print(f"  ⚠️  endpoint availability check failed: {e}")
+            continue
+        if available and get_token_budget(ep).can_spend(tokens, quiet=True):
+            return True
+    return False
 
 
 def estimate_tokens(text: str) -> int:
@@ -175,7 +213,6 @@ def call_endpoint(  # noqa: C901
     call chain. Recurse only to names not in that set (ROADMAP §8.1).
     """
     config = get_config()
-    token_budget = get_token_budget()
     endpoint_mgr = get_endpoint_manager()
     seen = set(seen_endpoints) if seen_endpoints else set()
     _sync_support_freeze()
@@ -201,6 +238,7 @@ def call_endpoint(  # noqa: C901
         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="no_alternate_endpoint")
         return None, 0
     seen.add(endpoint.name)
+    token_budget = get_token_budget(endpoint)
 
     # Per-endpoint rate limiting
     rate_limiter = get_rate_limiter(endpoint)
@@ -242,8 +280,10 @@ def call_endpoint(  # noqa: C901
     estimated_output = payload["max_tokens"] // 2
     estimated_total = input_tokens + estimated_output
 
-    if not token_budget.can_spend(estimated_total):
+    if not token_budget.can_spend(estimated_total, endpoint=endpoint.name):
         print("⚠️  Token budget exceeded. Trying alternate endpoint...")
+        # Latch A only — do not use KEY_LOCKED. B keeps its own 4h bucket.
+        endpoint.health.mark_failure(EndpointStatus.TOKEN_EXHAUSTED, cooldown_minutes=15)
         return _fallback_to_alternate(
             messages,
             max_tokens,

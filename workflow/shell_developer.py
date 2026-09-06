@@ -437,7 +437,7 @@ class SessionResult:
 
 # Failure kinds that a bounded backoff+retry cannot fix — give up immediately
 # instead of burning retries (mirrors call_endpoint's own handling).
-PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_budget", "token_exhausted", "bad_payload"}
+PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_exhausted", "bad_payload"}
 
 
 def _recent_failure_kind(model_ref: str | None, max_age_s: int = 30) -> str:
@@ -514,8 +514,9 @@ class ShellDeveloperSession:
         endpoints; this layer adds a session-level retry so a single transient
         failure (rate-limit / 5xx / timeout / health latch) cannot kill the
         session. The kind recorded in model_health_events decides whether a
-        short backoff + retry is worthwhile; permanent kinds (bad key, token
-        budget, ...) give up immediately. The model is re-resolved between
+        short backoff + retry is worthwhile; permanent kinds (bad key, ...)
+        give up immediately. token_budget is endpoint-local: retry while any
+        reachable endpoint still has 4h room. The model is re-resolved between
         attempts so retries follow the resource-controller's current steering.
         """
         for attempt in range(self.cfg.llm_failure_max_retries + 1):
@@ -535,6 +536,12 @@ class ShellDeveloperSession:
             self.result.last_llm_failure = {"kind": kind, "model_ref": model_ref, "attempt": attempt + 1}
             if kind in PERMANENT_FAILURE_KINDS or attempt >= self.cfg.llm_failure_max_retries:
                 break
+            if kind == "token_budget":
+                # Endpoint-local: give up only when every reachable bucket is dead.
+                from agents.base import any_token_budget_remaining
+
+                if not any_token_budget_remaining(1):
+                    break
             backoff_s = max(int(self.cfg.llm_retry_backoff_seconds) * (attempt + 1), 1)
             print(f"   ⏳ Shell developer LLM failure ({kind}); backing off {backoff_s}s (attempt {attempt + 1}/{self.cfg.llm_failure_max_retries + 1})")
             time.sleep(backoff_s)

@@ -151,7 +151,7 @@ class TestWiringFullOutage:
 
         monkeypatch.setattr("workflow.task_runner.time.sleep", lambda _s: None)
         monkeypatch.setattr("workflow.task_runner.call_orchestrator", fake_orchestrator)
-        monkeypatch.setattr("agents.base.get_token_budget", lambda: FakeTokenBudget())
+        monkeypatch.setattr("agents.base.any_token_budget_remaining", lambda tokens=1: True)
         monkeypatch.setattr(
             resource_controller_worker,
             "get_resource_controller",

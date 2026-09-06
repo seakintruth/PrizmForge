@@ -558,9 +558,9 @@ def run_task_cycle(  # noqa: C901
             if decision is None:
                 budget_exhausted = False
                 try:
-                    from agents.base import get_token_budget
+                    from agents.base import any_token_budget_remaining
 
-                    budget_exhausted = not get_token_budget().can_spend(1)
+                    budget_exhausted = not any_token_budget_remaining(1)
                 except Exception as e:
                     print(f"   ⚠️  Token budget check failed: {e}")
 

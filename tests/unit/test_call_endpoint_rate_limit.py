@@ -124,6 +124,7 @@ def call_endpoint_env(monkeypatch):
     # Reset singletons so get_rate_limiter()/get_token_budget() rebuild cleanly.
     base._rate_limiter = None
     base._token_budget = None
+    base._token_budgets = {}
     return base
 
 
@@ -756,10 +757,10 @@ def test_token_budget_overflow_no_fallback_records_failure(call_endpoint_env, mo
     outcomes: list[dict] = []
 
     class _NoBudget:
-        def can_spend(self, tokens):
+        def can_spend(self, tokens, endpoint=None, **kwargs):
             return False
 
-    monkeypatch.setattr(base, "get_token_budget", lambda: _NoBudget())
+    monkeypatch.setattr(base, "get_token_budget", lambda endpoint=None: _NoBudget())
     monkeypatch.setattr(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}))
 
     answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")

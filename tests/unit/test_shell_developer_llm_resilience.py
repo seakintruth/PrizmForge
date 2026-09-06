@@ -11,7 +11,8 @@ These tests lock in the fix:
   resource-controller > agent_model_preferences) and records the resolved model.
 - a failure kind read back from model_health_events decides retry-vs-give-up:
   transient kinds (rate_limited / 5xx / timeout / latch) back off and retry;
-  permanent kinds (key_locked / token_budget / ...) do not burn retries.
+   permanent kinds (key_locked / token_exhausted / ...) do not burn retries.
+  token_budget is endpoint-local: retry while another endpoint has room.
 - the trajectory exposes that metadata (model_stats, last_llm_failure).
 """
 
@@ -156,6 +157,43 @@ def test_all_transient_failures_gives_up_truthfully_with_metadata(monkeypatch):
     assert result.last_llm_failure["kind"] == "rate_limited"
     assert states["sleeps"] == [1, 2, 3]
     assert "rate_limited" in result.summary
+
+
+def test_token_budget_retries_when_another_endpoint_has_room(monkeypatch):
+    """§8.1a: token_budget is not session-permanent if another bucket has room."""
+    _install_rc_stub(monkeypatch)
+    _install_endpoint_manager(monkeypatch)
+    monkeypatch.setattr("agents.base.any_token_budget_remaining", lambda tokens=1: True)
+    states = _install_llm_script(
+        monkeypatch,
+        script=[None, f"Done.\n{sd.FINISH_TOKEN}\nComplete."],
+        kinds=["token_budget"],
+    )
+    _capture_health_records(monkeypatch)
+
+    session = _session()
+    result = session.run("task")
+
+    assert result.exit_status == "Finished"
+    assert result.llm_attempts == 2
+    assert states["sleeps"] == [1]
+
+
+def test_token_budget_gives_up_when_every_endpoint_is_dead(monkeypatch):
+    """§8.1a: give up the session only when every reachable endpoint is budget-dead."""
+    _install_rc_stub(monkeypatch)
+    _install_endpoint_manager(monkeypatch)
+    monkeypatch.setattr("agents.base.any_token_budget_remaining", lambda tokens=1: False)
+    states = _install_llm_script(monkeypatch, script=[None, None, None], kinds=["token_budget"])
+    _capture_health_records(monkeypatch)
+
+    session = _session()
+    result = session.run("task")
+
+    assert result.exit_status == "LlmUnavailable"
+    assert result.llm_attempts == 1
+    assert states["sleeps"] == []
+    assert "token_budget" in result.summary
 
 
 def test_permanent_failure_does_not_retry(monkeypatch):
