@@ -359,3 +359,94 @@ class TestNoProgressGuard:
         guard.record_no_change("t_d9")
         guard.record_no_change("t_d9")
         assert guard.stalled()
+
+
+class TestZeroCommandSeedGuard:
+    """ROADMAP §3: A-1 finish-without-bash must not re-dispatch the same seed."""
+
+    def test_finish_without_bash_latches_immediately(self):
+        from workflow.task_runner import ZeroCommandSeedGuard, _is_zero_command_seed_failure
+
+        mut = {
+            "status": "error",
+            "message": "session LimitsExceeded: step limit (3) reached",
+            "session_exit": "LimitsExceeded",
+            "commands_executed": 0,
+            "evidence_ok": False,
+        }
+        assert _is_zero_command_seed_failure(mut)
+        guard = ZeroCommandSeedGuard()
+        assert guard.record(mut) is True
+        assert guard.latched()
+
+    def test_workspace_validation_failed_latches_even_if_evidence_ran(self):
+        from workflow.task_runner import ZeroCommandSeedGuard, _is_zero_command_seed_failure
+
+        mut = {
+            "status": "error",
+            "message": "shell developer workspace validation failed: expected workflow/__init__.py",
+            "session_exit": "WorkspaceValidationFailed",
+            "commands_executed": 1,
+            "evidence_ok": False,
+            "evidence_ran": True,
+        }
+        assert _is_zero_command_seed_failure(mut)
+        guard = ZeroCommandSeedGuard()
+        assert guard.record(mut) is True
+
+    def test_llm_unavailable_stays_dispatchable(self):
+        from workflow.task_runner import ZeroCommandSeedGuard, _is_zero_command_seed_failure
+
+        mut = {
+            "status": "error",
+            "message": "session LlmUnavailable: LLM endpoint unavailable",
+            "session_exit": "LlmUnavailable",
+            "commands_executed": 0,
+            "evidence_ok": False,
+        }
+        assert not _is_zero_command_seed_failure(mut)
+        guard = ZeroCommandSeedGuard()
+        for _ in range(20):
+            assert guard.record(mut) is False
+        assert not guard.latched()
+
+    def test_edit_payload_errors_are_not_shell_zero_command(self):
+        from workflow.task_runner import _is_zero_command_seed_failure
+
+        assert not _is_zero_command_seed_failure({"status": "error", "message": "invalid payload"})
+        assert not _is_zero_command_seed_failure({"status": "success", "gates": ["success"]})
+
+    def test_finished_with_evidence_and_no_mutation_does_not_zero_command_latch(self):
+        from workflow.task_runner import ZeroCommandSeedGuard, _is_zero_command_seed_failure
+
+        mut = {
+            "status": "error",
+            "message": "session finished but produced no file changes",
+            "session_exit": "Finished",
+            "commands_executed": 1,
+            "evidence_ok": True,
+        }
+        assert not _is_zero_command_seed_failure(mut)
+        guard = ZeroCommandSeedGuard()
+        assert guard.record(mut) is False
+
+    def test_latch_does_not_rearm(self):
+        from workflow.task_runner import ZeroCommandSeedGuard
+
+        guard = ZeroCommandSeedGuard()
+        guard.record(
+            {
+                "status": "error",
+                "session_exit": "LimitsExceeded",
+                "commands_executed": 0,
+            }
+        )
+        assert guard.latched()
+        guard.record(
+            {
+                "status": "success",
+                "session_exit": "Finished",
+                "commands_executed": 2,
+            }
+        )
+        assert guard.latched()

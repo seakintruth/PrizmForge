@@ -37,6 +37,11 @@
       "description": "OpenRouter endpoint (free-model fallback)",
       "priority": 10,
       "rate_limit_per_minute": 100,
+      "token_budget": {
+        "max_tokens_per_4h": 250000,
+        "max_tokens_per_day": 1000000,
+        "_note": "Per-endpoint buckets. OpenRouter does not share 4h or daily tokens with OpenCode."
+      },
       "models": {
         "openrouter/free": {
           "max_output_tokens": 65536,
@@ -58,6 +63,11 @@
       "description": "OpenCode endpoint",
       "priority": 20,
       "rate_limit_per_minute": 80,
+      "token_budget": {
+        "max_tokens_per_4h": 500000,
+        "max_tokens_per_day": 2000000,
+        "_note": "Per-endpoint buckets. OpenCode does not share 4h or daily tokens with OpenRouter."
+      },
       "models": {
         "big-pickle": {
           "max_output_tokens": 65536,
@@ -101,7 +111,9 @@
     "_note": "Leave empty to disable proxy"
   },
   "token_budget": {
-    "max_tokens_per_4h": 500000
+    "max_tokens_per_4h": 500000,
+    "max_tokens_per_day": 2000000,
+    "_note": "Defaults for endpoints that omit token_budget. Each endpoint has its own 4h and daily bucket; they do not share."
   },
   "reporter": {
     "enabled": true,

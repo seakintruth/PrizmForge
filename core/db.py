@@ -134,6 +134,15 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     ):
         _ensure_column(conn, "agent_responses_archive", col, coltype)
 
+    # token_log: per-endpoint 4h windows (ROADMAP §8.1a)
+    _ensure_column(conn, "token_log", "endpoint_name", "TEXT")
+    # model_health: advertised Retry-After on rate_limited events (ROADMAP §5)
+    _ensure_column(conn, "model_health_events", "retry_after_s", "INTEGER")
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_token_log_endpoint_ts ON token_log(endpoint_name, timestamp)")
+    except sqlite3.OperationalError as e:
+        print(f"   ⚠️  idx_token_log_endpoint_ts: {e}")
+
 
 def init_db():
     """Initialize database with complete schema"""
@@ -182,7 +191,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS token_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT,
-                tokens_used INTEGER
+                tokens_used INTEGER,
+                endpoint_name TEXT
             );
 
             -- Conversation history
@@ -438,7 +448,8 @@ def init_db():
                 endpoint TEXT NOT NULL,
                 ok INTEGER NOT NULL,
                 latency_ms INTEGER DEFAULT 0,
-                kind TEXT
+                kind TEXT,
+                retry_after_s INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_model_health_events_ref_ts ON model_health_events(model_ref, ts);
 

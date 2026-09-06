@@ -9,6 +9,7 @@ exported parsing helpers.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 
 from workflow import shell_developer as sd
 from workflow import shell_protocol as sp
@@ -107,19 +108,29 @@ def test_session_archives_command_step(monkeypatch):
 
     monkeypatch.setattr(sd, "archive_raw_response", fake_archive)
 
-    session = _session_with_replies(["```bash\necho hi\n```"])
-    session.wt = _FakeWorktree(exit_code=5, output="hi\n")
+    class _SplitWt(_FakeWorktree):
+        def run_command(self, command, timeout=120):
+            if "git rev-parse" in command:
+                return 0, "/work/wt\n/work/wt\nworkflow/__init__.py\n"
+            return 5, "hi\n"
+
+    session = _session_with_replies(
+        [
+            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+            "```bash\necho hi\n```",
+        ]
+    )
+    session.wt = _SplitWt()
+    session.cfg.step_limit = 5
     session.run("task")
 
-    assert calls["n"] == 1
-    record = captured[0]
+    echo_records = [c for c in captured if c.get("command") and "echo hi" in c.get("command", "")]
+    assert echo_records
+    record = echo_records[0]
     assert record["agent_name"] == "developer"
-    assert record["command"] == "echo hi"
     assert record["command_exit_code"] == 5
     assert record["response_format_status"] == sp.VALID_BASH_BLOCK
     assert record["parse_success"] is True
-    assert record["response"] == "```bash\necho hi\n```"
-    assert record["step_number"] == 1
 
 
 def test_session_archives_finish_step(monkeypatch):
@@ -132,12 +143,19 @@ def test_session_archives_finish_step(monkeypatch):
 
     monkeypatch.setattr(sd, "archive_raw_response", fake_archive)
 
-    session = _session_with_replies([f"{sd.FINISH_TOKEN}\nDone."])
+    session = _session_with_replies(
+        [
+            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+            f"{sd.FINISH_TOKEN}\nDone.",
+        ]
+    )
+    session.wt = _FakeWorktree(output="/work/wt\n/work/wt\nworkflow/__init__.py\n")
+    session.cfg.step_limit = 5
     session.run("task")
 
-    assert calls["n"] == 1
-    record = captured[0]
-    assert record["response_format_status"] == sp.VALID_FINISH_SESSION
+    finish_records = [c for c in captured if c.get("response_format_status") == sp.VALID_FINISH_SESSION and c.get("command") is None]
+    assert finish_records
+    record = finish_records[-1]
     assert record["command"] is None
     assert record["command_exit_code"] is None
     assert record["parse_success"] is True
@@ -218,8 +236,20 @@ def test_command_failure_publishes_event(monkeypatch):
     monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
     monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
 
-    session = _session_with_replies(["```bash\nexit 3\n```"])
-    session.wt = _FakeWorktree(exit_code=3, output="boom\n")
+    class _SplitWt(_FakeWorktree):
+        def run_command(self, command, timeout=120):
+            if "git rev-parse" in command:
+                return 0, "/work/wt\n/work/wt\nworkflow/__init__.py\n"
+            return 3, "boom\n"
+
+    session = _session_with_replies(
+        [
+            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+            "```bash\nexit 3\n```",
+        ]
+    )
+    session.wt = _SplitWt()
+    session.cfg.step_limit = 5
     session.run("task")
 
     types = [a[0] for a, _ in events]
@@ -261,6 +291,8 @@ def test_session_no_mutation_publishes_event(isolated_project, monkeypatch):
 
     project = Path(isolated_project["project"])
     (project / "README.md").write_text("seed\n")
+    (project / "workflow").mkdir(exist_ok=True)
+    (project / "workflow" / "__init__.py").write_text("# marker\n")
     for args in (
         ["git", "init", "-q"],
         ["git", "config", "user.email", "t@example.com"],
@@ -270,8 +302,16 @@ def test_session_no_mutation_publishes_event(isolated_project, monkeypatch):
     ):
         subprocess.run(args, cwd=str(project), capture_output=True, text=True, timeout=30)
 
+    replies = [
+        "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+        f"Nothing to change.\n{sd.FINISH_TOKEN}\nNo edits needed.",
+    ]
+    state = {"i": 0}
+
     def fake_call_endpoint(messages, **kwargs):
-        return f"Nothing to change.\n{sd.FINISH_TOKEN}\nNo edits needed.", 10
+        text = replies[min(state["i"], len(replies) - 1)]
+        state["i"] += 1
+        return text, 10
 
     monkeypatch.setattr(sd, "call_endpoint", fake_call_endpoint)
 
@@ -298,8 +338,14 @@ def test_protocol_valid_and_command_outcomes_recorded(monkeypatch):
     monkeypatch.setattr(sd, "archive_raw_response", lambda **kw: None)
     monkeypatch.setattr(sd, "record_model_outcome", lambda model_ref, **kw: kinds.append(kw["kind"]))
 
-    session = _session_with_replies(["```bash\necho hi\n```"])
-    session.wt = _FakeWorktree(exit_code=0, output="hi\n")
+    session = _session_with_replies(
+        [
+            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+            "```bash\necho hi\n```",
+        ]
+    )
+    session.wt = _FakeWorktree(exit_code=0, output="/work/wt\n/work/wt\nworkflow/__init__.py\nhi\n")
+    session.cfg.step_limit = 5
     result = session.run("task")
 
     assert result.exit_status in ("Finished", "") or result.n_model_calls >= 1
@@ -360,6 +406,9 @@ class _FakeWorktree:
 
     def run_command(self, command, timeout=120):
         return self._exit_code, self._output
+
+    def working_dir(self):
+        return Path("/work/wt")
 
     def run_test_command(self, command, timeout=600):
         return 0, "ok"

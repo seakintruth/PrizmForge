@@ -126,6 +126,57 @@ def get_db_connection(
             print(f"    ⚠️  Exception handled in db_connection.py: {e}")
 
 
+@contextmanager
+def get_init_db_connection(db_path: str | None = None):
+    """Init-window bulk writer. Pragmas are restored before this context exits.
+
+    These pragmas are **init-window only** (ROADMAP §1). A box-crash mid-init
+    already throws the DB away; MEMORY journal still lets a mid-walk exception
+    roll back. Runtime ``get_db_connection()`` must never inherit this window.
+    """
+    if db_path is None:
+        from core.db import get_db_path
+
+        db_path = get_db_path()
+
+    try:
+        conn = sqlite3.connect(db_path, timeout=30.0)
+    except sqlite3.Error as e:
+        raise DatabaseRetryError(f"Failed to connect to database: {e}") from e
+
+    try:
+        # Init-window only — restore DELETE + NORMAL before returning.
+        conn.execute("PRAGMA journal_mode = MEMORY")
+        conn.execute("PRAGMA synchronous = OFF")
+        conn.execute("PRAGMA temp_store = MEMORY")
+        conn.execute("PRAGMA cache_size = -524288")  # 512 MiB page cache
+        conn.execute("PRAGMA mmap_size = 268435456")  # 256 MiB mmap
+        conn.execute("PRAGMA locking_mode = EXCLUSIVE")
+        conn.execute("PRAGMA busy_timeout = 5000")
+        yield conn
+        conn.commit()
+        conn.execute("PRAGMA locking_mode = NORMAL")
+        conn.execute("PRAGMA synchronous = NORMAL")
+        conn.execute("PRAGMA journal_mode = DELETE")
+    except DatabaseRetryError:
+        try:
+            conn.rollback()
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in db_connection.py: {e}")
+        raise
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in db_connection.py: {e}")
+        raise
+    finally:
+        try:
+            conn.close()
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in db_connection.py: {e}")
+
+
 def _commit_with_retry(
     conn: sqlite3.Connection,
     retries: int = DEFAULT_COMMIT_RETRIES,

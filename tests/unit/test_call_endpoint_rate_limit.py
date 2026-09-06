@@ -121,9 +121,9 @@ def call_endpoint_env(monkeypatch):
         },
     )
     monkeypatch.setattr(base, "get_endpoint_manager", lambda: _FakeManager())
-    # Reset singletons so get_rate_limiter()/get_token_budget() rebuild cleanly.
+    # Reset caches so get_rate_limiter()/get_token_budget() rebuild cleanly.
     base._rate_limiter = None
-    base._token_budget = None
+    base._token_budgets = {}
     return base
 
 
@@ -452,8 +452,17 @@ class _FallbackManager(_FakeManager):
         super().__init__()
         self.fallback_ep = _FakeEndpoint()
         self.fallback_ep.name = "fallback"
+        self.endpoints = {"primary": self.endpoints["primary"], "fallback": self.fallback_ep}
 
-    def get_fallback_model(self, endpoint):
+    def normalize_model_reference(self, raw):
+        raw = str(raw or "")
+        if "fallback" in raw:
+            return SimpleNamespace(endpoint_name="fallback", model_name="fallback-model")
+        return _Choice()
+
+    def get_fallback_model(self, endpoint, exclude=None):
+        if endpoint.name == "fallback" or (exclude and "fallback" in exclude):
+            return None
         return ("fallback-model", self.fallback_ep)
 
 
@@ -747,10 +756,10 @@ def test_token_budget_overflow_no_fallback_records_failure(call_endpoint_env, mo
     outcomes: list[dict] = []
 
     class _NoBudget:
-        def can_spend(self, tokens):
+        def can_spend(self, tokens, endpoint=None, **kwargs):
             return False
 
-    monkeypatch.setattr(base, "get_token_budget", lambda: _NoBudget())
+    monkeypatch.setattr(base, "get_token_budget", lambda endpoint=None: _NoBudget())
     monkeypatch.setattr(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}))
 
     answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")

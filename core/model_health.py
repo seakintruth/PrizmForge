@@ -93,6 +93,18 @@ DEFAULTS = {
 
 _LOCK = threading.Lock()
 _PRUNE_EVERY = 64  # records between lazy prune passes
+
+# Operator / quota outcomes must not demote model quality (ROADMAP §5).
+# Still persisted; compute_stats ignores them for streak and failure_ratio.
+DEMOTE_EXCLUDE_KINDS = frozenset(
+    {
+        "no_alternate_endpoint",
+        "token_budget",
+        "key_locked",
+        "token_exhausted",
+        "unauthorized",
+    }
+)
 # NOTE: only ever mutated under _LOCK inside record_model_outcome(), so the
 # read-modify-write counter is safe (SQLite writes themselves are serialized).
 _records_since_prune = 0
@@ -118,10 +130,17 @@ def _connect() -> sqlite3.Connection:
             endpoint TEXT,
             ok INTEGER NOT NULL,
             latency_ms INTEGER DEFAULT 0,
-            kind TEXT DEFAULT ''
+            kind TEXT DEFAULT '',
+            retry_after_s INTEGER
         )
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_model_health_events_ref_ts ON model_health_events(model_ref, ts)")
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(model_health_events)").fetchall()}
+    if "retry_after_s" not in cols:
+        try:
+            conn.execute("ALTER TABLE model_health_events ADD COLUMN retry_after_s INTEGER")
+        except sqlite3.OperationalError:
+            pass
     return conn
 
 
@@ -149,18 +168,20 @@ def record_model_outcome(
     ok: bool = True,
     latency_ms: int = 0,
     kind: str = "",
+    retry_after_s: int | None = None,
 ) -> None:
     """Record one request outcome. Never raises; silently skips when disabled."""
     if not model_ref or not _setting("enabled"):
         return
     global _records_since_prune
+    wait = None if retry_after_s is None else int(retry_after_s)
     try:
         with _LOCK:
             conn = _connect()
             try:
                 conn.execute(
-                    "INSERT INTO model_health_events (ts, model_ref, endpoint, ok, latency_ms, kind) VALUES (?, ?, ?, ?, ?, ?)",
-                    (_iso(datetime.now()), str(model_ref), endpoint, 1 if ok else 0, int(latency_ms), kind[:60]),
+                    "INSERT INTO model_health_events (ts, model_ref, endpoint, ok, latency_ms, kind, retry_after_s) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (_iso(datetime.now()), str(model_ref), endpoint, 1 if ok else 0, int(latency_ms), kind[:60], wait),
                 )
                 conn.commit()
             finally:
@@ -193,7 +214,7 @@ def load_events(model_ref: str | None = None, since_hours: float | None = None) 
     """Return events (oldest first) optionally scoped to a model and window."""
     hours = float(since_hours if since_hours is not None else max(float(_setting("event_retention_hours")), 1.0))
     cutoff = _iso(datetime.now() - timedelta(hours=hours))
-    sql = "SELECT ts, model_ref, endpoint, ok, latency_ms, kind FROM model_health_events WHERE ts >= ?"
+    sql = "SELECT ts, model_ref, endpoint, ok, latency_ms, kind, retry_after_s FROM model_health_events WHERE ts >= ?"
     params: list[Any] = [cutoff]
     if model_ref:
         sql += " AND model_ref = ?"
@@ -228,7 +249,7 @@ def load_events_for_models(
     # placeholders holds only fixed "?" marks (a count, never user text), so the
     # IN (...) clause is injection-safe-by-construction despite the static scan.
     sql = (
-        "SELECT ts, model_ref, endpoint, ok, latency_ms, kind FROM model_health_events "  # noqa: S608
+        "SELECT ts, model_ref, endpoint, ok, latency_ms, kind, retry_after_s FROM model_health_events "  # noqa: S608
         "WHERE ts >= ? AND model_ref IN (" + placeholders + ") ORDER BY ts ASC"
     )
     out: dict[str, list[dict]] = {r: [] for r in refs}
@@ -260,6 +281,10 @@ def compute_stats(events: list[dict], now: datetime | None = None) -> dict:
         ts = _parse(raw_ts)
         if ts is None:
             skipped += 1
+            continue
+        kind = str(ev.get("kind") or "")
+        if kind in DEMOTE_EXCLUDE_KINDS:
+            # Operator/quota: persist but do not demote (ROADMAP §5).
             continue
         w = _decay_weight(ts, now)
         if ev.get("ok"):

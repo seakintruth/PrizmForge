@@ -42,14 +42,27 @@ def _clear_managers_registry() -> None:
         _MANAGERS.clear()
 
 
+def _latch_is_open(health: "EndpointHealth | None") -> bool:
+    """True if the endpoint is not currently latched. Does not probe freeze."""
+    if health is None:
+        return True
+    if health.unavailable_until is None:
+        return True
+    return datetime.now() >= health.unavailable_until
+
+
 def _all_endpoints_latched() -> bool:
-    """True iff every tracked endpoint across all live managers is latched."""
+    """True iff every tracked endpoint across all live managers is latched.
+
+    Reads ``unavailable_until`` only. Must not call ``is_available()``
+    (ROADMAP §8.1 / §6.3) — that used to recurse through ``_sync_support_freeze``.
+    """
     with _MANAGERS_LOCK:
         entries: list[tuple[EndpointManager, EndpointConfig]] = [(m, ep) for m in _MANAGERS for ep in m.endpoints.values()]
     if not entries:
         return False
     for _mgr, ep in entries:
-        if ep.health is not None and ep.health.is_available():
+        if _latch_is_open(ep.health):
             return False
     return True
 
@@ -59,10 +72,11 @@ def _sync_support_freeze() -> None:
 
     Freeze only when every configured endpoint is latched, so a mixed
     (some-healthy) config never pauses support workers that could reach a
-    working endpoint. Reentrancy-guarded: is_available() calls back into this
-    while _all_endpoints_latched() inspects health. worker_utils is imported
-    lazily to avoid a startup circular import (agents.worker_utils ->
-    agents/__init__ -> ... -> core.endpoint_manager).
+    working endpoint. Call from mark_success / mark_failure and an optional
+    tick (get_available_endpoints / call_endpoint). Must not be invoked from
+    is_available() (ROADMAP §8.1). worker_utils is imported lazily to avoid a
+    startup circular import (agents.worker_utils -> agents/__init__ -> ...
+    -> core.endpoint_manager).
     """
     global _freeze_syncing
     with _freeze_syncing_lock:
@@ -188,13 +202,10 @@ class EndpointHealth:
             logger.warning(f"Failed to save endpoint health to DB: {e}")
 
     def is_available(self) -> bool:
-        # §6.3: probing on every availability check re-evaluates the
-        # support-worker freeze, so an unavailable_until that merely elapses
-        # (no mark_success mark) still unfreezes support promptly.
-        _sync_support_freeze()
-        if self.unavailable_until is None:
-            return True
-        return datetime.now() >= self.unavailable_until
+        # Latch check only. Do not call _sync_support_freeze() here — that
+        # re-entered is_available via _all_endpoints_latched (A-1 RecursionError).
+        # Freeze is ticked from mark_success / mark_failure / get_available_endpoints.
+        return _latch_is_open(self)
 
     def time_until_available(self) -> int:
         if self.unavailable_until is None:
@@ -544,12 +555,15 @@ class EndpointManager:
             return fallback
         return None
 
-    def get_fallback_model(self, current_endpoint: EndpointConfig) -> tuple[str, EndpointConfig] | None:
+    def get_fallback_model(self, current_endpoint: EndpointConfig, exclude: set[str] | None = None) -> tuple[str, EndpointConfig] | None:
         fallback_settings = self.config.get("fallback_settings", {})
         if not fallback_settings.get("enabled", True):
             return None
 
-        available = [ep for ep in self.get_available_endpoints() if ep.name != current_endpoint.name]
+        skip = {current_endpoint.name}
+        if exclude:
+            skip |= exclude
+        available = [ep for ep in self.get_available_endpoints() if ep.name not in skip]
         if not available:
             return None
 
@@ -578,6 +592,8 @@ class EndpointManager:
         return model_name, fallback_endpoint
 
     def get_available_endpoints(self) -> list[EndpointConfig]:
+        # Periodic tick: expiry-without-mark still unfreezes support (§8.1).
+        _sync_support_freeze()
         available = [ep for ep in self.endpoints.values() if ep.health.is_available()]
         available.sort(key=lambda ep: ep.priority)
         return available

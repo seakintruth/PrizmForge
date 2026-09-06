@@ -18,7 +18,12 @@ from agents.worker_utils import classify_transport_severity
 from core.config import get_agent_prompts, get_config
 from core.db import get_db_path
 from core.db_helpers import save_conversation
-from core.endpoint_manager import EndpointConfig, EndpointStatus, get_endpoint_manager
+from core.endpoint_manager import (
+    EndpointConfig,
+    EndpointStatus,
+    _sync_support_freeze,
+    get_endpoint_manager,
+)
 from core.fallback_stats import log_fallback
 from core.http_client import post_json
 from core.http_diag import print_http_error_dump
@@ -30,7 +35,7 @@ from core.rate_limit_headers import (
     classify_rate_limit,
 )
 from core.rate_limiter import RateLimiter
-from core.token_budget import TokenBudget
+from core.token_budget import TokenBudget, token_cap_for_endpoint, token_daily_cap_for_endpoint
 from file_editing.db import log_error
 
 # Background agents that call_agent() as part of a parallel/support pool.
@@ -46,7 +51,7 @@ _BACKGROUND_TRANSPORT_AGENTS = {
 
 # Initialize
 _rate_limiter = None
-_token_budget = None
+_token_budgets: dict[str, TokenBudget] = {}
 
 # Active-work tracking: HTTP latency (seconds) of the most recent call_endpoint
 # invocation. Rate-limit sleeps and DB lock backoffs are excluded so iteration
@@ -65,18 +70,130 @@ def get_rate_limiter(endpoint: EndpointConfig) -> RateLimiter:
     return _rate_limiter
 
 
-def get_token_budget() -> TokenBudget:
-    """Get token budget singleton"""
-    global _token_budget
-    if _token_budget is None:
+def _endpoint_budget_key(endpoint: EndpointConfig | str | None) -> str:
+    if endpoint is None:
+        return "_global"
+    if isinstance(endpoint, str):
+        return endpoint or "_global"
+    return getattr(endpoint, "name", None) or "_global"
+
+
+def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudget:
+    """Return the 4h TokenBudget for ``endpoint.name`` (or the process default).
+
+    Caps: ``endpoints.<name>.token_budget.max_tokens_per_4h`` /
+    ``max_tokens_per_day``, else top-level ``token_budget``. Company and
+    public Gemini do not share a bucket (ROADMAP §8.1a).
+    """
+    name = _endpoint_budget_key(endpoint)
+    budget = _token_budgets.get(name)
+    if budget is None:
         config = get_config()
-        _token_budget = TokenBudget(get_db_path(), config["token_budget"]["max_tokens_per_4h"])
-    return _token_budget
+        ep_name = None if name == "_global" else name
+        cap = token_cap_for_endpoint(config, ep_name)
+        daily = token_daily_cap_for_endpoint(config, ep_name)
+        budget = TokenBudget(get_db_path(), cap, endpoint_name=ep_name, max_tokens_per_day=daily)
+        _token_budgets[name] = budget
+    return budget
+
+
+def any_token_budget_remaining(tokens: int = 1) -> bool:
+    """True if any currently available endpoint still has 4h budget room."""
+    try:
+        endpoints = list(get_endpoint_manager().endpoints.values())
+    except Exception:
+        endpoints = []
+    if not endpoints:
+        return get_token_budget().can_spend(tokens, quiet=True)
+    for ep in endpoints:
+        try:
+            available = ep.health.is_available()
+        except Exception as e:
+            print(f"  ⚠️  endpoint availability check failed: {e}")
+            continue
+        if available and get_token_budget(ep).can_spend(tokens, quiet=True):
+            return True
+    return False
 
 
 def estimate_tokens(text: str) -> int:
     """Rough token estimation"""
     return len(text) // 4
+
+
+def _resolve_fallback(endpoint_mgr, endpoint, seen: set[str]):
+    """Return (model, endpoint) for an unseen alternate, or None."""
+    getter = getattr(endpoint_mgr, "get_fallback_model", None)
+    if getter is None:
+        return None
+    try:
+        fallback = getter(endpoint, exclude=seen)
+    except TypeError:
+        fallback = getter(endpoint)
+    if not fallback:
+        return None
+    _model, fb_ep = fallback
+    if getattr(fb_ep, "name", None) in seen:
+        return None
+    return fallback
+
+
+def _bounded_no_alternate_sleep(endpoint) -> None:
+    wait_time = 30
+    try:
+        wait_time = int(endpoint.health.time_until_available())
+    except Exception:
+        wait_time = 30
+    backoff_s = min(max(wait_time, 30), 120)
+    print(f"   ❌ No alternate endpoints available — recheck in {backoff_s}s")
+    time.sleep(backoff_s)
+
+
+def _fallback_to_alternate(
+    messages,
+    max_tokens,
+    temperature,
+    retry_count,
+    task_id,
+    agent_name,
+    endpoint,
+    model_name,
+    endpoint_mgr,
+    seen: set[str],
+    *,
+    stop_kind: str | None = None,
+    sleep_on_stop: bool = False,
+    announce: str = "   → Falling back to {name}/{model}",
+    reason: str | None = None,
+) -> tuple[str | None, int]:
+    """Recurse to an unseen fallback, or stop without unbounded call_endpoint depth."""
+    fallback = _resolve_fallback(endpoint_mgr, endpoint, seen)
+    if fallback is not None:
+        fallback_model, fallback_endpoint = fallback
+        status = getattr(getattr(endpoint, "health", None), "status", None)
+        log_fallback(
+            original_endpoint=endpoint.name,
+            fallback_endpoint=fallback_endpoint.name,
+            reason=reason or getattr(status, "value", "unavailable"),
+            task_id=task_id,
+            agent_name=agent_name,
+        )
+        print(announce.format(name=fallback_endpoint.name, model=fallback_model))
+        return call_endpoint(
+            messages,
+            max_tokens,
+            temperature,
+            fallback_model,
+            retry_count,
+            task_id,
+            agent_name,
+            seen,
+        )
+    if sleep_on_stop:
+        _bounded_no_alternate_sleep(endpoint)
+    if stop_kind:
+        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind=stop_kind)
+    return None, 0
 
 
 def call_endpoint(  # noqa: C901
@@ -87,11 +204,17 @@ def call_endpoint(  # noqa: C901
     retry_count: int = 3,
     task_id: str = "unknown",
     agent_name: str = "unknown",
+    seen_endpoints: set[str] | None = None,
 ) -> tuple[str | None, int]:
-    """Call API endpoint with automatic fallback on failure"""
+    """Call API endpoint with automatic fallback on failure.
+
+    ``seen_endpoints`` is the set of endpoint names already visited in this
+    call chain. Recurse only to names not in that set (ROADMAP §8.1).
+    """
     config = get_config()
-    token_budget = get_token_budget()
     endpoint_mgr = get_endpoint_manager()
+    seen = set(seen_endpoints) if seen_endpoints else set()
+    _sync_support_freeze()
 
     # Validate and get model name (accepts "endpoint/model" or bare name)
     raw_model = model or config.get("default_model")
@@ -108,6 +231,13 @@ def call_endpoint(  # noqa: C901
     if model_ref is None:
         raise ValueError("No model name available to validate")
     model_name = endpoint_mgr.validate_model(str(model_ref))
+
+    if endpoint.name in seen:
+        _bounded_no_alternate_sleep(endpoint)
+        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="no_alternate_endpoint")
+        return None, 0
+    seen.add(endpoint.name)
+    token_budget = get_token_budget(endpoint)
 
     # Per-endpoint rate limiting
     rate_limiter = get_rate_limiter(endpoint)
@@ -126,42 +256,20 @@ def call_endpoint(  # noqa: C901
         # get a single compact line instead (ROADMAP §6.2).
         print(f"⚠️  {endpoint.name} skipped (LOCAL health latch: {endpoint.health.status.value}) — {int(wait_time)}s left")
         print("   Not calling the API — cooldown remaining. OpenCode CLI can still work.")
-
-        # Try to get fallback
-        fallback = endpoint_mgr.get_fallback_model(endpoint)
-        if fallback:
-            fallback_model, fallback_endpoint = fallback
-            # Log the fallback
-            log_fallback(
-                original_endpoint=endpoint.name,
-                fallback_endpoint=fallback_endpoint.name,
-                reason=endpoint.health.status.value,
-                task_id=task_id,
-                agent_name=agent_name,
-            )
-
-            print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
-            return call_endpoint(
-                messages,
-                max_tokens,
-                temperature,
-                fallback_model,
-                retry_count,
-                task_id,
-                agent_name,
-            )
-        else:
-            # Every candidate is latched (all-parked). Pause a bounded
-            # minutes-level backoff instead of hot-looping the skip path until
-            # the first cooldown expires.
-            backoff_s = min(max(int(wait_time), 30), 120)
-            print(f"   ❌ No alternate endpoints available — recheck in {backoff_s}s")
-            time.sleep(backoff_s)
-            # Pass 1 soak follow-up: this silent None used to skip health
-            # recording, so post-mortems could not tell latch-skips from
-            # rate-limit failures. Record it so callers can classify.
-            record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="no_alternate_endpoint")
-            return None, 0
+        return _fallback_to_alternate(
+            messages,
+            max_tokens,
+            temperature,
+            retry_count,
+            task_id,
+            agent_name,
+            endpoint,
+            model_name,
+            endpoint_mgr,
+            seen,
+            stop_kind="no_alternate_endpoint",
+            sleep_on_stop=True,
+        )
 
     # Build payload for this endpoint
     payload = endpoint_mgr.build_payload(endpoint, model_name, messages, max_tokens, temperature)
@@ -171,34 +279,23 @@ def call_endpoint(  # noqa: C901
     estimated_output = payload["max_tokens"] // 2
     estimated_total = input_tokens + estimated_output
 
-    if not token_budget.can_spend(estimated_total):
+    if not token_budget.can_spend(estimated_total, endpoint=endpoint.name):
         print("⚠️  Token budget exceeded. Trying alternate endpoint...")
-        fallback = endpoint_mgr.get_fallback_model(endpoint)
-        if fallback:
-            fallback_model, fallback_endpoint = fallback
-            # Log the fallback
-            log_fallback(
-                original_endpoint=endpoint.name,
-                fallback_endpoint=fallback_endpoint.name,
-                reason=endpoint.health.status.value,
-                task_id=task_id,
-                agent_name=agent_name,
-            )
-            print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
-            return call_endpoint(
-                messages,
-                max_tokens,
-                temperature,
-                fallback_model,
-                retry_count,
-                task_id,
-                agent_name,
-            )
-        # Pass 1 soak follow-up: record this silent None so callers can
-        # classify budget denials (the shell developer backs off/retries only
-        # for transient kinds).
-        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="token_budget")
-        return None, 0
+        # Latch A only — do not use KEY_LOCKED. B keeps its own 4h bucket.
+        endpoint.health.mark_failure(EndpointStatus.TOKEN_EXHAUSTED, cooldown_minutes=15)
+        return _fallback_to_alternate(
+            messages,
+            max_tokens,
+            temperature,
+            retry_count,
+            task_id,
+            agent_name,
+            endpoint,
+            model_name,
+            endpoint_mgr,
+            seen,
+            stop_kind="token_budget",
+        )
 
     # Get API key for this endpoint
     try:
@@ -207,32 +304,18 @@ def call_endpoint(  # noqa: C901
         print(f"❌ {e}")
         endpoint.health.mark_failure(EndpointStatus.KEY_LOCKED)
         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="key_locked")
-
-        # Try fallback
-        fallback = endpoint_mgr.get_fallback_model(endpoint)
-        if fallback:
-            fallback_model, fallback_endpoint = fallback
-            # Log the fallback
-            log_fallback(
-                original_endpoint=endpoint.name,
-                fallback_endpoint=fallback_endpoint.name,
-                reason=endpoint.health.status.value,
-                task_id=task_id,
-                agent_name=agent_name,
-            )
-
-            print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
-            return call_endpoint(
-                messages,
-                max_tokens,
-                temperature,
-                fallback_model,
-                retry_count,
-                task_id,
-                agent_name,
-            )
-
-        return None, 0
+        return _fallback_to_alternate(
+            messages,
+            max_tokens,
+            temperature,
+            retry_count,
+            task_id,
+            agent_name,
+            endpoint,
+            model_name,
+            endpoint_mgr,
+            seen,
+        )
 
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
@@ -337,27 +420,20 @@ def call_endpoint(  # noqa: C901
                 # === Fallback Logic (Executes if no unlock_url, or if retry failed) ===
                 endpoint.health.mark_failure(EndpointStatus.KEY_LOCKED, cooldown_minutes=30)
                 record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="unauthorized")
-                fallback = endpoint_mgr.get_fallback_model(endpoint)
-                if fallback:
-                    fallback_model, fallback_endpoint = fallback
-                    log_fallback(
-                        original_endpoint=endpoint.name,
-                        fallback_endpoint=fallback_endpoint.name,
-                        reason=EndpointStatus.KEY_LOCKED.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
-                    )
-                    print(f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}")
-                    return call_endpoint(
-                        messages,
-                        max_tokens,
-                        temperature,
-                        fallback_model,
-                        retry_count,
-                        task_id,
-                        agent_name,
-                    )
-                return None, 0
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce="→ Automatically falling back to {name}/{model}",
+                    reason=EndpointStatus.KEY_LOCKED.value,
+                )
 
             # ============= HANDLE 429 RATE LIMIT / 503 SERVER ERRORS =============
             # Shared policy (ROADMAP §0.0): honor a short advertised wait (<= 600s)
@@ -379,56 +455,47 @@ def call_endpoint(  # noqa: C901
                     wait = (reset_epoch - time.time()) if reset_epoch is not None else 0.0
                     if wait > 60:
                         endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
-                        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
+                        record_model_outcome(
+                            f"{endpoint.name}/{model_name}",
+                            endpoint.name,
+                            ok=False,
+                            kind="rate_limited",
+                            retry_after_s=int(wait),
+                        )
                         reset_label = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(reset_epoch)) if reset_epoch is not None else "later"
-                        print(f"   Daily quota exhausted (free-models-per-day pattern) — reset {reset_label}; parking {endpoint.name} for 15m")
-                        fallback = endpoint_mgr.get_fallback_model(endpoint)
-                        if fallback:
-                            fallback_model, fallback_endpoint = fallback
-                            log_fallback(
-                                original_endpoint=endpoint.name,
-                                fallback_endpoint=fallback_endpoint.name,
-                                reason=endpoint.health.status.value,
-                                task_id=task_id,
-                                agent_name=agent_name,
-                            )
-                            print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
-                            return call_endpoint(
-                                messages,
-                                max_tokens,
-                                temperature,
-                                fallback_model,
-                                retry_count,
-                                task_id,
-                                agent_name,
-                            )
-                        return None, 0
+                        print(
+                            f"   Daily quota exhausted (free-models-per-day pattern) — "
+                            f"Retry-After={int(wait)}s reset {reset_label}; parking {endpoint.name} for 15m"
+                        )
+                        return _fallback_to_alternate(
+                            messages,
+                            max_tokens,
+                            temperature,
+                            retry_count,
+                            task_id,
+                            agent_name,
+                            endpoint,
+                            model_name,
+                            endpoint_mgr,
+                            seen,
+                        )
                     if wait <= 0 and reset_epoch is None:
                         # body-quota, no Reset — park, do not 1s-hop
                         endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
                         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
                         print(f"   Daily quota exhausted (body signal, no Reset) — parking {endpoint.name} for 15m")
-                        fallback = endpoint_mgr.get_fallback_model(endpoint)
-                        if fallback:
-                            fallback_model, fallback_endpoint = fallback
-                            log_fallback(
-                                original_endpoint=endpoint.name,
-                                fallback_endpoint=fallback_endpoint.name,
-                                reason=endpoint.health.status.value,
-                                task_id=task_id,
-                                agent_name=agent_name,
-                            )
-                            print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
-                            return call_endpoint(
-                                messages,
-                                max_tokens,
-                                temperature,
-                                fallback_model,
-                                retry_count,
-                                task_id,
-                                agent_name,
-                            )
-                        return None, 0
+                        return _fallback_to_alternate(
+                            messages,
+                            max_tokens,
+                            temperature,
+                            retry_count,
+                            task_id,
+                            agent_name,
+                            endpoint,
+                            model_name,
+                            endpoint_mgr,
+                            seen,
+                        )
                     sleep_for = max(1.0, wait)
                     print(f"   Quota reset in {sleep_for:.0f}s — sleeping to reset and retrying once...")
                     time.sleep(sleep_for)
@@ -451,29 +518,21 @@ def call_endpoint(  # noqa: C901
                         endpoint.name,
                         ok=False,
                         kind="rate_limited" if resp.status_code == 429 else "server_error",
+                        retry_after_s=advertised,
                     )
                     print(f"   Rate limit cooldown too long ({advertised}s)" if advertised is not None else "   Rate limit cooldown too long / unparseable")
-                    fallback = endpoint_mgr.get_fallback_model(endpoint)
-                    if fallback:
-                        fallback_model, fallback_endpoint = fallback
-                        log_fallback(
-                            original_endpoint=endpoint.name,
-                            fallback_endpoint=fallback_endpoint.name,
-                            reason=endpoint.health.status.value,
-                            task_id=task_id,
-                            agent_name=agent_name,
-                        )
-                        print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
-                        return call_endpoint(
-                            messages,
-                            max_tokens,
-                            temperature,
-                            fallback_model,
-                            retry_count,
-                            task_id,
-                            agent_name,
-                        )
-                    return None, 0
+                    return _fallback_to_alternate(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        retry_count,
+                        task_id,
+                        agent_name,
+                        endpoint,
+                        model_name,
+                        endpoint_mgr,
+                        seen,
+                    )
 
                 # Honor the advertised wait: latch the endpoint for that many
                 # seconds, so concurrent agents share one unavailable_until
@@ -497,29 +556,21 @@ def call_endpoint(  # noqa: C901
                     endpoint.name,
                     ok=False,
                     kind="rate_limited" if resp.status_code == 429 else "server_error",
+                    retry_after_s=advertised,
                 )
-                print("   same-endpoint retry exhausted")
-                fallback = endpoint_mgr.get_fallback_model(endpoint)
-                if fallback:
-                    fallback_model, fallback_endpoint = fallback
-                    log_fallback(
-                        original_endpoint=endpoint.name,
-                        fallback_endpoint=fallback_endpoint.name,
-                        reason=endpoint.health.status.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
-                    )
-                    print(f"   → Falling back to {fallback_endpoint.name}/{fallback_model}")
-                    return call_endpoint(
-                        messages,
-                        max_tokens,
-                        temperature,
-                        fallback_model,
-                        retry_count,
-                        task_id,
-                        agent_name,
-                    )
-                return None, 0
+                print(f"   same-endpoint retry exhausted (Retry-After={advertised}s)")
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                )
 
             # ============= HANDLE 402 TOKEN EXHAUSTED =============
             if resp.status_code == 402:
@@ -531,30 +582,19 @@ def call_endpoint(  # noqa: C901
 
                 # Try fallback immediately
                 print(f"⚠️  {endpoint.name} marked as unavailable for 15 minutes")
-                fallback = endpoint_mgr.get_fallback_model(endpoint)
-                if fallback:
-                    fallback_model, fallback_endpoint = fallback
-                    # Log the fallback
-                    log_fallback(
-                        original_endpoint=endpoint.name,
-                        fallback_endpoint=fallback_endpoint.name,
-                        reason=endpoint.health.status.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
-                    )
-                    print(f"→ Automatically falling back to {fallback_endpoint.name}/{fallback_model}")
-                    return call_endpoint(
-                        messages,
-                        max_tokens,
-                        temperature,
-                        fallback_model,
-                        retry_count,
-                        task_id,
-                        agent_name,
-                    )
-                else:
-                    print("❌ No alternate endpoints available")
-                    return None, 0
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce="→ Automatically falling back to {name}/{model}",
+                )
 
             # ============= HANDLE OTHER 5xx SERVER ERRORS =============
             # 503 is handled above with the advertised-wait policy; all remaining
@@ -570,28 +610,19 @@ def call_endpoint(  # noqa: C901
                 if attempt == retry_count - 1:
                     endpoint.health.mark_failure(EndpointStatus.SERVER_ERROR, cooldown_minutes=5)
                     record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="server_error")
-
-                    fallback = endpoint_mgr.get_fallback_model(endpoint)
-                    if fallback:
-                        fallback_model, fallback_endpoint = fallback
-                        # Log the fallback
-                        log_fallback(
-                            original_endpoint=endpoint.name,
-                            fallback_endpoint=fallback_endpoint.name,
-                            reason=endpoint.health.status.value,
-                            task_id=task_id,
-                            agent_name=agent_name,
-                        )
-                        print(f"→ Server unreachable. Falling back to {fallback_endpoint.name}/{fallback_model}")
-                        return call_endpoint(
-                            messages,
-                            max_tokens,
-                            temperature,
-                            fallback_model,
-                            retry_count,
-                            task_id,
-                            agent_name,
-                        )
+                    return _fallback_to_alternate(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        retry_count,
+                        task_id,
+                        agent_name,
+                        endpoint,
+                        model_name,
+                        endpoint_mgr,
+                        seen,
+                        announce="→ Server unreachable. Falling back to {name}/{model}",
+                    )
 
                 time.sleep(wait_time)
                 continue
@@ -609,31 +640,19 @@ def call_endpoint(  # noqa: C901
                 # Mark endpoint as having issues
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
                 record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="bad_payload")
-
-                # Try fallback
-                fallback = endpoint_mgr.get_fallback_model(endpoint)
-                if fallback:
-                    fallback_model, fallback_endpoint = fallback
-                    # Log the fallback
-                    log_fallback(
-                        original_endpoint=endpoint.name,
-                        fallback_endpoint=fallback_endpoint.name,
-                        reason=endpoint.health.status.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
-                    )
-                    print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
-                    return call_endpoint(
-                        messages,
-                        max_tokens,
-                        temperature,
-                        fallback_model,
-                        retry_count,
-                        task_id,
-                        agent_name,
-                    )
-
-                return None, 0
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce="→ Falling back to {name}/{model}",
+                )
 
             # ============= SUCCESS =============
             # Mark endpoint as healthy
@@ -662,28 +681,20 @@ def call_endpoint(  # noqa: C901
             if attempt == retry_count - 1:
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
                 record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="timeout")
-
-                fallback = endpoint_mgr.get_fallback_model(endpoint)
-                if fallback:
-                    fallback_model, fallback_endpoint = fallback
-                    log_fallback(
-                        original_endpoint=endpoint.name,
-                        fallback_endpoint=fallback_endpoint.name,
-                        reason=EndpointStatus.UNAVAILABLE.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
-                    )
-                    print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
-                    return call_endpoint(
-                        messages,
-                        max_tokens,
-                        temperature,
-                        fallback_model,
-                        retry_count,
-                        task_id,
-                        agent_name,
-                    )
-                return None, 0
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce=f"  → {agent_name} falling back to {{name}}/{{model}}",
+                    reason=EndpointStatus.UNAVAILABLE.value,
+                )
 
             # ✅ Make the retry visible
             print(f"  🔄 Retrying {agent_name} in {2**attempt}s...")
@@ -706,29 +717,20 @@ def call_endpoint(  # noqa: C901
             if attempt == retry_count - 1:
                 endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
                 record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="request_error")
-
-                fallback = endpoint_mgr.get_fallback_model(endpoint)
-                if fallback:
-                    fallback_model, fallback_endpoint = fallback
-                    log_fallback(
-                        original_endpoint=endpoint.name,
-                        fallback_endpoint=fallback_endpoint.name,
-                        reason=EndpointStatus.UNAVAILABLE.value,
-                        task_id=task_id,
-                        agent_name=agent_name,
-                    )
-                    print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
-                    return call_endpoint(
-                        messages,
-                        max_tokens,
-                        temperature,
-                        fallback_model,
-                        retry_count,
-                        task_id,
-                        agent_name,
-                    )
-
-                return None, 0
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce=f"  → {agent_name} falling back to {{name}}/{{model}}",
+                    reason=EndpointStatus.UNAVAILABLE.value,
+                )
 
             print(f"  🔄 Retrying {agent_name} in {2**attempt}s...")
             time.sleep(2**attempt)
@@ -742,58 +744,38 @@ def call_endpoint(  # noqa: C901
 
             endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
             record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="unexpected_error")
-
-            fallback = endpoint_mgr.get_fallback_model(endpoint)
-            if fallback:
-                fallback_model, fallback_endpoint = fallback
-                log_fallback(
-                    original_endpoint=endpoint.name,
-                    fallback_endpoint=fallback_endpoint.name,
-                    reason=EndpointStatus.UNAVAILABLE.value,
-                    task_id=task_id,
-                    agent_name=agent_name,
-                )
-                print(f"  → {agent_name} falling back to {fallback_endpoint.name}/{fallback_model}")
-                return call_endpoint(
-                    messages,
-                    max_tokens,
-                    temperature,
-                    fallback_model,
-                    retry_count,
-                    task_id,
-                    agent_name,
-                )
-
-            return None, 0
+            return _fallback_to_alternate(
+                messages,
+                max_tokens,
+                temperature,
+                retry_count,
+                task_id,
+                agent_name,
+                endpoint,
+                model_name,
+                endpoint_mgr,
+                seen,
+                announce=f"  → {agent_name} falling back to {{name}}/{{model}}",
+                reason=EndpointStatus.UNAVAILABLE.value,
+            )
 
     # All retries exhausted
     print(f"❌ All retries exhausted for {endpoint.name}")
     endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
     record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="retries_exhausted")
-
-    fallback = endpoint_mgr.get_fallback_model(endpoint)
-    if fallback:
-        fallback_model, fallback_endpoint = fallback
-        # Log the fallback
-        log_fallback(
-            original_endpoint=endpoint.name,
-            fallback_endpoint=fallback_endpoint.name,
-            reason=endpoint.health.status.value,
-            task_id=task_id,
-            agent_name=agent_name,
-        )
-        print(f"→ Falling back to {fallback_endpoint.name}/{fallback_model}")
-        return call_endpoint(
-            messages,
-            max_tokens,
-            temperature,
-            fallback_model,
-            retry_count,
-            task_id,
-            agent_name,
-        )
-
-    return None, 0
+    return _fallback_to_alternate(
+        messages,
+        max_tokens,
+        temperature,
+        retry_count,
+        task_id,
+        agent_name,
+        endpoint,
+        model_name,
+        endpoint_mgr,
+        seen,
+        announce="→ Falling back to {name}/{model}",
+    )
 
 
 def call_agent(  # noqa: C901

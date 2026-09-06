@@ -10,7 +10,7 @@ from agents.orchestrator import call_orchestrator
 from agents.parallel_workers import get_agent_pool
 from core.config import get_config
 from core.db_connection import get_db_connection
-from core.db_helpers import age_feedback_backlog, complete_task, create_task, post_message
+from core.db_helpers import age_feedback_backlog, complete_task, create_task, mark_task_status, post_message
 from core.endpoint_manager import registered_or_none
 from core.file_operations import get_file_content_from_db, is_secret_path, should_ignore_file
 from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
@@ -35,6 +35,11 @@ NETWORK_FAILURE_PAUSE_THRESHOLD = 2
 #: rate-limit pressure, yet the orchestrator re-dispatched the same developer
 #: turn every iteration — "📋 Decision: developer", Work 0.0s each time).
 NO_PROGRESS_TURNS_THRESHOLD = 3
+
+#: Session exits that mean infrastructure, not "the model never ran a command."
+#: These stay NEUTRAL for the zero-command seed latch so a transport blip
+#: cannot freeze the mutation path (ROADMAP §3 vs Operator Principle #1).
+_ZERO_COMMAND_INFRA_EXITS = frozenset({"LlmUnavailable", "TimeExceeded"})
 
 
 def _is_network_failure_text(text: str | None) -> bool:
@@ -178,23 +183,28 @@ def _finish_gate_blocked(
     return False, ""
 
 
-def _finalize_task(task_id: str, progress: dict, reason: str) -> None:
+def _finalize_task(task_id: str, progress: dict, reason: str, status: str | None = None) -> None:
     """Write a terminal status for a task.
 
-    `completed` when the task produced file changes, `stalled` otherwise.
     Never downgrades an already-terminal task (e.g. completed via FINISH).
     """
-    status = "completed" if progress.get("files_modified", 0) > 0 else "stalled"
+    if status is None:
+        status = progress.get("terminal_status")
+    if status is None:
+        if progress.get("files_modified", 0) > 0:
+            status = "completed"
+        elif "KeyboardInterrupt" in reason:
+            status = "failed"
+        elif "token budget" in reason.lower():
+            status = "timed_out"
+        elif "max_turns" in reason and progress.get("evidence_ok"):
+            status = "no_change_required"
+            reason = progress.get("terminal_reason") or "review completed; no safe change justified"
+        else:
+            status = "stalled"
     result = f"{reason}: files_modified={progress.get('files_modified', 0)}"
     try:
-        with get_db_connection() as conn:
-            conn.execute(
-                """
-                UPDATE tasks SET status = ?, completed_at = ?, result = ?
-                WHERE id = ? AND status = 'in_progress'
-            """,
-                (status, datetime.now().isoformat(), result, task_id),
-            )
+        mark_task_status(task_id, status, result)
         print(f"📌 Task {task_id} finalized as '{status}' ({result})")
     except Exception as e:
         print(f"   ⚠️  Failed to finalize task {task_id}: {e}")
@@ -350,6 +360,46 @@ class NoProgressLoopGuard:
         return self._streak >= self.threshold
 
 
+class ZeroCommandSeedGuard:
+    """ROADMAP §3: do not re-dispatch developer on a seed that never ran a command.
+
+    A-1 re-dispatched the same seed 13 times after Gemini finished with no bash.
+    After fail-closed evidence (§2) those sessions become WorkspaceValidationFailed
+    or LimitsExceeded with commands_executed==0; both must latch on the first
+    turn. Transport failures stay dispatchable.
+    """
+
+    def __init__(self) -> None:
+        self._latched = False
+
+    def latched(self) -> bool:
+        return self._latched
+
+    def record(self, mut: dict | None) -> bool:
+        if _is_zero_command_seed_failure(mut):
+            self._latched = True
+        return self._latched
+
+
+def _is_zero_command_seed_failure(mut: dict | None) -> bool:
+    """True when re-dispatching the same seed would repeat a no-command session."""
+    if not mut:
+        return False
+    # Edit-payload turns do not populate these keys; only shell sessions do.
+    if "session_exit" not in mut and "commands_executed" not in mut:
+        return False
+    exit_status = str(mut.get("session_exit") or "")
+    if exit_status == "WorkspaceValidationFailed":
+        return True
+    if int(mut.get("commands_executed") or 0) > 0:
+        return False
+    if exit_status in _ZERO_COMMAND_INFRA_EXITS:
+        return False
+    if mut.get("status") in ("success", "rejected", "test_failed"):
+        return False
+    return True
+
+
 def _is_uncompleted_session(mut: dict | None) -> bool:
     """True when a developer turn returned WITHOUT completing a real session.
 
@@ -469,6 +519,7 @@ def run_task_cycle(  # noqa: C901
 
     network_guard = NetworkBusyLoopGuard()
     no_progress_guard = NoProgressLoopGuard()
+    zero_command_guard = ZeroCommandSeedGuard()
 
     try:
         max_orchestrator_retries = 3
@@ -558,9 +609,9 @@ def run_task_cycle(  # noqa: C901
             if decision is None:
                 budget_exhausted = False
                 try:
-                    from agents.base import get_token_budget
+                    from agents.base import any_token_budget_remaining
 
-                    budget_exhausted = not get_token_budget().can_spend(1)
+                    budget_exhausted = not any_token_budget_remaining(1)
                 except Exception as e:
                     print(f"   ⚠️  Token budget check failed: {e}")
 
@@ -623,7 +674,16 @@ def run_task_cycle(  # noqa: C901
             # below, so the mutation path -- the LOOP's MOST IMPORTANT PATH --
             # always gets a chance to retry once infrastructure recovers.
             no_progress_guard.record_cycle()
-            if next_agent == "developer" and no_progress_guard.stalled():
+            if next_agent == "developer" and zero_command_guard.latched():
+                print("   🧯 Zero-command seed latch: not re-dispatching developer (prior session ran no command).")
+                decision = {
+                    "next_agent": "background",
+                    "instructions": user_command,
+                    "files_needed": [],
+                    "reasoning": "Zero-command seed latch: prior shell session finished before any command executed; not re-dispatching developer.",
+                }
+                next_agent = "background"
+            elif next_agent == "developer" and no_progress_guard.stalled():
                 print("   🧯 No-progress stall guard: redirecting developer dispatch to background discovery (mutation path re-arms next cycle).")
                 decision = {
                     "next_agent": "background",
@@ -687,7 +747,14 @@ def run_task_cycle(  # noqa: C901
                     continue
 
                 print(f"✅ Task marked complete after {current_turn} iterations")
-                complete_task(task_id, "Completed by orchestrator decision")
+                if progress.get("files_modified", 0) > 0:
+                    complete_task(task_id, "Completed by orchestrator decision")
+                else:
+                    mark_task_status(
+                        task_id,
+                        "no_change_required",
+                        "review completed; no safe change justified",
+                    )
                 continue
 
             # =====================================================
@@ -717,6 +784,11 @@ def run_task_cycle(  # noqa: C901
                     else:
                         network_guard.record_success()
                     _record_developer_progress(no_progress_guard, task_id, progress, files_before, mut)
+                    if mut.get("evidence_ok"):
+                        progress["evidence_ok"] = True
+                    if zero_command_guard.record(mut) and not progress.get("terminal_status"):
+                        progress["terminal_status"] = "failed"
+                        progress["terminal_reason"] = mut.get("message") or "shell session ran no command"
                     conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
                     continue
 
@@ -822,6 +894,11 @@ PLAN: [brief explanation]"""
                 )
                 _active_work_seconds += _last_call_http_latency
                 _record_developer_progress(no_progress_guard, task_id, progress, files_before, mut)
+                if mut.get("evidence_ok"):
+                    progress["evidence_ok"] = True
+                if zero_command_guard.record(mut) and not progress.get("terminal_status"):
+                    progress["terminal_status"] = "failed"
+                    progress["terminal_reason"] = mut.get("message") or "shell session ran no command"
 
             # BACKGROUND AGENTS - Yield control
             # =====================================================
@@ -892,7 +969,7 @@ PLAN: [brief explanation]"""
                                 """)
                                 next_items = cursor.fetchall()
 
-                        if top_item and not no_progress_guard.stalled():
+                        if top_item and not no_progress_guard.stalled() and not zero_command_guard.latched():
                             print(f"   ⚠️  Orchestrator chose 'background', but agents are PAUSED (backlog: {backlog_count})")
                             print("   🔄 Redirecting to 'developer' to work on prioritized feedback")
 
@@ -971,6 +1048,11 @@ PLAN: [brief explanation]"""
                             # infrastructure failure never freezes the
                             # developer.
                             _record_developer_progress(no_progress_guard, task_id, progress, files_before, mut)
+                            if mut.get("evidence_ok"):
+                                progress["evidence_ok"] = True
+                            if zero_command_guard.record(mut) and not progress.get("terminal_status"):
+                                progress["terminal_status"] = "failed"
+                                progress["terminal_reason"] = mut.get("message") or "shell session ran no command"
                             conversation_context.append({"role": "assistant", "content": json.dumps(mut, default=str)[:4000]})
 
                         elif top_item:
@@ -1061,10 +1143,11 @@ PLAN: [brief explanation]"""
     except KeyboardInterrupt:
         # Residual P6: a manual stop must still write a terminal status; the
         # finally block (worker stop) still runs below.
-        _finalize_task(task_id, progress, reason="KeyboardInterrupt")
+        _finalize_task(task_id, progress, reason="KeyboardInterrupt", status="failed")
         raise
     except Exception as e:
-        _finalize_task(task_id, progress, reason=f"error: {e}")
+        crash_status = "stalled" if isinstance(e, RecursionError) else "failed"
+        _finalize_task(task_id, progress, reason=f"error: {e}", status=crash_status)
         raise
 
     finally:

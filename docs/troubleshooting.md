@@ -337,7 +337,16 @@ curl -I https://api.our.example.domain/
 ```json
 {
   "token_budget": {
-    "max_tokens_per_4h": 50000000
+    "max_tokens_per_4h": 50000000,
+    "max_tokens_per_day": 200000000
+  },
+  "endpoints": {
+    "opencode": {
+      "token_budget": {
+        "max_tokens_per_4h": 50000000,
+        "max_tokens_per_day": 200000000
+      }
+    }
   }
 }
 ```

@@ -86,6 +86,7 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | `description` | string | Label |
 | `priority` | int | Lower = preferred on ties (convention) |
 | `rate_limit_per_minute` | number | Soft client-side limit |
+| `token_budget` | object | Optional per-endpoint spend caps (`max_tokens_per_4h`, `max_tokens_per_day`). Overrides top-level `token_budget` for this endpoint only; endpoints do not share a bucket. |
 | `models` | map of model id → spec | Per-model settings: `max_context_tokens`, `max_output_tokens`, `temperature`, `description` |
 
 Models without `max_context_tokens` use a 100k default (applied silently when the
@@ -144,9 +145,18 @@ Map of agent name → model id string. Typical agents:
 
 ## `token_budget`
 
+Defaults for endpoints that omit `endpoints.<name>.token_budget`. Each endpoint
+has its own 4h and daily bucket — company vs public Gemini (or OpenCode vs
+OpenRouter) do not share.
+
 | Key | Type | Description |
 |-----|------|-------------|
-| `max_tokens_per_4h` | int | Rolling window budget used by `TokenBudget` |
+| `max_tokens_per_4h` | int | Rolling 4-hour window used by `TokenBudget` |
+| `max_tokens_per_day` | int | Rolling 24-hour window used by `TokenBudget`. Omit for no daily gate on the call path (`resource_controller.max_tokens_per_day` remains a separate process-wide throttle). |
+
+### `endpoints.<name>.token_budget`
+
+Same keys. When present, they override the top-level defaults **for that endpoint only**.
 
 ---
 

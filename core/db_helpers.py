@@ -294,16 +294,36 @@ def create_task(task_id: str, description: str):
         )
 
 
-def complete_task(task_id: str, result: str):
-    """Mark task as complete"""
+TERMINAL_TASK_STATUSES = frozenset(
+    {
+        "completed",
+        "failed",
+        "deferred",
+        "cancelled",
+        "timed_out",
+        "no_change_required",
+        "stalled",
+    }
+)
+
+
+def mark_task_status(task_id: str, status: str, reason: str = "") -> None:
+    """Write a terminal task status. Never downgrades an already-terminal row."""
+    if status not in TERMINAL_TASK_STATUSES:
+        raise ValueError(f"invalid terminal task status: {status!r}")
     with get_db_connection() as conn:
         conn.execute(
             """
-            UPDATE tasks SET status = 'completed', completed_at = ?, result = ?
-            WHERE id = ?
-        """,
-            (datetime.now().isoformat(), result, task_id),
+            UPDATE tasks SET status = ?, completed_at = ?, result = ?
+            WHERE id = ? AND status = 'in_progress'
+            """,
+            (status, datetime.now().isoformat(), reason, task_id),
         )
+
+
+def complete_task(task_id: str, result: str):
+    """Mark task as complete"""
+    mark_task_status(task_id, "completed", result)
 
 
 def normalize_feedback_message(message: str) -> str:
