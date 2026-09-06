@@ -796,3 +796,117 @@ def test_all_parked_no_alternate_records_failure(call_endpoint_env, monkeypatch,
     assert outcomes and outcomes[0]["ok"] is False
     assert outcomes[0]["kind"] == "no_alternate_endpoint"
     assert "No alternate endpoints available" in capfd.readouterr().out
+
+
+# =====================================================================
+# PR #122 review: empty/policy HTTP-200 extraction.
+# A non-empty extract must survive safety metadata (safetyRatings /
+# content_filter), and a true empty/policy body must follow dump +
+# fallback — never a silent (None, 0) that skips the health latch.
+# =====================================================================
+
+
+def test_classify_nonempty_extract_never_classified_from_raw_substrings():
+    import agents.base as base
+
+    gemini = {
+        "candidates": [
+            {
+                "content": {"parts": [{"text": "real answer"}], "role": "model"},
+                "finishReason": "STOP",
+                "safetyRatings": [{"category": "HARM_CATEGORY", "probability": "HIGH"}],
+            }
+        ]
+    }
+    openai = {"choices": [{"message": {"content": "real answer", "role": "assistant"}, "finish_reason": "stop"}], "usage": {"total_tokens": 5}}
+    prose = {"choices": [{"message": {"content": "The safety gate was unblocked and the filter passed.", "role": "assistant"}}]}
+
+    assert base._classify_empty_or_policy_body(gemini, "real answer") == ""
+    assert base._classify_empty_or_policy_body(openai, "real answer") == ""
+    assert base._classify_empty_or_policy_body(prose, "The safety gate was unblocked and the filter passed.") == ""
+    assert base._classify_empty_or_policy_body({"usage": {}}, "answer") == ""
+
+
+def test_classify_empty_extract_detects_structured_policy_signals():
+    import agents.base as base
+
+    assert base._classify_empty_or_policy_body({"promptFeedback": {"blockReason": "SAFETY"}}, "") == "policy"
+    assert base._classify_empty_or_policy_body({"candidates": [{"finishReason": "BLOCK"}]}, "") == "policy"
+    assert base._classify_empty_or_policy_body({"candidates": [{"finishReason": "PROHIBITED_CONTENT"}]}, "") == "policy"
+    assert base._classify_empty_or_policy_body({"finishReason": "SAFETY", "usageMetadata": {}}, "") == "policy"
+    assert base._classify_empty_or_policy_body({"candidates": [{"safetyRatings": [{"category": "X"}]}]}, "") == "policy"
+    assert base._classify_empty_or_policy_body({"choices": [{"finish_reason": "content_filter", "message": {"content": ""}}]}, "") == "policy"
+    assert base._classify_empty_or_policy_body({"error": {"type": "safety"}}, "") == "policy"
+    # A non-policy empty body is still detected as empty.
+    assert base._classify_empty_or_policy_body({"choices": [{"message": {"content": ""}}]}, "") == "empty_body"
+    assert base._classify_empty_or_policy_body({}, "") == "empty_body"
+    # A non-policy empty body whose text merely mentions a policy word is not a block.
+    assert base._classify_empty_or_policy_body({"choices": [{"message": {"content": ""}}]}, "policy") == ""
+
+
+def test_200_with_safetyratings_and_text_still_returns_text(call_endpoint_env, capfd):
+    """PR #122: a 200 carrying safetyRatings/filters + a usable extract must
+    return the answer on the shared success path (orchestrator/developer/peer)."""
+    base = call_endpoint_env
+    body = {
+        "choices": [
+            {
+                "message": {"content": "here is the real answer", "role": "assistant"},
+                "finish_reason": "stop",
+                "content_filter_results": {"hate": {"filtered": True}},
+            }
+        ]
+    }
+    scripted = [_resp(200, body)]
+    outcomes: list[dict] = []
+
+    with patch("agents.base.post_json", side_effect=scripted):
+        with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw})):
+            answer, _tokens = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "here is the real answer"
+    assert not outcomes or all(o.get("ok") for o in outcomes)
+    assert "Empty/policy LLM body" not in capfd.readouterr().out
+
+
+def test_empty_policy_200_marks_failure_and_falls_back(call_endpoint_env, capfd):
+    """PR #122: a true empty/policy 200 must mark the endpoint failed and
+    fall back to an alternate (bad_payload behavior), not return (None, 0)."""
+    base = call_endpoint_env
+    primary = _FakeEndpoint()
+    primary.health = _RecordingHealth()
+    fallback = _FakeEndpoint()
+    fallback.name = "fallback"
+
+    class _TwoEndpointManager(_FakeManager):
+        def __init__(self):
+            self.endpoints = {"primary": primary, "fallback": fallback}
+
+        def normalize_model_reference(self, raw):
+            if "fallback" in str(raw):
+                return SimpleNamespace(endpoint_name="fallback", model_name="fallback-model")
+            return _Choice()
+
+        def get_fallback_model(self, endpoint, exclude=None):
+            if endpoint.name == "fallback" or (exclude and "fallback" in exclude):
+                return None
+            return ("fallback-model", fallback)
+
+    scripted = [
+        _resp(200, {"choices": [{"message": {"content": ""}, "finish_reason": "content_filter"}]}),
+        _resp(200, {"choices": [{"message": {"content": "from fallback"}}]}),
+    ]
+    outcomes: list[dict] = []
+    sleeps: list[float] = []
+
+    with patch.object(base, "get_endpoint_manager", lambda: _TwoEndpointManager()):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw})):
+                with patch("time.sleep", side_effect=sleeps.append):
+                    answer, _tokens = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "from fallback"
+    assert any(s == EndpointStatus.UNAVAILABLE for s, _ in primary.health.parked)
+    assert any(o.get("kind") == "policy" for o in outcomes)
+    assert any(o.get("ok") is False for o in outcomes)
+    assert "falling back" in capfd.readouterr().out.lower()

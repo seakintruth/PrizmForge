@@ -124,6 +124,55 @@ Never attempt to interact outside this working copy; changes outside it are disc
 
 _SEED_PATH_RE = re.compile(r"[\w./-]+\.\w+")
 
+# Version-like / domain-like tokens harvested from seed prose (gemini-3.1,
+# v1.2, api.genai.mil) are not file targets. A suffix that is purely numeric
+# (…\.3.1) is a version; multi-part dot tokens with no slash and no known code
+# extension (….mil) are domains. Neither should abort or drive the inspect path.
+_VERSIONISH_EXT_RE = re.compile(r"\.\d+(\.\w+)*$")
+
+# Extensions that make a bare token (no path separator) look like a real
+# target file rather than a domain / prose artifact.
+_SEED_KNOWN_EXTENSIONS = frozenset(
+    [
+        ".py",
+        ".pyw",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".json",
+        ".jsonc",
+        ".md",
+        ".rst",
+        ".txt",
+        ".toml",
+        ".yaml",
+        ".yml",
+        ".ini",
+        ".cfg",
+        ".conf",
+        ".sh",
+        ".bash",
+        ".sql",
+        ".html",
+        ".css",
+        ".xml",
+        ".go",
+        ".rs",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".java",
+        ".lock",
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+    ]
+)
+
 _NO_SHELL_FINISH_MARKERS = (
     "upload files",
     "upload the files",
@@ -169,8 +218,59 @@ def build_inspect_prompt(task_text: str, evidence: dict[str, Any], target_path: 
     return f"{header}{build_instance_prompt(task_text)}\nReply with exactly one closed bash block. Inspect the relevant files first."
 
 
+def _seed_path_candidates(task_text: str) -> list[str]:
+    """File-like tokens from the seed, longest-first.
+
+    Drops ``..`` / absolute candidates and version/domain-like tokens
+    (gemini-3.1, v1.2, api.genai.mil) that seed prose will otherwise harvest.
+    Mirrors ``parallel_workers._resolve_seed_target_path`` (longest-wins, then
+    an in-repo existence check) so a false-positive token cannot abort the
+    session (PR #122 review).
+    """
+    found = sorted(set(_SEED_PATH_RE.findall(task_text or "")), key=len, reverse=True)
+    return [c for c in found if not _versionish_or_invalid(c)]
+
+
+def _versionish_or_invalid(candidate: str) -> bool:
+    """True when a seed token must not be treated as a target path."""
+    if "/" in candidate:
+        # reject explicit parent escapes or absolute paths inside a path token
+        if candidate.startswith("/") or any(part == ".." for part in candidate.split("/")):
+            return True
+        return False
+    # A bare token with a purely-numeric version suffix (3.1) or a non-code,
+    # multi-dot domain shape (api.genai.mil) is not a file target.
+    if _VERSIONISH_EXT_RE.search(candidate):
+        return True
+    if candidate.count(".") >= 2 and Path(candidate).suffix.lower() not in _SEED_KNOWN_EXTENSIONS:
+        return True
+    return False
+
+
+def _path_like_seed_candidate(candidate: str) -> bool:
+    """True when the token is plausibly a real in-repo target path: it has a
+    path separator, or a bare-token code/doc extension. Only such a surviving
+    candidate warrants the documented §10.4.2 'target missing' abort; a
+    version/domain token or a bare prose artifact does not."""
+
+    def _part_ok(part: str) -> bool:
+        return part not in ("", ".", "..") and not _VERSIONISH_EXT_RE.search(part)
+
+    parts = (candidate or "").split("/")
+    if not parts:
+        return False
+    if any(not _part_ok(p) for p in parts):
+        return False
+    if candidate.startswith("/"):
+        return False
+    # A bare token is a target only when it carries a known code/doc extension.
+    if "/" not in candidate:
+        return Path(candidate).suffix.lower() in _SEED_KNOWN_EXTENSIONS
+    return True
+
+
 def resolve_seed_target_path(task_text: str, worktree: Any | None = None, marker: str = WORKSPACE_MARKER_DEFAULT) -> str | None:
-    candidates = sorted(set(_SEED_PATH_RE.findall(task_text or "")), key=len, reverse=True)
+    candidates = _seed_path_candidates(task_text)
     root = None
     if worktree is not None:
         try:
@@ -586,18 +686,34 @@ def _recent_failure_kind(model_ref: str | None, max_age_s: int = 30) -> str:
     a model reference (or "" if none). call_endpoint writes every failure
     synchronously before returning None, so this classifies the None instead of
     guessing whether it was rate-limiting, a latch, or a token budget."""
+    _kind, _detail = _recent_failure(model_ref, max_age_s)
+    return _kind
+
+
+def _recent_failure_detail(model_ref: str | None, max_age_s: int = 30) -> str:
+    """Return the body-excerpt detail the most recent model-health failure
+    recorded for a model reference (or "" if none). call_endpoint stores the
+    dumped body here, so prefer it over a stub (PR #122 review)."""
+    _kind, detail = _recent_failure(model_ref, max_age_s)
+    return detail
+
+
+def _recent_failure(model_ref: str | None, max_age_s: int = 30) -> tuple[str, str]:
+    """Shared read of the latest ok=0 model-health row: (kind, detail)."""
     if not model_ref:
-        return ""
+        return "", ""
     try:
         with get_db_connection() as conn:
             cutoff = (datetime.now() - timedelta(seconds=max_age_s)).isoformat(timespec="seconds")
             row = conn.execute(
-                "SELECT kind FROM model_health_events WHERE model_ref = ? AND ok = 0 AND ts >= ? ORDER BY ts DESC LIMIT 1",
+                "SELECT kind, detail FROM model_health_events WHERE model_ref = ? AND ok = 0 AND ts >= ? ORDER BY ts DESC LIMIT 1",
                 (model_ref, cutoff),
             ).fetchone()
-            return str(row[0]) if row else ""
+            if not row:
+                return "", ""
+            return str(row[0] or ""), str(row[1] or "")
     except Exception:
-        return ""
+        return "", ""
 
 
 class ShellDeveloperSession:
@@ -649,6 +765,19 @@ class ShellDeveloperSession:
             return f"{choice.endpoint_name}/{choice.model_name}"
         return choice.model_name
 
+    def _resolved_enterprise_chat(self) -> bool:
+        """True when the model actually used for this session resolves onto
+        Gemini Enterprise chat (api.genai.mil), even if cfg.model was null and
+        the effective model only surfaced via resource-controller / preference
+        resolution. Mirrors run_shell_developer_turn so Session.run cannot let
+        a null shell_developer.model enter the LLM loop via tests vs prod."""
+        try:
+            resolved = self._resolve_developer_model() or self.cfg.model
+        except Exception as e:
+            print(f"  ⚠️  Developer model capability check skipped: {e}")
+            return False
+        return is_enterprise_chat_developer(resolved, _enterprise_chat_base_url(resolved))
+
     def _llm(self) -> str | None:
         """Call the LLM with bounded, failure-kind-aware retries (Soak10 follow-up).
 
@@ -675,7 +804,7 @@ class ShellDeveloperSession:
                 return text
             kind = _recent_failure_kind(model_ref) or "unknown"
             if kind == "unknown":
-                excerpt = "(empty or unparsed body)"
+                excerpt = _recent_failure_detail(model_ref) or "(empty or unparsed body)"
                 print(f"   ⚠️  Empty/policy LLM body from {model_ref}: {excerpt}")
                 record_model_outcome(model_ref, ok=False, kind="unknown", detail=excerpt)
                 self.result.last_llm_failure = {
@@ -826,7 +955,7 @@ class ShellDeveloperSession:
     def run(self, task_text: str) -> SessionResult:  # noqa: C901
         r = self.result
         r.messages = self.messages
-        if is_enterprise_chat_developer(self.cfg.model):
+        if is_enterprise_chat_developer(self.cfg.model) or self._resolved_enterprise_chat():
             r.exit_status = "DeveloperModelNotShellCapable"
             r.summary = "developer_model_not_shell_capable"
             print(f"   ❌ {r.summary}: {self.cfg.model}")
@@ -834,12 +963,12 @@ class ShellDeveloperSession:
         if not self._run_in_process_evidence():
             return r
         self.target_path = resolve_seed_target_path(task_text, self.wt, self.cfg.workspace_marker)
-        named = sorted(set(_SEED_PATH_RE.findall(task_text or "")), key=len, reverse=True)
+        named = _seed_path_candidates(task_text)
         try:
             root = Path(self.wt.working_dir())
         except Exception:
             root = None
-        if named and root is not None and root.is_dir() and self.target_path is None:
+        if named and root is not None and root.is_dir() and self.target_path is None and _path_like_seed_candidate(named[0]):
             r.exit_status = "WorkspaceValidationFailed"
             r.summary = f"target missing after evidence: {named[0]}"
             print(f"   ❌ {r.summary}")

@@ -312,6 +312,24 @@ def test_recent_failure_kind_reads_recorded_event_real_db(monkeypatch, tmp_path)
     assert sd._recent_failure_kind("openrouter/openrouter/free", max_age_s=999999) == "rate_limited"
 
 
+def test_recent_failure_detail_reads_stored_excerpt_real_db(monkeypatch, tmp_path):
+    """PR #122: _llm's unknown-kind excerpt should come from the health-row
+    detail call_endpoint stored (dump-once), not a hardcoded stub."""
+    _real_health_db(monkeypatch, tmp_path)
+
+    sd.record_model_outcome(
+        "openrouter/openrouter/free",
+        endpoint="openrouter",
+        ok=False,
+        kind="empty_body",
+        detail='{"choices": []}',
+    )
+
+    assert sd._recent_failure_detail("openrouter/openrouter/free", max_age_s=999999) == '{"choices": []}'
+    assert sd._recent_failure_detail(None) == ""
+    assert sd._recent_failure_detail("never/used-ref", max_age_s=999999) == ""
+
+
 def test_recent_failure_kind_real_db_missing_refs_return_empty(monkeypatch, tmp_path):
     _real_health_db(monkeypatch, tmp_path)
 

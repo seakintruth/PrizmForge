@@ -178,6 +178,18 @@ def test_enterprise_chat_model_skips_shell_session():
     assert result.n_model_calls == 0
 
 
+def test_resolved_enterprise_model_skips_shell_session_even_when_cfg_null():
+    """PR #122: Session.run must not let a null cfg.model that resolves onto
+    api.genai.mil (resource-controller / preference path) enter the LLM loop —
+    parity with run_shell_developer_turn."""
+    session, state = _session([f"{sd.FINISH_TOKEN}\nok"])
+    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
+    result = session.run("task")
+    assert result.exit_status == "DeveloperModelNotShellCapable"
+    assert state["i"] == 0
+    assert result.n_model_calls == 0
+
+
 def test_correct_worktree_exposes_marker(tmp_path):
     repo = _git_repo(tmp_path / "repo", with_marker=True)
     wt = sd.ShellWorktree(repo)
@@ -240,3 +252,60 @@ def test_run_command_uses_worktree_cwd(tmp_path):
         assert Path(cwd_used["cwd"]).resolve() == wt.working_dir().resolve()
     finally:
         wt.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# PR #122: seed-path tokens harvested from prose must not latch developer.
+# Only a path-like surviving candidate may trigger the §10.4.2 missing-target
+# abort; version/domain tokens (gemini-3.1, api.genai.mil) resolve to None and
+# the session proceeds with the inspect prompt (target_path=None).
+# ---------------------------------------------------------------------------
+class _RealDirWorktree(_FakeWorktree):
+    def __init__(self, root: Path):
+        super().__init__(exit_code=0, output="/work/wt\n/work/wt\nworkflow/\nworkflow/__init__.py\n")
+        self.path = root
+
+    def working_dir(self):
+        return self.path
+
+
+def test_seed_path_candidate_filter_drops_version_and_domain_tokens():
+    assert sd._seed_path_candidates("update gemini-3.1 for api.genai.mil v1.2") == []
+    assert sd._seed_path_candidates("inspect workflow/task_runner.py") == ["workflow/task_runner.py"]
+    assert sd._seed_path_candidates("fix bug in config.json") == ["config.json"]
+    assert "api.genai.mil" not in sd._seed_path_candidates("see docs/config.json on api.genai.mil")
+
+
+def test_path_like_seed_candidate_discriminates_targets_from_prose():
+    assert sd._path_like_seed_candidate("workflow/task_runner.py") is True
+    assert sd._path_like_seed_candidate("config.json") is True
+    assert sd._path_like_seed_candidate("docs/README.md") is True
+    assert sd._path_like_seed_candidate("api.genai.mil") is False
+    assert sd._path_like_seed_candidate("gemini-3.1") is False
+    assert sd._path_like_seed_candidate("../etc/passwd") is False
+    assert sd._path_like_seed_candidate("/etc/hosts") is False
+
+
+def test_version_token_in_seed_prose_does_not_abort(tmp_path):
+    root = tmp_path / "wt"
+    root.mkdir()
+    session, _ = _session(
+        ["```bash\necho hi\n```", f"{sd.FINISH_TOKEN}\nok"],
+        wt=_RealDirWorktree(root),
+    )
+    result = session.run("update gemini-3.1 notes for api.genai.mil v1.2")
+    assert result.exit_status != "WorkspaceValidationFailed"
+    assert result.evidence_ok is True
+    assert session.target_path is None
+
+
+def test_missing_path_like_target_still_aborts(tmp_path):
+    root = tmp_path / "wt"
+    root.mkdir()
+    session, _ = _session(
+        [f"{sd.FINISH_TOKEN}\nno change"],
+        wt=_RealDirWorktree(root),
+    )
+    result = session.run("Inspect workflow/task_runner.py")
+    assert result.exit_status == "WorkspaceValidationFailed"
+    assert "target missing after evidence" in result.summary

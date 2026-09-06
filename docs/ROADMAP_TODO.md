@@ -144,33 +144,39 @@ is not a fence-normalizer bug.
 
 ### 10.3 Harness bugs visible in the same dump
 
-- [ ] **Finish classifier is too loose.** Rows 67, 77, 124, 245, 248,
+- [x] **Finish classifier is too loose.** Rows 67, 77, 124, 245, 248,
       268, 277, 288 parsed as `VALID_FINISH_SESSION` while the body is
       an essay that only *mentions* the token. Require the first
       non-empty line to be exactly `FINISH_EDIT_SESSION`. Reject a
       finish whose summary claims no filesystem / upload-files /
       “Gemini Enterprise” after `marker_found=true`.
-- [ ] **Archive `command` is not always model-authored.** Every
+      (Shipped: `is_canonical_finish` in `shell_protocol.py` +
+      `finish_claims_no_shell` rejection.)
+- [x] **Archive `command` is not always model-authored.** Every
       `prompt_len=2333` row stores the injected evidence line, even
       when `response` is “### System Access Limitations” (id 86).
       Store `injected_command` vs `model_command` separately, or only
       write `command` when the parsed bash block is what ran.
-- [ ] **`echo "I do not have shell access…"` is a valid bash block**
+      (Shipped: `_record_step` stores `command=None` unless it ran.)
+- [x] **`echo "I do not have shell access…"` is a valid bash block**
       (ids 209, 304) with `command_exit_code` NULL. Do not count that
       as evidence. Evidence is only the configured
       `pwd && git rev-parse --show-toplevel && ls -la && test -f <marker>`
-      line with exit 0.
-- [ ] **`kind=unknown` after a good `ls` is unlogged.**
+      line with exit 0. (Shipped: `is_evidence_command` rejects it.)
+- [x] **`kind=unknown` after a good `ls` is unlogged.**
       `model_health_events` on this DB was empty. Dump the raw HTTP
       body once per unknown; classify empty / safety / policy
       separately from transport. Do not tear the session down as
       `LlmUnavailable` until that dump exists.
-- [ ] **Latch: evidence-only ≠ zero-command.** If
+      (Shipped: `model_health_events.detail`, `_dump_unknown_llm_body_once`,
+      structured-only classifier; a non-empty extract is never classified
+      and an empty/policy body falls back like `bad_payload`.)
+- [x] **Latch: evidence-only ≠ zero-command.** If
       `commands_executed >= 1` and `marker_found`, do **not** freeze
       developer for the rest of the duration on `LlmUnavailable` or
       “no mutation.” Allow at least one retry. Otherwise one policy
       rant + one `ls` burns the remaining window on reviewers
-      (`Work: 0.0s`).
+      (`Work: 0.0s`). (Shipped: `_is_zero_command_seed_failure`.)
 
 ### 10.4 Required mutation-path changes
 
@@ -182,7 +188,7 @@ developer model routing in config, tests under
 
 #### 10.4.1 Evidence is in-process (no LLM)
 
-- [ ] Before the first `call_endpoint` for a shell session, the
+- [x] Before the first `call_endpoint` for a shell session, the
       runner itself executes:
 
       ```bash
@@ -191,16 +197,16 @@ developer model routing in config, tests under
 
       Persist cwd, git_root, exit, stdout excerpt, `marker_found`,
       `task_path_exists` (already on the trajectory object).
-- [ ] If marker missing or exit ≠ 0: emit
+- [x] If marker missing or exit ≠ 0: emit
       `shell_workspace_validation_failed`, abort. Do not ask the
       model to prove the tree exists.
-- [ ] Do **not** put “you have a real shell / do not ask the user to
+- [x] Do **not** put “you have a real shell / do not ask the user to
       upload files” sermons in the first user turn. That text is
       what triggers the Enterprise refusal.
 
 #### 10.4.2 First model turn is inspect-the-target, not prove-cwd
 
-- [ ] After in-process evidence, the first user message is only:
+- [x] After in-process evidence, the first user message is only:
 
       ```text
       Workspace listing (already executed, exit 0):
@@ -214,28 +220,31 @@ developer model routing in config, tests under
 
       Use the resolved seed path; do not hard-code only
       `__init__.py`.
-- [ ] Reject `FINISH_EDIT_SESSION` until **one non-evidence command**
+- [x] Reject `FINISH_EDIT_SESSION` until **one non-evidence command**
       against the target path has run (or a documented “target
       missing after evidence” abort).
-- [ ] After that `sed -n` / `nl` succeeds, the model may edit with
+- [x] After that `sed -n` / `nl` succeeds, the model may edit with
       further bash or finish with a real rationale. Finish with
       “no shell” after evidence stdout is
       `shell_session_no_mutation` + retry, not session-complete.
 
 #### 10.4.3 Developer model is not optional
 
-- [ ] Do not assign `gemini-3.1-pro-preview` on `api.genai.mil`
+- [x] Do not assign `gemini-3.1-pro-preview` on `api.genai.mil`
       (Gemini Enterprise chat) as `developer` / shell implementation.
       Orchestrator and reviewers may stay on that endpoint.
-- [ ] Config: `agents.developer.model` (or
+- [x] Config: `agents.developer.model` (or
       `shell_developer.model`) must be a model that will emit a
       **second** closed bash block after seeing command stdout.
       Document the soak-proven refusal so a future config cannot
       silently point developer back at Enterprise chat.
-- [ ] If the only available endpoint is Enterprise chat, skip the
+      (Shipped: `example_config.json` `_note_model` warning.)
+- [x] If the only available endpoint is Enterprise chat, skip the
       shell developer and fail the task as
       `developer_model_not_shell_capable` rather than looping 30
       evidence-only turns.
+      (Shipped: `Session.run` + `run_shell_developer_turn` both check
+      the configured *and* resolved model/base_url for `genai.mil`.)
 
 #### 10.4.4 Proposal path (only after a dirty tree)
 
@@ -244,6 +253,11 @@ developer model routing in config, tests under
       `edit_proposals` must run even when the last LLM call was
       `unknown`. Today 33 successful commands still yield 0
       proposals because the tree never changed.
+      (Wiring exists — `run_shell_developer_turn` collects changes after
+      the session and gates them. NOT proven against a Soak4-shaped
+      fixture yet; tick only once the §10.7 acceptance query shows
+      `other_cmds > 0` and `edit_proposals > 0` on a seed naming an
+      existing file.)
 - [ ] Acceptance query (same DB shape as Soak4):
 
       ```sql
@@ -264,22 +278,26 @@ developer model routing in config, tests under
 Add to `tests/unit/test_shell_developer_protocol_recovery.py`
 (and a thin `task_runner` latch test):
 
-- [ ] First assistant message is the Enterprise refusal (no bash).
+- [x] First assistant message is the Enterprise refusal (no bash).
       Expected: format error; evidence already ran in-process so
       no 2333-char “emit ls” inject.
-- [ ] Finish whose body discusses `FINISH_EDIT_SESSION` but does not
+- [x] Finish whose body discusses `FINISH_EDIT_SESSION` but does not
       start with that line → not `VALID_FINISH_SESSION`.
-- [ ] Finish that claims no filesystem after `marker_found=true` →
+- [x] Finish that claims no filesystem after `marker_found=true` →
       rejected.
-- [ ] `echo "I do not have shell access"` is not evidence.
-- [ ] In-process evidence failure (empty temp dir) →
+- [x] `echo "I do not have shell access"` is not evidence.
+- [x] In-process evidence failure (empty temp dir) →
       `shell_workspace_validation_failed`, no LLM.
-- [ ] In-process evidence success + model emits
+- [x] In-process evidence success + model emits
       `sed -n '1,80p' workflow/task_runner.py` → command runs,
       session continues.
-- [ ] Session with `commands_executed>=1` and `marker_found` plus
+- [x] Session with `commands_executed>=1` and `marker_found` plus
       `LlmUnavailable` does **not** set the zero-command latch.
-- [ ] `kind=unknown` records a model-health row with body excerpt.
+- [x] `kind=unknown` records a model-health row with body excerpt.
+- [x] (PR #122 follow-up) A 200 with `safetyRatings`/filter metadata
+      **plus non-empty text** still returns the text; a true empty/policy
+      body marks the endpoint failed and falls back; seed-prose version /
+      domain tokens (`gemini-3.1`, `api.genai.mil`) do not abort.
 
 ### 10.6 Out of scope
 
