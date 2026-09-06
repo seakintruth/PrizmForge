@@ -87,6 +87,40 @@ def test_streak_rule_trips_early_and_doubles_cooldown(tracker_db):
         assert (v6["until"] - now).total_seconds() > (v4["until"] - now).total_seconds()
 
 
+def test_operator_kinds_do_not_demote(tracker_db):
+    """ROADMAP §5: latch/budget/key_lock must not inflate streak or ratio."""
+    now = datetime.now()
+    events = []
+    for kind in ("key_locked", "token_budget", "no_alternate_endpoint", "token_exhausted"):
+        events.extend([{"ts": now.isoformat(timespec="seconds"), "ok": 0, "kind": kind, "latency_ms": 0}] * 6)
+    stats = mh.compute_stats(events, now=now)
+    assert stats["consecutive_failures"] == 0
+    assert stats["failure_ratio"] == 0.0
+    assert mh.evaluate_demotion(stats, now=now) is None
+
+
+def test_real_failures_still_demote_across_operator_events(tracker_db):
+    now = datetime.now()
+    events = [
+        {"ts": (now - timedelta(minutes=5)).isoformat(timespec="seconds"), "ok": 0, "kind": "timeout", "latency_ms": 0},
+        {"ts": (now - timedelta(minutes=4)).isoformat(timespec="seconds"), "ok": 0, "kind": "key_locked", "latency_ms": 0},
+        {"ts": (now - timedelta(minutes=3)).isoformat(timespec="seconds"), "ok": 0, "kind": "timeout", "latency_ms": 0},
+        {"ts": (now - timedelta(minutes=2)).isoformat(timespec="seconds"), "ok": 0, "kind": "timeout", "latency_ms": 0},
+        {"ts": (now - timedelta(minutes=1)).isoformat(timespec="seconds"), "ok": 0, "kind": "timeout", "latency_ms": 0},
+    ]
+    stats = mh.compute_stats(events, now=now)
+    assert stats["consecutive_failures"] == 4
+    assert stats["failure_ratio"] > 0.5
+
+
+def test_record_outcome_stores_retry_after(tracker_db):
+    mh.record_model_outcome("ep/m", "ep", ok=False, kind="rate_limited", retry_after_s=90)
+    events = mh.load_events("ep/m")
+    assert events
+    assert events[-1]["kind"] == "rate_limited"
+    assert int(events[-1]["retry_after_s"] or 0) == 90
+
+
 def test_recovery_after_successes_clears_demotion(tracker_db):
     now = datetime.now()
     # Flaky past, then a run of successes: streak resets and ratio drops.

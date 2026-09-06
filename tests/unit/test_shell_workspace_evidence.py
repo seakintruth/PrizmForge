@@ -75,6 +75,7 @@ def test_finish_before_evidence_is_rejected():
     result = session.run("Inspect workflow/__init__.py")
     assert result.exit_status != "Finished"
     assert result.evidence_ok is False
+    assert result.commands_executed == 0
     injects = [m["content"] for m in result.messages if m.get("role") == "user"]
     assert any("Do not ask the user to upload files" in c for c in injects)
     assert any("Command stdout is the repository" in c for c in injects)
@@ -87,6 +88,7 @@ def test_evidence_command_runs_and_captures_output():
     assert result.evidence_ran is True
     assert result.evidence_ok is True
     assert result.exit_status == "Finished"
+    assert result.commands_executed >= 1
     assert wt.commands
     assert "test -f workflow/__init__.py" in wt.commands[0]
     assert result.evidence["marker_found"] is True

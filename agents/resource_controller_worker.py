@@ -65,9 +65,12 @@ class ResourceState:
     budget_percentage: float
     time_remaining_in_window: float  # minutes
     rate_limited_last_minute: int = 0  # upstream 429s seen in the last minute
+    rate_limited_retry_after_s: int | None = None  # latest advertised Retry-After
 
     def __str__(self):
         rate_suffix = f", 429s: {self.rate_limited_last_minute}/min" if self.rate_limited_last_minute > 0 else ""
+        if self.rate_limited_retry_after_s:
+            rate_suffix += f", Retry-After={self.rate_limited_retry_after_s}s"
         return (
             f"Budget: {self.budget_percentage:.1%} "
             f"({self.tokens_remaining:,}/{self.max_tokens:,} tokens), "
@@ -277,9 +280,13 @@ class HeuristicOptimizer:
             decision.level = "RATE_LIMITED"
             decision.rate_limit_per_minute = max(10, int(state.api_rate_limit * 0.1))
             decision.background_feeder_interval = max(120, decision.background_feeder_interval * 2)
+            retry_note = ""
+            advertised = getattr(state, "rate_limited_retry_after_s", None)
+            if advertised:
+                retry_note = f" Retry-After={int(advertised)}s."
             decision.reasoning = (
                 f"⏳ Rate-limited feedback: {state.rate_limited_last_minute} upstream "
-                f"429s in the last minute. Dropping our call rate to "
+                f"429s in the last minute.{retry_note} Dropping our call rate to "
                 f"{decision.rate_limit_per_minute}/min and backing off background "
                 f"feeding to {decision.background_feeder_interval}s until the window clears."
             )
@@ -699,7 +706,7 @@ class ResourceControllerWorker:
         api_calls_last_minute = self._count_recent_api_calls()
 
         # Upstream 429s observed in the last minute (model_health events)
-        rate_limited_last_minute = self._count_recent_rate_limits()
+        rate_limited_last_minute, rate_limited_retry_after_s = self._count_recent_rate_limits()
 
         # Time remaining in window (24h rolling window)
         time_remaining = 24 * 60  # minutes
@@ -714,6 +721,7 @@ class ResourceControllerWorker:
             budget_percentage=budget_pct,
             time_remaining_in_window=time_remaining,
             rate_limited_last_minute=rate_limited_last_minute,
+            rate_limited_retry_after_s=rate_limited_retry_after_s,
         )
 
     def _compute_burn_rate(self) -> float:
@@ -767,8 +775,8 @@ class ResourceControllerWorker:
         except Exception:
             return 0
 
-    def _count_recent_rate_limits(self) -> int:
-        """Count upstream 429 events (kind='rate_limited') in the last minute."""
+    def _count_recent_rate_limits(self) -> tuple[int, int | None]:
+        """Count upstream 429 events and the latest advertised Retry-After."""
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
@@ -777,7 +785,7 @@ class ResourceControllerWorker:
 
                 cursor.execute(
                     """
-                    SELECT COUNT(*)
+                    SELECT COUNT(*), MAX(retry_after_s)
                     FROM model_health_events
                     WHERE kind = 'rate_limited' AND ts > ?
                 """,
@@ -786,10 +794,14 @@ class ResourceControllerWorker:
 
                 result = cursor.fetchone()
 
-            return result[0] if result else 0
+            if not result:
+                return 0, None
+            count = int(result[0] or 0)
+            advertised = int(result[1]) if result[1] is not None else None
+            return count, advertised
 
         except Exception:
-            return 0
+            return 0, None
 
     def _should_apply_decision(self, new_decision: ThrottleDecision) -> bool:
         """Check if decision changed enough to warrant reapplication"""

@@ -122,6 +122,50 @@ class TestFinalizeTask:
         assert row[0] == "stalled"
         assert "max_turns" in row[1]
 
+    def test_keyboard_interrupt_is_failed(self, temp_db):
+        from core.db_connection import get_db_connection
+        from workflow.task_runner import _finalize_task
+
+        with get_db_connection() as conn:
+            conn.execute("INSERT INTO tasks (id, description, status) VALUES ('t_ki', 'd', 'in_progress')")
+
+        _finalize_task("t_ki", {"files_modified": 0}, reason="KeyboardInterrupt")
+
+        with get_db_connection() as conn:
+            row = conn.execute("SELECT status FROM tasks WHERE id='t_ki'").fetchone()
+        assert row[0] == "failed"
+
+    def test_evidence_ok_no_change_is_no_change_required(self, temp_db):
+        from core.db_connection import get_db_connection
+        from workflow.task_runner import _finalize_task
+
+        with get_db_connection() as conn:
+            conn.execute("INSERT INTO tasks (id, description, status) VALUES ('t_ncr', 'd', 'in_progress')")
+
+        _finalize_task("t_ncr", {"files_modified": 0, "evidence_ok": True}, reason="max_turns exhausted")
+
+        with get_db_connection() as conn:
+            row = conn.execute("SELECT status, result FROM tasks WHERE id='t_ncr'").fetchone()
+        assert row[0] == "no_change_required"
+        assert "no safe change" in row[1]
+
+    def test_zero_command_terminal_status_is_failed(self, temp_db):
+        from core.db_connection import get_db_connection
+        from workflow.task_runner import _finalize_task
+
+        with get_db_connection() as conn:
+            conn.execute("INSERT INTO tasks (id, description, status) VALUES ('t_zc', 'd', 'in_progress')")
+
+        _finalize_task(
+            "t_zc",
+            {"files_modified": 0, "terminal_status": "failed", "terminal_reason": "workspace validation failed"},
+            reason="max_turns exhausted",
+        )
+
+        with get_db_connection() as conn:
+            row = conn.execute("SELECT status FROM tasks WHERE id='t_zc'").fetchone()
+        assert row[0] == "failed"
+
     def test_does_not_downgrade_completed(self, temp_db):
         from core.db_connection import get_db_connection
         from workflow.task_runner import _finalize_task

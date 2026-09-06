@@ -337,10 +337,12 @@ def should_ignore_file(file_path: str) -> bool:
     return False
 
 
-def sync_file_to_database(file_path: str, content: str) -> bool:
+def sync_file_to_database(file_path: str, content: str, conn=None) -> bool:
     """
     Sync file content to database
     COMPUTE TOKEN ESTIMATE HERE (write-time)
+
+    Pass ``conn`` when the caller already holds a writer (cmd_init bulk load).
     """
     if should_ignore_file(file_path) or is_secret_path(file_path):
         return False
@@ -353,26 +355,28 @@ def sync_file_to_database(file_path: str, content: str) -> bool:
         # =============Compute tokens once =============
         estimated_tokens = estimate_tokens(content) if not is_binary else 0
         # ====================================================
-        with get_db_connection() as conn:
-            conn.execute(
-                """
+        params = (
+            file_path,
+            content,
+            content_hash,
+            datetime.now().isoformat(),
+            size_bytes,
+            file_type,
+            datetime.now().isoformat(),
+            is_binary,
+            estimated_tokens,
+        )
+        sql = """
                 INSERT OR REPLACE INTO project_files
                 (file_path, content, content_hash, last_modified, size_bytes,
                 file_type, indexed_at, is_binary, estimated_tokens)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    file_path,
-                    content,
-                    content_hash,
-                    datetime.now().isoformat(),
-                    size_bytes,
-                    file_type,
-                    datetime.now().isoformat(),
-                    is_binary,
-                    estimated_tokens,
-                ),
-            )  # Store pre-computed value
+            """
+        if conn is not None:
+            conn.execute(sql, params)
+        else:
+            with get_db_connection() as owned:
+                owned.execute(sql, params)
 
         return True
     except Exception as e:
@@ -458,10 +462,12 @@ def generate_file_summary(file_path: str, content: str) -> dict:
     return summary
 
 
-def save_file_summary(file_path: str, summary: dict):
+def save_file_summary(file_path: str, summary: dict, conn=None):
     """
     Save file summary to database
     COMPUTE TOKEN ESTIMATE FOR SUMMARY TEXT HERE
+
+    Pass ``conn`` when the caller already holds a writer (cmd_init bulk load).
     """
     try:
         # Build summary text
@@ -471,25 +477,27 @@ def save_file_summary(file_path: str, summary: dict):
         summary_tokens = estimate_tokens(summary_text)
         # ===========================================================
 
-        with get_db_connection() as conn:
-            conn.execute(
-                """
+        params = (
+            file_path,
+            summary_text,
+            json.dumps(summary.get("functions", [])),
+            json.dumps(summary.get("imports", [])),
+            summary.get("purpose", ""),
+            summary.get("line_count", 0),
+            datetime.now().isoformat(),
+            summary_tokens,  # Store pre-computed value
+        )
+        sql = """
                 INSERT OR REPLACE INTO file_summaries
                 (file_path, summary, key_functions, dependencies, purpose,
                 line_count, generated_at, estimated_tokens)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    file_path,
-                    summary_text,
-                    json.dumps(summary.get("functions", [])),
-                    json.dumps(summary.get("imports", [])),
-                    summary.get("purpose", ""),
-                    summary.get("line_count", 0),
-                    datetime.now().isoformat(),
-                    summary_tokens,  # Store pre-computed value
-                ),
-            )
+            """
+        if conn is not None:
+            conn.execute(sql, params)
+        else:
+            with get_db_connection() as owned:
+                owned.execute(sql, params)
     except Exception as e:
         print(f"  ⚠️  Failed to save summary: {e}")
 

@@ -116,23 +116,29 @@ def _initialize_lines_impl(conn, file_path: str, content: str) -> dict[str, Any]
         )
         file_id = cursor.lastrowid
 
-    # 2. Split content into lines and create line records
+    # 2. Split content into lines and create line records (one executemany per file)
     lines = content.split("\n")
     initial_gap = 1024.0
-
-    for i, line_content in enumerate(lines):
-        line_guid = str(uuid4())
-        sort_order = (i + 1) * initial_gap
-        content_hash = _compute_hash(line_content)
-
-        conn.execute(
-            """
+    rows = [
+        (
+            str(uuid4()),
+            file_id,
+            (i + 1) * initial_gap,
+            line_content,
+            _compute_hash(line_content),
+            1,
+            0,
+        )
+        for i, line_content in enumerate(lines)
+    ]
+    conn.executemany(
+        """
             INSERT INTO file_lines
             (line_guid, file_id, sort_order, content, content_hash, version, is_deleted)
-            VALUES (?, ?, ?, ?, ?, 1, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-            (line_guid, file_id, sort_order, line_content, content_hash),
-        )
+        rows,
+    )
 
     return {"status": "success", "file_id": file_id, "line_count": len(lines)}
 

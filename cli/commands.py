@@ -8,9 +8,16 @@ from pathlib import Path
 
 from core.config import get_config
 from core.db import get_db_path, init_db
-from core.db_connection import get_db_connection
+from core.db_connection import get_db_connection, get_init_db_connection
 from core.db_helpers import get_unaddressed_feedback
-from core.file_operations import generate_file_summary, is_text_file, save_file_summary, should_ignore_file, sync_file_to_database
+from core.file_operations import (
+    compute_file_hash,
+    generate_file_summary,
+    is_text_file,
+    save_file_summary,
+    should_ignore_file,
+    sync_file_to_database,
+)
 from core.token_budget import TokenBudget
 
 
@@ -44,52 +51,64 @@ def cmd_init():  # noqa: C901
     indexed = 0
     skipped = 0
     errors = 0
+    deleted_count = 0
 
     from file_editing import initialize_file_lines
 
-    for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if not should_ignore_file(d)]
+    # One exclusive writer for the whole walk (ROADMAP §1). Init pragmas
+    # live only inside this context; they are restored before it returns.
+    with get_init_db_connection() as conn:
+        for root, dirs, files in os.walk(project_dir):
+            dirs[:] = [d for d in dirs if not should_ignore_file(d)]
 
-        for filename in files:
-            full_path = Path(root) / filename
+            for filename in files:
+                full_path = Path(root) / filename
 
-            try:
-                rel_path = full_path.relative_to(project_dir)
-                rel_path_str = str(rel_path).replace("\\", "/")
+                try:
+                    rel_path = full_path.relative_to(project_dir)
+                    rel_path_str = str(rel_path).replace("\\", "/")
 
-                if should_ignore_file(rel_path_str):
-                    skipped += 1
-                    continue
+                    if should_ignore_file(rel_path_str):
+                        skipped += 1
+                        continue
 
-                if not is_text_file(rel_path_str):
-                    print(f"  ⏭️  Skipped (binary): {rel_path_str}")
-                    skipped += 1
-                    continue
+                    if not is_text_file(rel_path_str):
+                        skipped += 1
+                        continue
 
-                content = full_path.read_text(encoding="utf-8")
-
-                if sync_file_to_database(rel_path_str, content):
-                    summary = generate_file_summary(rel_path_str, content)
-                    save_file_summary(rel_path_str, summary)
-
-                    result = initialize_file_lines(rel_path_str, content)
-                    if result.get("status") == "success":
+                    content = full_path.read_text(encoding="utf-8")
+                    content_hash = compute_file_hash(content)
+                    existing = conn.execute(
+                        "SELECT content_hash FROM project_files WHERE file_path = ?",
+                        (rel_path_str,),
+                    ).fetchone()
+                    if existing and existing[0] == content_hash:
                         indexed += 1
-                        print(f"  ✅ {rel_path_str}")
+                        if indexed % 50 == 0:
+                            print(f"  ✅ {indexed} files indexed...")
+                        continue
+
+                    if sync_file_to_database(rel_path_str, content, conn=conn):
+                        summary = generate_file_summary(rel_path_str, content)
+                        save_file_summary(rel_path_str, summary, conn=conn)
+
+                        result = initialize_file_lines(rel_path_str, content, conn=conn)
+                        if result.get("status") == "success":
+                            indexed += 1
+                            if indexed % 50 == 0:
+                                print(f"  ✅ {indexed} files indexed...")
+                        else:
+                            print(f"  ⚠️  Failed to initialize lines: {rel_path_str}")
+                            errors += 1
                     else:
-                        print(f"  ⚠️  Failed to initialize lines: {rel_path_str}")
+                        print(f"  ⚠️  Failed to sync: {rel_path_str}")
                         errors += 1
-                else:
-                    print(f"  ⚠️  Failed to sync: {rel_path_str}")
+
+                except Exception as e:
+                    print(f"  ❌ Error: {filename}: {e}")
                     errors += 1
 
-            except Exception as e:
-                print(f"  ❌ Error: {filename}: {e}")
-                errors += 1
-
-    print("\n🧹 Checking for deleted files...")
-    deleted_count = 0
-    with get_db_connection() as conn:
+        print("\n🧹 Checking for deleted files...")
         cursor = conn.cursor()
 
         cursor.execute("SELECT file_id, file_path FROM files WHERE is_deleted = 0")

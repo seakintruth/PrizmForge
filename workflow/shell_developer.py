@@ -489,6 +489,7 @@ class SessionResult:
     evidence_ran: bool = False
     evidence_ok: bool = False
     evidence: dict[str, Any] = field(default_factory=dict)
+    commands_executed: int = 0
 
 
 # Failure kinds that a bounded backoff+retry cannot fix — give up immediately
@@ -675,6 +676,12 @@ class ShellDeveloperSession:
                 return max(remaining_s, 1)
         return timeout
 
+    def _run_worktree_command(self, command: str) -> tuple[int, str]:
+        """Run a bash command in the worktree and count it as an executed command."""
+        exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
+        self.result.commands_executed += 1
+        return exit_code, output
+
     def _handle_pre_evidence_turn(
         self,
         response: str,
@@ -692,7 +699,7 @@ class ShellDeveloperSession:
 
         if command is not None and is_evidence_command(command):
             evidence_cmd = augment_evidence_command(command, marker)
-            exit_code, output = self.wt.run_command(evidence_cmd, self._effective_command_timeout())
+            exit_code, output = self._run_worktree_command(evidence_cmd)
             try:
                 cwd = str(self.wt.working_dir())
             except Exception:
@@ -806,7 +813,7 @@ class ShellDeveloperSession:
                 # worktree state the command produces, execute it first and defer the
                 # finish; force-finish if the model keeps pairing them.
                 self._deferred_finish_count += 1
-                exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
+                exit_code, output = self._run_worktree_command(command)
                 self.messages.append(self._observation(exit_code, output))
                 self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
                 self._record_model_health(ok=True, kind="command_executed")
@@ -890,7 +897,7 @@ class ShellDeveloperSession:
                 continue
 
             consecutive_format_errors = 0
-            exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
+            exit_code, output = self._run_worktree_command(command)
             self.messages.append(self._observation(exit_code, output))
             self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
             self._record_model_health(ok=True, kind="command_executed")
@@ -928,6 +935,7 @@ class ShellDeveloperSession:
             },
             "last_llm_failure": self.result.last_llm_failure,
             "workspace_evidence": dict(self.result.evidence),
+            "commands_executed": self.result.commands_executed,
             "verification": {
                 "test_command": self.cfg.test_command,
                 "test_exit_code": self.result.test_exit_code,
@@ -1196,6 +1204,16 @@ def _publish_shell_event(event_type: str, *, task_id: str, payload: dict) -> Non
         print(f"   ⚠️  Shell event publish skipped ({event_type}): {e}")
 
 
+def _session_mut_fields(result: SessionResult) -> dict[str, Any]:
+    """Fields the orchestrator uses to decide re-dispatch vs infra-neutral."""
+    return {
+        "session_exit": result.exit_status,
+        "commands_executed": result.commands_executed,
+        "evidence_ok": result.evidence_ok,
+        "evidence_ran": result.evidence_ran,
+    }
+
+
 def _handle_session_without_changes(
     *,
     task_id: str,
@@ -1255,7 +1273,14 @@ def run_shell_developer_turn(
             task_id=task_id,
             payload={"message": str(e)},
         )
-        return {"status": "error", "message": str(e)}
+        return {
+            "status": "error",
+            "message": str(e),
+            "session_exit": "WorkspaceValidationFailed",
+            "commands_executed": 0,
+            "evidence_ok": False,
+            "evidence_ran": False,
+        }
 
     print(f"   🐚 Shell developer session (step_limit={cfg.step_limit}, verify={'yes' if cfg.test_command else 'no'})")
     progress["developer_calls"] = progress.get("developer_calls", 0) + 1
@@ -1302,7 +1327,7 @@ def run_shell_developer_turn(
             return {
                 "status": "error",
                 "message": result.summary,
-                "session_exit": result.exit_status,
+                **_session_mut_fields(result),
             }
 
         # W1 (soak recompute, 2026-08-29): an early-exiting session
@@ -1327,6 +1352,7 @@ def run_shell_developer_turn(
                     "status": "test_failed",
                     "message": f"post-session verification failed (exit {result.test_exit_code})",
                     "test_output_tail": result.test_output[-2000:],
+                    **_session_mut_fields(result),
                 }
 
         changes = worktree.collect_changes()
@@ -1341,6 +1367,7 @@ def run_shell_developer_turn(
                 "message": (
                     "session finished but produced no file changes" if result.exit_status == "Finished" else f"session {result.exit_status}: {result.summary}"
                 ),
+                **_session_mut_fields(result),
             }
 
         statuses, proposal_ids, gates_by_path = _gate_and_materialize_changes(
@@ -1373,8 +1400,8 @@ def run_shell_developer_turn(
         return {
             "status": overall,
             "proposal_ids": proposal_ids,
-            "session_exit": result.exit_status,
             "gates": statuses,
+            **_session_mut_fields(result),
         }
     finally:
         worktree.cleanup()

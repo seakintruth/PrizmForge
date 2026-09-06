@@ -456,9 +456,18 @@ def call_endpoint(  # noqa: C901
                     wait = (reset_epoch - time.time()) if reset_epoch is not None else 0.0
                     if wait > 60:
                         endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
-                        record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
+                        record_model_outcome(
+                            f"{endpoint.name}/{model_name}",
+                            endpoint.name,
+                            ok=False,
+                            kind="rate_limited",
+                            retry_after_s=int(wait),
+                        )
                         reset_label = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(reset_epoch)) if reset_epoch is not None else "later"
-                        print(f"   Daily quota exhausted (free-models-per-day pattern) — reset {reset_label}; parking {endpoint.name} for 15m")
+                        print(
+                            f"   Daily quota exhausted (free-models-per-day pattern) — "
+                            f"Retry-After={int(wait)}s reset {reset_label}; parking {endpoint.name} for 15m"
+                        )
                         return _fallback_to_alternate(
                             messages,
                             max_tokens,
@@ -510,6 +519,7 @@ def call_endpoint(  # noqa: C901
                         endpoint.name,
                         ok=False,
                         kind="rate_limited" if resp.status_code == 429 else "server_error",
+                        retry_after_s=advertised,
                     )
                     print(f"   Rate limit cooldown too long ({advertised}s)" if advertised is not None else "   Rate limit cooldown too long / unparseable")
                     return _fallback_to_alternate(
@@ -547,8 +557,9 @@ def call_endpoint(  # noqa: C901
                     endpoint.name,
                     ok=False,
                     kind="rate_limited" if resp.status_code == 429 else "server_error",
+                    retry_after_s=advertised,
                 )
-                print("   same-endpoint retry exhausted")
+                print(f"   same-endpoint retry exhausted (Retry-After={advertised}s)")
                 return _fallback_to_alternate(
                     messages,
                     max_tokens,
