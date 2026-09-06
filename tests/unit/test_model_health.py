@@ -91,12 +91,30 @@ def test_operator_kinds_do_not_demote(tracker_db):
     """ROADMAP §5: latch/budget/key_lock must not inflate streak or ratio."""
     now = datetime.now()
     events = []
-    for kind in ("key_locked", "token_budget", "no_alternate_endpoint", "token_exhausted"):
+    for kind in ("key_locked", "token_budget", "no_alternate_endpoint", "token_exhausted", "unauthorized"):
         events.extend([{"ts": now.isoformat(timespec="seconds"), "ok": 0, "kind": kind, "latency_ms": 0}] * 6)
     stats = mh.compute_stats(events, now=now)
+    assert "unauthorized" in mh.DEMOTE_EXCLUDE_KINDS
     assert stats["consecutive_failures"] == 0
     assert stats["failure_ratio"] == 0.0
     assert mh.evaluate_demotion(stats, now=now) is None
+
+
+def test_two_unauthorized_401s_do_not_down_or_demote(tracker_db):
+    """401 records kind=unauthorized (not rewritten to key_locked). Two of them
+    must not trip down_streak or rank the model last."""
+    now = datetime.now()
+    for _ in range(2):
+        mh.record_model_outcome("company/gemini", "company", ok=False, kind="unauthorized")
+    events = mh.load_events("company/gemini")
+    assert {e["kind"] for e in events} == {"unauthorized"}
+    stats = mh.compute_stats(events, now=now)
+    assert mh.evaluate_demotion(stats, now=now) is None
+    assert mh.model_down_until("company/gemini", now=now) is None
+    ranked = mh.rank_candidates([("company/gemini", 10), ("public/gemini", 20)], now=now)
+    assert ranked[0][0] in ("company/gemini", "public/gemini")
+    verdict = mh.model_verdict("company/gemini", now=now)
+    assert verdict["demotion"] is None
 
 
 def test_real_failures_still_demote_across_operator_events(tracker_db):

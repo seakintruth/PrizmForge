@@ -48,10 +48,8 @@ def endpoint_config(monkeypatch, temp_db):
         }
 
     monkeypatch.setattr(config_mod, "get_config", fake)
-    # reset token budget singleton if any
     import agents.base as base
 
-    base._token_budget = None
     base._token_budgets = {}
     return fake()
 

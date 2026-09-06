@@ -51,7 +51,6 @@ _BACKGROUND_TRANSPORT_AGENTS = {
 
 # Initialize
 _rate_limiter = None
-_token_budget = None
 _token_budgets: dict[str, TokenBudget] = {}
 
 # Active-work tracking: HTTP latency (seconds) of the most recent call_endpoint
@@ -86,7 +85,6 @@ def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudge
     ``max_tokens_per_day``, else top-level ``token_budget``. Company and
     public Gemini do not share a bucket (ROADMAP §8.1a).
     """
-    global _token_budget
     name = _endpoint_budget_key(endpoint)
     budget = _token_budgets.get(name)
     if budget is None:
@@ -96,7 +94,6 @@ def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudge
         daily = token_daily_cap_for_endpoint(config, ep_name)
         budget = TokenBudget(get_db_path(), cap, endpoint_name=ep_name, max_tokens_per_day=daily)
         _token_budgets[name] = budget
-        _token_budget = budget
     return budget
 
 

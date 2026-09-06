@@ -114,7 +114,6 @@ def budget_env(monkeypatch, tmp_path):
     monkeypatch.setattr(base, "get_db_path", lambda: db_path)
     monkeypatch.setattr("core.token_budget.get_db_connection", _memory_conn_factory(db_path))
     base._rate_limiter = None
-    base._token_budget = None
     base._token_budgets = {}
     return base, cfg, db_path
 

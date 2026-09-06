@@ -102,6 +102,7 @@ DEMOTE_EXCLUDE_KINDS = frozenset(
         "token_budget",
         "key_locked",
         "token_exhausted",
+        "unauthorized",
     }
 )
 # NOTE: only ever mutated under _LOCK inside record_model_outcome(), so the

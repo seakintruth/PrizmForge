@@ -163,7 +163,6 @@ def call_env(monkeypatch):
         },
     )
     base._rate_limiter = None
-    base._token_budget = None
     base._token_budgets = {}
     return base
 

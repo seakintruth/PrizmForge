@@ -121,9 +121,8 @@ def call_endpoint_env(monkeypatch):
         },
     )
     monkeypatch.setattr(base, "get_endpoint_manager", lambda: _FakeManager())
-    # Reset singletons so get_rate_limiter()/get_token_budget() rebuild cleanly.
+    # Reset caches so get_rate_limiter()/get_token_budget() rebuild cleanly.
     base._rate_limiter = None
-    base._token_budget = None
     base._token_budgets = {}
     return base
 
