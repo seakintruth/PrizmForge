@@ -72,11 +72,34 @@ def classify_shell_reply(text: str | None) -> str:
     if "```bash" in reply.lower():
         return UNTERMINATED_BASH_BLOCK
 
-    # 4. Otherwise the canonical completion token is the finish signal.
-    if FINISH_TOKEN in reply:
+    # 4. Finish only when the first non-empty line is exactly the token.
+    #    An essay that merely *mentions* FINISH_EDIT_SESSION is prose (Soak4).
+    if is_canonical_finish(reply):
         return VALID_FINISH_SESSION
 
     return PROSE_OR_UNSUPPORTED_FORMAT
+
+
+def _first_nonempty_line(text: str) -> str:
+    for line in (text or "").splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return ""
+
+
+def is_canonical_finish(text: str | None) -> bool:
+    """True when the first non-empty line is exactly FINISH_EDIT_SESSION."""
+    reply = (text or "").strip()
+    if not reply:
+        return False
+    if is_valid_bash_block(reply) or is_unterminated_bash_block(reply):
+        return False
+    if extract_bash_command(reply, normalize=False) is not None:
+        return False
+    if "```bash" in reply.lower():
+        return False
+    return _first_nonempty_line(reply) == FINISH_TOKEN
 
 
 def normalize_shell_reply(reply: str | None) -> str:
@@ -109,18 +132,20 @@ def diagnose_shell_reply(response: str | None) -> dict:
     text = (response or "").strip()
     excerpt = text[:240]
 
-    if FINISH_TOKEN in text and not classify_shell_reply(text) == VALID_FINISH_SESSION:
-        if is_unterminated_bash_block(text):
+    classified = classify_shell_reply(text)
+    if FINISH_TOKEN in text and classified != VALID_FINISH_SESSION:
+        if is_unterminated_bash_block(text) or (classified == UNTERMINATED_BASH_BLOCK):
             return {
                 "reason": "unterminated_bash_fence",
                 "response_excerpt": excerpt,
                 "expected": "closed_bash_block_or_finish_token",
             }
-        return {
-            "reason": "finish_token_inside_command_block",
-            "response_excerpt": excerpt,
-            "expected": "closed_bash_block_or_finish_token",
-        }
+        if is_valid_bash_block(text) or classified == VALID_BASH_BLOCK:
+            return {
+                "reason": "finish_token_inside_command_block",
+                "response_excerpt": excerpt,
+                "expected": "closed_bash_block_or_finish_token",
+            }
 
     if is_unterminated_bash_block(text):
         return {
@@ -150,16 +175,15 @@ def extract_bash_command(response: str | None, *, normalize: bool = True) -> str
 
 
 def extract_finish(response: str | None) -> str | None:
-    """Return the finish summary when the canonical token is present.
+    """Return the finish summary when the first non-empty line is the token.
 
     The token is only honored as a finish when it is not buried inside a
     command block (`` ```bash\nFINISH_EDIT_SESSION\n``` `` is a command whose
-    content happens to be the token, not a session completion).
+    content happens to be the token, not a session completion). An essay that
+    only mentions the token is not a finish (Soak4).
     """
     reply = (response or "").strip()
-    if FINISH_TOKEN not in reply:
+    if not is_canonical_finish(reply):
         return None
-    if is_valid_bash_block(reply) or is_unterminated_bash_block(reply):
-        return None
-    summary_lines = [line for line in reply.splitlines() if FINISH_TOKEN not in line]
+    summary_lines = [line for line in reply.splitlines() if line.strip() != FINISH_TOKEN]
     return "\n".join(summary_lines).strip()

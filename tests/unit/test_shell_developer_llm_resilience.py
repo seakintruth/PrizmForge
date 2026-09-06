@@ -129,8 +129,8 @@ def test_transient_failure_backs_off_retries_and_finishes(monkeypatch):
         script=[
             None,
             None,
-            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
-            f"Done.\n{sd.FINISH_TOKEN}\nComplete.",
+            "```bash\nsed -n '1,80p' workflow/__init__.py\n```",
+            f"{sd.FINISH_TOKEN}\nComplete.",
         ],
         kinds=["rate_limited", "rate_limited"],
     )
@@ -178,8 +178,8 @@ def test_token_budget_retries_when_another_endpoint_has_room(monkeypatch):
         monkeypatch,
         script=[
             None,
-            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
-            f"Done.\n{sd.FINISH_TOKEN}\nComplete.",
+            "```bash\nsed -n '1,80p' workflow/__init__.py\n```",
+            f"{sd.FINISH_TOKEN}\nComplete.",
         ],
         kinds=["token_budget"],
     )
@@ -322,3 +322,15 @@ def test_recent_failure_kind_real_db_missing_refs_return_empty(monkeypatch, tmp_
     assert sd._recent_failure_kind("never/used-ref", max_age_s=999999) == ""
     # A later successful event must not erase the most recent failure kind.
     assert sd._recent_failure_kind("openrouter/openrouter/free", max_age_s=999999) == "rate_limited"
+
+
+def test_unknown_kind_records_body_excerpt(monkeypatch):
+    _install_rc_stub(monkeypatch)
+    _install_endpoint_manager(monkeypatch)
+    _install_llm_script(monkeypatch, script=[None, None, None, None], kinds=["", "", "", ""])
+    session = _session()
+    result = session.run("task")
+    assert result.exit_status == "LlmUnavailable"
+    assert result.llm_failure_kinds.get("unknown", 0) >= 1
+    assert result.last_llm_failure["kind"] == "unknown"
+    assert result.last_llm_failure.get("body_excerpt")

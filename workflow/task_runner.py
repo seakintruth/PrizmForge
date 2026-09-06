@@ -391,6 +391,12 @@ def _is_zero_command_seed_failure(mut: dict | None) -> bool:
     exit_status = str(mut.get("session_exit") or "")
     if exit_status == "WorkspaceValidationFailed":
         return True
+    # Soak4: in-process evidence + LlmUnavailable / evidence-only must not
+    # freeze developer for the rest of the duration.
+    if mut.get("evidence_ok") and exit_status in _ZERO_COMMAND_INFRA_EXITS:
+        return False
+    if mut.get("evidence_ok") and int(mut.get("commands_executed") or 0) >= 1:
+        return False
     if int(mut.get("commands_executed") or 0) > 0:
         return False
     if exit_status in _ZERO_COMMAND_INFRA_EXITS:

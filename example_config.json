@@ -177,7 +177,7 @@
     "_note_test_command": "e.g. 'python -m pytest tests/ -x -q'. Non-zero exit discards the session unless on_test_failure=propose_anyway",
     "on_test_failure": "discard",
     "model": null,
-    "_note_model": "null uses the orchestrator decision model, then default_model",
+    "_note_model": "null uses the orchestrator decision, then agent_model_preferences.developer. Do not point developer or shell_developer at Gemini Enterprise chat (api.genai.mil / gemini-3.1-pro-preview): Soak4 showed it will not emit a second bash block. Orchestrator and reviewers may stay on that endpoint.",
     "worktree_parent": ""
   },
   "content_safety": {

@@ -22,6 +22,7 @@ The legacy structured EditPayload developer path remains available via
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import tempfile
@@ -110,24 +111,39 @@ RESPONSE FORMAT — REQUIRED:
 It will be executed with the project copy as the working directory.
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
-- When the task is fully done and verified, reply with {finish_token} on its own line \
+- When the task is fully done and verified, reply with {finish_token} as the first line \
 followed by a short summary of what changed. Do not emit a bash block in that final reply.
 - A closed bash block looks exactly like this (opening line, the command, closing line):
 
 ```bash
-pwd && ls -la
+sed -n '1,80p' path/to/file.py
 ```
 
-- Your FIRST command must always be the initial-workspace evidence command below:
-  pwd && git rev-parse --show-toplevel && ls -la
-  This proves which directory you are in and that the repository root is reachable before \
-you touch anything.
+Never attempt to interact outside this working copy; changes outside it are discarded."""
 
-Never attempt to interact outside this working copy; changes outside it are discarded.
 
-Do not ask the user to upload files or provide repository contents.
-You have shell access to the project checkout.
-Command stdout is the repository."""
+_SEED_PATH_RE = re.compile(r"[\w./-]+\.\w+")
+
+_NO_SHELL_FINISH_MARKERS = (
+    "upload files",
+    "upload the files",
+    "please upload",
+    "no filesystem",
+    "do not have shell",
+    "don't have shell",
+    "no shell access",
+    "gemini enterprise",
+    "conversational assistant",
+    "conversational ai",
+    "i cannot execute",
+    "cannot run shell",
+    "no access to the file system",
+    "no access to your filesystem",
+    "automated script runner",
+    "i operate as a conversational",
+)
+
+_ENTERPRISE_CHAT_MARKERS = ("genai.mil",)
 
 
 def build_instance_prompt(task_text: str) -> str:
@@ -136,8 +152,70 @@ def build_instance_prompt(task_text: str) -> str:
         "Begin by inspecting the relevant files, then implement the change and verify it. "
         "If the task target file does not exist, do NOT create or guess a task-named path. "
         f"Unless you can find a safe, in-repo change that directly satisfies the task, reply "
-        f"with only {FINISH_TOKEN} and a clear summary of why no safe change was made."
+        f"with only {FINISH_TOKEN} as the first line and a clear summary of why no safe change was made."
     )
+
+
+def build_inspect_prompt(task_text: str, evidence: dict[str, Any], target_path: str | None) -> str:
+    listing = (evidence.get("output_excerpt") or "").strip()
+    header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
+    if target_path:
+        return (
+            f"{header}Target file: {target_path}\n\n"
+            f"{build_instance_prompt(task_text)}\n"
+            "Reply with exactly one closed bash block. First command must be:\n"
+            f"sed -n '1,80p' {target_path}"
+        )
+    return f"{header}{build_instance_prompt(task_text)}\nReply with exactly one closed bash block. Inspect the relevant files first."
+
+
+def resolve_seed_target_path(task_text: str, worktree: Any | None = None, marker: str = WORKSPACE_MARKER_DEFAULT) -> str | None:
+    candidates = sorted(set(_SEED_PATH_RE.findall(task_text or "")), key=len, reverse=True)
+    root = None
+    if worktree is not None:
+        try:
+            root = Path(worktree.working_dir())
+        except Exception:
+            root = Path(getattr(worktree, "path", "") or "")
+            if not str(root):
+                root = None
+    if root is not None and root.is_dir():
+        for candidate in candidates:
+            try:
+                if (root / candidate).is_file():
+                    return candidate
+            except (OSError, TypeError, ValueError):
+                continue
+        return None
+    return candidates[0] if candidates else None
+
+
+def command_touches_target(command: str | None, target: str | None) -> bool:
+    if not command or not target or is_evidence_command(command):
+        return False
+    return target in command
+
+
+def finish_claims_no_shell(summary: str | None) -> bool:
+    low = (summary or "").lower()
+    return any(marker in low for marker in _NO_SHELL_FINISH_MARKERS)
+
+
+def is_enterprise_chat_developer(model_ref: str | None, base_url: str = "") -> bool:
+    blob = f"{model_ref or ''} {base_url or ''}".lower()
+    return any(marker in blob for marker in _ENTERPRISE_CHAT_MARKERS)
+
+
+def _enterprise_chat_base_url(model_ref: str | None) -> str:
+    try:
+        from core.endpoint_manager import get_endpoint_manager
+
+        mgr = get_endpoint_manager()
+        ep_name = (model_ref or "").split("/", 1)[0]
+        ep = mgr.endpoints.get(ep_name) if ep_name else None
+        return str(getattr(ep, "base_url", "") or "") if ep is not None else ""
+    except Exception:
+        return ""
 
 
 # =========================================================================
@@ -168,7 +246,12 @@ def evidence_command(marker: str = WORKSPACE_MARKER_DEFAULT) -> str:
 
 
 def is_evidence_command(command: str | None) -> bool:
-    return "git rev-parse --show-toplevel" in (command or "")
+    cmd = command or ""
+    if "git rev-parse --show-toplevel" not in cmd:
+        return False
+    if re.search(r"\becho\b", cmd, re.I) and "shell access" in cmd.lower():
+        return False
+    return True
 
 
 def augment_evidence_command(command: str, marker: str = WORKSPACE_MARKER_DEFAULT) -> str:
@@ -490,6 +573,7 @@ class SessionResult:
     evidence_ok: bool = False
     evidence: dict[str, Any] = field(default_factory=dict)
     commands_executed: int = 0
+    target_inspected: bool = False
 
 
 # Failure kinds that a bounded backoff+retry cannot fix — give up immediately
@@ -530,6 +614,7 @@ class ShellDeveloperSession:
         self.result = SessionResult()
         self._start = time.time()
         self._deferred_finish_count = 0
+        self.target_path: str | None = None
         # Resolved model ref ("endpoint/model") actually used for LLM calls;
         # set on the first _llm call (cfg.model may be None).
         self.resolved_model: str | None = None
@@ -589,8 +674,19 @@ class ShellDeveloperSession:
             if text:
                 return text
             kind = _recent_failure_kind(model_ref) or "unknown"
+            if kind == "unknown":
+                excerpt = "(empty or unparsed body)"
+                print(f"   ⚠️  Empty/policy LLM body from {model_ref}: {excerpt}")
+                record_model_outcome(model_ref, ok=False, kind="unknown", detail=excerpt)
+                self.result.last_llm_failure = {
+                    "kind": kind,
+                    "model_ref": model_ref,
+                    "attempt": attempt + 1,
+                    "body_excerpt": excerpt,
+                }
             self.result.llm_failure_kinds[kind] = self.result.llm_failure_kinds.get(kind, 0) + 1
-            self.result.last_llm_failure = {"kind": kind, "model_ref": model_ref, "attempt": attempt + 1}
+            if self.result.last_llm_failure is None or self.result.last_llm_failure.get("attempt") != attempt + 1:
+                self.result.last_llm_failure = {"kind": kind, "model_ref": model_ref, "attempt": attempt + 1}
             if kind in PERMANENT_FAILURE_KINDS or attempt >= self.cfg.llm_failure_max_retries:
                 break
             if kind == "token_budget":
@@ -642,7 +738,7 @@ class ShellDeveloperSession:
                 model=self.resolved_model,
                 step_number=step_number,
                 response_format_status=response_format_status,
-                command=command,
+                command=command if command_exit_code is not None else None,
                 command_exit_code=command_exit_code,
             )
         except Exception as e:
@@ -682,90 +778,79 @@ class ShellDeveloperSession:
         self.result.commands_executed += 1
         return exit_code, output
 
-    def _handle_pre_evidence_turn(
-        self,
-        response: str,
-        command: str | None,
-        summary: str | None,
-    ) -> bool:
-        """Reject finish / non-evidence bash until workspace evidence succeeds.
-
-        Returns True when the turn was handled (caller should continue).
-        Returns False so prose / unterminated fences still use the format-error path.
-        """
+    def _run_in_process_evidence(self) -> bool:
+        """Execute workspace evidence before any LLM call. Returns False on abort."""
         r = self.result
         marker = self.cfg.workspace_marker
-        inject = evidence_inject_message(marker)
+        cmd = evidence_command(marker)
+        try:
+            exit_code, output = self.wt.run_command(cmd, self._effective_command_timeout())
+        except Exception as e:
+            exit_code, output = 1, str(e)
+        try:
+            cwd = str(self.wt.working_dir())
+        except Exception:
+            cwd = ""
+        evidence = parse_evidence_output(output, exit_code, marker, cwd=cwd)
+        r.evidence = evidence
+        r.evidence_ran = True
+        if exit_code == 0 and evidence.get("marker_found"):
+            r.evidence_ok = True
+            return True
+        r.exit_status = "WorkspaceValidationFailed"
+        r.summary = f"shell developer workspace validation failed: expected {marker} under project root but it was not found"
+        print(f"   ❌ {r.summary}")
+        _publish_shell_event(
+            "shell_workspace_validation_failed",
+            task_id=self.task_id,
+            payload=evidence,
+        )
+        return False
 
-        if command is not None and is_evidence_command(command):
-            evidence_cmd = augment_evidence_command(command, marker)
-            exit_code, output = self._run_worktree_command(evidence_cmd)
-            try:
-                cwd = str(self.wt.working_dir())
-            except Exception:
-                cwd = ""
-            evidence = parse_evidence_output(output, exit_code, marker, cwd=cwd)
-            r.evidence = evidence
-            r.evidence_ran = True
-            self.messages.append(self._observation(exit_code, output))
-            self._emit_command_failed_if_needed(exit_code, evidence_cmd, r.n_model_calls)
-            self._record_model_health(ok=True, kind="command_executed")
-            self._record_model_health(ok=exit_code == 0, kind="command_success")
-            self._record_step(
-                response=response,
-                command=evidence_cmd,
-                command_exit_code=exit_code,
-                response_format_status=shell_protocol.VALID_BASH_BLOCK,
-                step_number=r.n_model_calls,
-            )
-            if exit_code == 0 and evidence["marker_found"]:
-                r.evidence_ok = True
-                return True
+    def _mark_target_inspected(self, command: str | None) -> None:
+        if not command or is_evidence_command(command):
+            return
+        if self.target_path is None or command_touches_target(command, self.target_path):
+            self.result.target_inspected = True
+
+    def _reject_finish(self, response: str, reason: str) -> None:
+        self.messages.append({"role": "user", "content": reason})
+        self._record_step(
+            response=response,
+            command=None,
+            command_exit_code=None,
+            response_format_status=shell_protocol.VALID_FINISH_SESSION,
+            step_number=self.result.n_model_calls,
+        )
+
+    def run(self, task_text: str) -> SessionResult:  # noqa: C901
+        r = self.result
+        r.messages = self.messages
+        if is_enterprise_chat_developer(self.cfg.model):
+            r.exit_status = "DeveloperModelNotShellCapable"
+            r.summary = "developer_model_not_shell_capable"
+            print(f"   ❌ {r.summary}: {self.cfg.model}")
+            return r
+        if not self._run_in_process_evidence():
+            return r
+        self.target_path = resolve_seed_target_path(task_text, self.wt, self.cfg.workspace_marker)
+        named = sorted(set(_SEED_PATH_RE.findall(task_text or "")), key=len, reverse=True)
+        try:
+            root = Path(self.wt.working_dir())
+        except Exception:
+            root = None
+        if named and root is not None and root.is_dir() and self.target_path is None:
             r.exit_status = "WorkspaceValidationFailed"
-            r.summary = f"shell developer workspace validation failed: expected {marker} under project root but it was not found"
+            r.summary = f"target missing after evidence: {named[0]}"
             print(f"   ❌ {r.summary}")
             _publish_shell_event(
                 "shell_workspace_validation_failed",
                 task_id=self.task_id,
-                payload=evidence,
+                payload={**r.evidence, "reason": "target_missing", "target": named[0]},
             )
-            return True
-
-        if summary is not None:
-            self.messages.append(
-                {
-                    "role": "user",
-                    "content": (f"{FINISH_TOKEN} is not allowed until the workspace evidence command has succeeded. " + inject),
-                }
-            )
-            self._record_step(
-                response=response,
-                command=None,
-                command_exit_code=None,
-                response_format_status=shell_protocol.VALID_FINISH_SESSION,
-                step_number=r.n_model_calls,
-            )
-            return True
-
-        if command is not None:
-            self.messages.append({"role": "user", "content": inject})
-            self._record_step(
-                response=response,
-                command=command,
-                command_exit_code=None,
-                response_format_status=shell_protocol.VALID_BASH_BLOCK,
-                step_number=r.n_model_calls,
-            )
-            return True
-
-        return False
-
-    def run(self, task_text: str) -> SessionResult:
-        r = self.result
-        r.messages = self.messages
+            return r
         self.messages.append({"role": "system", "content": SYSTEM_PROMPT.format(finish_token=FINISH_TOKEN)})
-        self.messages.append({"role": "user", "content": build_instance_prompt(task_text)})
-        self.messages.append({"role": "user", "content": evidence_inject_message(self.cfg.workspace_marker)})
+        self.messages.append({"role": "user", "content": build_inspect_prompt(task_text, r.evidence, self.target_path)})
 
         consecutive_format_errors = 0
         while True:
@@ -800,13 +885,6 @@ class ShellDeveloperSession:
             is_protocol_valid = command is not None or summary is not None
             self._record_model_health(ok=is_protocol_valid, kind="protocol_valid" if is_protocol_valid else "protocol_invalid")
 
-            if not r.evidence_ok:
-                handled = self._handle_pre_evidence_turn(response, command, summary)
-                if r.exit_status:
-                    break
-                if handled:
-                    continue
-
             if summary is not None and command is not None:
                 # The model tried to run a final command AND finish in one reply
                 # (e.g. "run tests, then FINISH"). Since verification depends on the
@@ -825,7 +903,8 @@ class ShellDeveloperSession:
                     response_format_status=shell_protocol.VALID_BASH_BLOCK,
                     step_number=r.n_model_calls,
                 )
-                if self._deferred_finish_count >= 3:
+                self._mark_target_inspected(command)
+                if self._deferred_finish_count >= 3 and r.target_inspected and not finish_claims_no_shell(summary):
                     r.exit_status = "Finished"
                     r.summary = f"[finish forced after {self._deferred_finish_count} deferred finishes] {summary}"
                     break
@@ -842,6 +921,25 @@ class ShellDeveloperSession:
                 continue
 
             if summary is not None:
+                if not r.target_inspected:
+                    target = self.target_path or "the target file"
+                    self._reject_finish(
+                        response,
+                        f"{FINISH_TOKEN} is not allowed until one non-evidence command against {target} has run.",
+                    )
+                    continue
+                if finish_claims_no_shell(summary):
+                    _publish_shell_event(
+                        "shell_session_no_mutation",
+                        task_id=self.task_id,
+                        payload={"reason": "finish_denies_shell", "step_number": r.n_model_calls},
+                    )
+                    target = self.target_path or "the target file"
+                    self._reject_finish(
+                        response,
+                        f"{FINISH_TOKEN} after evidence cannot claim there is no shell. Inspect {target}.",
+                    )
+                    continue
                 r.exit_status = "Finished"
                 r.summary = summary
                 self._record_step(
@@ -898,6 +996,7 @@ class ShellDeveloperSession:
 
             consecutive_format_errors = 0
             exit_code, output = self._run_worktree_command(command)
+            self._mark_target_inspected(command)
             self.messages.append(self._observation(exit_code, output))
             self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
             self._record_model_health(ok=True, kind="command_executed")
@@ -1241,7 +1340,7 @@ def _handle_session_without_changes(
 # =========================================================================
 # Public turn entry point (mirrors run_developer_mutation contract)
 # =========================================================================
-def run_shell_developer_turn(
+def run_shell_developer_turn(  # noqa: C901
     *,
     task_id: str,
     instructions: str,
@@ -1256,12 +1355,34 @@ def run_shell_developer_turn(
     cfg = ShellDeveloperConfig.from_config()
     if cfg.model is None:
         cfg.model = model_choice
+    if is_enterprise_chat_developer(cfg.model):
+        return {
+            "status": "error",
+            "message": "developer_model_not_shell_capable",
+            "session_exit": "DeveloperModelNotShellCapable",
+            "commands_executed": 0,
+            "evidence_ok": False,
+            "evidence_ran": False,
+        }
 
     config = get_config()
     project_dir = Path(config.get("project_directory", ".")).resolve()
 
     worktree = ShellWorktree(project_dir, parent_dir=cfg.worktree_parent, max_file_bytes=cfg.max_file_bytes)
     session = ShellDeveloperSession(cfg, worktree, task_id)
+    try:
+        resolved = session._resolve_developer_model() or cfg.model
+        if is_enterprise_chat_developer(resolved, _enterprise_chat_base_url(resolved)):
+            return {
+                "status": "error",
+                "message": "developer_model_not_shell_capable",
+                "session_exit": "DeveloperModelNotShellCapable",
+                "commands_executed": 0,
+                "evidence_ok": False,
+                "evidence_ran": False,
+            }
+    except Exception as e:
+        print(f"   ⚠️  Developer model capability check skipped: {e}")
 
     try:
         worktree.create()
@@ -1322,11 +1443,11 @@ def run_shell_developer_turn(
 
         _save_trajectory(task_id, current_turn, session)
 
-        if result.exit_status == "WorkspaceValidationFailed":
+        if result.exit_status in ("WorkspaceValidationFailed", "DeveloperModelNotShellCapable"):
             progress["edit_failures"] = progress.get("edit_failures", 0) + 1
             return {
                 "status": "error",
-                "message": result.summary,
+                "message": result.summary or "developer_model_not_shell_capable",
                 **_session_mut_fields(result),
             }
 

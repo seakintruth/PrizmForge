@@ -416,6 +416,22 @@ class TestZeroCommandSeedGuard:
         assert not _is_zero_command_seed_failure({"status": "error", "message": "invalid payload"})
         assert not _is_zero_command_seed_failure({"status": "success", "gates": ["success"]})
 
+    def test_evidence_ok_plus_llm_unavailable_does_not_latch(self):
+        from workflow.task_runner import ZeroCommandSeedGuard, _is_zero_command_seed_failure
+
+        mut = {
+            "status": "error",
+            "message": "session LlmUnavailable after evidence",
+            "session_exit": "LlmUnavailable",
+            "commands_executed": 0,
+            "evidence_ok": True,
+            "evidence_ran": True,
+        }
+        assert not _is_zero_command_seed_failure(mut)
+        guard = ZeroCommandSeedGuard()
+        assert guard.record(mut) is False
+        assert not guard.latched()
+
     def test_finished_with_evidence_and_no_mutation_does_not_zero_command_latch(self):
         from workflow.task_runner import ZeroCommandSeedGuard, _is_zero_command_seed_failure
 

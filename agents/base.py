@@ -3,6 +3,7 @@ Base agent
  - functionality with multi-endpoint support
 """
 
+import json
 import random
 import re
 import time
@@ -194,6 +195,36 @@ def _fallback_to_alternate(
     if stop_kind:
         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind=stop_kind)
     return None, 0
+
+
+_empty_body_dumped: set[str] = set()
+
+
+def _classify_empty_or_policy_body(data: object, answer: str) -> str:
+    """Separate empty extract from safety/policy blocks (Soak4 unknown-kind)."""
+    blob = ""
+    try:
+        blob = json.dumps(data, default=str).lower()
+    except Exception:
+        blob = str(data).lower()
+    if any(token in blob for token in ("safety", "blocked", "policy_violation", "content_filter")):
+        return "policy"
+    if not (answer or "").strip():
+        return "empty_body"
+    return ""
+
+
+def _dump_unknown_llm_body_once(endpoint_name: str, model_name: str, data: object) -> str:
+    """Print the raw body once per endpoint/model so kind=unknown is not silent."""
+    key = f"{endpoint_name}/{model_name}"
+    try:
+        excerpt = json.dumps(data, default=str)[:2000]
+    except Exception:
+        excerpt = str(data)[:2000]
+    if key not in _empty_body_dumped:
+        _empty_body_dumped.add(key)
+        print(f"   ⚠️  Empty/policy LLM body from {key}: {excerpt or '(empty)'}")
+    return excerpt
 
 
 def call_endpoint(  # noqa: C901
@@ -653,6 +684,22 @@ def call_endpoint(  # noqa: C901
                     seen,
                     announce="→ Falling back to {name}/{model}",
                 )
+
+            # HTTP 200 with an empty or policy-blocked extract is not success.
+            # Dump once, record kind, return None so the shell loop can retry
+            # after the dump exists (Soak4 kind=unknown x4 with empty health).
+            empty_kind = _classify_empty_or_policy_body(data, answer)
+            if empty_kind:
+                excerpt = _dump_unknown_llm_body_once(endpoint.name, model_name, data)
+                record_model_outcome(
+                    f"{endpoint.name}/{model_name}",
+                    endpoint.name,
+                    ok=False,
+                    latency_ms=int((time.time() - _req_t0) * 1000),
+                    kind=empty_kind,
+                    detail=excerpt,
+                )
+                return None, 0
 
             # ============= SUCCESS =============
             # Mark endpoint as healthy

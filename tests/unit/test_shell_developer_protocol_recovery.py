@@ -134,6 +134,19 @@ def test_extract_finish_absent_from_block():
     assert sp.extract_finish(FINISH_TOKEN_INSIDE_BLOCK) is None
 
 
+def test_essay_mentioning_finish_token_is_not_a_finish():
+    essay = "As Gemini Enterprise I cannot run a shell. You would use FINISH_EDIT_SESSION after editing, but I have no filesystem."
+    assert sp.classify_shell_reply(essay) == sp.PROSE_OR_UNSUPPORTED_FORMAT
+    assert sp.extract_finish(essay) is None
+
+
+def test_canonical_finish_must_be_first_nonempty_line():
+    buried = "I am done.\nFINISH_EDIT_SESSION\nsummary"
+    assert sp.classify_shell_reply(buried) == sp.PROSE_OR_UNSUPPORTED_FORMAT
+    assert sp.extract_finish(buried) is None
+    assert sp.is_canonical_finish(VALID_FINISH_PLUS_SUMMARY)
+
+
 # ---------------------------------------------------------------------------
 # Structured diagnostics (Phase 1.5)
 # ---------------------------------------------------------------------------
