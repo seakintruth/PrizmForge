@@ -193,3 +193,25 @@ def test_cmd_init_creates_and_updates_gitignore(tmp_path, monkeypatch, temp_db):
     cli_commands.cmd_init()
     content = gitignore.read_text(encoding="utf-8")
     assert content.count(".PrizmForge/") == 1
+
+
+def test_quote_identifier_escapes_embedded_quotes():
+    assert cli_commands._quote_identifier("abc") == '"abc"'
+    assert cli_commands._quote_identifier('a"b') == '"a""b"'
+
+
+def test_export_keyword_table_name(tmp_path, temp_db, capsys):
+    """Quoted identifiers let export read a table named with a SQL keyword."""
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute('CREATE TABLE "order" (id INTEGER, task_id TEXT)')
+        conn.execute('INSERT INTO "order" (id, task_id) VALUES (1, ?)', ("t-kw",))
+
+    out = tmp_path / "exp"
+    cli_commands.cmd_export_db(output_dir=out, task_id="t-kw")
+    csv_path = out / "order.csv"
+    assert csv_path.exists()
+    text = csv_path.read_text(encoding="utf-8")
+    assert "t-kw" in text
+    capsys.readouterr()

@@ -31,31 +31,118 @@ def get_db_path() -> str:
     return str(prizmforge_dir / "agents.db")
 
 
+def _split_sql_statements(schema_sql: str) -> list[str]:  # noqa: C901
+    """Split DDL on statement-terminating ``;``, ignoring ``;`` inside comments or strings.
+
+    No sqlparse. Tracks ``--`` / ``/* */`` comments and single/double-quoted
+    literals (SQLite doubled quotes).
+    """
+    stmts: list[str] = []
+    buf: list[str] = []
+    i = 0
+    n = len(schema_sql)
+    in_single = False
+    in_double = False
+    in_line_comment = False
+    in_block_comment = False
+    while i < n:
+        c = schema_sql[i]
+        nxt = schema_sql[i + 1] if i + 1 < n else ""
+        if in_line_comment:
+            buf.append(c)
+            if c == "\n":
+                in_line_comment = False
+            i += 1
+            continue
+        if in_block_comment:
+            buf.append(c)
+            if c == "*" and nxt == "/":
+                buf.append(nxt)
+                i += 2
+                in_block_comment = False
+                continue
+            i += 1
+            continue
+        if in_single:
+            buf.append(c)
+            if c == "'" and nxt == "'":
+                buf.append(nxt)
+                i += 2
+                continue
+            if c == "'":
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            buf.append(c)
+            if c == '"' and nxt == '"':
+                buf.append(nxt)
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "-" and nxt == "-":
+            buf.append(c)
+            buf.append(nxt)
+            in_line_comment = True
+            i += 2
+            continue
+        if c == "/" and nxt == "*":
+            buf.append(c)
+            buf.append(nxt)
+            in_block_comment = True
+            i += 2
+            continue
+        if c == "'":
+            in_single = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            buf.append(c)
+            i += 1
+            continue
+        if c == ";":
+            stmt = "".join(buf).strip()
+            buf = []
+            if stmt:
+                stmts.append(stmt)
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        stmts.append(tail)
+    return stmts
+
+
+def _statement_is_meaningful(stmt: str) -> bool:
+    """True when ``stmt`` has SQL besides comments/whitespace."""
+    for line in stmt.splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("--"):
+            return True
+    return False
+
+
 def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
     """Run DDL one statement at a time (avoids executescript disk I/O issues)."""
-    buf = []
-    for line in schema_sql.splitlines():
-        buf.append(line)
-        if line.strip().endswith(";"):
-            stmt = chr(10).join(buf).strip()
-            buf = []
-            if not stmt:
-                continue
-            # Renamed 'l' -> 'stmt_line' to resolve ruff E741 ambiguous variable name
-            meaningful = [stmt_line for stmt_line in stmt.splitlines() if stmt_line.strip() and not stmt_line.strip().startswith("--")]
-            if meaningful:
-                try:
-                    conn.execute(stmt)
-                except sqlite3.OperationalError as e:
-                    # Index on a column not yet present (pre-migration DB) — continue
-                    msg = str(e).lower()
-                    if "no such column" in msg or "already exists" in msg:
-                        print(f"   ℹ️  Schema statement skipped: {e}")
-                    else:
-                        raise
-    tail = chr(10).join(buf).strip()
-    if tail and any(raw_line.strip() and not raw_line.strip().startswith("--") for raw_line in tail.splitlines()):
-        conn.execute(tail)
+    for stmt in _split_sql_statements(schema_sql):
+        if not _statement_is_meaningful(stmt):
+            continue
+        try:
+            conn.execute(stmt)
+        except sqlite3.OperationalError as e:
+            # Index on a column not yet present (pre-migration DB) — continue
+            msg = str(e).lower()
+            if "no such column" in msg or "already exists" in msg:
+                print(f"   ℹ️  Schema statement skipped: {e}")
+            else:
+                raise
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
