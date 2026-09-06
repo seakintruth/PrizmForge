@@ -1,0 +1,29 @@
+$ /c/git/programs/Python31209/python.exe ./utils/query_developer_responses.py --db ../PrizmForge-Soak/Soak4-target/PrizmForge/.PrizmForge/agents.db --diagnostic
+
+================================================================================
+🔬 FULL DIAGNOSTIC DUMP
+================================================================================
+   📆 data window: latest record seen 2026-09-06T17:08:17.757969
+
+================================================================================
+📊 RUN EFFECTIVENESS
+================================================================================
+
+1️⃣  MUTATION FUNNEL
+   proposals created : 0
+   writes succeeded  : 0
+
+2️⃣  EDIT MODE EFFECTIVENESS (selected → final, count)
+   (no proposals with mode data)
+
+3️⃣  FILES ACTUALLY MUTATED (by applied proposals)
+   (none — the loop has not changed any files)
+
+4️⃣  FEEDBACK BACKLOG HEALTH
+   addressed: 0 / 51
+   open MEDIUM  : 30
+   open LOW     : 16
+   open HIGH    : 3
+   open CRITICAL: 2
+
+   
