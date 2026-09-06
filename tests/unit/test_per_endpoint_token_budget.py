@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from core.token_budget import TokenBudget, format_token_budget
+from core.token_budget import TokenBudget, format_token_budget, token_cap_for_endpoint, token_daily_cap_for_endpoint
 
 
 def _resp(status: int, body: dict):
@@ -102,12 +102,12 @@ def budget_env(monkeypatch, tmp_path):
 
     db_path = str(tmp_path / "agents.db")
     cfg = {
-        "token_budget": {"max_tokens_per_4h": 100_000},
+        "token_budget": {"max_tokens_per_4h": 100_000, "max_tokens_per_day": 200_000},
         "proxy": {},
         "default_model": "model-a",
         "endpoints": {
-            "gemini": {"token_budget": {"max_tokens_per_4h": 50}},
-            "beta_company": {"token_budget": {"max_tokens_per_4h": 80_000}},
+            "gemini": {"token_budget": {"max_tokens_per_4h": 50, "max_tokens_per_day": 80}},
+            "beta_company": {"token_budget": {"max_tokens_per_4h": 80_000, "max_tokens_per_day": 200_000}},
         },
     }
     monkeypatch.setattr(base, "get_config", lambda: cfg)
@@ -159,6 +159,9 @@ def test_get_token_budget_keys_by_endpoint_name(budget_env):
     assert a.max_tokens == 50
     assert b.max_tokens == 80_000
     assert global_b.max_tokens == 100_000
+    assert a.max_tokens_per_day == 80
+    assert b.max_tokens_per_day == 200_000
+    assert global_b.max_tokens_per_day == 200_000
     assert base.get_token_budget("gemini") is a
 
 
@@ -242,3 +245,56 @@ def test_in_memory_usage_is_endpoint_local(tmp_path):
     assert b.get_used() == 0
     assert a.can_spend(700) is False
     assert b.can_spend(700) is True
+
+
+def test_daily_cap_blocks_when_4h_still_has_room(tmp_path):
+    db = str(tmp_path / "t.db")
+    budget = TokenBudget(db, max_tokens_per_4h=10_000, endpoint_name="a", max_tokens_per_day=100)
+    budget.add_usage(90)
+    assert budget.remaining() >= 1000
+    assert budget.can_spend(20) is False
+    assert budget.can_spend(5) is True
+
+
+def test_daily_cap_is_per_endpoint(tmp_path):
+    db = str(tmp_path / "t.db")
+    a = TokenBudget(db, max_tokens_per_4h=10_000, endpoint_name="a", max_tokens_per_day=100)
+    b = TokenBudget(db, max_tokens_per_4h=10_000, endpoint_name="b", max_tokens_per_day=100)
+    a.add_usage(100)
+    assert a.can_spend(1) is False
+    assert b.can_spend(50) is True
+
+
+def test_token_caps_read_nested_and_top_level():
+    cfg = {
+        "token_budget": {"max_tokens_per_4h": 9, "max_tokens_per_day": 90},
+        "endpoints": {
+            "openrouter": {"token_budget": {"max_tokens_per_4h": 3, "max_tokens_per_day": 30}},
+            "opencode": {},
+        },
+    }
+    assert token_cap_for_endpoint(cfg, "openrouter") == 3
+    assert token_daily_cap_for_endpoint(cfg, "openrouter") == 30
+    assert token_cap_for_endpoint(cfg, "opencode") == 9
+    assert token_daily_cap_for_endpoint(cfg, "opencode") == 90
+    assert token_cap_for_endpoint(cfg, None) == 9
+    assert token_daily_cap_for_endpoint(cfg, None) == 90
+
+
+def test_example_config_has_per_endpoint_4h_and_daily_budgets():
+    from pathlib import Path
+
+    data = json.loads(Path("example_config.json").read_text(encoding="utf-8"))
+    top = data["token_budget"]
+    assert int(top["max_tokens_per_4h"]) > 0
+    assert int(top["max_tokens_per_day"]) > 0
+    endpoints = data["endpoints"]
+    assert endpoints
+    for name, ep in endpoints.items():
+        tb = ep["token_budget"]
+        assert int(tb["max_tokens_per_4h"]) > 0, name
+        assert int(tb["max_tokens_per_day"]) > 0, name
+        assert int(tb["max_tokens_per_day"]) >= int(tb["max_tokens_per_4h"]), name
+    assert token_cap_for_endpoint(data, "openrouter") == data["endpoints"]["openrouter"]["token_budget"]["max_tokens_per_4h"]
+    assert token_daily_cap_for_endpoint(data, "opencode") == data["endpoints"]["opencode"]["token_budget"]["max_tokens_per_day"]
+    assert token_cap_for_endpoint(data, "openrouter") != token_cap_for_endpoint(data, "opencode")

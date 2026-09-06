@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from core.config import get_config
-from core.db import get_db_path, init_db
+from core.db import init_db
 from core.db_connection import get_db_connection, get_init_db_connection
 from core.db_helpers import get_unaddressed_feedback
 from core.file_operations import (
@@ -18,7 +18,6 @@ from core.file_operations import (
     should_ignore_file,
     sync_file_to_database,
 )
-from core.token_budget import TokenBudget
 
 
 def cmd_init():  # noqa: C901
@@ -174,10 +173,18 @@ def cmd_files():
 
 def cmd_status():
     """Show system status"""
-    config = get_config()
-    budget = TokenBudget(get_db_path(), config["token_budget"]["max_tokens_per_4h"])
-    budget.load_from_db()
-    budget.print_status()
+    from agents.base import get_token_budget
+    from core.endpoint_manager import get_endpoint_manager
+
+    try:
+        names = list(get_endpoint_manager().endpoints)
+    except Exception:
+        names = []
+    if names:
+        for name in names:
+            get_token_budget(name).print_status()
+    else:
+        get_token_budget().print_status()
 
 
 def cmd_history(limit: int = 10):

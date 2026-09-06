@@ -169,7 +169,7 @@ run to continue anyway.
 | `feedback.max_unaddressed` / `max_age_days_low` | Cap on open feedback and aging of LOW items. |
 | `finish_gate.high_grace_iterations` | CRITICAL always blocks completion; HIGH stops blocking after this many consecutive completion attempts. |
 | `resource_controller.max_tokens_per_day` / `model_downgrades` | Daily spend cap and per-mode model downgrades; burn-rate throttling engages beyond the warning threshold. |
-| `token_budget.max_tokens_per_4h` | Rolling token budget that halts the loop rather than overrunning. |
+| `token_budget.max_tokens_per_4h` / `max_tokens_per_day` | Default rolling 4h and daily caps. Override per endpoint at `endpoints.<name>.token_budget` — buckets are not shared. |
 | `background_agents_enabled` + `background_agents.<name>` | Master switch + per-agent `enabled` / `on_modification` / `random_review`. |
 | `reporter.interval_minutes` | How often the project reporter writes summaries. |
 | `content_safety` | Binary/extension guards for governed writes (default safe). |

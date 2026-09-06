@@ -35,7 +35,7 @@ from core.rate_limit_headers import (
     classify_rate_limit,
 )
 from core.rate_limiter import RateLimiter
-from core.token_budget import TokenBudget, token_cap_for_endpoint
+from core.token_budget import TokenBudget, token_cap_for_endpoint, token_daily_cap_for_endpoint
 from file_editing.db import log_error
 
 # Background agents that call_agent() as part of a parallel/support pool.
@@ -82,17 +82,19 @@ def _endpoint_budget_key(endpoint: EndpointConfig | str | None) -> str:
 def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudget:
     """Return the 4h TokenBudget for ``endpoint.name`` (or the process default).
 
-    Caps: ``endpoints.<name>.token_budget.max_tokens_per_4h``, else top-level
-    ``token_budget.max_tokens_per_4h``. Company and public Gemini do not share
-    a bucket (ROADMAP §8.1a).
+    Caps: ``endpoints.<name>.token_budget.max_tokens_per_4h`` /
+    ``max_tokens_per_day``, else top-level ``token_budget``. Company and
+    public Gemini do not share a bucket (ROADMAP §8.1a).
     """
     global _token_budget
     name = _endpoint_budget_key(endpoint)
     budget = _token_budgets.get(name)
     if budget is None:
         config = get_config()
-        cap = token_cap_for_endpoint(config, None if name == "_global" else name)
-        budget = TokenBudget(get_db_path(), cap, endpoint_name=None if name == "_global" else name)
+        ep_name = None if name == "_global" else name
+        cap = token_cap_for_endpoint(config, ep_name)
+        daily = token_daily_cap_for_endpoint(config, ep_name)
+        budget = TokenBudget(get_db_path(), cap, endpoint_name=ep_name, max_tokens_per_day=daily)
         _token_budgets[name] = budget
         _token_budget = budget
     return budget
