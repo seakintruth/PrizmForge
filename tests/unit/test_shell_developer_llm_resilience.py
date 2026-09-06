@@ -18,6 +18,8 @@ These tests lock in the fix:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import workflow.shell_developer as sd
 
 
@@ -34,10 +36,13 @@ def _session(**cfg_overrides):
 
 class _FakeWorktree:
     def run_command(self, command, timeout=120):
-        return 0, "ok"
+        return 0, "/work/wt\n/work/wt\nworkflow/\nworkflow/__init__.py\n"
 
     def run_test_command(self, command, timeout=600):
         return 0, "ok"
+
+    def working_dir(self):
+        return Path("/work/wt")
 
 
 def _install_rc_stub(monkeypatch):
@@ -121,7 +126,12 @@ def test_transient_failure_backs_off_retries_and_finishes(monkeypatch):
     _install_endpoint_manager(monkeypatch)
     states = _install_llm_script(
         monkeypatch,
-        script=[None, None, f"Done.\n{sd.FINISH_TOKEN}\nComplete."],
+        script=[
+            None,
+            None,
+            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+            f"Done.\n{sd.FINISH_TOKEN}\nComplete.",
+        ],
         kinds=["rate_limited", "rate_limited"],
     )
     records = _capture_health_records(monkeypatch)
@@ -130,13 +140,13 @@ def test_transient_failure_backs_off_retries_and_finishes(monkeypatch):
     result = session.run("task")
 
     assert result.exit_status == "Finished"
-    assert result.llm_attempts == 3  # two failures + one success
+    assert result.llm_attempts == 4  # two failures + evidence + finish
     assert result.llm_failure_kinds == {"rate_limited": 2}
     assert result.last_llm_failure["kind"] == "rate_limited"
     assert result.last_llm_failure["attempt"] == 2
     assert states["sleeps"] == [1, 2]  # linear backoff: base*(attempt)
     # Every call rode the resolved model (agent prefs), not cfg.model (None).
-    assert states["models"] == ["openrouter/openrouter/free"] * 3
+    assert states["models"] == ["openrouter/openrouter/free"] * 4
     assert session.resolved_model == "openrouter/openrouter/free"
     # Model-health records followed the resolved model too, never None.
     assert records and all(r["model"] == "openrouter/openrouter/free" for r in records)
@@ -166,7 +176,11 @@ def test_token_budget_retries_when_another_endpoint_has_room(monkeypatch):
     monkeypatch.setattr("agents.base.any_token_budget_remaining", lambda tokens=1: True)
     states = _install_llm_script(
         monkeypatch,
-        script=[None, f"Done.\n{sd.FINISH_TOKEN}\nComplete."],
+        script=[
+            None,
+            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+            f"Done.\n{sd.FINISH_TOKEN}\nComplete.",
+        ],
         kinds=["token_budget"],
     )
     _capture_health_records(monkeypatch)
@@ -175,7 +189,7 @@ def test_token_budget_retries_when_another_endpoint_has_room(monkeypatch):
     result = session.run("task")
 
     assert result.exit_status == "Finished"
-    assert result.llm_attempts == 2
+    assert result.llm_attempts == 3
     assert states["sleeps"] == [1]
 
 

@@ -48,6 +48,8 @@ from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_sugg
 FINISH_TOKEN = shell_protocol.FINISH_TOKEN
 BASH_BLOCK_RE = shell_protocol.BASH_BLOCK_RE
 MAX_RATIONALE_CHARS = 3000
+WORKSPACE_MARKER_DEFAULT = "workflow/__init__.py"
+EVIDENCE_PROMPT_COMMAND = "pwd && git rev-parse --show-toplevel && ls -la"
 
 
 # =========================================================================
@@ -68,6 +70,7 @@ class ShellDeveloperConfig:
     llm_failure_max_retries: int = 3
     llm_retry_backoff_seconds: int = 15
     worktree_parent: str = ""  # empty → system temp dir
+    workspace_marker: str = WORKSPACE_MARKER_DEFAULT
 
     @classmethod
     def from_config(cls) -> ShellDeveloperConfig:
@@ -86,6 +89,7 @@ class ShellDeveloperConfig:
             llm_failure_max_retries=int(cfg.get("llm_failure_max_retries", 3)),
             llm_retry_backoff_seconds=int(cfg.get("llm_retry_backoff_seconds", 15)),
             worktree_parent=str(cfg.get("worktree_parent", "") or ""),
+            workspace_marker=str(cfg.get("workspace_marker") or WORKSPACE_MARKER_DEFAULT),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
             print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
@@ -119,7 +123,11 @@ pwd && ls -la
   This proves which directory you are in and that the repository root is reachable before \
 you touch anything.
 
-Never attempt to interact outside this working copy; changes outside it are discarded."""
+Never attempt to interact outside this working copy; changes outside it are discarded.
+
+Do not ask the user to upload files or provide repository contents.
+You have shell access to the project checkout.
+Command stdout is the repository."""
 
 
 def build_instance_prompt(task_text: str) -> str:
@@ -153,6 +161,51 @@ def extract_finish(response: str) -> str | None:
 def classify_shell_reply(response: str) -> str:
     """Classify a reply into a protocol category (shared trajectory/classifier)."""
     return shell_protocol.classify_shell_reply(response)
+
+
+def evidence_command(marker: str = WORKSPACE_MARKER_DEFAULT) -> str:
+    return f"{EVIDENCE_PROMPT_COMMAND} && test -f {marker} && echo {marker}"
+
+
+def is_evidence_command(command: str | None) -> bool:
+    return "git rev-parse --show-toplevel" in (command or "")
+
+
+def augment_evidence_command(command: str, marker: str = WORKSPACE_MARKER_DEFAULT) -> str:
+    cmd = (command or "").rstrip()
+    test_bit = f"test -f {marker}"
+    echo_bit = f"echo {marker}"
+    if test_bit not in cmd:
+        cmd = f"{cmd} && {test_bit}"
+    if echo_bit not in cmd:
+        cmd = f"{cmd} && {echo_bit}"
+    return cmd
+
+
+def parse_evidence_output(output: str, exit_code: int, marker: str, cwd: str = "") -> dict[str, Any]:
+    lines = [ln.strip() for ln in (output or "").splitlines() if ln.strip()]
+    git_root = lines[1] if len(lines) >= 2 else ""
+    marker_found = marker in (output or "")
+    return {
+        "cwd": lines[0] if lines else cwd,
+        "git_root": git_root,
+        "exit_code": exit_code,
+        "output_excerpt": (output or "")[:2000],
+        "marker": marker,
+        "marker_found": marker_found,
+        "task_path_exists": marker_found,
+    }
+
+
+def evidence_inject_message(marker: str = WORKSPACE_MARKER_DEFAULT) -> str:
+    return (
+        "Do not ask the user to upload files or provide repository contents. "
+        "You have shell access to the project checkout. "
+        "Command stdout is the repository. "
+        "You have a real shell in a disposable worktree; emit the evidence command now. "
+        f"Do not reply with {FINISH_TOKEN} yet.\n"
+        f"```bash\n{EVIDENCE_PROMPT_COMMAND}\n```"
+    )
 
 
 # =========================================================================
@@ -433,6 +486,9 @@ class SessionResult:
     llm_attempts: int = 0
     llm_failure_kinds: dict[str, int] = field(default_factory=dict)
     last_llm_failure: dict[str, Any] | None = None
+    evidence_ran: bool = False
+    evidence_ok: bool = False
+    evidence: dict[str, Any] = field(default_factory=dict)
 
 
 # Failure kinds that a bounded backoff+retry cannot fix — give up immediately
@@ -619,11 +675,90 @@ class ShellDeveloperSession:
                 return max(remaining_s, 1)
         return timeout
 
+    def _handle_pre_evidence_turn(
+        self,
+        response: str,
+        command: str | None,
+        summary: str | None,
+    ) -> bool:
+        """Reject finish / non-evidence bash until workspace evidence succeeds.
+
+        Returns True when the turn was handled (caller should continue).
+        Returns False so prose / unterminated fences still use the format-error path.
+        """
+        r = self.result
+        marker = self.cfg.workspace_marker
+        inject = evidence_inject_message(marker)
+
+        if command is not None and is_evidence_command(command):
+            evidence_cmd = augment_evidence_command(command, marker)
+            exit_code, output = self.wt.run_command(evidence_cmd, self._effective_command_timeout())
+            try:
+                cwd = str(self.wt.working_dir())
+            except Exception:
+                cwd = ""
+            evidence = parse_evidence_output(output, exit_code, marker, cwd=cwd)
+            r.evidence = evidence
+            r.evidence_ran = True
+            self.messages.append(self._observation(exit_code, output))
+            self._emit_command_failed_if_needed(exit_code, evidence_cmd, r.n_model_calls)
+            self._record_model_health(ok=True, kind="command_executed")
+            self._record_model_health(ok=exit_code == 0, kind="command_success")
+            self._record_step(
+                response=response,
+                command=evidence_cmd,
+                command_exit_code=exit_code,
+                response_format_status=shell_protocol.VALID_BASH_BLOCK,
+                step_number=r.n_model_calls,
+            )
+            if exit_code == 0 and evidence["marker_found"]:
+                r.evidence_ok = True
+                return True
+            r.exit_status = "WorkspaceValidationFailed"
+            r.summary = f"shell developer workspace validation failed: expected {marker} under project root but it was not found"
+            print(f"   ❌ {r.summary}")
+            _publish_shell_event(
+                "shell_workspace_validation_failed",
+                task_id=self.task_id,
+                payload=evidence,
+            )
+            return True
+
+        if summary is not None:
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": (f"{FINISH_TOKEN} is not allowed until the workspace evidence command has succeeded. " + inject),
+                }
+            )
+            self._record_step(
+                response=response,
+                command=None,
+                command_exit_code=None,
+                response_format_status=shell_protocol.VALID_FINISH_SESSION,
+                step_number=r.n_model_calls,
+            )
+            return True
+
+        if command is not None:
+            self.messages.append({"role": "user", "content": inject})
+            self._record_step(
+                response=response,
+                command=command,
+                command_exit_code=None,
+                response_format_status=shell_protocol.VALID_BASH_BLOCK,
+                step_number=r.n_model_calls,
+            )
+            return True
+
+        return False
+
     def run(self, task_text: str) -> SessionResult:
         r = self.result
         r.messages = self.messages
         self.messages.append({"role": "system", "content": SYSTEM_PROMPT.format(finish_token=FINISH_TOKEN)})
         self.messages.append({"role": "user", "content": build_instance_prompt(task_text)})
+        self.messages.append({"role": "user", "content": evidence_inject_message(self.cfg.workspace_marker)})
 
         consecutive_format_errors = 0
         while True:
@@ -657,6 +792,13 @@ class ShellDeveloperSession:
 
             is_protocol_valid = command is not None or summary is not None
             self._record_model_health(ok=is_protocol_valid, kind="protocol_valid" if is_protocol_valid else "protocol_invalid")
+
+            if not r.evidence_ok:
+                handled = self._handle_pre_evidence_turn(response, command, summary)
+                if r.exit_status:
+                    break
+                if handled:
+                    continue
 
             if summary is not None and command is not None:
                 # The model tried to run a final command AND finish in one reply
@@ -785,6 +927,7 @@ class ShellDeveloperSession:
                 "failure_kinds": dict(self.result.llm_failure_kinds),
             },
             "last_llm_failure": self.result.last_llm_failure,
+            "workspace_evidence": dict(self.result.evidence),
             "verification": {
                 "test_command": self.cfg.test_command,
                 "test_exit_code": self.result.test_exit_code,
@@ -1153,6 +1296,14 @@ def run_shell_developer_turn(
         print(f"   🐺 Session exit: {result.exit_status} after {result.n_model_calls} model calls")
 
         _save_trajectory(task_id, current_turn, session)
+
+        if result.exit_status == "WorkspaceValidationFailed":
+            progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+            return {
+                "status": "error",
+                "message": result.summary,
+                "session_exit": result.exit_status,
+            }
 
         # W1 (soak recompute, 2026-08-29): an early-exiting session
         # (step_limit, user signal, transport failure) must still materialize

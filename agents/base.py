@@ -86,7 +86,7 @@ def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudge
     ``token_budget.max_tokens_per_4h``. Company and public Gemini do not share
     a bucket (ROADMAP §8.1a).
     """
-    global _token_budget, _token_budgets
+    global _token_budget
     name = _endpoint_budget_key(endpoint)
     budget = _token_budgets.get(name)
     if budget is None:
