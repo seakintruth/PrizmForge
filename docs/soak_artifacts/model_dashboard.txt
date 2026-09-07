@@ -1,0 +1,20 @@
+Model	Requests	Tokens	Prompt	Completion
+gemini-3.1-pro-preview
+
+238
+
+1.7M
+
+1.6M
+
+70.3K
+
+gemini-3.7-flash
+
+165
+
+1.6M
+
+1.5M
+
+41.2K
