@@ -4,11 +4,11 @@ This file lists **only work that still needs to be accomplished**.
 
 Completed work is **not repeated here**. Implementation, PR numbers, soak
 post-mortems, and acceptance evidence live in **git history**
-(`git log`, merged PRs #108–#121, and
+(`git log`, merged PRs #108–#124, and
 `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`). Do not paste shipped
 checklists back into this tracker.
 
-**Last updated:** 2026-09-06
+**Last updated:** 2026-09-07
 
 ## How to use this file
 
@@ -23,9 +23,10 @@ checklists back into this tracker.
 | Section | Priority | Why |
 |---|---|---|
 | §0 Current state | — | Index |
-| **§10 Soak4 mutation path (Gemini will not drive the shell)** | **P0** | Worktree and evidence work. Developer on Gemini Enterprise never inspects or edits the task file. 0 proposals. Do this before ingest or more latch work. |
-| §6 Next-soak 429 dump | **P0** | Unpaid soak check |
-| §8 Operator soak A-1 | **ran** | Soak4 ran after #121; remaining mutation work is §10 |
+| **§11 Soak17 root-cause fixes (targeting / 400 class / headers)** | **P0** | Phantom-seed abort burned Soak17 at 0 model calls. Fix §11.1 existence-verified targeting first, then §11.2 config-failure class + quota park, then §11.3 per-minute token headers. |
+| §10 Mutation path | shipped #121–#124 | Proposal path + Soak16 fixes soak-validated; only §10.7 gate remains |
+| §6 Next-soak 429 dump | **P0** | Partly paid by the Soak5 artifact; `Work: 0.0s` still open |
+| §8 Operator soak A-1 | **ran** | Soak4 ran after #121; remaining gate is §10.7 / §11 |
 | §5 Optional SQL hygiene | **P2** | Identifier quoting + comment-aware DDL split |
 | §3 Seed-path / scope | **watch** | Next soak with background agents on |
 | §2.3 Protocol nits | **watch** | Only if the next soak shows them |
@@ -37,18 +38,22 @@ checklists back into this tracker.
 
 ## 0. Current state & next focus
 
-- **`main` already has (PR #121):** `seen_endpoints` recurse, latch-only
-  `is_available()`, per-endpoint 4h + daily `TokenBudget`, fail-closed
-  workspace evidence, zero-command seed latch, task status vocabulary
-  (`failed` / `timed_out` / `no_change_required` / `stalled`), demotion
-  exclusions (`key_locked`, `unauthorized`, `token_budget`,
-  `token_exhausted`, `no_alternate_endpoint`), `Retry-After` on
-  `rate_limited` events, cold `cmd_init` one-writer ingest. Do not
-  re-implement those.
-- **Next (run now):** §10 — Soak4 mutation path. Worktree and evidence
-  already work; Gemini Enterprise will not drive the shell. Do this
-  before ingest or more latch work. Optional SQL (§5) stays unblocked
-  but is not the gate.
+- **`main` already has (PRs #121–#124):** recursive `seen_endpoints`,
+  latch-only `is_available()`, per-endpoint 4h + daily `TokenBudget`,
+  fail-closed workspace evidence, zero-command seed latch, task status
+  vocabulary, demotion exclusions, `Retry-After` on `rate_limited`
+  events, cold `cmd_init` one-writer ingest (#121); chat-JSON-table
+  protocol + Enterprise-chat developer driving (#123); in-worktree
+  edit primitive, command/change-state observations, stall tripwire,
+  task-fiability pre-flight, `edit_payload` fallback gating (#124). Do
+  not re-implement those.
+- **Soak artifacts (review only):** `docs/soak_artifacts/`
+  (`stdout.txt`, `model_dashboard.txt`, `soak-target-.prizmforge/`).
+  The Soak5 run validated the #124 fixes in a live soak; Soak17 aborted
+  on a **phantom seed** with 0 model calls — that is §11.
+- **Next (do):** §11 — make targeting existence-verified, close the
+  endpoint config/header gaps, then re-run the §10.7 acceptance gate on
+  a targeted task that names an existing file.
 - **Company endpoints** still need a **manual unlock ~every 8 hours**
   and **must keep falling back** when one key locks.
 - **Trajectories (do not merge):** `soak/doc-run-a-1` /
@@ -57,256 +62,20 @@ checklists back into this tracker.
 
 ---
 
-## 10. Soak4 — make the mini-swe mutation path produce a proposal
+## 10. Soak4 → Soak17 — mutation path (shipped; gate open)
 
-**Priority:** P0
-**Evidence (do not merge):** `soak/4-tmp-reporting` /
-`docs/soak-a-4-example-tmp/shell_trajectories/`
-(34 JSON files: `task_001` turns 1–30, `task_002` turns 1–4) and
-`docs/soak-a-4-example-tmp/agents.db`.
-**Live soak:** Windows Soak4-target, after PR #121 (`feat/roadmap-priority-0`).
-**Last updated:** 2026-09-06
+**Priority:** shipped (PRs #121–#124). Only the §10.7 acceptance gate
+is open, exercised by Soak17 (§11). Soak4–Soak16 post-mortem detail
+(§10.0–§10.5) is in git history — do not re-paste it here.
 
-The worktree is fine. Gemini Enterprise never acts as a shell agent.
-That is the mutation failure.
-
-### 10.0 What already works (do not reopen)
-
-- Disposable worktree (`/tmp/pf-shelldev-*/wt` ↔
-  `C:/Users/…/Temp/pf-shelldev-*/wt`) contains the repo.
-- Evidence command exit 0, `marker_found=true` for
-  `workflow/__init__.py`, `task_path_exists=true`.
-- Fail-closed “no FINISH until evidence” (PR #121).
-- Zero-command seed latch fires and blocks a second developer
-  dispatch (ROADMAP §3).
-- Endpoint backoff on 407 / 503 (operator win on this soak).
-- `CREATE TABLE` drift and cold ingest are **not** this item.
-
-### 10.1 Soak4 facts (DB + trajectories)
-
-Funnel on `docs/soak-a-4-example-tmp/agents.db`:
-
-```text
-tasks=2  developer_replies=103  replies_with_command=35
-commands_ok=33  shell_events=46  proposals=0  writes=0  file_mods=0
-```
-
-Protocol histogram (103 = all developer rows):
-
-| `response_format_status` | n | Typical prompt_len | What it is |
-|---|---:|---:|---|
-| `PROSE_OR_UNSUPPORTED_FORMAT` | 45 | 329 | Gemini Enterprise refusal (“no shell / upload files / I am a conversational assistant”). Invents `/home/bard` empty. |
-| `VALID_BASH_BLOCK` | 35 | 2333 | Almost all are the **injected evidence line**. Response ~55–60 chars = copied fence. |
-| `VALID_FINISH_SESSION` | 23 | 416 | Post-evidence “you may finish” turn. Many rows only *mention* the token. |
-
-No developer `command` is `sed`/`python`/`cat` of
-`workflow/task_runner.py`. `commands_executed` in trajectories is 0 or 1
-(evidence only). Session headers:
-
-| File | `exit_status` | After evidence? |
-|---|---|---|
-| `task_001-turn1` | `LlmUnavailable` (`kind=unknown` ×4) | Yes — `ls` stdout is last message |
-| `task_001-turn25` | same | Yes |
-| `task_002-turn1` | same | Yes |
-| `task_002-turn4` | `RepeatedFormatError` | No command |
-
-Turn 25 states the policy in plain language: “as **Gemini Enterprise**,
-I operate as a conversational AI… I do not support the automated
-script runner protocol.”
-
-Soak-local token use on this run is ~**2M**, not 148M. The RC line
-`Budget: 99.0% (148,497,489 / 150,000,000)` is the **shared 4h window**,
-already near the cap from earlier work. Task_002 still ended
-`failed (token budget exhausted: files_modified=0)` because that
-window was ~99% when the latch was yielding to reviewers.
-`Work:` stayed **0.0s**.
-
-### 10.2 Session loop (every turn)
-
-1. User/system ask for one closed bash block; first command must be
-   evidence.
-2. Model replies as a chatbot. Parser:
-   `prose_or_unsupported_format`.
-3. Finish before evidence is refused (correct).
-4. 2333-char inject embeds the evidence fence. Model often **copies**
-   it (sometimes unclosed). Runner executes it. Exit 0.
-5. Next LLM call is still “emit bash.” Model essays again, or the
-   call returns `kind=unknown` ×4 → `LlmUnavailable`.
-6. If a finish is accepted first, the summary is “no shell / upload
-   files,” not an edit.
-7. Proposal builder never sees a dirty tree → 0 `edit_proposals`.
-8. Latch treats the session as zero useful commands → orchestrator
-   keeps voting `developer` → yield to jr_reviewer / security_reviewer
-   until the **window** is exhausted.
-
-Telling the model “you have a real shell” **causes** the essay. That
-is not a fence-normalizer bug.
-
-### 10.3 Harness bugs visible in the same dump
-
-- [x] **Finish classifier is too loose.** Rows 67, 77, 124, 245, 248,
-      268, 277, 288 parsed as `VALID_FINISH_SESSION` while the body is
-      an essay that only *mentions* the token. Require the first
-      non-empty line to be exactly `FINISH_EDIT_SESSION`. Reject a
-      finish whose summary claims no filesystem / upload-files /
-      “Gemini Enterprise” after `marker_found=true`.
-      (Shipped: `is_canonical_finish` in `shell_protocol.py` +
-      `finish_claims_no_shell` rejection.)
-- [x] **Archive `command` is not always model-authored.** Every
-      `prompt_len=2333` row stores the injected evidence line, even
-      when `response` is “### System Access Limitations” (id 86).
-      Store `injected_command` vs `model_command` separately, or only
-      write `command` when the parsed bash block is what ran.
-      (Shipped: `_record_step` stores `command=None` unless it ran.)
-- [x] **`echo "I do not have shell access…"` is a valid bash block**
-      (ids 209, 304) with `command_exit_code` NULL. Do not count that
-      as evidence. Evidence is only the configured
-      `pwd && git rev-parse --show-toplevel && ls -la && test -f <marker>`
-      line with exit 0. (Shipped: `is_evidence_command` rejects it.)
-- [x] **`kind=unknown` after a good `ls` is unlogged.**
-      `model_health_events` on this DB was empty. Dump the raw HTTP
-      body once per unknown; classify empty / safety / policy
-      separately from transport. Do not tear the session down as
-      `LlmUnavailable` until that dump exists.
-      (Shipped: `model_health_events.detail`, `_dump_unknown_llm_body_once`,
-      structured-only classifier; a non-empty extract is never classified
-      and an empty/policy body falls back like `bad_payload`.)
-- [x] **Latch: evidence-only ≠ zero-command.** If
-      `commands_executed >= 1` and `marker_found`, do **not** freeze
-      developer for the rest of the duration on `LlmUnavailable` or
-      “no mutation.” Allow at least one retry. Otherwise one policy
-      rant + one `ls` burns the remaining window on reviewers
-      (`Work: 0.0s`). (Shipped: `_is_zero_command_seed_failure`.)
-
-### 10.4 Required mutation-path changes
-
-Primary files: `workflow/shell_developer.py`,
-`workflow/shell_protocol.py`, `workflow/task_runner.py`,
-`core/model_health.py` / `agents/base.py` (unknown-kind dump),
-developer model routing in config, tests under
-`tests/unit/test_shell_developer_protocol_recovery.py`.
-
-#### 10.4.1 Evidence is in-process (no LLM)
-
-- [x] Before the first `call_endpoint` for a shell session, the
-      runner itself executes:
-
-      ```bash
-      pwd && git rev-parse --show-toplevel && ls -la && test -f workflow/__init__.py
-      ```
-
-      Persist cwd, git_root, exit, stdout excerpt, `marker_found`,
-      `task_path_exists` (already on the trajectory object).
-- [x] If marker missing or exit ≠ 0: emit
-      `shell_workspace_validation_failed`, abort. Do not ask the
-      model to prove the tree exists.
-- [x] Do **not** put “you have a real shell / do not ask the user to
-      upload files” sermons in the first user turn. That text is
-      what triggers the Enterprise refusal.
-
-#### 10.4.2 First model turn is inspect-the-target, not prove-cwd
-
-- [x] After in-process evidence, the first user message is only:
-
-      ```text
-      Workspace listing (already executed, exit 0):
-      <stdout>
-
-      Target file: <seed path, e.g. workflow/task_runner.py>
-
-      Reply with exactly one closed bash block. First command must be:
-      sed -n '1,80p' <seed path>
-      ```
-
-      Use the resolved seed path; do not hard-code only
-      `__init__.py`.
-- [x] Reject `FINISH_EDIT_SESSION` until **one non-evidence command**
-      against the target path has run (or a documented “target
-      missing after evidence” abort).
-- [x] After that `sed -n` / `nl` succeeds, the model may edit with
-      further bash or finish with a real rationale. Finish with
-      “no shell” after evidence stdout is
-      `shell_session_no_mutation` + retry, not session-complete.
-
-#### 10.4.3 Developer model is not optional
-
-- [x] Do not assign `gemini-3.1-pro-preview` on `api.genai.mil`
-      (Gemini Enterprise chat) as `developer` / shell implementation.
-      Orchestrator and reviewers may stay on that endpoint.
-      (Revised PR #123: an Enterprise-chat developer is now **attempted** via
-      the chat-JSON-table protocol — an append-only JSON step-row table the
-      model completes for the next `bash` command — instead of hard-aborting;
-      if that session errors, the turn falls back to an `edit_payload`
-      mutation in the same turn. `shell_developer.json_table="off"` restores
-      the historical abort-on-fence-refusal behavior.)
-- [x] Config: `agents.developer.model` (or
-      `shell_developer.model`) must be a model that will emit a
-      **second** closed bash block after seeing command stdout.
-      Document the soak-proven refusal so a future config cannot
-      silently point developer back at Enterprise chat.
-      (Shipped: `example_config.json` `_note_model` warning.)
-- [x] If the only available endpoint is Enterprise chat, skip the
-      shell developer and fail the task as
-      `developer_model_not_shell_capable` rather than looping 30
-      evidence-only turns.
-      (Revised PR #123: instead of failing as not-shell-capable, an
-      Enterprise-chat model is driven with the chat-JSON-table protocol; a
-      failed chat session falls back to `edit_payload` in the same turn, so
-      the task still gets a mutation attempt and is never burned on 30
-      evidence-only loops.)
-
-#### 10.4.4 Proposal path (only after a dirty tree)
-
-- [ ] On `FINISH_EDIT_SESSION` or session end, if `git status` /
-      worktree diff is non-empty, `collect_changes` →
-      `edit_proposals` must run even when the last LLM call was
-      `unknown`. Today 33 successful commands still yield 0
-      proposals because the tree never changed.
-      (Wiring exists — `run_shell_developer_turn` collects changes after
-      the session and gates them. NOT proven against a Soak4-shaped
-      fixture yet; tick only once the §10.7 acceptance query shows
-      `other_cmds > 0` and `edit_proposals > 0` on a seed naming an
-      existing file.)
-- [ ] Acceptance query (same DB shape as Soak4):
-
-      ```sql
-      -- other_cmds must be > 0 and proposals > 0 on a seed that
-      -- names an existing file
-      SELECT
-        SUM(CASE WHEN command LIKE '%git rev-parse%' THEN 1 ELSE 0 END)
-          AS evidence_cmds,
-        SUM(CASE WHEN command LIKE '%git rev-parse%' THEN 0 ELSE 1 END)
-          AS other_cmds
-      FROM agent_responses_archive
-      WHERE agent_name='developer' AND command IS NOT NULL;
-      SELECT COUNT(*) FROM edit_proposals;
-      ```
-
-### 10.5 Tests (fixtures from Soak4)
-
-Add to `tests/unit/test_shell_developer_protocol_recovery.py`
-(and a thin `task_runner` latch test):
-
-- [x] First assistant message is the Enterprise refusal (no bash).
-      Expected: format error; evidence already ran in-process so
-      no 2333-char “emit ls” inject.
-- [x] Finish whose body discusses `FINISH_EDIT_SESSION` but does not
-      start with that line → not `VALID_FINISH_SESSION`.
-- [x] Finish that claims no filesystem after `marker_found=true` →
-      rejected.
-- [x] `echo "I do not have shell access"` is not evidence.
-- [x] In-process evidence failure (empty temp dir) →
-      `shell_workspace_validation_failed`, no LLM.
-- [x] In-process evidence success + model emits
-      `sed -n '1,80p' workflow/task_runner.py` → command runs,
-      session continues.
-- [x] Session with `commands_executed>=1` and `marker_found` plus
-      `LlmUnavailable` does **not** set the zero-command latch.
-- [x] `kind=unknown` records a model-health row with body excerpt.
-- [x] (PR #122 follow-up) A 200 with `safetyRatings`/filter metadata
-      **plus non-empty text** still returns the text; a true empty/policy
-      body marks the endpoint failed and falls back; seed-prose version /
-      domain tokens (`gemini-3.1`, `api.genai.mil`) do not abort.
+**Evidence:** `docs/soak_artifacts/stdout.txt` shows the proposal path
+creating and gating **real proposals** in a soak — `e6a85797`
+(`workflow/__init__.py`, approved + materialized first), then
+`c5d6fb78` / `df6cd912` / `754abb94` / `f0872af5` / `1226b947` — with
+the Soak16 fixes behaving as designed (edit primitive,
+command/change-state observations, stall tripwire, task-fiability
+pre-flight, `edit_payload` fallback gating; developer on
+`gemini-3.1-pro-preview` @ api.genai.mil).
 
 ### 10.6 Out of scope
 
@@ -337,72 +106,71 @@ Add to `tests/unit/test_shell_developer_protocol_recovery.py`
 7. `Work:` is not 0.0s for the whole duration solely because the
    latch yielded to reviewers.
 
----
+### 10.8 Soak16 remediation (shipped #124)
 
-### 10.8 Soak16 remediation — edits succeed, no silent stall (shipped #124)
-
-Soak16 (2026-09-07): a bash-fence-only developer session burned all 30
-calls replaying failed `sed -i`/heredoc edits against
-`workflow/shell_protocol.py` (exit 1/2), never issued `FINISH`, and the
-shared-free-endpoint model park silently consumed the soak. Feed fixes:
-
-1. **In-worktree edit primitive** (priority — successful edits win over
-   context-window minimization). The model emits ```` ```edit path `````
-   fences (bash mode) or a JSON `edit` step row (chat mode). The harness
-   applies them **in-process** (read/OLD-match/replace/write) with no shell
-   quoting, so multi-line edits can never fail on escaping. OLD-not-found →
-   `exit 1` + current-file head excerpt; ambiguous OLD → occurrence count.
-   Known sides:
-   - Model may send `sed`/`sed -i` anyway; it still works but is par.
-   - An edit that clobbers the wrong region is the model's error; the
-     harness reports the diff back so it self-corrects.
-2. **Command + change-state observations**. Every bash observation echoes
-   `$ <command>` + `[exit code N]`, then the worktree's porcelain
-   name-status vs the post-sync baseline tree, plus a bounded unified diff
-   only for paths newly changed since the last observation (frozenset-keyed,
-   capped ~4k). The model always sees whether its step actually changed a
-   file. Never runtime-critical; failure → "no reportable changes".
-3. **Stall tripwire** `shell_developer.no_change_stall_limit` (default 6,
-   0=off). A step counts only when the tree is unchanged **and** the action
-   repeated an already-run command or exited non-zero → `exit_status="Stalled"`
-   with a greppable summary + `shell_stalled` event, instead of burning to
-   step_limit. Commands like `false` finally cost value on their own.
-4. **Task-fiability pre-flight** (`task_scope`: `auto`/`strict`,
-   `explore_step_cap` default 12). An untargeted task ("review the
-   architecture") is an exploration session: `auto` caps `step_limit` and
-   appends a "explore briefly, else FINISH with a summary" note; `strict`
-   short-circuits before any LLM call with `session_exit="UntargetedTask"`.
-   It costs nothing to run forever with a targeted task (seed resolution hit,
-   `decision.files_needed`, or `addressing_feedback_ids`).
-5. **edit_payload fallback gating**. The same-turn legacy-fallback runs only
-   when `_fallback_targets()` finds a real target (sanitized
-   `requested_files` → decision `files_needed` → addressing-feedback DB
-   file). Otherwise the shell error is returned with
-   `fallback_skipped=true` instead of `❌ No files for developer mutation`.
-   Session `target_path` is surfaced via `_session_mut_fields`.
-
-Soak acceptance (Soak16-target next run): ≥1 successful edit applied via the
-primitive, no `Stalled` exit on a targeted task, and no 30-call
-no-mutation burn with a shared free endpoint. 1158 unit tests pass.
+In-worktree edit primitive, command/change-state observations, stall
+tripwire, task-fiability pre-flight, `edit_payload` fallback gating —
+shipped and soak-validated. Details in git log (PR #124).
 
 ---
 
-## 8. Operator soak A-1 — ran (Soak4); remaining work is §10
+## 11. Soak17 — target-missing abort (open, P0)
 
-**Priority:** ran (Soak4 after #121). Mutation failure tracked in §10.
-**Live tree:** Windows Soak4-target
+**Priority:** P0 — next work.
+**Soak17 symptom:** `workflow/shell_developer.py:1339` aborted the
+session ("target missing after evidence") after **0 model calls**. The
+driver: the orchestrator's own seed-hint list ("Look for TODO.md,
+PLANS.md, IDEAS.md, ROADMAP.md, BACKLOG.md…") harvested `ROADMAP.md`
+via `_seed_path_candidates`, but that file does not exist; three of the
+five `files_needed` (`TODO.md`, `PLANS.md`, `IDEAS.md`) are **phantom**
+(never in `project_files`; their "2 lines" came from
+`get_file_content_from_db` stubs, not disk reads).
 
-Code for recursive fallback, per-endpoint budget, and fail-closed
-evidence **shipped in #121**. Soak4 confirmed worktree + evidence.
-Gemini Enterprise still will not drive the shell — that is §10, not
-a re-run of this 15-minute checklist.
+### 11.1 Existence-verified task targeting
 
-### 8.1 Soak-watches (Soak4 already showed them — implement under §10)
+- [ ] `_task_is_targeted` must count a `files_needed` / addressed
+      feedback file only when the file exists on disk. A target that
+      never existed must not abort the session.
+- [ ] A seed that resolves to no existing file downgrades to an
+      exploration session with a generic discovery hint — a
+      case-insensitive glob of `todo|idea|plan|roadmap|backlog` over
+      `*.md` / `*.markdown` — instead of a hard "target missing"
+      abort (no hard-coded repo names), raising a `target_missing`
+      event.
 
-- Finish-before-evidence injects burned full sessions: Soak4. Cap and
-  fail-closed belong in §10.3 / §10.4, not a re-soak of this list.
-- Evidence POSIX `test -f` / `ls` listing `workflow/` **worked** on
-  Soak4 (`marker_found=true`). Do not reopen.
+### 11.2 Config-failure vs transient classes + quota park
+
+- [ ] Treat `MissingSessionID`-class 400s as **permanent
+      endpoint-config failures** (opencode/API session absent), not
+      transient: surface the misconfiguration and demote without retry
+      loops. `EndpointStatus` has no `MISCONFIGURED` state today.
+- [ ] Quota park = `min(seconds_to_reset, 4h)`, so a short
+      `Retry-After` reopens on time instead of a fixed offline window.
+
+### 11.3 Per-minute token-bucket headers + send pacing
+
+- [ ] Parse `x-ratelimit-limit-tokens-minute` /
+      `x-ratelimit-remaining-tokens-minute` /
+      `x-ratelimit-reset-tokens-minute` (and windowed `x-ratelimit-*`
+      families) in `core/rate_limit_headers.py`; today only
+      `X-RateLimit-Limit/Remaining/Reset` (daily free models) and
+      `Retry-After` are read.
+- [ ] Persist the discovered per-minute budget to endpoint health; when
+      `remaining-tokens-minute == 0`, park all consumers for the
+      endpoint until `reset-tokens-minute`, and pace client token
+      send-rate so parallel large prompts (one reviewer prompt was
+      183k+ chars) cannot re-trigger the 429 storm.
+      (Evidence: `docs/soak_artifacts/stdout.txt` 356-363 and 1007-1098 —
+      `500000` tokens/min, `remaining 0`, `reset 59`; `Retry-After` is
+      honored correctly, but consecutive windows keep re-tripping.)
+
+---
+
+## 8. Operator soak A-1 — ran (Soak4)
+
+**Priority:** ran. Recursive fallback, per-endpoint budget, fail-closed
+evidence shipped in #121; Soak4 confirmed worktree + evidence. The
+remaining gate is §10.7 / §11, not a re-soak of this checklist.
 
 ### 8.2 Out of scope (unchanged)
 
@@ -441,18 +209,8 @@ Two endpoints configured. Background agents off for the first pass.
 ```
 
 **Soak4 result (do not re-run this as P0):** evidence + worktree
-passed; criterion 6 failed (chat refusals / 0 proposals). Remaining
-gate is §10.7, with developer ≠ Enterprise chat.
-
-Historical pass criteria (kept for the next *non-Enterprise* soak):
-
-1. Evidence command runs; `workflow/__init__.py` is in stdout. **met**
-2. Lock endpoint A → one fallback to B; no `RecursionError`.
-3. Burn A's token window → B used; burn both → clean stop.
-4. Task status is `completed`, `no_change_required`, or `failed` with a
-   reason — never stuck `in_progress`.
-5. `--diagnostic` on the **target** DB matches the trajectory files.
-6. No twelve `shell_session_no_mutation` chat refusals. **failed → §10**
+passed; the chat-refusal gate failed (0 proposals). Remaining gate is
+§10.7, with developer ≠ Enterprise chat.
 
 Copy `endpoints.<name>.token_budget` 4h/daily keys from
 `example_config.json` into the live soak `config.json` (gitignored).
@@ -468,6 +226,9 @@ Skip-path fallback, dump-once, support freeze, `seen` recurse, and
       endpoint; stdout shows **one** dump; other agents skip in one
       line; orchestrator/developer reach a healthy fallback; `Work:` is
       not 0.0s only because support held the latch.
+      (Soak5 artifact evidence: one dump per 429, one-line skip, and a
+      fallback attempt to `beta_genai` — but a token-budget gate and
+      `Work: 0.0s` remain; see `docs/soak_artifacts/stdout.txt` 1015-1098.)
 
 Non-goals (still): do not spoof OpenCode CLI headers; do not treat
 `free-models-per-day` as a product bug; do not reopen short Retry-After
@@ -639,7 +400,7 @@ evidence — that e2e is **§10**, not a second mini-swe port.
 
 | Order | Work item | Exit criterion |
 |---:|---|---|
-| 1 | **§10 Soak4 mutation path** | §10.7 acceptance 1–7; developer ≠ Enterprise chat |
+| 1 | **§11 Soak17 root-cause fixes** (11.1 → 11.2 → 11.3) | §10.7 acceptance 1–7 on a targeted seed naming an existing file; no `target missing` abort |
 | 2 | §5 optional SQL quoting + DDL split | Export uses quoted ids; `;` in comments/strings does not split DDL |
 | 3 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
 | 4 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
