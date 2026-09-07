@@ -106,6 +106,46 @@ def _inject_seed_feedback(task_id: str, user_command: str) -> None:
         print(f"   ⚠️  Seed feedback injection skipped: {e}")
 
 
+def _fallback_targets(requested_files: list[str] | None, decision: dict) -> list[str]:
+    """Real file targets the edit_payload fallback is allowed to act on.
+
+    Sources, in priority order: sanitized requested_files, sanitized
+    decision.files_needed, then a file pulled from addressing_feedback_ids.
+    Never synthesizes names (Soak16: the fallback was invoked with no files and
+    errored "No files for developer mutation"; the cold-start app.py/README.md
+    defaults are phase-1-only and must not resurface here).
+    """
+    targets: list[str] = []
+    for f in requested_files or []:
+        clean = sanitize_path_token(f) if f else None
+        if clean and clean not in targets:
+            targets.append(clean)
+    if not targets:
+        for f in (decision or {}).get("files_needed", []) or []:
+            clean = sanitize_path_token(f) if f else None
+            if clean and clean not in targets:
+                targets.append(clean)
+    if not targets:
+        for aid in (decision or {}).get("addressing_feedback_ids") or []:
+            try:
+                fb_id = int(aid)
+            except (TypeError, ValueError):
+                continue
+            try:
+                with get_db_connection() as conn:
+                    row = conn.execute("SELECT file_path FROM agent_feedback WHERE id = ? LIMIT 1", (fb_id,)).fetchone()
+            except Exception as e:
+                print(f"   ⚠️  Fallback target lookup for feedback {aid} skipped: {e}")
+                continue
+            if row:
+                clean = sanitize_path_token(row[0])
+                if clean:
+                    targets.append(clean)
+            if targets:
+                break
+    return targets
+
+
 def _dispatch_developer(
     *,
     task_id: str,
@@ -143,20 +183,29 @@ def _dispatch_developer(
             print(f"   ⚠️  Shell developer status: {mut.get('status')} {mut.get('message', '')}")
             # Fallback bridge: a shell/chat-table session that did not carry the
             # turn to success or reviewer rejection re-disperses to the legacy
-            # structured EditPayload developer in the SAME turn. Surface the
+            # structured EditPayload developer in the SAME turn — but only when a
+            # concrete file target is known (Soak16: with no requested_files the
+            # fallback errored "No files for developer mutation"). Surface the
             # shell outcome on the fallback result so the orchestrator sees both.
-            mut = _edit_payload_fallback(
-                task_id=task_id,
-                instructions=instructions,
-                user_command=user_command,
-                requested_files=requested_files,
-                conversation_context=conversation_context,
-                model_choice=model_choice,
-                progress=progress,
-                decision=decision,
-                current_turn=current_turn,
-                shell_mut=mut,
-            )
+            fallback_targets = _fallback_targets(requested_files, decision)
+            if not fallback_targets:
+                print("   ⚠️  Shell developer failed and no file target is known for the edit_payload fallback; returning shell error")
+                mut.setdefault("fallback_skipped", True)
+                mut.setdefault("fallback_skipped_reason", "no_file_target")
+                mut.setdefault("fallback_skipped_message", mut.get("message", ""))
+            else:
+                mut = _edit_payload_fallback(
+                    task_id=task_id,
+                    instructions=instructions,
+                    user_command=user_command,
+                    requested_files=fallback_targets,
+                    conversation_context=conversation_context,
+                    model_choice=model_choice,
+                    progress=progress,
+                    decision=decision,
+                    current_turn=current_turn,
+                    shell_mut=mut,
+                )
         return mut
 
     preferred_modes, fallback_order, small_file_threshold = _edit_mode_settings(config)

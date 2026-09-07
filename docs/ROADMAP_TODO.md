@@ -339,6 +339,54 @@ Add to `tests/unit/test_shell_developer_protocol_recovery.py`
 
 ---
 
+### 10.8 Soak16 remediation — edits succeed, no silent stall (shipped #124)
+
+Soak16 (2026-09-07): a bash-fence-only developer session burned all 30
+calls replaying failed `sed -i`/heredoc edits against
+`workflow/shell_protocol.py` (exit 1/2), never issued `FINISH`, and the
+shared-free-endpoint model park silently consumed the soak. Feed fixes:
+
+1. **In-worktree edit primitive** (priority — successful edits win over
+   context-window minimization). The model emits ```` ```edit path `````
+   fences (bash mode) or a JSON `edit` step row (chat mode). The harness
+   applies them **in-process** (read/OLD-match/replace/write) with no shell
+   quoting, so multi-line edits can never fail on escaping. OLD-not-found →
+   `exit 1` + current-file head excerpt; ambiguous OLD → occurrence count.
+   Known sides:
+   - Model may send `sed`/`sed -i` anyway; it still works but is par.
+   - An edit that clobbers the wrong region is the model's error; the
+     harness reports the diff back so it self-corrects.
+2. **Command + change-state observations**. Every bash observation echoes
+   `$ <command>` + `[exit code N]`, then the worktree's porcelain
+   name-status vs the post-sync baseline tree, plus a bounded unified diff
+   only for paths newly changed since the last observation (frozenset-keyed,
+   capped ~4k). The model always sees whether its step actually changed a
+   file. Never runtime-critical; failure → "no reportable changes".
+3. **Stall tripwire** `shell_developer.no_change_stall_limit` (default 6,
+   0=off). A step counts only when the tree is unchanged **and** the action
+   repeated an already-run command or exited non-zero → `exit_status="Stalled"`
+   with a greppable summary + `shell_stalled` event, instead of burning to
+   step_limit. Commands like `false` finally cost value on their own.
+4. **Task-fiability pre-flight** (`task_scope`: `auto`/`strict`,
+   `explore_step_cap` default 12). An untargeted task ("review the
+   architecture") is an exploration session: `auto` caps `step_limit` and
+   appends a "explore briefly, else FINISH with a summary" note; `strict`
+   short-circuits before any LLM call with `session_exit="UntargetedTask"`.
+   It costs nothing to run forever with a targeted task (seed resolution hit,
+   `decision.files_needed`, or `addressing_feedback_ids`).
+5. **edit_payload fallback gating**. The same-turn legacy-fallback runs only
+   when `_fallback_targets()` finds a real target (sanitized
+   `requested_files` → decision `files_needed` → addressing-feedback DB
+   file). Otherwise the shell error is returned with
+   `fallback_skipped=true` instead of `❌ No files for developer mutation`.
+   Session `target_path` is surfaced via `_session_mut_fields`.
+
+Soak acceptance (Soak16-target next run): ≥1 successful edit applied via the
+primitive, no `Stalled` exit on a targeted task, and no 30-call
+no-mutation burn with a shared free endpoint. 1158 unit tests pass.
+
+---
+
 ## 8. Operator soak A-1 — ran (Soak4); remaining work is §10
 
 **Priority:** ran (Soak4 after #121). Mutation failure tracked in §10.

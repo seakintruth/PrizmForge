@@ -84,6 +84,21 @@ class ShellDeveloperConfig:
     # chat (api.genai.mil). "on" forces it for every model; "off" disables it
     # (falling back to the historical bash-fence-only protocol).
     json_table: str = "auto"
+    # Stall tripwire: a step with no worktree change that repeats an already
+    # executed command OR exited non-zero counts toward the stall. When the
+    # counter reaches no_change_stall_limit the session exits "Stalled"
+    # instead of burning to the step limit (Soak16: 30 calls, 0 edits).
+    # 0 disables the tripwire.
+    no_change_stall_limit: int = 6
+    # Task-fiability pre-flight. "auto": an untargeted task ("review the
+    # TODO list") gets its step_limit capped to explore_step_cap so it cannot
+    # burn a full session hunting a file. "strict": an untargeted task
+    # short-circuits before any LLM call.
+    task_scope: str = "auto"
+    explore_step_cap: int = 12
+    # Internal: computed by the turn entry point (not read from config) so the
+    # prompt can tell the model when the task is exploratory, not mutation-led.
+    fiability: str = "targeted"  # "targeted" | "exploratory"
 
     @classmethod
     def from_config(cls) -> ShellDeveloperConfig:
@@ -104,6 +119,9 @@ class ShellDeveloperConfig:
             worktree_parent=str(cfg.get("worktree_parent", "") or ""),
             workspace_marker=str(cfg.get("workspace_marker") or WORKSPACE_MARKER_DEFAULT),
             json_table=str(cfg.get("json_table", "auto") or "auto"),
+            no_change_stall_limit=int(cfg.get("no_change_stall_limit", 6) or 6),
+            task_scope=str(cfg.get("task_scope", "auto") or "auto"),
+            explore_step_cap=int(cfg.get("explore_step_cap", 12) or 12),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
             print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
@@ -111,6 +129,15 @@ class ShellDeveloperConfig:
         if instance.json_table not in ("auto", "on", "off"):
             print(f"   ⚠️ shell_developer.json_table={instance.json_table!r} is invalid; using 'auto'")
             instance.json_table = "auto"
+        if instance.no_change_stall_limit < 0:
+            print(f"   ⚠️ shell_developer.no_change_stall_limit={instance.no_change_stall_limit} is invalid; using 6")
+            instance.no_change_stall_limit = 6
+        if instance.task_scope not in ("auto", "strict"):
+            print(f"   ⚠️ shell_developer.task_scope={instance.task_scope!r} is invalid; using 'auto'")
+            instance.task_scope = "auto"
+        if instance.explore_step_cap < 0:
+            print(f"   ⚠️ shell_developer.explore_step_cap={instance.explore_step_cap} is invalid; using 12")
+            instance.explore_step_cap = 12
         return instance
 
 
@@ -123,12 +150,28 @@ You are working in a disposable copy of the project repository. Your job is to c
 the given task by editing files directly with shell commands, then verifying your work.
 
 RESPONSE FORMAT — REQUIRED:
-- Think briefly, then emit EXACTLY ONE bash command inside a single ```bash fenced block. \
+- Apply file edits with the edit block primitive instead of sed/heredoc. The harness
+  applies it directly to the file (no shell quoting, no escaping issues):
+    ```edit path/to/file.py
+    OLD:
+    <exact lines currently in the file>
+    NEW:
+    <replacement lines>
+    ```
+  Use `mode: full` + `CONTENT:` to replace a whole file:
+    ```edit path/to/file.py
+    mode: full
+    CONTENT:
+    <full new file contents>
+    ```
+  The OLD section must match the file exactly (whitespace included). If your edit
+  is rejected, read the file and resend with the exact current content.
+- Otherwise think briefly, then emit EXACTLY ONE bash command inside a single ```bash fenced block. \
 It will be executed with the project copy as the working directory.
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
 - When the task is fully done and verified, reply with {finish_token} as the first line \
-followed by a short summary of what changed. Do not emit a bash block in that final reply.
+followed by a short summary of what changed. Do not emit a bash block or edit block in that final reply.
 - A closed bash block looks exactly like this (opening line, the command, closing line):
 
 ```bash
@@ -211,27 +254,43 @@ _NO_SHELL_FINISH_MARKERS = (
 _ENTERPRISE_CHAT_MARKERS = ("genai.mil",)
 
 
-def build_instance_prompt(task_text: str) -> str:
-    return (
+def build_instance_prompt(task_text: str, *, explore_note: bool = False) -> str:
+    base = (
         f"TASK:\n{task_text}\n\n"
         "Begin by inspecting the relevant files, then implement the change and verify it. "
         "If the task target file does not exist, do NOT create or guess a task-named path. "
         f"Unless you can find a safe, in-repo change that directly satisfies the task, reply "
         f"with only {FINISH_TOKEN} as the first line and a clear summary of why no safe change was made."
     )
+    if explore_note:
+        base += (
+            "\n\nThis task does not name a concrete file target, so treat it as an exploration "
+            "task with a limited budget: briefly inspect the repo for a change that directly "
+            f"satisfies it, and if none exists, reply with {FINISH_TOKEN} and a short summary "
+            "of what you inspected and why no change was warranted."
+        )
+    return base
 
 
-def build_inspect_prompt(task_text: str, evidence: dict[str, Any], target_path: str | None) -> str:
+def build_inspect_prompt(
+    task_text: str,
+    evidence: dict[str, Any],
+    target_path: str | None,
+    explore_note: bool = False,
+) -> str:
     listing = (evidence.get("output_excerpt") or "").strip()
     header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
     if target_path:
         return (
             f"{header}Target file: {target_path}\n\n"
-            f"{build_instance_prompt(task_text)}\n"
-            "Reply with exactly one closed bash block. First command must be:\n"
+            f"{build_instance_prompt(task_text, explore_note=explore_note)}\n"
+            "Reply with exactly one closed bash block or ```edit block. First command must be:\n"
             f"sed -n '1,80p' {target_path}"
         )
-    return f"{header}{build_instance_prompt(task_text)}\nReply with exactly one closed bash block. Inspect the relevant files first."
+    return (
+        f"{header}{build_instance_prompt(task_text, explore_note=explore_note)}\n"
+        "Reply with exactly one closed bash block or ```edit block. Inspect the relevant files first."
+    )
 
 
 # Chat-JSON-table protocol prompts. Chat-tuned models (Gemini Enterprise chat,
@@ -245,7 +304,19 @@ You are working in a disposable copy of the project repository. Your job is to c
 the given task by editing files directly with shell commands, then verifying your work.
 
 RESPONSE FORMAT — REQUIRED:
-- Interact with the file system ONLY through bash commands you emit.
+- Interact with the file system ONLY through bash commands you emit, OR through
+  the structured edit action (see below).
+- Apply file edits with the structured edit action instead of sed/heredoc — the
+  harness applies it directly to the file:
+    {{ "thought": "why", "step": <n>, "edit": {{
+      "path": "path/to/file.py",
+      "mode": "replace",
+      "old": "<exact lines currently in the file>",
+      "new": "<replacement lines>"
+    }} }}
+  Use `"mode": "full"` + `"new"` (no `"old"`) to replace a whole file. The old
+  text must match the file exactly (whitespace included); if rejected, read the
+  file and resend with the exact current content.
 - You are shown a JSON table of the steps executed so far (command, exit code,
   output). Do NOT repeat past steps. Complete the NEXT row of that table.
 - Reply with EXACTLY ONE JSON object (no markdown fences, no prose before or
@@ -279,11 +350,12 @@ def build_chat_prompt(
     evidence: dict[str, Any],
     target_path: str | None,
     steps: list[dict[str, Any]],
+    explore_note: bool = False,
 ) -> str:
     """Build the chat-mode user prompt: JSON table of past steps + the next-row
     instruction. Mirrors build_inspect_prompt but asks the model to complete the
     awaiting step of an append-only JSON table (chat-JSON-table protocol)."""
-    task_block = build_instance_prompt(task_text)
+    task_block = build_instance_prompt(task_text, explore_note=explore_note)
     if not steps:
         listing = (evidence.get("output_excerpt") or "").strip()
         header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
@@ -293,7 +365,10 @@ def build_chat_prompt(
         body = f"Steps executed so far:\n```json\n{table}\n```\n\n{task_block}"
     if target_path:
         body += f"\n\nTarget file: {target_path}\nFirst command must be:\nsed -n '1,80p' {target_path}"
-    body += "\n\nOutput the JSON object for the next step (step " + str((steps[-1]["step"] if steps else 0) + 1) + ") awaiting execution:"
+    body += (
+        "\n\nOutput the JSON object for the next step (an edit action or a "
+        "command — never both in one row; step " + str((steps[-1]["step"] if steps else 0) + 1) + ") awaiting execution:"
+    )
     return body
 
 
@@ -408,6 +483,48 @@ def command_touches_target(command: str | None, target: str | None) -> bool:
     if not command or not target or is_evidence_command(command):
         return False
     return target in command
+
+
+def _parse_name_status(lines: list[str]) -> list[tuple[str, str]]:
+    """[(code, path)] from git --name-status lines ("M<tab>path"). Robust to
+    spaces in paths (path is everything after the first tab) and renames."""
+    pairs: list[tuple[str, str]] = []
+    for line in lines:
+        line = line.strip()
+        if not line or line[0] not in "AMDR":
+            continue
+        parts = line.split("\t")
+        code = parts[0][0]
+        path = parts[1] if len(parts) > 1 else parts[0][1:].strip()
+        if not path or code.startswith("R"):
+            continue
+        pairs.append((code, path))
+    return pairs
+
+
+def _safe_edit_target(workdir: str, raw_path: str) -> Path | None:
+    """Resolve a model-supplied edit path that must stay inside the worktree."""
+    if not raw_path or raw_path.startswith(("/", "\\")):
+        return None
+    if ".." in Path(raw_path).parts:
+        return None
+    root = Path(workdir)
+    full = (root / raw_path).resolve()
+    root_res = root.resolve()
+    if full != root_res and root_res not in full.parents:
+        return None
+    return full
+
+
+def _worktree_change_state(wt: Any) -> tuple[list[str], str]:
+    """The worktree's change-state feed, safe against test doubles without git."""
+    change = getattr(wt, "change_state_since_baseline", None)
+    if change is None:
+        return [], ""
+    try:
+        return change()
+    except Exception:
+        return [], ""
 
 
 def finish_claims_no_shell(summary: str | None) -> bool:
@@ -735,6 +852,33 @@ class ShellWorktree:
                 changes.append(item)
         return changes
 
+    def change_state_since_baseline(self, paths: list[str] | None = None) -> tuple[list[str], str]:
+        """(name-status lines, capped unified diff) for agent changes since baseline.
+
+        Stages the worktree (like collect_changes) and diffs the index against
+        the recorded baseline tree, so only agent-authored work is reported.
+        Used for the observation change-state feed and the stall tripwire.
+        Any failure (including test doubles without a real git binary) is
+        treated as "no reportable changes".
+        """
+        assert self.path is not None
+        try:
+            add = self._git("add", "-A", cwd=self.path)
+            if add.returncode != 0:
+                return [], ""
+            base = self._baseline_tree or "HEAD"
+            if paths:
+                st = self._git("diff", "--cached", "--name-status", base, "--", *paths, cwd=self.path)
+                diff = self._git("diff", "--cached", base, "--", *paths, cwd=self.path)
+            else:
+                st = self._git("diff", "--cached", "--name-status", base, cwd=self.path)
+                diff = self._git("diff", "--cached", base, cwd=self.path)
+            lines = [line for line in st.stdout.splitlines() if line.strip()]
+            dtext = (diff.stdout or "")[:4000] if diff.returncode == 0 else ""
+            return lines, dtext
+        except Exception:
+            return [], ""
+
     def _strip_sub(self, repo_relative: str) -> str | None:
         if str(self._sub_rel) == ".":
             return repo_relative
@@ -788,6 +932,9 @@ class SessionResult:
     evidence: dict[str, Any] = field(default_factory=dict)
     commands_executed: int = 0
     target_inspected: bool = False
+    # Seed-resolved task target (populated by run()); surfaced on the mutation
+    # result so a failed shell turn's fallback can name this file.
+    target_path: str | None = None
 
 
 # Failure kinds that a bounded backoff+retry cannot fix — give up immediately
@@ -845,6 +992,13 @@ class ShellDeveloperSession:
         self._start = time.time()
         self._deferred_finish_count = 0
         self.target_path: str | None = None
+        # Stall tripwire bookkeeping: normalized commands already executed and
+        # the current no-change streak. A step counts toward the streak only
+        # when the worktree is unchanged AND the command repeated an already
+        # executed command OR exited non-zero.
+        self._executed_command_counts: dict[str, int] = {}
+        self._no_change_steps = 0
+        self._last_fed_change_key: frozenset[str] = frozenset()
         # Chat-JSON-table protocol: executed steps (append-only) and whether the
         # session drives the model with a JSON step table instead of bash fences.
         self.steps: list[dict[str, Any]] = []
@@ -939,24 +1093,38 @@ class ShellDeveloperSession:
         if len(trimmed) > self.cfg.max_output_chars:
             cut = len(trimmed) - self.cfg.max_output_chars
             trimmed = f"...[{cut} chars truncated]...\n{trimmed[-self.cfg.max_output_chars :]}"
+        change_lines, dtext = _worktree_change_state(self.wt)
+        pairs = _parse_name_status(change_lines)
+        new_key = frozenset(path for _code, path in pairs)
+        newly_changed = sorted(new_key - self._last_fed_change_key)
+        self._last_fed_change_key = new_key
         if self.chat_mode:
-            if command:
-                self.steps.append(
-                    {
-                        "step": len(self.steps) + 1,
-                        "thought": thought,
-                        "command": command,
-                        "exit_code": exit_code,
-                        "output": trimmed,
-                    }
-                )
+            row: dict[str, Any] = {
+                "step": len(self.steps) + 1,
+                "thought": thought,
+                "command": command,
+                "exit_code": exit_code,
+                "output": trimmed,
+            }
+            if change_lines:
+                row["changed"] = [path for _code, path in pairs]
+            if newly_changed and dtext:
+                row["diff"] = dtext[-4000:]
+            self.steps.append(row)
             table = json.dumps(self.steps, indent=2)
             content = f"```json\n{table}\n```\n\nOutput the JSON object for the next step (step {len(self.steps) + 1}) awaiting execution:"
             return {"role": "user", "content": content}
-        return {
-            "role": "user",
-            "content": f"[exit code {exit_code}]\n{trimmed}" if trimmed else f"[exit code {exit_code}, no output]",
-        }
+        body = ""
+        if command:
+            body += f"$ {command}\n"
+        body += trimmed
+        if change_lines:
+            body += "\n\n[worktree changes since baseline]\n" + "\n".join(change_lines)
+        if newly_changed and dtext:
+            body += f"\n\n[diff for newly changed paths (capped)]\n{dtext}"
+        if body.strip():
+            return {"role": "user", "content": f"[exit code {exit_code}]\n{body}"}
+        return {"role": "user", "content": f"[exit code {exit_code}, no output]"}
 
     def _record_step(
         self,
@@ -974,7 +1142,11 @@ class ShellDeveloperSession:
             if message.get("role") == "user":
                 prompt = message.get("content", "") or ""
                 break
-        valid = response_format_status in (shell_protocol.VALID_BASH_BLOCK, shell_protocol.VALID_FINISH_SESSION)
+        valid = response_format_status in (
+            shell_protocol.VALID_BASH_BLOCK,
+            shell_protocol.VALID_EDIT_BLOCK,
+            shell_protocol.VALID_FINISH_SESSION,
+        )
         try:
             archive_raw_response(
                 task_id=self.task_id,
@@ -1025,6 +1197,86 @@ class ShellDeveloperSession:
         exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
         self.result.commands_executed += 1
         return exit_code, output
+
+    def _apply_edit_payload(self, payload: dict[str, Any]) -> tuple[int, str]:
+        """Apply a structured edit payload to the worktree in-process (no shell).
+
+        Returns (0, message) on success or (1, message) on failure. OLD-not-found
+        includes a head excerpt so the model can resend exact content.
+        """
+        full = _safe_edit_target(str(self.wt.working_dir()), str(payload.get("path") or ""))
+        path = payload.get("path") or ""
+        if full is None:
+            return 1, f"edit target path is invalid (must be relative and inside the worktree): {path!r}"
+        try:
+            content = full.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return 1, f"edit target does not exist: {path}"
+        except OSError as e:
+            return 1, f"cannot read edit target {path}: {e}"
+        new_text = str(payload.get("new") or "")
+        if str(payload.get("mode") or "").lower() in ("full", "content"):
+            try:
+                full.write_text(new_text, encoding="utf-8")
+            except OSError as e:
+                return 1, f"cannot write edit target {path}: {e}"
+            self.result.commands_executed += 1
+            return 0, f"replaced {path} with {len(new_text)} chars"
+        old_text = str(payload.get("old") or "")
+        if not old_text:
+            return 1, f"edit {path} is missing the OLD section (or OLD is empty); resend with exact current content"
+        count = content.count(old_text)
+        if count == 0:
+            head = content[:600]
+            return 1, f"edit OLD section not found in {path} (0 matches). Current file head:\n{head}"
+        if count > 1:
+            return 1, f"edit OLD section is ambiguous in {path}: matched {count} occurrences (need exactly 1)"
+        try:
+            full.write_text(content.replace(old_text, new_text, 1), encoding="utf-8")
+        except OSError as e:
+            return 1, f"cannot write edit target {path}: {e}"
+        self.result.commands_executed += 1
+        return 0, f"applied edit to {path}"
+
+    def _normalize_stall_key(self, action: str) -> str:
+        return " ".join(action.split())
+
+    def _note_step_outcome(self, exit_code: int, action: str) -> bool:
+        """Stall-tripwire bookkeeping for one executed step. Returns True only
+        when the tripwire fires (current step reached no_change_stall_limit with
+        the tree unchanged). Any worktree change resets the streak; unchanged
+        steps count only when the action repeated an already-executed action or
+        exited non-zero, so a new command that simply changed nothing does not
+        accumulate."""
+        if self.cfg.no_change_stall_limit <= 0:
+            return False
+        change_lines, _dtext = _worktree_change_state(self.wt)
+        if change_lines:
+            self._no_change_steps = 0
+            return False
+        key = self._normalize_stall_key(action)
+        self._executed_command_counts[key] = self._executed_command_counts.get(key, 0) + 1
+        repeated = self._executed_command_counts[key] > 1
+        if not (repeated or exit_code != 0):
+            return False
+        self._no_change_steps += 1
+        if self._no_change_steps >= self.cfg.no_change_stall_limit:
+            return True
+        return False
+
+    def _mark_stalled(self, action: str, step_number: int) -> None:
+        r = self.result
+        r.exit_status = "Stalled"
+        r.summary = (
+            f"stalled after {self._no_change_steps} consecutive no-change steps "
+            f"(no_change_stall_limit={self.cfg.no_change_stall_limit}) around repeatedly executed/failing action {action!r}"
+        )
+        _publish_shell_event(
+            "shell_stalled",
+            task_id=self.task_id,
+            payload={"action": action, "step_number": step_number, "no_change_steps": self._no_change_steps},
+        )
+        print(f"   ❌ {r.summary}")
 
     def _run_in_process_evidence(self) -> bool:
         """Execute workspace evidence before any LLM call. Returns False on abort."""
@@ -1108,10 +1360,31 @@ class ShellDeveloperSession:
             )
         if self.chat_mode:
             self.messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
-            self.messages.append({"role": "user", "content": build_chat_prompt(task_text, r.evidence, self.target_path, self.steps)})
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": build_chat_prompt(
+                        task_text,
+                        r.evidence,
+                        self.target_path,
+                        self.steps,
+                        explore_note=self.cfg.fiability == "exploratory",
+                    ),
+                }
+            )
         else:
             self.messages.append({"role": "system", "content": SYSTEM_PROMPT.format(finish_token=FINISH_TOKEN)})
-            self.messages.append({"role": "user", "content": build_inspect_prompt(task_text, r.evidence, self.target_path)})
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": build_inspect_prompt(
+                        task_text,
+                        r.evidence,
+                        self.target_path,
+                        explore_note=self.cfg.fiability == "exploratory",
+                    ),
+                }
+            )
 
         consecutive_format_errors = 0
         while True:
@@ -1142,9 +1415,34 @@ class ShellDeveloperSession:
 
             summary = extract_finish(response)
             command = extract_bash_command(response)
+            edit = shell_protocol.extract_edit_payload(response)
 
-            is_protocol_valid = command is not None or summary is not None
+            is_protocol_valid = command is not None or summary is not None or edit is not None
             self._record_model_health(ok=is_protocol_valid, kind="protocol_valid" if is_protocol_valid else "protocol_invalid")
+
+            if edit is not None:
+                # In-worktree edit primitive (Soak16 feed fix): applied by the
+                # harness directly to the file, so edits never depend on shell
+                # quoting. Takes priority over any co-present bash command.
+                action = f"```edit {edit['path'] if edit.get('path') else '?'}```"
+                exit_code, output = self._apply_edit_payload(edit)
+                self.result.target_inspected = True
+                self._record_model_health(ok=True, kind="command_executed")
+                self._record_model_health(ok=exit_code == 0, kind="command_success")
+                self._record_step(
+                    response=response,
+                    command=action,
+                    command_exit_code=exit_code,
+                    response_format_status=shell_protocol.VALID_EDIT_BLOCK,
+                    step_number=r.n_model_calls,
+                )
+                user_msg = self._observation(exit_code, output, action, None)
+                self.messages.append(user_msg)
+                self._emit_command_failed_if_needed(exit_code, action, r.n_model_calls)
+                if self._note_step_outcome(exit_code, action):
+                    self._mark_stalled(action, r.n_model_calls)
+                    break
+                continue
 
             if summary is not None and command is not None:
                 # The model tried to run a final command AND finish in one reply
@@ -1166,6 +1464,9 @@ class ShellDeveloperSession:
                     step_number=r.n_model_calls,
                 )
                 self._mark_target_inspected(command)
+                if self._note_step_outcome(exit_code, command):
+                    self._mark_stalled(command, r.n_model_calls)
+                    break
                 if self._deferred_finish_count >= 3 and r.target_inspected and not finish_claims_no_shell(summary):
                     r.exit_status = "Finished"
                     r.summary = f"[finish forced after {self._deferred_finish_count} deferred finishes] {summary}"
@@ -1253,7 +1554,7 @@ class ShellDeveloperSession:
                         payload={"reason": diag["reason"], "step_number": r.n_model_calls},
                     )
                     break
-                expected = "the JSON step-table object {thought, step, command, finish, summary}" if self.chat_mode else diag["expected"]
+                expected = "the JSON step-table object {thought, step, command, edit, finish, summary}" if self.chat_mode else diag["expected"]
                 must_msg = (
                     "reply must contain the JSON step-table object for the next step"
                     if self.chat_mode
@@ -1282,6 +1583,9 @@ class ShellDeveloperSession:
                 response_format_status=shell_protocol.classify_shell_reply(response),
                 step_number=r.n_model_calls,
             )
+            if self._note_step_outcome(exit_code, command):
+                self._mark_stalled(command, r.n_model_calls)
+                break
 
         # Optional post-session verification against the edited worktree.
         if r.exit_status == "Finished" and self.cfg.test_command:
@@ -1584,6 +1888,7 @@ def _session_mut_fields(result: SessionResult) -> dict[str, Any]:
         "commands_executed": result.commands_executed,
         "evidence_ok": result.evidence_ok,
         "evidence_ran": result.evidence_ran,
+        "target_path": result.target_path,
     }
 
 
@@ -1614,6 +1919,25 @@ def _handle_session_without_changes(
 # =========================================================================
 # Public turn entry point (mirrors run_developer_mutation contract)
 # =========================================================================
+def _task_is_targeted(
+    task_text: str,
+    decision: dict[str, Any],
+    worktree: Any | None = None,
+    marker: str = WORKSPACE_MARKER_DEFAULT,
+) -> bool:
+    """Task-fiability pre-flight: the orchestrator's decision names a concrete
+    file target (seed resolution) or the addressing list picks a file. Honoring
+    the evidence-only chat row (step 1) is not a target (Soak16: the model
+    fixated on the workspace listing and never found a file)."""
+    if resolve_seed_target_path(task_text, worktree, marker):
+        return True
+    if decision.get("files_needed"):
+        return True
+    if decision.get("addressing_feedback_ids"):
+        return True
+    return False
+
+
 def run_shell_developer_turn(  # noqa: C901
     *,
     task_id: str,
@@ -1666,6 +1990,33 @@ def run_shell_developer_turn(  # noqa: C901
 
     task_text = instructions or user_command
     addressing_ids = decision.get("addressing_feedback_ids") or []
+
+    # Task-fiability pre-flight (Soak16 feed fix): an untargeted task must not
+    # burn a full session hunting a file. "strict" short-circuits before any
+    # LLM call; "auto" caps the step budget and flags the session exploratory.
+    targeted = _task_is_targeted(task_text, decision, worktree, cfg.workspace_marker)
+    if not targeted and cfg.task_scope == "strict":
+        print("   ⛔ Task-fiability pre-flight: task not targeted at any file (strict task_scope); skipping shell session")
+        _publish_shell_event(
+            "shell_task_untargeted_skipped",
+            task_id=task_id,
+            payload={"reason": "strict_scope", "task": task_text[:300]},
+        )
+        worktree.cleanup()
+        return {
+            "status": "error",
+            "message": "task not targeted at any file; strict task_scope skipped the shell session",
+            "session_exit": "UntargetedTask",
+            "commands_executed": 0,
+            "evidence_ok": False,
+            "evidence_ran": False,
+            "target_path": None,
+        }
+    if not targeted:
+        cfg.fiability = "exploratory"
+        if 0 < cfg.explore_step_cap < cfg.step_limit:
+            print(f"   🔭 Task not targeted at a file; exploratory session step budget capped at {cfg.explore_step_cap}")
+            cfg.step_limit = cfg.explore_step_cap
 
     # W6 (soak recompute): during a developer session the shell worktree is the
     # source of truth; background reviewers scanning the same files would rack

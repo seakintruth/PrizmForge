@@ -29,6 +29,10 @@ VALID_BASH_BLOCK = "VALID_BASH_BLOCK"
 UNTERMINATED_BASH_BLOCK = "UNTERMINATED_BASH_BLOCK"
 VALID_FINISH_SESSION = "VALID_FINISH_SESSION"
 PROSE_OR_UNSUPPORTED_FORMAT = "PROSE_OR_UNSUPPORTED_FORMAT"
+VALID_EDIT_BLOCK = "VALID_EDIT_BLOCK"
+
+# Matches a properly closed edit fence: ```edit <path> ... ``` .
+EDIT_BLOCK_RE = re.compile(r"```edit[ \t]+(\S+)[ \t]*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
 
 def is_valid_bash_block(text: str | None) -> bool:
@@ -129,6 +133,17 @@ def extract_chat_table_action(response: str | None) -> dict[str, Any] | None:  #
             "thought": candidate.get("thought"),
         }
 
+    edit = candidate.get("edit")
+    if isinstance(edit, dict) and (edit.get("path") or edit.get("file")):
+        return {
+            "type": "edit",
+            "path": str(edit.get("path") or edit.get("file")).strip(),
+            "mode": str(edit.get("mode") or "replace").lower(),
+            "old": edit.get("old"),
+            "new": edit.get("new"),
+            "thought": candidate.get("thought"),
+        }
+
     command = candidate.get("command") or candidate.get("cmd") or candidate.get("bash")
     if isinstance(command, str) and command.strip():
         cmd = command.strip()
@@ -148,6 +163,93 @@ def extract_chat_table_action(response: str | None) -> dict[str, Any] | None:  #
     return None
 
 
+# Matches the inside of a ```edit fence body: leading `mode:` line plus
+# OLD:/NEW: (replace) or CONTENT: (full) marker sections.
+def _parse_edit_body(path: str, body: str) -> dict[str, Any] | None:
+    """Turn one ```edit fence body into {path, mode, old, new} (or None)."""
+    lines = body.splitlines()
+    mode = "replace"
+    if lines and lines[0].strip().startswith("mode:"):
+        mode = lines[0].split(":", 1)[1].strip().lower()
+        lines = lines[1:]
+    content_idx = -1
+    old_idx = -1
+    new_idx = -1
+    for i, line in enumerate(lines):
+        token = line.strip()
+        if token.startswith("CONTENT:"):
+            content_idx = i
+        elif token == "OLD:" and old_idx == -1:
+            old_idx = i
+        elif token == "NEW:":
+            new_idx = i
+            break
+    # Full replace: explicit mode:full line, or a CONTENT: marker.
+    if content_idx != -1 or mode in ("full", "content"):
+        new_text = ""
+        if content_idx != -1:
+            new_text = "\n".join(lines[content_idx + 1 :])
+        else:
+            new_text = "\n".join(lines)
+        return {"path": path, "mode": "full", "old": None, "new": new_text.strip("\n")}
+    if old_idx == -1 or new_idx == -1 or new_idx <= old_idx:
+        return None
+    old_text = "\n".join(lines[old_idx + 1 : new_idx]).strip("\n")
+    new_text = "\n".join(lines[new_idx + 1 :]).strip("\n")
+    if not old_text:
+        return None
+    return {"path": path, "mode": "replace", "old": old_text, "new": new_text}
+
+
+def extract_edit_payload(response: str | None) -> dict[str, Any] | None:
+    """Extract a structured file-edit request from an ```edit fence or a chat
+    JSON step row carrying an ``edit`` key.
+
+    Bash-mode fence shape (highest-priority edit primitive — applied by the
+    harness in-process, so no shell quoting is involved):
+        ```edit path/to/file.py
+        mode: replace            # optional; "replace" (default) or "full"
+        OLD:
+        <exact lines to replace>
+        NEW:
+        <replacement lines>
+        ```
+    or a whole-file replacement:
+        ```edit path/to/file.py
+        mode: full
+        CONTENT:
+        <full new file content>
+        ```
+
+    Chat-mode step row: ``"edit": {"path": ..., "mode": "replace"|"full",
+    "old": ..., "new": ...}``.
+
+    Returns ``None`` when no edit parses. The harness applies the payload
+    directly to the worktree (read/replace/write) and feeds the resulting diff
+    back as the observation, so multi-line edits never depend on shell quoting.
+    """
+    reply = response or ""
+    parsed = None
+    for path, body in EDIT_BLOCK_RE.findall(reply):
+        parsed = _parse_edit_body(path.strip(), body)
+        if parsed is not None:
+            break
+    if parsed is None:
+        # A chat JSON row may carry the edit as a structured field.
+        action = extract_chat_table_action(reply)
+        if action is not None and action.get("type") == "edit":
+            parsed = {
+                "path": action.get("path"),
+                "mode": action.get("mode", "replace"),
+                "old": action.get("old"),
+                "new": action.get("new"),
+            }
+    if parsed is None or not parsed.get("path"):
+        return None
+    parsed["type"] = "edit"
+    return parsed
+
+
 def classify_shell_reply(text: str | None) -> str:
     """Classify a shell developer reply into one protocol category.
 
@@ -157,32 +259,38 @@ def classify_shell_reply(text: str | None) -> str:
     """
     reply = (text or "").strip()
 
-    # 1. A strictly closed bash fence wins outright - even if the finish token
+    # 1. A ```edit fence is an executable (harness-applied) edit request and
+    #    takes priority over a paired bash command — successful edits win.
+    #    Runs before the bash check so a reply mixing both classifies as edit.
+    if extract_edit_payload(reply) is not None:
+        return VALID_EDIT_BLOCK
+
+    # 2. A strictly closed bash fence wins outright - even if the finish token
     #    is buried inside it (`` ```bash\nFINISH_EDIT_SESSION\n``` `` is a
     #    command block whose only content is the token, not a finish reply).
     if is_valid_bash_block(reply):
         return VALID_BASH_BLOCK
 
-    # 2. Prose wrapped around a properly closed block still carries an
+    # 3. Prose wrapped around a properly closed block still carries an
     #    executable command (the missing-file-claim safety case). Classify on
     #    the raw reply (no normalization) so a genuinely unterminated fence is
     #    not mistaken for a valid one.
     if extract_bash_command(reply, normalize=False) is not None:
         return VALID_BASH_BLOCK
 
-    # 3. A lone opening fence that was never closed (and could not otherwise
+    # 4. A lone opening fence that was never closed (and could not otherwise
     #    execute) is the unterminated case.
     if is_unterminated_bash_block(reply):
         return UNTERMINATED_BASH_BLOCK
     if "```bash" in reply.lower():
         return UNTERMINATED_BASH_BLOCK
 
-    # 4. Finish only when the first non-empty line is exactly the token.
+    # 5. Finish only when the first non-empty line is exactly the token.
     #    An essay that merely *mentions* FINISH_EDIT_SESSION is prose (Soak4).
     if is_canonical_finish(reply):
         return VALID_FINISH_SESSION
 
-    # 5. Check if chat table action is finish or command
+    # 6. Check if chat table action is finish or command
     action = extract_chat_table_action(reply)
     if action:
         if action.get("type") == "finish":
@@ -208,9 +316,11 @@ def is_canonical_finish(text: str | None) -> bool:
         return False
     if is_valid_bash_block(reply) or is_unterminated_bash_block(reply):
         return False
-    if extract_bash_command(reply, normalize=False) is not None:
+    if extract_edit_payload(reply) is not None:
         return False
-    if "```bash" in reply.lower():
+    if "```bash" in reply.lower() or "```edit" in reply.lower():
+        return False
+    if extract_bash_command(reply, normalize=False) is not None:
         return False
     return _first_nonempty_line(reply) == FINISH_TOKEN
 
@@ -265,6 +375,13 @@ def diagnose_shell_reply(response: str | None) -> dict:
             "reason": "unterminated_bash_fence",
             "response_excerpt": excerpt,
             "expected": "closed_bash_block_or_finish_token",
+        }
+
+    if "```edit" in text and extract_edit_payload(text) is None:
+        return {
+            "reason": "malformed_edit_block",
+            "response_excerpt": excerpt,
+            "expected": "closed_edit_block_or_bash_command",
         }
 
     return {
