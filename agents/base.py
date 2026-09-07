@@ -3,6 +3,7 @@ Base agent
  - functionality with multi-endpoint support
 """
 
+import json
 import random
 import re
 import time
@@ -194,6 +195,77 @@ def _fallback_to_alternate(
     if stop_kind:
         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind=stop_kind)
     return None, 0
+
+
+_empty_body_dumped: set[str] = set()
+
+# Structured finish-reason values that mean the response was safety-blocked
+# (Gemini SAFETY/BLOCK/BLOCKLIST/PROHIBITED_CONTENT/SPII/RECITATION, OpenAI
+# CONTENT_FILTER). Only consulted when the extract is already empty.
+_POLICY_FINISH_REASONS = frozenset(
+    {
+        "SAFETY",
+        "BLOCK",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "RECITATION",
+        "CONTENT_FILTER",
+    }
+)
+
+
+def _classify_empty_or_policy_body(data: object, answer: str) -> str:
+    """Separate empty extract from safety/policy blocks (Soak4 unknown-kind).
+
+    Only classifies when the extract is empty: a 200 with usable text is
+    success even when safety metadata (Gemini safetyRatings, OpenAI
+    content_filter) rides along. Policy is inferred from structured fields
+    or whole-token keys only — never raw substrings of the serialized body,
+    so normal text that merely says "safety" / "blocked" stays success.
+    """
+    if (answer or "").strip():
+        return ""
+    if not isinstance(data, dict):
+        return "empty_body"
+
+    prompt_feedback = data.get("promptFeedback")
+    if isinstance(prompt_feedback, dict) and prompt_feedback.get("blockReason"):
+        return "policy"
+
+    error = data.get("error")
+    if isinstance(error, dict) and error.get("type"):
+        return "policy"
+
+    for field in ("finishReason", "finish_reason"):
+        finish_reason = data.get(field)
+        if isinstance(finish_reason, str) and finish_reason.upper() in _POLICY_FINISH_REASONS:
+            return "policy"
+
+    candidates = data.get("candidates") or data.get("choices") or []
+    if candidates:
+        head = candidates[0]
+        if isinstance(head, dict):
+            for field in ("finishReason", "finish_reason"):
+                finish_reason = head.get(field)
+                if isinstance(finish_reason, str) and finish_reason.upper() in _POLICY_FINISH_REASONS:
+                    return "policy"
+            if any(key in head for key in ("safetyRatings", "contentFilterResults", "content_filter_results")):
+                return "policy"
+    return "empty_body"
+
+
+def _dump_unknown_llm_body_once(endpoint_name: str, model_name: str, data: object) -> str:
+    """Print the raw body once per endpoint/model so kind=unknown is not silent."""
+    key = f"{endpoint_name}/{model_name}"
+    try:
+        excerpt = json.dumps(data, default=str)[:2000]
+    except Exception:
+        excerpt = str(data)[:2000]
+    if key not in _empty_body_dumped:
+        _empty_body_dumped.add(key)
+        print(f"   ⚠️  Empty/policy LLM body from {key}: {excerpt or '(empty)'}")
+    return excerpt
 
 
 def call_endpoint(  # noqa: C901
@@ -652,6 +724,37 @@ def call_endpoint(  # noqa: C901
                     endpoint_mgr,
                     seen,
                     announce="→ Falling back to {name}/{model}",
+                )
+
+            # HTTP 200 with an empty or policy-blocked extract is not success.
+            # Dump once, latch the endpoint, record kind + detail, then fall
+            # back to an alternate endpoint like bad_payload (Soak4 kind=unknown
+            # x4 with empty health; §8.1 company→public fallback applies).
+            empty_kind = _classify_empty_or_policy_body(data, answer)
+            if empty_kind:
+                excerpt = _dump_unknown_llm_body_once(endpoint.name, model_name, data)
+                record_model_outcome(
+                    f"{endpoint.name}/{model_name}",
+                    endpoint.name,
+                    ok=False,
+                    latency_ms=int((time.time() - _req_t0) * 1000),
+                    kind=empty_kind,
+                    detail=excerpt,
+                )
+                endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce="→ Empty/policy extract. Falling back to {name}/{model}",
+                    reason=empty_kind,
                 )
 
             # ============= SUCCESS =============

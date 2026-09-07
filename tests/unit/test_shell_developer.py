@@ -193,9 +193,8 @@ def shell_env(isolated_project, monkeypatch):
 
     state = {"llm_calls": 0, "reviewer_prompts": [], "llm_script": None}
     default_llm_script = [
-        "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
         "```bash\nprintf 'VALUE = 42\\n' > app.py\n```",
-        f"Done editing.\n{sd.FINISH_TOKEN}\nBumped VALUE to 42.",
+        f"{sd.FINISH_TOKEN}\nBumped VALUE to 42.",
     ]
 
     def fake_call_endpoint(messages, **kwargs):
@@ -390,7 +389,6 @@ def test_turn_fails_closed_on_invalid_decision_value(shell_env, monkeypatch):
 # =========================================================================
 def test_finish_with_final_command_defers_then_finishes(shell_env, isolated_project):
     shell_env["state"]["llm_script"] = [
-        "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
         f"Running final check.\n```bash\nprintf 'VALUE = 42\\n' > app.py\n```\n{sd.FINISH_TOKEN}\nAll done.",
         f"{sd.FINISH_TOKEN}\nBumped VALUE to 42 after final check.",
     ]
@@ -406,8 +404,8 @@ def test_finish_with_final_command_defers_then_finishes(shell_env, isolated_proj
         current_turn=1,
     )
 
-    # Evidence first, then the paired command+finish is deferred (3 LLM calls).
-    assert shell_env["state"]["llm_calls"] == 3, result
+    # Paired command+finish is deferred, then a real finish (2 LLM calls).
+    assert shell_env["state"]["llm_calls"] == 2, result
     assert result["status"] == "success", result
     assert result.get("session_exit") == "Finished"
 
@@ -421,7 +419,6 @@ def test_early_exit_step_limit_materializes_wip_changes(shell_env, isolated_proj
     # edits must still go through the reviewer gate and materialize, and the
     # real exit status ("LimitsExceeded") comes back so the loop-guard sees it.
     shell_env["state"]["llm_script"] = [
-        "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
         "Touch app.py only.\n```bash\nprintf 'VALUE = 42\\n' > app.py\n```",
     ]
 
@@ -448,7 +445,6 @@ def test_early_exit_step_limit_materializes_wip_changes(shell_env, isolated_proj
 # =========================================================================
 def test_mixed_gate_turn_reports_error_not_success(shell_env, isolated_project, monkeypatch):
     shell_env["state"]["llm_script"] = [
-        "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
         "```bash\nprintf 'VALUE = 42\\n' > app.py\n```",
         "```bash\nprintf 'x = 1\\n' > new.py\n```",
         f"{sd.FINISH_TOKEN}\nBoth files written.",

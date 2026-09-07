@@ -136,3 +136,25 @@ def test_ensure_column_is_idempotent(temp_db):
     cols = {row[1] for row in conn.execute("PRAGMA table_info(edit_proposals)").fetchall()}
     assert "task_id" in cols
     conn.close()
+
+
+def test_split_sql_keeps_semicolon_in_comment_and_string():
+    from core.db import _apply_schema, _split_sql_statements
+
+    sql = """
+    -- note: keep ; here
+    CREATE TABLE t_semi (x TEXT DEFAULT 'a;b');
+    CREATE TABLE "u;semi" (y TEXT);
+    /* block ; comment */
+    CREATE TABLE v_semi (z INTEGER);
+    """
+    stmts = _split_sql_statements(sql)
+    assert len(stmts) == 3
+    assert "DEFAULT 'a;b'" in stmts[0]
+    assert '"u;semi"' in stmts[1]
+
+    conn = sqlite3.connect(":memory:")
+    _apply_schema(conn, sql)
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    assert {"t_semi", "u;semi", "v_semi"} <= names
+    conn.close()

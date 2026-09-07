@@ -74,6 +74,13 @@
           "max_context_tokens": 200000,
           "temperature": 0.7,
           "description": "OpenCode big-pickle"
+        },
+        "chat-model": {
+          "max_output_tokens": 65536,
+          "max_context_tokens": 200000,
+          "temperature": 0.7,
+          "chat_capable": true,
+          "description": "Chat-tuned model example: flagged chat_capable so shell_developer uses the chat-JSON-table protocol automatically"
         }
       }
     }
@@ -177,7 +184,15 @@
     "_note_test_command": "e.g. 'python -m pytest tests/ -x -q'. Non-zero exit discards the session unless on_test_failure=propose_anyway",
     "on_test_failure": "discard",
     "model": null,
-    "_note_model": "null uses the orchestrator decision model, then default_model",
+    "_note_model": "null uses the orchestrator decision, then agent_model_preferences.developer. Chat-capable models (Gemini Enterprise chat / api.genai.mil, or any model flagged chat_capable in its endpoint config) are driven with the chat-JSON-table protocol: the session passes an append-only JSON row table and the model completes the next row, which mini-swe uses as the next bash command. Do not set json_table=off for those models unless you accept that they may never emit a bash fence.",
+    "json_table": "auto",
+    "_note_json_table": "auto = chat-capable models (chat_capable endpoint flag, or api.genai.mil) use the JSON step-table protocol; others use bash fences. on = force JSON step-table for every model; off = never use it (bash fences only). A shell turn that errors falls back to an edit_payload mutation in the same turn when a concrete file target is known; otherwise the shell error is returned and fallback_skipped=true.",
+    "no_change_stall_limit": 6,
+    "_note_no_change_stall_limit": "Stall tripwire: consecutive no-change steps where the action repeated an already-run command or exited non-zero end the session as 'Stalled' without burning to step_limit. 0 disables the tripwire. Soak16: the model burned 30 calls replaying failed sed edits.",
+    "task_scope": "auto",
+    "_note_task_scope": "Task-fiability pre-flight. auto = an untargeted task ('review the architecture') is run as an exploration session capped to explore_step_cap steps with a FINISH-with-summary note. strict = an untargeted task is skipped before any LLM call (session_exit='UntargetedTask').",
+    "explore_step_cap": 12,
+    "_note_explore_step_cap": "Step budget for untargeted (exploratory) tasks when task_scope=auto.",
     "worktree_parent": ""
   },
   "content_safety": {

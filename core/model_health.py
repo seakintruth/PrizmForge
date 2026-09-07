@@ -131,7 +131,8 @@ def _connect() -> sqlite3.Connection:
             ok INTEGER NOT NULL,
             latency_ms INTEGER DEFAULT 0,
             kind TEXT DEFAULT '',
-            retry_after_s INTEGER
+            retry_after_s INTEGER,
+            detail TEXT
         )
         """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_model_health_events_ref_ts ON model_health_events(model_ref, ts)")
@@ -139,6 +140,11 @@ def _connect() -> sqlite3.Connection:
     if "retry_after_s" not in cols:
         try:
             conn.execute("ALTER TABLE model_health_events ADD COLUMN retry_after_s INTEGER")
+        except sqlite3.OperationalError:
+            pass
+    if "detail" not in cols:
+        try:
+            conn.execute("ALTER TABLE model_health_events ADD COLUMN detail TEXT")
         except sqlite3.OperationalError:
             pass
     return conn
@@ -169,19 +175,21 @@ def record_model_outcome(
     latency_ms: int = 0,
     kind: str = "",
     retry_after_s: int | None = None,
+    detail: str = "",
 ) -> None:
     """Record one request outcome. Never raises; silently skips when disabled."""
     if not model_ref or not _setting("enabled"):
         return
     global _records_since_prune
     wait = None if retry_after_s is None else int(retry_after_s)
+    excerpt = (detail or "")[:2000]
     try:
         with _LOCK:
             conn = _connect()
             try:
                 conn.execute(
-                    "INSERT INTO model_health_events (ts, model_ref, endpoint, ok, latency_ms, kind, retry_after_s) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (_iso(datetime.now()), str(model_ref), endpoint, 1 if ok else 0, int(latency_ms), kind[:60], wait),
+                    "INSERT INTO model_health_events (ts, model_ref, endpoint, ok, latency_ms, kind, retry_after_s, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (_iso(datetime.now()), str(model_ref), endpoint, 1 if ok else 0, int(latency_ms), kind[:60], wait, excerpt),
                 )
                 conn.commit()
             finally:

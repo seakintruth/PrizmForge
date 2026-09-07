@@ -378,11 +378,12 @@ def cmd_export_db(output_dir: Path | None = None, task_id: str | None = None):
         for table_name in tables:
             try:
                 # Filter by task_id if supplied AND table has task_id column
+                ident = _quote_identifier(table_name)
                 if task_id and table_has_task_id(cursor, table_name):
-                    query = f"SELECT * FROM {table_name} WHERE task_id = ?"
+                    query = f"SELECT * FROM {ident} WHERE task_id = ?"
                     cursor.execute(query, (task_id,))
                 else:
-                    query = f"SELECT * FROM {table_name}"
+                    query = f"SELECT * FROM {ident}"
                     cursor.execute(query)
 
                 rows = cursor.fetchall()
@@ -419,10 +420,15 @@ def cmd_export_db(output_dir: Path | None = None, task_id: str | None = None):
     return output_dir
 
 
+def _quote_identifier(name: str) -> str:
+    """Double-quote a SQLite identifier and escape embedded quotes."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
 def table_has_task_id(cursor, table_name: str) -> bool:
     """Check if a table has a task_id column"""
     try:
-        cursor.execute(f"PRAGMA table_info({table_name})")
+        cursor.execute(f"PRAGMA table_info({_quote_identifier(table_name)})")
         columns = [row[1] for row in cursor.fetchall()]
         return "task_id" in columns
     except Exception:
@@ -512,11 +518,12 @@ def cmd_export_specific_tables(tables: list, output_dir: Path | None = None, tas
                     print(f"  ⚠️  {table_name}: Table not found")
                     continue
 
+                ident = _quote_identifier(table_name)
                 if task_id and table_has_task_id(cursor, table_name):
-                    query = f"SELECT * FROM {table_name} WHERE task_id = ?"
+                    query = f"SELECT * FROM {ident} WHERE task_id = ?"
                     cursor.execute(query, (task_id,))
                 else:
-                    query = f"SELECT * FROM {table_name}"
+                    query = f"SELECT * FROM {ident}"
                     cursor.execute(query)
 
                 rows = cursor.fetchall()

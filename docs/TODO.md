@@ -1,0 +1,407 @@
+# PrizmForge Roadmap / TODO
+
+This file lists **only work that still needs to be accomplished**.
+
+Completed work is **not repeated here**. Implementation, PR numbers, soak
+post-mortems, and acceptance evidence live in **git history**
+(`git log`, merged PRs #108–#124, and
+`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`). Do not paste shipped
+checklists back into this tracker.
+
+**Last updated:** 2026-09-07
+
+## How to use this file
+
+- Tick a box when the change lands on `main`; then delete that item on
+  the next pass (do not leave `[x]` museums).
+- Detailed *design* for an open item stays in this file until it ships.
+- Do not merge `soak/doc-run-a-1` or `soak/4-tmp-reporting`
+  (trajectories + docs only).
+
+## Section priorities
+
+| Section | Priority | Why |
+|---|---|---|
+| §0 Current state | — | Index |
+| **§11 Soak17 root-cause fixes (targeting / 400 class / headers)** | **P0** | Phantom-seed abort burned Soak17 at 0 model calls. Fix §11.1 existence-verified targeting first, then §11.2 config-failure class + quota park, then §11.3 per-minute token headers. |
+| §10 Mutation path | shipped #121–#124 | Proposal path + Soak16 fixes soak-validated; only §10.7 gate remains |
+| §6 Next-soak 429 dump | **P0** | Partly paid by the Soak5 artifact; `Work: 0.0s` still open |
+| §8 Operator soak A-1 | **ran** | Soak4 ran after #121; remaining gate is §10.7 / §11 |
+| §5 Optional SQL hygiene | **P2** | Identifier quoting + comment-aware DDL split |
+| §3 Seed-path / scope | **watch** | Next soak with background agents on |
+| §2.3 Protocol nits | **watch** | Only if the next soak shows them |
+| §1 NUC `cmd_init` timing | **P1 operator** | Code shipped in #121; still time on the box |
+| §7 Closed-loop / mini-swe | **MEDIUM** | Unblocked by #121; needs live hooks / endpoints |
+| §9 Annexes | **LOW** | WAL-as-default, Postgres, federation |
+
+---
+
+## 0. Current state & next focus
+
+- **`main` already has (PRs #121–#124):** recursive `seen_endpoints`,
+  latch-only `is_available()`, per-endpoint 4h + daily `TokenBudget`,
+  fail-closed workspace evidence, zero-command seed latch, task status
+  vocabulary, demotion exclusions, `Retry-After` on `rate_limited`
+  events, cold `cmd_init` one-writer ingest (#121); chat-JSON-table
+  protocol + Enterprise-chat developer driving (#123); in-worktree
+  edit primitive, command/change-state observations, stall tripwire,
+  task-fiability pre-flight, `edit_payload` fallback gating (#124). Do
+  not re-implement those.
+- **Soak artifacts (review only):** `docs/soak_artifacts/`
+  (`stdout.txt`, `model_dashboard.txt`, `soak-target-.prizmforge/`).
+  The Soak5 run validated the #124 fixes in a live soak; Soak17 aborted
+  on a **phantom seed** with 0 model calls — that is §11.
+- **Next (do):** §11 — make targeting existence-verified, close the
+  endpoint config/header gaps, then re-run the §10.7 acceptance gate on
+  a targeted task that names an existing file.
+- **Company endpoints** still need a **manual unlock ~every 8 hours**
+  and **must keep falling back** when one key locks.
+- **Trajectories (do not merge):** `soak/doc-run-a-1` /
+  `docs/soak-a-1-shell-trajectories/`; `soak/4-tmp-reporting` /
+  `docs/soak-a-4-example-tmp/`.
+
+---
+
+## 10. Soak4 → Soak17 — mutation path (shipped; gate open)
+
+**Priority:** shipped (PRs #121–#124). Only the §10.7 acceptance gate
+is open, exercised by Soak17 (§11). Soak4–Soak16 post-mortem detail
+(§10.0–§10.5) is in git history — do not re-paste it here.
+
+**Evidence:** `docs/soak_artifacts/stdout.txt` shows the proposal path
+creating and gating **real proposals** in a soak — `e6a85797`
+(`workflow/__init__.py`, approved + materialized first), then
+`c5d6fb78` / `df6cd912` / `754abb94` / `f0872af5` / `1226b947` — with
+the Soak16 fixes behaving as designed (edit primitive,
+command/change-state observations, stall tripwire, task-fiability
+pre-flight, `edit_payload` fallback gating; developer on
+`gemini-3.1-pro-preview` @ api.genai.mil).
+
+### 10.6 Out of scope
+
+- Do not merge `soak/4-tmp-reporting` or `soak/doc-run-a-1`.
+- Do not disable company↔public fallback on 401.
+- Do not treat the RC 150M window as this soak’s spend.
+- Do not “fix” mutation by widening fence repair or by asking the
+  model harder that it has `/bin/sh`.
+- Do not start §1 cold ingest or WAL ahead of this section.
+- Mini-swe is not “folded in wrong.” The runner executed a real
+  command in a real worktree. The developer **model** will not
+  drive that runner past step 1.
+
+### 10.7 Acceptance (short soak, two endpoints, developer ≠ Enterprise chat)
+
+1. Trajectory `workspace_evidence` is filled **before** message[3]
+   (no model-authored evidence fence required).
+2. First model bash, if any, is inspect-of-target, not `pwd && ls`.
+3. At least one session either writes a proposal or finishes
+   `no_change_required` **after** printing the target file — never
+   23 finishes that only deny having a shell.
+4. `edit_proposals` ≥ 1 **or** an explicit
+   `developer_model_not_shell_capable` / validation-failed status.
+   `files_modified=0` with 30× evidence-only is a failed gate.
+5. Zero-command latch does not freeze developer after a successful
+   in-process evidence + `LlmUnavailable`.
+6. `--model-health` is not empty after `kind=unknown`.
+7. `Work:` is not 0.0s for the whole duration solely because the
+   latch yielded to reviewers.
+
+### 10.8 Soak16 remediation (shipped #124)
+
+In-worktree edit primitive, command/change-state observations, stall
+tripwire, task-fiability pre-flight, `edit_payload` fallback gating —
+shipped and soak-validated. Details in git log (PR #124).
+
+---
+
+## 11. Soak17 — target-missing abort (open, P0)
+
+**Priority:** P0 — next work.
+**Soak17 symptom:** `workflow/shell_developer.py:1339` aborted the
+session ("target missing after evidence") after **0 model calls**. The
+driver: the orchestrator's own seed-hint list ("Look for TODO.md,
+PLANS.md, IDEAS.md, ROADMAP.md, BACKLOG.md…") harvested `ROADMAP.md`
+via `_seed_path_candidates`, but that file does not exist; three of the
+five `files_needed` (`TODO.md`, `PLANS.md`, `IDEAS.md`) are **phantom**
+(never in `project_files`; their "2 lines" came from
+`get_file_content_from_db` stubs, not disk reads).
+
+### 11.1 Existence-verified task targeting
+
+- [ ] `_task_is_targeted` must count a `files_needed` / addressed
+      feedback file only when the file exists on disk. A target that
+      never existed must not abort the session.
+- [ ] A seed that resolves to no existing file downgrades to an
+      exploration session with a generic discovery hint — a
+      case-insensitive glob of `todo|idea|plan|roadmap|backlog` over
+      `*.md` / `*.markdown` — instead of a hard "target missing"
+      abort (no hard-coded repo names), raising a `target_missing`
+      event.
+
+### 11.2 Config-failure vs transient classes + quota park
+
+- [ ] Treat `MissingSessionID`-class 400s as **permanent
+      endpoint-config failures** (opencode/API session absent), not
+      transient: surface the misconfiguration and demote without retry
+      loops. `EndpointStatus` has no `MISCONFIGURED` state today.
+- [ ] Quota park = `min(seconds_to_reset, 4h)`, so a short
+      `Retry-After` reopens on time instead of a fixed offline window.
+
+### 11.3 Per-minute token-bucket headers + send pacing
+
+- [ ] Parse `x-ratelimit-limit-tokens-minute` /
+      `x-ratelimit-remaining-tokens-minute` /
+      `x-ratelimit-reset-tokens-minute` (and windowed `x-ratelimit-*`
+      families) in `core/rate_limit_headers.py`; today only
+      `X-RateLimit-Limit/Remaining/Reset` (daily free models) and
+      `Retry-After` are read.
+- [ ] Persist the discovered per-minute budget to endpoint health; when
+      `remaining-tokens-minute == 0`, park all consumers for the
+      endpoint until `reset-tokens-minute`, and pace client token
+      send-rate so parallel large prompts (one reviewer prompt was
+      183k+ chars) cannot re-trigger the 429 storm.
+      (Evidence: `docs/soak_artifacts/stdout.txt` 356-363 and 1007-1098 —
+      `500000` tokens/min, `remaining 0`, `reset 59`; `Retry-After` is
+      honored correctly, but consecutive windows keep re-tripping.)
+
+---
+
+## 8. Operator soak A-1 — ran (Soak4)
+
+**Priority:** ran. Recursive fallback, per-endpoint budget, fail-closed
+evidence shipped in #121; Soak4 confirmed worktree + evidence. The
+remaining gate is §10.7 / §11, not a re-soak of this checklist.
+
+### 8.2 Out of scope (unchanged)
+
+- Do not disable company↔public Gemini fallback on **401 / key lock**.
+- Do not treat two company keys as one provider quota.
+- Do not copy `.PrizmForge` across soaks.
+- Do not merge `soak/doc-run-a-1`.
+- Do not enable WAL on the live soak writer unless NUC DELETE+NORMAL
+  is not enough (§9).
+- Do not pull optional PostgreSQL / SQLAlchemy forward.
+- Resource controller `max_tokens_per_day` stays process-wide. Do not
+  treat it as an endpoint bucket.
+
+### 8.3 Acceptance (same Windows box, same 8-hour unlock cadence)
+
+Two endpoints configured. Background agents off for the first pass.
+
+```json
+{
+  "background_agents_enabled": false,
+  "reporter": { "enabled": false, "interval_minutes": 10 },
+  "resource_controller": { "enabled": false },
+  "cli_mode": {
+    "mode": "unattended",
+    "unattended": {
+      "max_duration_hours": 0.25,
+      "max_iterations_per_task": 3,
+      "auto_generate_tasks": false,
+      "stop_when_backlog_empty": true,
+      "seed_tasks": [
+        "Inspect workflow/__init__.py. Make one small, justified improvement if needed. Do not create missing files. If no change is justified, finish with FINISH_EDIT_SESSION and a summary."
+      ]
+    }
+  }
+}
+```
+
+**Soak4 result (do not re-run this as P0):** evidence + worktree
+passed; the chat-refusal gate failed (0 proposals). Remaining gate is
+§10.7, with developer ≠ Enterprise chat.
+
+Copy `endpoints.<name>.token_budget` 4h/daily keys from
+`example_config.json` into the live soak `config.json` (gitignored).
+
+---
+
+## 6. Latch / fallback — next-soak acceptance
+
+Skip-path fallback, dump-once, support freeze, `seen` recurse, and
+`is_available()` latch-only **already shipped**.
+
+- [ ] **Next-soak acceptance (still unpaid):** one 429 parks an
+      endpoint; stdout shows **one** dump; other agents skip in one
+      line; orchestrator/developer reach a healthy fallback; `Work:` is
+      not 0.0s only because support held the latch.
+      (Soak5 artifact evidence: one dump per 429, one-line skip, and a
+      fallback attempt to `beta_genai` — but a token-budget gate and
+      `Work: 0.0s` remain; see `docs/soak_artifacts/stdout.txt` 1015-1098.)
+
+Non-goals (still): do not spoof OpenCode CLI headers; do not treat
+`free-models-per-day` as a product bug; do not reopen short Retry-After
+for non-quota 429/503.
+
+---
+
+## 2. Shell developer — remaining protocol holes
+
+Shipped in #121 and **not** repeated: fail-closed evidence,
+`FINISH_EDIT_SESSION` rejected until `test -f workflow/__init__.py`,
+A-1 finish-without-bash fixture, worktree-not-parent tests.
+
+Soak4: that evidence loop is not enough. Do **not** keep the
+“you have a real shell / do not ask the user to upload files”
+sermon in the first user turn — it triggers Gemini Enterprise
+refusal. Mutation-path work is §10 (in-process evidence, inspect
+target first, developer ≠ Enterprise chat).
+
+### 2.3 Remaining protocol nits (only if the next soak shows them)
+
+- [ ] `<finish>` alias — watch A-1 follow-up; accept as alias for one
+      release only if it recurs.
+- [ ] `is_valid_bash_block` requires `` ```bash\n ``; strip `\r` in
+      `normalize_shell_reply` if a soak emits `` ```bash\r\n ``.
+- [ ] `classify_shell_reply` labels any text containing `` ```bash ``
+      that is not a closed block `UNTERMINATED_BASH_BLOCK` (error text
+      that *quotes* the format). Conservative; leave unless it poisons
+      diagnostics.
+
+---
+
+## 3. Feedback / developer dispatch — soak watches
+
+Shipped: praise filter, prioritizer `seed_task` first, caps, **no
+re-dispatch** when the prior shell session ran no command (#121).
+
+Still open:
+
+- [ ] **Seed-path regex** `[\w./-]+\.\w+`
+      (`agents/parallel_workers.py` `_resolve_seed_target_path`) can
+      bind `config.json`. Longest-wins + `project_files` lookup bounds
+      it; tighten if a soak edits gitignored config.
+- [ ] Scope creep watch: a seed that names `workflow/__init__.py`
+      must not enqueue `workflow/task_runner.py` /
+      `proposal_builder.py` / `utils/pre_commit.sh` unless the task is
+      repository-wide. Re-measure on the next soak with background
+      agents on; if fan-out returns, the cap is not binding.
+
+---
+
+## 1. Cold-soak SQLite ingest — NUC timing (operator)
+
+**Code shipped in #121.** One `get_init_db_connection()` writer, MEMORY
+journal + `synchronous=OFF` for the walk, restore DELETE + NORMAL,
+`executemany` for `file_lines`, in-process hash skip only.
+
+Still unpaid:
+
+- [ ] Time a wiped `cmd_init()` on the NUC (2-core / ≥8 GB) before vs
+      after on the same tree. Wall-clock should drop from “noticeable
+      stall” to a short burst; first orchestrator call still sees
+      DELETE + NORMAL; no new `database is locked` storms vs current
+      soak baseline.
+
+Do not persist `.PrizmForge/` between soaks. Do not switch live soak
+to WAL unless this timing is still not enough.
+
+---
+
+## 5. Optional SQL hygiene
+
+Demotion exclusions and `Retry-After` **shipped in #121**. Remaining:
+
+- [ ] Quote SQL identifiers in `cli/commands.py` DB exports
+      (`cmd_export_db`, `cmd_export_specific_tables`,
+      `table_has_task_id`). `_quote_identifier()` = double-quote +
+      escape embedded `"`. (`sqlite_master name=?` is already
+      parameterized.)
+- [ ] Comment/string-aware DDL split in `core/db.py`
+      `_apply_schema` (current `endswith(";")` per-line split breaks on
+      `;` inside a comment or string). No `sqlparse`.
+
+---
+
+## 7. Closed-loop and mini-swe residuals
+
+§8 code is on `main`. These still need live runtime / endpoints /
+machines.
+
+### 7.1 Git closed loop
+
+Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`.
+
+- [ ] Live failing-hook smoke on a copy: CRITICAL feedback → developer
+      fix-forward proposal → materialized and addressed, visible in
+      events/errors/feedback. In-process proofs already exist in
+      `tests/unit/test_git_closed_loop.py`.
+- [ ] Ignored-path in the git closed loop (e.g. gitignored
+      `config.json`): skip git or fail with `path is gitignored`, never
+      silent success. **Default parked (§9.3 decision 3).**
+- [ ] Diagnostic dump shows a forced-hook-failure path (Workstream F
+      dump sections). `git_fail` counter already exists in task
+      summaries.
+
+### 7.2 Mini-swe / shell port
+
+Port itself is shipped (`docs/mini_swe_agent.md`). Soak4 showed the
+runner executes real commands; Gemini Enterprise will not drive past
+evidence — that e2e is **§10**, not a second mini-swe port.
+
+- [ ] Real-model end-to-end validation + prompt/limit tuning **after
+      §10** (developer model that emits a second bash block).
+- [ ] Manual cold-start smoke: seed consumed on turn 1, no
+      `Unknown model` lines.
+- [ ] Enclave sandboxing (container / approved-workstation). Shell
+      runs are not confined to the worktree today.
+- [ ] Post-materialize `test_command` re-run — **deferred** (session
+      `test_command` + ruff pre-check already gate). Revisit only if a
+      deploy-time validator becomes a requirement.
+- [ ] EndpointManager / LiteLLM overlap — parked; no routing layer
+      planned.
+
+---
+
+## 9. Annexes (parked — do not start)
+
+### 9.1 Federation
+
+`Federation/Plan.md` — Stage 0 → Stage 1 → Stage 2. YAGNI sprints.
+
+### 9.2 Structural tech-debt
+
+- [ ] `project_files` metadata normalize — needs a design doc before
+      touching the governed-edit path.
+- [ ] Standardize file_editing error shape / status vocabulary.
+- [ ] 120s unlock sleep in `agents/base.py` (401/KEY_LOCKED) and
+      `interactive.py` (unattended recovery) → shared
+      `unavailable_until` latch. Related to the 8-hour company unlock.
+
+### 9.3 Defaults (do not reopen without evidence)
+
+1. Hook failure: fix-forward unless `git.revert_on_hook_failure`.
+2. Create-file: clean relative paths OK.
+3. `config.json` stays human-only (gitignored).
+4. Reviewer sees hook output optionally; developer is primary.
+5. Network streaks: `NetworkBusyLoopGuard` (shipped).
+
+### 9.4 Not this pass
+
+- PostgreSQL / SQLAlchemy dual backend.
+- Live-soak **WAL + single-writer queue** as the default runtime.
+  Live soak stays DELETE + NORMAL after init. Revisit WAL only if
+  NUC timing is not enough.
+- Copy-forward of `.PrizmForge/` between soaks.
+
+### 9.5 False positives — no change
+
+- Init-window `synchronous=OFF` / MEMORY journal is intentional;
+  restore before iteration 1 (#121).
+- `core/db_helpers.py` feedback SQL is parameterized.
+- `agent_schemas/*.json` stay example-shaped for
+  `get_schema_example()`.
+- `cli/__init__.py` empty / `datetime.now()` cosmetics.
+
+---
+
+## Implementation sequence (open work only)
+
+| Order | Work item | Exit criterion |
+|---:|---|---|
+| 1 | **§11 Soak17 root-cause fixes** (11.1 → 11.2 → 11.3) | §10.7 acceptance 1–7 on a targeted seed naming an existing file; no `target missing` abort |
+| 2 | §5 optional SQL quoting + DDL split | Export uses quoted ids; `;` in comments/strings does not split DDL |
+| 3 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
+| 4 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
+| 5 | §7 live-hook / mini-swe e2e | When endpoints and a hook-fail copy exist |

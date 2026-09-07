@@ -22,8 +22,7 @@ def test_system_prompt_contains_required_format_contract():
     prompt = sd.SYSTEM_PROMPT.format(finish_token=sd.FINISH_TOKEN)
     assert "RESPONSE FORMAT — REQUIRED" in prompt
     assert "EXACTLY ONE" in prompt
-    assert "pwd && ls -la" in prompt  # sample closed block and first-command evidence
-    assert "git rev-parse --show-toplevel" in prompt
+    assert "sed -n '1,80p'" in prompt
 
 
 def test_build_instance_prompt_contains_missing_file_safety_rule():
@@ -36,15 +35,17 @@ def test_build_instance_prompt_contains_missing_file_safety_rule():
 # =========================================================================
 # Phase 2 (prompt-only) — evidence-first instruction present via the session
 # =========================================================================
-def test_session_prompt_mandates_evidence_first_command():
-    # The session must seed the system prompt with the workspace-evidence rule;
-    # enforcement is prompt-driven (observability/recording land in Phase 3.1).
+def test_session_prompt_inspects_target_not_cwd_evidence():
     session = _session_with_replies([])
-    result = session.run("task")
+    result = session.run("Inspect workflow/task_runner.py")
     system_contents = [m["content"] for m in result.messages if m.get("role") == "system"]
     assert system_contents
-    assert "git rev-parse --show-toplevel" in system_contents[0]
-    assert "FIRST command" in system_contents[0]
+    assert "git rev-parse --show-toplevel" not in system_contents[0]
+    user_contents = [m["content"] for m in result.messages if m.get("role") == "user"]
+    assert any("Workspace listing (already executed, exit 0)" in c for c in user_contents)
+    assert any("sed -n '1,80p' workflow/task_runner.py" in c for c in user_contents)
+    assert result.evidence_ok is True
+    assert result.n_model_calls == 0 or result.evidence_ran is True
 
 
 # =========================================================================
@@ -145,7 +146,7 @@ def test_session_archives_finish_step(monkeypatch):
 
     session = _session_with_replies(
         [
-            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
+            "```bash\nsed -n '1,80p' workflow/__init__.py\n```",
             f"{sd.FINISH_TOKEN}\nDone.",
         ]
     )
@@ -244,7 +245,6 @@ def test_command_failure_publishes_event(monkeypatch):
 
     session = _session_with_replies(
         [
-            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
             "```bash\nexit 3\n```",
         ]
     )
@@ -303,8 +303,8 @@ def test_session_no_mutation_publishes_event(isolated_project, monkeypatch):
         subprocess.run(args, cwd=str(project), capture_output=True, text=True, timeout=30)
 
     replies = [
-        "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
-        f"Nothing to change.\n{sd.FINISH_TOKEN}\nNo edits needed.",
+        "```bash\nsed -n '1,80p' workflow/__init__.py\n```",
+        f"{sd.FINISH_TOKEN}\nNo edits needed.",
     ]
     state = {"i": 0}
 
@@ -340,7 +340,6 @@ def test_protocol_valid_and_command_outcomes_recorded(monkeypatch):
 
     session = _session_with_replies(
         [
-            "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```",
             "```bash\necho hi\n```",
         ]
     )
@@ -400,7 +399,7 @@ def _patch_call_endpoint(session, script: list[str]):
 
 
 class _FakeWorktree:
-    def __init__(self, exit_code: int = 0, output: str = "ok"):
+    def __init__(self, exit_code: int = 0, output: str = "/work/wt\n/work/wt\nworkflow/__init__.py\n"):
         self._exit_code = exit_code
         self._output = output
 

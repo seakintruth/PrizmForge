@@ -134,6 +134,19 @@ def test_extract_finish_absent_from_block():
     assert sp.extract_finish(FINISH_TOKEN_INSIDE_BLOCK) is None
 
 
+def test_essay_mentioning_finish_token_is_not_a_finish():
+    essay = "As Gemini Enterprise I cannot run a shell. You would use FINISH_EDIT_SESSION after editing, but I have no filesystem."
+    assert sp.classify_shell_reply(essay) == sp.PROSE_OR_UNSUPPORTED_FORMAT
+    assert sp.extract_finish(essay) is None
+
+
+def test_canonical_finish_must_be_first_nonempty_line():
+    buried = "I am done.\nFINISH_EDIT_SESSION\nsummary"
+    assert sp.classify_shell_reply(buried) == sp.PROSE_OR_UNSUPPORTED_FORMAT
+    assert sp.extract_finish(buried) is None
+    assert sp.is_canonical_finish(VALID_FINISH_PLUS_SUMMARY)
+
+
 # ---------------------------------------------------------------------------
 # Structured diagnostics (Phase 1.5)
 # ---------------------------------------------------------------------------
@@ -169,3 +182,43 @@ def test_all_fixtures_classify_without_error(fixture):
 def test_all_fixtures_normalize_orm_diagnose_without_error(fixture):
     sp.normalize_shell_reply(fixture)
     sp.diagnose_shell_reply(fixture)
+
+
+# ---------------------------------------------------------------------------
+# Chat JSON Table Protocol tests
+# ---------------------------------------------------------------------------
+def test_chat_table_direct_object_command():
+    payload = '{"thought": "Inspect target", "step": 2, "command": "sed -n \'1,80p\' workflow/__init__.py", "finish": false}'
+    assert sp.classify_shell_reply(payload) == sp.VALID_BASH_BLOCK
+    assert sp.extract_bash_command(payload) == "sed -n '1,80p' workflow/__init__.py"
+    assert sp.extract_finish(payload) is None
+
+
+def test_chat_table_list_takes_last_entry():
+    payload = (
+        "[\n"
+        '  {"step": 1, "command": "pwd && ls -la", "output": "ok"},\n'
+        '  {"step": 2, "thought": "run tests", "command": "pytest tests/unit/test_foo.py -q", "finish": false}\n'
+        "]"
+    )
+    assert sp.classify_shell_reply(payload) == sp.VALID_BASH_BLOCK
+    assert sp.extract_bash_command(payload) == "pytest tests/unit/test_foo.py -q"
+
+
+def test_chat_table_nested_dict_takes_last_entry():
+    payload = '{\n  "steps": [\n    {"step": 1, "command": "pwd"},\n    {"step": 2, "command": "cat README.md"}\n  ]\n}'
+    assert sp.classify_shell_reply(payload) == sp.VALID_BASH_BLOCK
+    assert sp.extract_bash_command(payload) == "cat README.md"
+
+
+def test_chat_table_finish_action():
+    payload = '{"thought": "All tests pass and task complete", "step": 3, "command": null, "finish": true, "summary": "Added exports to __init__.py"}'
+    assert sp.classify_shell_reply(payload) == sp.VALID_FINISH_SESSION
+    assert sp.extract_finish(payload) == "Added exports to __init__.py"
+    assert sp.extract_bash_command(payload) is None
+
+
+def test_chat_table_markdown_fenced_json():
+    payload = '```json\n{\n  "thought": "Inspect target",\n  "step": 2,\n  "command": "cat workflow/task_runner.py",\n  "finish": false\n}\n```'
+    assert sp.classify_shell_reply(payload) == sp.VALID_BASH_BLOCK
+    assert sp.extract_bash_command(payload) == "cat workflow/task_runner.py"
