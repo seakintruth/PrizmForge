@@ -233,6 +233,12 @@ developer model routing in config, tests under
 - [x] Do not assign `gemini-3.1-pro-preview` on `api.genai.mil`
       (Gemini Enterprise chat) as `developer` / shell implementation.
       Orchestrator and reviewers may stay on that endpoint.
+      (Revised PR #123: an Enterprise-chat developer is now **attempted** via
+      the chat-JSON-table protocol — an append-only JSON step-row table the
+      model completes for the next `bash` command — instead of hard-aborting;
+      if that session errors, the turn falls back to an `edit_payload`
+      mutation in the same turn. `shell_developer.json_table="off"` restores
+      the historical abort-on-fence-refusal behavior.)
 - [x] Config: `agents.developer.model` (or
       `shell_developer.model`) must be a model that will emit a
       **second** closed bash block after seeing command stdout.
@@ -243,8 +249,11 @@ developer model routing in config, tests under
       shell developer and fail the task as
       `developer_model_not_shell_capable` rather than looping 30
       evidence-only turns.
-      (Shipped: `Session.run` + `run_shell_developer_turn` both check
-      the configured *and* resolved model/base_url for `genai.mil`.)
+      (Revised PR #123: instead of failing as not-shell-capable, an
+      Enterprise-chat model is driven with the chat-JSON-table protocol; a
+      failed chat session falls back to `edit_payload` in the same turn, so
+      the task still gets a mutation attempt and is never burned on 30
+      evidence-only loops.)
 
 #### 10.4.4 Proposal path (only after a dirty tree)
 

@@ -74,6 +74,13 @@
           "max_context_tokens": 200000,
           "temperature": 0.7,
           "description": "OpenCode big-pickle"
+        },
+        "chat-model": {
+          "max_output_tokens": 65536,
+          "max_context_tokens": 200000,
+          "temperature": 0.7,
+          "chat_capable": true,
+          "description": "Chat-tuned model example: flagged chat_capable so shell_developer uses the chat-JSON-table protocol automatically"
         }
       }
     }
@@ -177,7 +184,9 @@
     "_note_test_command": "e.g. 'python -m pytest tests/ -x -q'. Non-zero exit discards the session unless on_test_failure=propose_anyway",
     "on_test_failure": "discard",
     "model": null,
-    "_note_model": "null uses the orchestrator decision, then agent_model_preferences.developer. Do not point developer or shell_developer at Gemini Enterprise chat (api.genai.mil / gemini-3.1-pro-preview): Soak4 showed it will not emit a second bash block. Orchestrator and reviewers may stay on that endpoint.",
+    "_note_model": "null uses the orchestrator decision, then agent_model_preferences.developer. Chat-capable models (Gemini Enterprise chat / api.genai.mil, or any model flagged chat_capable in its endpoint config) are driven with the chat-JSON-table protocol: the session passes an append-only JSON row table and the model completes the next row, which mini-swe uses as the next bash command. Do not set json_table=off for those models unless you accept that they may never emit a bash fence.",
+    "json_table": "auto",
+    "_note_json_table": "auto = chat-capable models (chat_capable endpoint flag, or api.genai.mil) use the JSON step-table protocol; others use bash fences. on = force JSON step-table for every model; off = never use it (bash fences only). A shell turn that errors falls back to an edit_payload mutation in the same turn.",
     "worktree_parent": ""
   },
   "content_safety": {

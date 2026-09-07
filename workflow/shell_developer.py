@@ -15,6 +15,13 @@ Flow:
      materialize_proposal() pipeline. Nothing touches the governed tree without an
      approved proposal.
 
+Chat-capable models (chat_capable endpoint flag, or api.genai.mil / Gemini
+Enterprise chat) are driven with the chat-JSON-table protocol instead of bash
+fences: the session maintains an append-only JSON table of executed steps and
+asks the model to complete the NEXT row (command or finish). The parser in
+``workflow.shell_protocol`` treats both forms identically. A shell turn that
+errors falls back to an ``edit_payload`` mutation in the same turn.
+
 The legacy structured EditPayload developer path remains available via
 ``config.developer.implementation = "edit_payload"``.
 """
@@ -72,6 +79,11 @@ class ShellDeveloperConfig:
     llm_retry_backoff_seconds: int = 15
     worktree_parent: str = ""  # empty → system temp dir
     workspace_marker: str = WORKSPACE_MARKER_DEFAULT
+    # Chat-JSON-table protocol mode. "auto" -> enabled for models flagged
+    # chat_capable in endpoint config or that resolve onto Gemini Enterprise
+    # chat (api.genai.mil). "on" forces it for every model; "off" disables it
+    # (falling back to the historical bash-fence-only protocol).
+    json_table: str = "auto"
 
     @classmethod
     def from_config(cls) -> ShellDeveloperConfig:
@@ -91,10 +103,14 @@ class ShellDeveloperConfig:
             llm_retry_backoff_seconds=int(cfg.get("llm_retry_backoff_seconds", 15)),
             worktree_parent=str(cfg.get("worktree_parent", "") or ""),
             workspace_marker=str(cfg.get("workspace_marker") or WORKSPACE_MARKER_DEFAULT),
+            json_table=str(cfg.get("json_table", "auto") or "auto"),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
             print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
             instance.on_test_failure = "discard"
+        if instance.json_table not in ("auto", "on", "off"):
+            print(f"   ⚠️ shell_developer.json_table={instance.json_table!r} is invalid; using 'auto'")
+            instance.json_table = "auto"
         return instance
 
 
@@ -216,6 +232,104 @@ def build_inspect_prompt(task_text: str, evidence: dict[str, Any], target_path: 
             f"sed -n '1,80p' {target_path}"
         )
     return f"{header}{build_instance_prompt(task_text)}\nReply with exactly one closed bash block. Inspect the relevant files first."
+
+
+# Chat-JSON-table protocol prompts. Chat-tuned models (Gemini Enterprise chat,
+# any endpoint whose model config flags chat_capable) resist naked bash fences
+# but follow structured schema completion well. The session passes it an
+# append-only JSON table of executed steps and asks it to complete the NEXT
+# row; the parser takes that last row as the next command (or finish).
+CHAT_SYSTEM_PROMPT = """You are the Developer agent of an autonomous software engineering system.
+
+You are working in a disposable copy of the project repository. Your job is to complete \
+the given task by editing files directly with shell commands, then verifying your work.
+
+RESPONSE FORMAT — REQUIRED:
+- Interact with the file system ONLY through bash commands you emit.
+- You are shown a JSON table of the steps executed so far (command, exit code,
+  output). Do NOT repeat past steps. Complete the NEXT row of that table.
+- Reply with EXACTLY ONE JSON object (no markdown fences, no prose before or
+  after unless asked) with this shape:
+    {{
+      "thought": "why you are running this command",
+      "step": <next step number>,
+      "command": "<exact bash command to run>",
+      "finish": false,
+      "summary": null
+    }}
+- Use commands to inspect files, apply edits, and run the project's tests or linters.
+- Prefer small, verifiable steps. After editing, run relevant tests to check your work.
+- When the task is fully done and verified, emit instead:
+    {{
+      "thought": "Verification complete",
+      "step": <next step number>,
+      "command": null,
+      "finish": true,
+      "summary": "<concise summary of what changed>"
+    }}
+- The command must be a single bash command (you may chain with &&). It will be
+  executed in the disposable copy. You will see its exit code and output as the
+  next table row.
+
+Never attempt to interact outside this working copy; changes outside it are discarded."""
+
+
+def build_chat_prompt(
+    task_text: str,
+    evidence: dict[str, Any],
+    target_path: str | None,
+    steps: list[dict[str, Any]],
+) -> str:
+    """Build the chat-mode user prompt: JSON table of past steps + the next-row
+    instruction. Mirrors build_inspect_prompt but asks the model to complete the
+    awaiting step of an append-only JSON table (chat-JSON-table protocol)."""
+    task_block = build_instance_prompt(task_text)
+    if not steps:
+        listing = (evidence.get("output_excerpt") or "").strip()
+        header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
+        body = header + task_block
+    else:
+        table = json.dumps(steps, indent=2)
+        body = f"Steps executed so far:\n```json\n{table}\n```\n\n{task_block}"
+    if target_path:
+        body += f"\n\nTarget file: {target_path}\nFirst command must be:\nsed -n '1,80p' {target_path}"
+    body += "\n\nOutput the JSON object for the next step (step " + str((steps[-1]["step"] if steps else 0) + 1) + ") awaiting execution:"
+    return body
+
+
+def _chat_table_mode(cfg: ShellDeveloperConfig | None, model_ref: str | None) -> bool:
+    """Decide whether a session should use the chat-JSON-table protocol.
+
+    ``json_table`` config knob: "on" forces, "off" disables, "auto" (default)
+    enables when the resolved model is flagged chat_capable in endpoint config
+    or resolves onto Gemini Enterprise chat (api.genai.mil) — the models that
+    refuse naked bash fences. Never raises.
+    """
+    mode = cfg.json_table if cfg is not None else "auto"
+    if mode == "on":
+        return True
+    if mode == "off":
+        return False
+    if not model_ref:
+        return False
+    # Per-model capability flag in endpoint config (endpoints.<ep>.models.<name>).
+    try:
+        from core.endpoint_manager import get_endpoint_manager
+
+        mgr = get_endpoint_manager()
+    except Exception:
+        mgr = None
+    chat_capable = False
+    if mgr is not None:
+        try:
+            chat_capable = bool((mgr.get_model_config(model_ref) or {}).get("chat_capable"))
+        except Exception:
+            chat_capable = False
+    if chat_capable:
+        return True
+    # Existing Enterprise-chat detection keeps the Soak5 fix: those models get
+    # the JSON-table protocol instead of a hard abort.
+    return is_enterprise_chat_developer(model_ref, _enterprise_chat_base_url(model_ref))
 
 
 def _seed_path_candidates(task_text: str) -> list[str]:
@@ -731,6 +845,10 @@ class ShellDeveloperSession:
         self._start = time.time()
         self._deferred_finish_count = 0
         self.target_path: str | None = None
+        # Chat-JSON-table protocol: executed steps (append-only) and whether the
+        # session drives the model with a JSON step table instead of bash fences.
+        self.steps: list[dict[str, Any]] = []
+        self.chat_mode = False
         # Resolved model ref ("endpoint/model") actually used for LLM calls;
         # set on the first _llm call (cfg.model may be None).
         self.resolved_model: str | None = None
@@ -764,19 +882,6 @@ class ShellDeveloperSession:
         if choice.endpoint_name and choice.model_name:
             return f"{choice.endpoint_name}/{choice.model_name}"
         return choice.model_name
-
-    def _resolved_enterprise_chat(self) -> bool:
-        """True when the model actually used for this session resolves onto
-        Gemini Enterprise chat (api.genai.mil), even if cfg.model was null and
-        the effective model only surfaced via resource-controller / preference
-        resolution. Mirrors run_shell_developer_turn so Session.run cannot let
-        a null shell_developer.model enter the LLM loop via tests vs prod."""
-        try:
-            resolved = self._resolve_developer_model() or self.cfg.model
-        except Exception as e:
-            print(f"  ⚠️  Developer model capability check skipped: {e}")
-            return False
-        return is_enterprise_chat_developer(resolved, _enterprise_chat_base_url(resolved))
 
     def _llm(self) -> str | None:
         """Call the LLM with bounded, failure-kind-aware retries (Soak10 follow-up).
@@ -829,11 +934,25 @@ class ShellDeveloperSession:
             time.sleep(backoff_s)
         return None
 
-    def _observation(self, exit_code: int, output: str) -> dict:
+    def _observation(self, exit_code: int, output: str, command: str | None = None, thought: str | None = None) -> dict:
         trimmed = output
         if len(trimmed) > self.cfg.max_output_chars:
             cut = len(trimmed) - self.cfg.max_output_chars
             trimmed = f"...[{cut} chars truncated]...\n{trimmed[-self.cfg.max_output_chars :]}"
+        if self.chat_mode:
+            if command:
+                self.steps.append(
+                    {
+                        "step": len(self.steps) + 1,
+                        "thought": thought,
+                        "command": command,
+                        "exit_code": exit_code,
+                        "output": trimmed,
+                    }
+                )
+            table = json.dumps(self.steps, indent=2)
+            content = f"```json\n{table}\n```\n\nOutput the JSON object for the next step (step {len(self.steps) + 1}) awaiting execution:"
+            return {"role": "user", "content": content}
         return {
             "role": "user",
             "content": f"[exit code {exit_code}]\n{trimmed}" if trimmed else f"[exit code {exit_code}, no output]",
@@ -955,11 +1074,8 @@ class ShellDeveloperSession:
     def run(self, task_text: str) -> SessionResult:  # noqa: C901
         r = self.result
         r.messages = self.messages
-        if is_enterprise_chat_developer(self.cfg.model) or self._resolved_enterprise_chat():
-            r.exit_status = "DeveloperModelNotShellCapable"
-            r.summary = "developer_model_not_shell_capable"
-            print(f"   ❌ {r.summary}: {self.cfg.model}")
-            return r
+        resolved = self._resolve_developer_model() or self.cfg.model
+        self.chat_mode = _chat_table_mode(self.cfg, resolved)
         if not self._run_in_process_evidence():
             return r
         self.target_path = resolve_seed_target_path(task_text, self.wt, self.cfg.workspace_marker)
@@ -978,8 +1094,24 @@ class ShellDeveloperSession:
                 payload={**r.evidence, "reason": "target_missing", "target": named[0]},
             )
             return r
-        self.messages.append({"role": "system", "content": SYSTEM_PROMPT.format(finish_token=FINISH_TOKEN)})
-        self.messages.append({"role": "user", "content": build_inspect_prompt(task_text, r.evidence, self.target_path)})
+        # Seed the JSON step table with the in-process evidence step (chat mode).
+        if self.chat_mode:
+            excerpt = (r.evidence.get("output_excerpt") or "").strip()
+            self.steps.append(
+                {
+                    "step": 1,
+                    "thought": "Workspace validation (evidence)",
+                    "command": evidence_command(self.cfg.workspace_marker),
+                    "exit_code": 0,
+                    "output": excerpt,
+                }
+            )
+        if self.chat_mode:
+            self.messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
+            self.messages.append({"role": "user", "content": build_chat_prompt(task_text, r.evidence, self.target_path, self.steps)})
+        else:
+            self.messages.append({"role": "system", "content": SYSTEM_PROMPT.format(finish_token=FINISH_TOKEN)})
+            self.messages.append({"role": "user", "content": build_inspect_prompt(task_text, r.evidence, self.target_path)})
 
         consecutive_format_errors = 0
         while True:
@@ -1021,7 +1153,8 @@ class ShellDeveloperSession:
                 # finish; force-finish if the model keeps pairing them.
                 self._deferred_finish_count += 1
                 exit_code, output = self._run_worktree_command(command)
-                self.messages.append(self._observation(exit_code, output))
+                action = shell_protocol.extract_chat_table_action(response)
+                self.messages.append(self._observation(exit_code, output, command, (action or {}).get("thought")))
                 self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
                 self._record_model_health(ok=True, kind="command_executed")
                 self._record_model_health(ok=exit_code == 0, kind="command_success")
@@ -1041,7 +1174,11 @@ class ShellDeveloperSession:
                     {
                         "role": "user",
                         "content": (
-                            f"Your previous reply contained both a bash command and {FINISH_TOKEN}. "
+                            "Your previous reply contained both a bash command and a finish decision. "
+                            "The command has been executed (result above). If the task is now complete, "
+                            'reply with the JSON finish object ({... "command": null, "finish": true}).'
+                            if self.chat_mode
+                            else f"Your previous reply contained both a bash command and {FINISH_TOKEN}. "
                             "The command has been executed (result above). If the task is now "
                             f"complete, reply again with only {FINISH_TOKEN} and a summary."
                         ),
@@ -1052,10 +1189,13 @@ class ShellDeveloperSession:
             if summary is not None:
                 if not r.target_inspected:
                     target = self.target_path or "the target file"
-                    self._reject_finish(
-                        response,
-                        f"{FINISH_TOKEN} is not allowed until one non-evidence command against {target} has run.",
+                    reason = (
+                        "The finish decision is not allowed until one non-evidence command against "
+                        f"{target} has run. Emit a JSON step object with a command that inspects it."
+                        if self.chat_mode
+                        else f"{FINISH_TOKEN} is not allowed until one non-evidence command against {target} has run."
                     )
+                    self._reject_finish(response, reason)
                     continue
                 if finish_claims_no_shell(summary):
                     _publish_shell_event(
@@ -1064,10 +1204,12 @@ class ShellDeveloperSession:
                         payload={"reason": "finish_denies_shell", "step_number": r.n_model_calls},
                     )
                     target = self.target_path or "the target file"
-                    self._reject_finish(
-                        response,
-                        f"{FINISH_TOKEN} after evidence cannot claim there is no shell. Inspect {target}.",
+                    reason = (
+                        f"The finish summary cannot claim there is no shell after evidence ran. Inspect {target}."
+                        if self.chat_mode
+                        else f"{FINISH_TOKEN} after evidence cannot claim there is no shell. Inspect {target}."
                     )
+                    self._reject_finish(response, reason)
                     continue
                 r.exit_status = "Finished"
                 r.summary = summary
@@ -1111,14 +1253,16 @@ class ShellDeveloperSession:
                         payload={"reason": diag["reason"], "step_number": r.n_model_calls},
                     )
                     break
+                expected = "the JSON step-table object {thought, step, command, finish, summary}" if self.chat_mode else diag["expected"]
+                must_msg = (
+                    "reply must contain the JSON step-table object for the next step"
+                    if self.chat_mode
+                    else f"reply must contain either a single ```bash fenced command or the token {FINISH_TOKEN} with a summary"
+                )
                 self.messages.append(
                     {
                         "role": "user",
-                        "content": (
-                            f"FormatError (reason={diag['reason']}): reply must contain either a single "
-                            f"```bash fenced command or the token {FINISH_TOKEN} with a summary. "
-                            f"Expected: {diag['expected']}."
-                        ),
+                        "content": (f"FormatError (reason={diag['reason']}): {must_msg}. Expected: {expected}."),
                     }
                 )
                 continue
@@ -1126,7 +1270,8 @@ class ShellDeveloperSession:
             consecutive_format_errors = 0
             exit_code, output = self._run_worktree_command(command)
             self._mark_target_inspected(command)
-            self.messages.append(self._observation(exit_code, output))
+            action = shell_protocol.extract_chat_table_action(response)
+            self.messages.append(self._observation(exit_code, output, command, (action or {}).get("thought")))
             self._emit_command_failed_if_needed(exit_code, command, r.n_model_calls)
             self._record_model_health(ok=True, kind="command_executed")
             self._record_model_health(ok=exit_code == 0, kind="command_success")
@@ -1484,15 +1629,6 @@ def run_shell_developer_turn(  # noqa: C901
     cfg = ShellDeveloperConfig.from_config()
     if cfg.model is None:
         cfg.model = model_choice
-    if is_enterprise_chat_developer(cfg.model):
-        return {
-            "status": "error",
-            "message": "developer_model_not_shell_capable",
-            "session_exit": "DeveloperModelNotShellCapable",
-            "commands_executed": 0,
-            "evidence_ok": False,
-            "evidence_ran": False,
-        }
 
     config = get_config()
     project_dir = Path(config.get("project_directory", ".")).resolve()
@@ -1501,15 +1637,8 @@ def run_shell_developer_turn(  # noqa: C901
     session = ShellDeveloperSession(cfg, worktree, task_id)
     try:
         resolved = session._resolve_developer_model() or cfg.model
-        if is_enterprise_chat_developer(resolved, _enterprise_chat_base_url(resolved)):
-            return {
-                "status": "error",
-                "message": "developer_model_not_shell_capable",
-                "session_exit": "DeveloperModelNotShellCapable",
-                "commands_executed": 0,
-                "evidence_ok": False,
-                "evidence_ran": False,
-            }
+        if _chat_table_mode(cfg, resolved):
+            print(f"   🗨️  Chat-JSON-table protocol for shell developer model {resolved}")
     except Exception as e:
         print(f"   ⚠️  Developer model capability check skipped: {e}")
 
@@ -1572,11 +1701,11 @@ def run_shell_developer_turn(  # noqa: C901
 
         _save_trajectory(task_id, current_turn, session)
 
-        if result.exit_status in ("WorkspaceValidationFailed", "DeveloperModelNotShellCapable"):
+        if result.exit_status == "WorkspaceValidationFailed":
             progress["edit_failures"] = progress.get("edit_failures", 0) + 1
             return {
                 "status": "error",
-                "message": result.summary or "developer_model_not_shell_capable",
+                "message": result.summary or "shell workspace validation failed",
                 **_session_mut_fields(result),
             }
 

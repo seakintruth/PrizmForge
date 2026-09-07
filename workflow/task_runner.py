@@ -141,6 +141,22 @@ def _dispatch_developer(
         )
         if mut.get("status") not in ("success", "rejected"):
             print(f"   ⚠️  Shell developer status: {mut.get('status')} {mut.get('message', '')}")
+            # Fallback bridge: a shell/chat-table session that did not carry the
+            # turn to success or reviewer rejection re-disperses to the legacy
+            # structured EditPayload developer in the SAME turn. Surface the
+            # shell outcome on the fallback result so the orchestrator sees both.
+            mut = _edit_payload_fallback(
+                task_id=task_id,
+                instructions=instructions,
+                user_command=user_command,
+                requested_files=requested_files,
+                conversation_context=conversation_context,
+                model_choice=model_choice,
+                progress=progress,
+                decision=decision,
+                current_turn=current_turn,
+                shell_mut=mut,
+            )
         return mut
 
     preferred_modes, fallback_order, small_file_threshold = _edit_mode_settings(config)
@@ -161,6 +177,48 @@ def _dispatch_developer(
     if mut.get("status") not in ("success", "rejected"):
         print(f"   ⚠️  Developer mutation status: {mut.get('status')} {mut.get('message', '')}")
     return mut
+
+
+def _edit_payload_fallback(
+    *,
+    task_id: str,
+    instructions: str,
+    user_command: str,
+    requested_files: list[str] | None,
+    conversation_context: list,
+    model_choice: str | None,
+    progress: dict,
+    decision: dict,
+    current_turn: int,
+    shell_mut: dict,
+) -> dict:
+    """Fall back to the legacy EditPayload developer after a failed shell turn.
+
+    Used when ``developer.implementation == "shell"`` and the shell/chat-table
+    session returned an error (token budget, refusal, repeated format errors,
+    workspace validation). The legacy structured developer runs against the
+    governed tree in the same turn. The shell outcome is surfaced on the result
+    so callers (e.g. zero-command guard) can still see the failed shell attempt.
+    """
+    preferred_modes, fallback_order, small_file_threshold = _edit_mode_settings(get_config())
+    fallback = run_developer_mutation(
+        task_id=task_id,
+        instructions=instructions or user_command,
+        user_command=user_command,
+        requested_files=requested_files or [],
+        conversation_context=conversation_context,
+        model_choice=model_choice,
+        preferred_modes=preferred_modes,
+        fallback_order=fallback_order,
+        small_file_threshold=small_file_threshold,
+        progress=progress,
+        decision=decision,
+        current_turn=current_turn,
+    )
+    if fallback.get("status") not in ("success", "rejected"):
+        print(f"   ⚠️  Developer mutation fallback status: {fallback.get('status')} {fallback.get('message', '')}")
+    fallback.setdefault("shell_fallback_from", {"status": shell_mut.get("status"), "message": shell_mut.get("message")})
+    return fallback
 
 
 def _finish_gate_blocked(

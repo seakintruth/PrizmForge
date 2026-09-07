@@ -466,3 +466,95 @@ class TestZeroCommandSeedGuard:
             }
         )
         assert guard.latched()
+
+
+class TestDispatchDeveloperFallback:
+    """PR #123: a failed shell/chat-table session falls back to edit_payload in
+    the same turn (any non-success/rejected shell status)."""
+
+    def test_shell_error_falls_back_to_edit_payload(self, mock_minimal_config, monkeypatch):
+        from workflow import task_runner
+
+        mock_minimal_config["developer"] = {"implementation": "shell"}
+        shell_calls = []
+
+        def fake_shell(**kwargs):
+            shell_calls.append(kwargs)
+            return {
+                "status": "error",
+                "message": "session LlmUnavailable: token budget exhausted",
+                "session_exit": "LlmUnavailable",
+                "commands_executed": 0,
+                "evidence_ok": False,
+            }
+
+        edit_calls = []
+
+        def fake_edit(**kwargs):
+            edit_calls.append(kwargs)
+            return {
+                "status": "success",
+                "message": "edit_payload applied",
+                "files_modified": 1,
+                "proposal_ids": ["p1"],
+            }
+
+        monkeypatch.setattr("workflow.shell_developer.run_shell_developer_turn", fake_shell)
+        monkeypatch.setattr("workflow.task_runner.run_developer_mutation", fake_edit)
+
+        result = task_runner._dispatch_developer(
+            task_id="t123",
+            instructions="fix the bug",
+            user_command="",
+            decision={},
+            conversation_context=[],
+            model_choice=None,
+            progress={},
+            current_turn=1,
+            requested_files=[],
+        )
+        assert len(shell_calls) == 1
+        assert len(edit_calls) == 1
+        assert result["status"] == "success"
+        assert result["files_modified"] == 1
+        assert result["shell_fallback_from"]["status"] == "error"
+
+    def test_shell_success_does_not_fall_back(self, mock_minimal_config, monkeypatch):
+        from workflow import task_runner
+
+        mock_minimal_config["developer"] = {"implementation": "shell"}
+        shell_calls = []
+
+        def fake_shell(**kwargs):
+            shell_calls.append(kwargs)
+            return {
+                "status": "success",
+                "message": "session Finished",
+                "session_exit": "Finished",
+                "commands_executed": 3,
+                "evidence_ok": True,
+                "proposal_ids": ["p1"],
+            }
+
+        edit_calls = []
+
+        def fake_edit(**kwargs):
+            edit_calls.append(kwargs)
+            return {"status": "success"}
+
+        monkeypatch.setattr("workflow.shell_developer.run_shell_developer_turn", fake_shell)
+        monkeypatch.setattr("workflow.task_runner.run_developer_mutation", fake_edit)
+
+        result = task_runner._dispatch_developer(
+            task_id="t123",
+            instructions="fix the bug",
+            user_command="",
+            decision={},
+            conversation_context=[],
+            model_choice=None,
+            progress={},
+            current_turn=1,
+        )
+        assert len(shell_calls) == 1
+        assert len(edit_calls) == 0
+        assert result["status"] == "success"

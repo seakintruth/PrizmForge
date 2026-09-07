@@ -15,7 +15,9 @@ with a `` ```bash`` opening line and ends with a closing `` ``` `` line:
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Any
 
 FINISH_TOKEN = "FINISH_EDIT_SESSION"
 
@@ -43,12 +45,115 @@ def is_unterminated_bash_block(text: str | None) -> bool:
     return stripped.startswith("```bash") and not stripped.endswith("```")
 
 
+def extract_chat_table_action(response: str | None) -> dict[str, Any] | None:  # noqa: C901
+    """Extract the next command or finish decision from a chat JSON table response.
+
+    Supports:
+    - Direct JSON object: {"thought": "...", "command": "...", "finish": false}
+    - JSON list/table: [{"step": 1, ...}, {"step": 2, "command": "..."}] -> takes last entry
+    - Nested dictionary: {"steps": [...], ...} or {"table": [...]} -> takes last entry
+    """
+    if not response or not response.strip():
+        return None
+
+    text = response.strip()
+
+    data = None
+    # 1. Try markdown json block
+    json_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(1).strip())
+        except Exception:
+            data = None
+
+    # 2. Try raw JSON extraction bounded by outer braces or brackets
+    if data is None:
+        first_brace = text.find("{")
+        first_bracket = text.find("[")
+        if first_brace != -1 and (first_bracket == -1 or first_brace < first_bracket):
+            last_brace = text.rfind("}")
+            if last_brace != -1 and last_brace > first_brace:
+                try:
+                    data = json.loads(text[first_brace : last_brace + 1])
+                except Exception:
+                    data = None
+        elif first_bracket != -1:
+            last_bracket = text.rfind("]")
+            if last_bracket != -1 and last_bracket > first_bracket:
+                try:
+                    data = json.loads(text[first_bracket : last_bracket + 1])
+                except Exception:
+                    data = None
+
+    # 3. Fallback to core.json_parser
+    if data is None:
+        try:
+            from core.json_parser import JSONParser
+
+            res = JSONParser().parse(text)
+            if res.success and res.data:
+                data = res.data
+        except Exception:
+            data = None
+
+    if not data:
+        return None
+
+    # 4. Extract candidate dict
+    candidate = None
+    if isinstance(data, list):
+        candidate = data[-1] if data else None
+    elif isinstance(data, dict):
+        for key in ("steps", "table", "history", "actions", "step_table"):
+            if isinstance(data.get(key), list) and data[key]:
+                candidate = data[key][-1]
+                break
+        if candidate is None:
+            candidate = data
+
+    if not isinstance(candidate, dict):
+        return None
+
+    # 5. Check for finish vs command
+    is_finish = (
+        candidate.get("finish") is True
+        or str(candidate.get("action", "")).lower() in ("finish", "done", "complete")
+        or str(candidate.get("command", "")).strip() == FINISH_TOKEN
+    )
+    if is_finish:
+        summary = candidate.get("summary") or candidate.get("thought") or candidate.get("message") or "Task completed"
+        return {
+            "type": "finish",
+            "summary": str(summary).strip(),
+            "thought": candidate.get("thought"),
+        }
+
+    command = candidate.get("command") or candidate.get("cmd") or candidate.get("bash")
+    if isinstance(command, str) and command.strip():
+        cmd = command.strip()
+        if cmd == FINISH_TOKEN:
+            summary = candidate.get("summary") or candidate.get("thought") or "Task completed"
+            return {
+                "type": "finish",
+                "summary": str(summary).strip(),
+                "thought": candidate.get("thought"),
+            }
+        return {
+            "type": "command",
+            "command": cmd,
+            "thought": candidate.get("thought"),
+        }
+
+    return None
+
+
 def classify_shell_reply(text: str | None) -> str:
     """Classify a shell developer reply into one protocol category.
 
     Ordering matters: a finished session must not be misread as a command block,
     and a strictly valid block must not be demoted because it also mentions a
-    fence elsewhere.
+    fence elsewhere. Supports both bash blocks and JSON table actions.
     """
     reply = (text or "").strip()
 
@@ -76,6 +181,14 @@ def classify_shell_reply(text: str | None) -> str:
     #    An essay that merely *mentions* FINISH_EDIT_SESSION is prose (Soak4).
     if is_canonical_finish(reply):
         return VALID_FINISH_SESSION
+
+    # 5. Check if chat table action is finish or command
+    action = extract_chat_table_action(reply)
+    if action:
+        if action.get("type") == "finish":
+            return VALID_FINISH_SESSION
+        if action.get("type") == "command":
+            return VALID_BASH_BLOCK
 
     return PROSE_OR_UNSUPPORTED_FORMAT
 
@@ -162,7 +275,7 @@ def diagnose_shell_reply(response: str | None) -> dict:
 
 
 def extract_bash_command(response: str | None, *, normalize: bool = True) -> str | None:
-    """Return the last valid bash fenced command, after optional normalization."""
+    """Return the last valid bash command (from ```bash block OR JSON table)."""
     reply = response or ""
     if normalize:
         reply = normalize_shell_reply(reply)
@@ -171,11 +284,16 @@ def extract_bash_command(response: str | None, *, normalize: bool = True) -> str
         cmd = block.strip()
         if cmd and not cmd.strip() == FINISH_TOKEN:
             return cmd
+
+    action = extract_chat_table_action(reply)
+    if action and action.get("type") == "command":
+        return action.get("command")
+
     return None
 
 
 def extract_finish(response: str | None) -> str | None:
-    """Return the finish summary when the first non-empty line is the token.
+    """Return the finish summary (from FINISH_EDIT_SESSION token OR JSON table).
 
     The token is only honored as a finish when it is not buried inside a
     command block (`` ```bash\nFINISH_EDIT_SESSION\n``` `` is a command whose
@@ -183,7 +301,12 @@ def extract_finish(response: str | None) -> str | None:
     only mentions the token is not a finish (Soak4).
     """
     reply = (response or "").strip()
-    if not is_canonical_finish(reply):
-        return None
-    summary_lines = [line for line in reply.splitlines() if line.strip() != FINISH_TOKEN]
-    return "\n".join(summary_lines).strip()
+    if is_canonical_finish(reply):
+        summary_lines = [line for line in reply.splitlines() if line.strip() != FINISH_TOKEN]
+        return "\n".join(summary_lines).strip()
+
+    action = extract_chat_table_action(reply)
+    if action and action.get("type") == "finish":
+        return action.get("summary")
+
+    return None

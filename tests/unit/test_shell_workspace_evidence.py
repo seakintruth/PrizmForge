@@ -170,24 +170,59 @@ def test_system_prompt_has_no_shell_sermon():
     assert sd.EVIDENCE_PROMPT_COMMAND not in prompt
 
 
-def test_enterprise_chat_model_skips_shell_session():
-    session, state = _session([f"{sd.FINISH_TOKEN}\nok"], model="company/gemini-3.1-pro-preview@api.genai.mil")
-    result = session.run("task")
-    assert result.exit_status == "DeveloperModelNotShellCapable"
-    assert state["i"] == 0
-    assert result.n_model_calls == 0
-
-
-def test_resolved_enterprise_model_skips_shell_session_even_when_cfg_null():
-    """PR #122: Session.run must not let a null cfg.model that resolves onto
-    api.genai.mil (resource-controller / preference path) enter the LLM loop —
-    parity with run_shell_developer_turn."""
-    session, state = _session([f"{sd.FINISH_TOKEN}\nok"])
+def test_enterprise_chat_model_runs_chat_table_protocol():
+    """PR #123: an Enterprise-chat developer must NOT hard-abort. It enters the
+    chat-JSON-table protocol: the evidence row seeds the step table, the model
+    completes the next row (command), then the finish row ends the session."""
+    script = [
+        '{"thought": "Inspect the target", "step": 2, "command": "sed -n \'1,80p\' workflow/task_runner.py", "finish": false}',
+        '{"thought": "Verified", "step": 3, "command": null, "finish": true, "summary": "Reviewed target"}',
+    ]
+    session, state = _session(script, model="company/gemini-3.1-pro-preview@api.genai.mil")
     session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
-    result = session.run("task")
-    assert result.exit_status == "DeveloperModelNotShellCapable"
-    assert state["i"] == 0
-    assert result.n_model_calls == 0
+    result = session.run("Inspect workflow/task_runner.py")
+    assert session.chat_mode is True
+    assert state["i"] == 2
+    assert result.exit_status == "Finished"
+    assert result.n_model_calls == 2
+    assert result.commands_executed == 1
+    assert result.target_inspected is True
+    assert len(session.steps) == 2  # evidence seed + executed command
+    assert session.steps[0]["step"] == 1
+    assert session.steps[1]["step"] == 2
+    assert session.steps[1]["command"] == "sed -n '1,80p' workflow/task_runner.py"
+    assert result.summary == "Reviewed target"
+
+
+def test_resolved_enterprise_model_runs_chat_table_protocol_when_cfg_null():
+    """PR #123: even with a null cfg.model, a resolved genai.mil developer uses
+    the chat-JSON-table protocol instead of the historical hard abort."""
+    script = [
+        '{"thought": "Inspect", "step": 2, "command": "sed -n \'1,80p\' workflow/task_runner.py", "finish": false}',
+        '{"thought": "Done", "step": 3, "command": null, "finish": true, "summary": "ok"}',
+    ]
+    session, state = _session(script)
+    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
+    result = session.run("Inspect workflow/task_runner.py")
+    assert session.chat_mode is True
+    assert state["i"] == 2
+    assert result.exit_status == "Finished"
+    assert result.n_model_calls == 2
+
+
+def test_chat_table_mode_can_be_disabled_via_config():
+    """PR #123: json_table='off' keeps the historical bash-fence protocol even
+    for an Enterprise-chat developer model."""
+    script = [
+        "```bash\nsed -n '1,80p' workflow/task_runner.py\n```",
+        f"{sd.FINISH_TOKEN}\nok",
+    ]
+    session, state = _session(script, model="company/gemini-3.1-pro-preview@api.genai.mil", json_table="off")
+    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
+    result = session.run("Inspect workflow/task_runner.py")
+    assert session.chat_mode is False
+    assert state["i"] == 2
+    assert result.exit_status == "Finished"
 
 
 def test_correct_worktree_exposes_marker(tmp_path):
