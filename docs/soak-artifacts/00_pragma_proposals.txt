@@ -1,0 +1,29 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+cid  name                   type       notnull  dflt_value         pk
+---  ---------------------  ---------  -------  -----------------  --
+0    proposal_id            TEXT       0        NULL               1 
+1    task_id                TEXT       0        NULL               0 
+2    target_file_id         INTEGER    0        NULL               0 
+3    target_file_path       TEXT       0        NULL               0 
+4    edit_payload           TEXT       1        NULL               0 
+5    affected_line_guids    TEXT       0        NULL               0 
+6    expected_hashes        TEXT       0        NULL               0 
+7    status                 TEXT       0        'pending'          0 
+8    proposed_by_agent_id   INTEGER    0        NULL               0 
+9    reviewed_by_agent_id   INTEGER    0        NULL               0 
+10   rationale              TEXT       0        NULL               0 
+11   created_at             TIMESTAMP  0        CURRENT_TIMESTAMP  0 
+12   reviewed_at            TIMESTAMP  0        NULL               0 
+13   write_started_at       TIMESTAMP  0        NULL               0 
+14   write_completed_at     TIMESTAMP  0        NULL               0 
+15   write_start_line_guid  TEXT       0        NULL               0 
+16   write_end_line_guid    TEXT       0        NULL               0 
+17   selected_mode          TEXT       0        NULL               0 
+18   fallback_used          INTEGER    0        0                  0 
+19   final_mode             TEXT       0        NULL               0 
+
+20 row(s)

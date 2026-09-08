@@ -1,0 +1,10 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+tasks  developer_replies  replies_with_command  commands_ok  proposals  applied  writes  file_mods
+-----  -----------------  --------------------  -----------  ---------  -------  ------  ---------
+1      25                 17                    14           2          2        2       2        
+
+1 row(s)

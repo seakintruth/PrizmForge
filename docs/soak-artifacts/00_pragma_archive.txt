@@ -1,0 +1,22 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+cid  name                    type     notnull  dflt_value  pk
+---  ----------------------  -------  -------  ----------  --
+0    id                      INTEGER  0        NULL        1 
+1    task_id                 TEXT     0        NULL        0 
+2    agent_name              TEXT     0        NULL        0 
+3    prompt                  TEXT     0        NULL        0 
+4    response                TEXT     0        NULL        0 
+5    parse_success           INTEGER  0        NULL        0 
+6    parse_error             TEXT     0        NULL        0 
+7    timestamp               TEXT     0        NULL        0 
+8    model                   TEXT     0        NULL        0 
+9    step_number             INTEGER  0        NULL        0 
+10   response_format_status  TEXT     0        NULL        0 
+11   command                 TEXT     0        NULL        0 
+12   command_exit_code       INTEGER  0        NULL        0 
+
+13 row(s)

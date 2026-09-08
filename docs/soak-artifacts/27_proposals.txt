@@ -1,0 +1,11 @@
+
+================================================================================
+📦 Edit Proposals — 2 rows
+================================================================================
+
+proposal_id                           target_file_path      status   selected_mode  fallback_used  final_mode    created_at           rationale                                                   
+------------------------------------  --------------------  -------  -------------  -------------  ------------  -------------------  ------------------------------------------------------------
+03a8336e-6358-42f1-be42-8192427424a5  workflow/__init__.py  applied  full_replace   0              guid          2026-09-08 02:29:46  [mode=guid] Initial comprehensive review complete. The exist
+c6b81e99-c116-4b54-baf4-3413b0633533  workflow/__init__.py  applied  shell_session  0              full_replace  2026-09-08 02:28:25  [mode=full_replace] Shell developer session (Finished).
+
+Sum

@@ -1,0 +1,11 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+pid       target_file_path      status   selected_mode  final_mode    fallback_used  created_at           rationale                                                                                                                                                       
+--------  --------------------  -------  -------------  ------------  -------------  -------------------  ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+c6b81e99  workflow/__init__.py  applied  shell_session  full_replace  0              2026-09-08 02:28:25  [mode=full_replace] Shell developer session (Finished).  Summary: I have reviewed `workflow/__init__.py`. It was missing a module-level docstring, which I have 
+03a8336e  workflow/__init__.py  applied  full_replace   guid          0              2026-09-08 02:29:46  [mode=guid] Initial comprehensive review complete. The existing __init__.py file correctly establishes the module's docstring, metadata, and cleanly exposes 'cr
+
+2 row(s)

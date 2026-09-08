@@ -1,0 +1,154 @@
+
+================================================================================
+🔬 FULL DIAGNOSTIC DUMP
+================================================================================
+   📆 data window: latest record seen 2026-09-08T02:30:39.485655+00:00
+
+================================================================================
+📊 RUN EFFECTIVENESS
+================================================================================
+
+1️⃣  MUTATION FUNNEL
+   proposals created : 2
+   ├─ applied     : 2
+   writes succeeded  : 2
+   proposal→applied conversion: 100%
+
+2️⃣  EDIT MODE EFFECTIVENESS (selected → final, count)
+   full_replace → guid                      1
+   shell_session → full_replace             1
+   fallback rate: 0/2 (0%)
+
+3️⃣  FILES ACTUALLY MUTATED (by applied proposals)
+   workflow/__init__.py                 2 edits, ~16 lines now
+
+4️⃣  FEEDBACK BACKLOG HEALTH
+   (scoped to task task_001)
+   addressed: 1 / 14
+   open MEDIUM  : 8
+   open LOW     : 4
+   open HIGH    : 1
+
+5️⃣  TASK LIFECYCLE
+   in_progress : 1  (0.1h old)
+
+6️⃣  ERROR BURN (HIGH+CRITICAL per hour)
+   (scoped to task task_001)
+   top error signatures:
+
+7️⃣  SPEND VS OUTCOMES
+   (token_log has no task_id — global spend only)
+   (run without --task for token breakdown)
+
+================================================================================
+📦 Edit Proposals — 2 rows
+================================================================================
+
+proposal_id                           target_file_path      status   selected_mode  fallback_used  final_mode    created_at           rationale                                                   
+------------------------------------  --------------------  -------  -------------  -------------  ------------  -------------------  ------------------------------------------------------------
+03a8336e-6358-42f1-be42-8192427424a5  workflow/__init__.py  applied  full_replace   0              guid          2026-09-08 02:29:46  [mode=guid] Initial comprehensive review complete. The exist
+c6b81e99-c116-4b54-baf4-3413b0633533  workflow/__init__.py  applied  shell_session  0              full_replace  2026-09-08 02:28:25  [mode=full_replace] Shell developer session (Finished).
+
+Sum
+
+================================================================================
+📝 file_write_log — 2 rows
+================================================================================
+
+log_id  proposal_id                           file_id  status   started_at                  completed_at              
+------  ------------------------------------  -------  -------  --------------------------  --------------------------
+2       03a8336e-6358-42f1-be42-8192427424a5  254      success  2026-09-07T22:29:55.272361  2026-09-07T22:29:55.275820
+1       c6b81e99-c116-4b54-baf4-3413b0633533  254      success  2026-09-07T22:28:32.435607  2026-09-07T22:28:32.437607
+
+================================================================================
+🚨 Errors [HIGH] — 0 rows
+================================================================================
+
+  (no rows)
+
+================================================================================
+🚨 Errors [CRITICAL] — 0 rows
+================================================================================
+
+  (no rows)
+
+================================================================================
+🚨 Errors (keyword: full_replace) — 0 rows
+================================================================================
+
+  (no rows)
+
+================================================================================
+🚨 Errors (keyword: materialize) — 0 rows
+================================================================================
+
+  (no rows)
+
+================================================================================
+📡 Edit / Proposal Lifecycle Events — 14 rows
+================================================================================
+
+id  ts                                type                           source            task_id   proposal_id                           payload_json                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+--  --------------------------------  -----------------------------  ----------------  --------  ------------------------------------  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+14  2026-09-08T02:30:39.485655+00:00  shell_command_failed           shell_developer   task_001  None                                  {"command": "grep -n \"mark_task_complete\" workflow/task_runner.py -C 10", "exit_code": 1, "step_number": 3}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+13  2026-09-08T02:29:55.278848+00:00  edit.materialized              writer            task_001  03a8336e-6358-42f1-be42-8192427424a5  {"status": "success", "proposal_id": "03a8336e-6358-42f1-be42-8192427424a5", "materialized_files": ["workflow/__init__.py"], "results": [{"status": "success", "file_path": "C:\\git\\home\\user\\jeremy.gerdes\\github\\PrizmForge-Soak\\Soak8-target\\PrizmForge\\workflow\\__init__.py"}], "git_failed": null, "lint_failed": null}                                                                                                                                                                                                                                                                                                                                                             
+12  2026-09-08T02:29:55.235778+00:00  proposal.approved              reviewer          task_001  03a8336e-6358-42f1-be42-8192427424a5  {}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+11  2026-09-08T02:29:46.332648+00:00  proposal.created               proposal_builder  task_001  03a8336e-6358-42f1-be42-8192427424a5  {"target_file_path": "workflow/__init__.py", "selected_mode": "full_replace", "fallback_used": false, "task_id": "task_001"}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+10  2026-09-08T02:29:29.356320+00:00  shell_session_no_mutation      shell_developer   task_001  None                                  {"exit_status": "Finished", "summary": "No specific changes were requested for workflow/__init__.py, and the initial review found no obvious issues to fix."}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+9   2026-09-08T02:28:32.444764+00:00  edit.materialized              writer            task_001  c6b81e99-c116-4b54-baf4-3413b0633533  {"status": "success", "proposal_id": "c6b81e99-c116-4b54-baf4-3413b0633533", "materialized_files": ["workflow/__init__.py"], "results": [{"status": "success", "file_path": "C:\\git\\home\\user\\jeremy.gerdes\\github\\PrizmForge-Soak\\Soak8-target\\PrizmForge\\workflow\\__init__.py"}], "git_failed": null, "lint_failed": null}                                                                                                                                                                                                                                                                                                                                                             
+8   2026-09-08T02:28:32.408664+00:00  proposal.approved              reviewer          task_001  c6b81e99-c116-4b54-baf4-3413b0633533  {}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+7   2026-09-08T02:28:25.283702+00:00  proposal.created               proposal_builder  task_001  c6b81e99-c116-4b54-baf4-3413b0633533  {"target_file_path": "workflow/__init__.py", "selected_mode": "shell_session", "fallback_used": false, "task_id": "task_001"}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
+6   2026-09-08T02:28:19.013634+00:00  shell_protocol_prose_response  shell_developer   task_001  None                                  {"reason": "prose_or_unsupported_format", "step_number": 11}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       
+5   2026-09-08T02:27:54.476583+00:00  shell_protocol_prose_response  shell_developer   task_001  None                                  {"reason": "prose_or_unsupported_format", "step_number": 9}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+4   2026-09-08T02:26:42.405994+00:00  shell_protocol_prose_response  shell_developer   task_001  None                                  {"reason": "prose_or_unsupported_format", "step_number": 6}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+3   2026-09-08T02:26:35.765948+00:00  shell_protocol_prose_response  shell_developer   task_001  None                                  {"reason": "prose_or_unsupported_format", "step_number": 5}                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        
+2   2026-09-08T02:26:27.294932+00:00  shell_command_failed           shell_developer   task_001  None                                  {"command": "python -c \"content = '''\\\"\\\"\\\"\\nWorkflow Module\\n\\nThis module provides workflow management and automation capabilities,\\nincluding task execution, developer edit protocols, and proposal building.\\n\\\"\\\"\\\"\\n\\n# =============================================================================\\n# workflow/__init__.py\\n# Version: 1.2\\n# =============================================================================\\n\\nfrom .proposal_builder import create_proposal_from_developer_output\\n\\n__all__ = [\\\"create_proposal_from_developer_output\\\"]\\n'''; open('workflow/__init__.py', 'w').write(content)\"", "exit_code": 78, "step_number": 4}
+1   2026-09-08T02:26:19.597195+00:00  shell_command_failed           shell_developer   task_001  None                                  {"command": "cat << 'EOF' > workflow/__init__.py\n\"\"\"\nWorkflow Module\n\nThis module provides workflow management and automation capabilities, \nincluding task execution, developer edit protocols, and proposal building.\n\"\"\"\n\n# =============================================================================\n# workflow/__init__.py\n# Version: 1.2\n# =============================================================================\n\nfrom .proposal_builder import create_proposal_from_developer_output\n\n__all__ = [\"create_proposal_from_developer_output\"]\nEOF", "exit_code": 1, "step_number": 3}                                                                       
+
+================================================================================
+🔴 GIT / HOOK OUTCOMES (edit.git_failed) — 0 rows
+================================================================================
+
+   No git-failure events recorded.
+
+================================================================================
+📏 Current line counts (lowest first — potential truncation candidates) — 30 files
+================================================================================
+
+file_path                                                                            line_count
+-----------------------------------------------------------------------------------  ----------
+audit/__init__.py                                                                    1         
+cli/__init__.py                                                                      1         
+core/__init__.py                                                                     1         
+utils/__init__.py                                                                    1         
+assets/logos/.gitkeep                                                                2         
+tests/__init__.py                                                                    2         
+.gitattributes                                                                       8         
+agent_schemas/reviewer.json                                                          8         
+requirements.txt                                                                     10        
+mypy.ini                                                                             11        
+agent_schemas/tech_writer.json                                                       12        
+example_api_key.json                                                                 13        
+agent_schemas/jr_researcher.json                                                     13        
+agent_schemas/jr_reviewer.json                                                       13        
+agent_schemas/security_reviewer.json                                                 13        
+agent_schemas/deployment_validator.json                                              14        
+file_editing/schema.md                                                               14        
+file_editing/__init__.py                                                             14        
+agent_schemas/orchestrator.json                                                      15        
+agent_schemas/project_reporter.json                                                  16        
+workflow/__init__.py                                                                 16        
+.flake8                                                                              17        
+agent_schemas/archivist.json                                                         17        
+file_editing/prizmforge_integration_documentation/prompts/reviewer_prompt_update.md  17        
+agent_schemas/prioritizer.json                                                       18        
+agent_schemas/resource_controller.json                                               18        
+pytest.ini                                                                           19        
+LICENSE                                                                              22        
+agents/__init__.py                                                                   24        
+agent_schemas/README.md                                                              24        
+
+================================================================================
+Diagnostic dump complete.
+================================================================================
+

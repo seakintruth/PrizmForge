@@ -1,0 +1,11 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+id  timestamp                   task_id   parse_success  resp_len  resp_head                                                                                                                                                                                                                                                              
+--  --------------------------  --------  -------------  --------  -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+14  2026-09-07T22:28:32.392987  task_001  1              175       ```json | { | "decision": "APPROVE", | "reason": "The change safely adds a descriptive module-level docstring without altering or removing any existing logic.", | "suggestions": [] | } |                                                                             
+34  2026-09-07T22:29:55.235778  task_001  1              251       ```json | { |   "decision": "APPROVE", |   "reason": "The proposed full_replace safely preserves the exact existing file content, serving as a no-op update, which is consistent with the provided rationale that no changes are needed.", |   "suggestions": [] | } | 
+
+2 row(s)

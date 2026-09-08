@@ -1,0 +1,22 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+id  priority  addressed  task_id   msg                                                                                                                                                             
+--  --------  ---------  --------  ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+2   MEDIUM    0          task_001  Good use of module-level docstrings to clearly explain the purpose and capabilities of the workflow module.                                                     
+3   MEDIUM    0          task_001  Explicit definition of `__all__` correctly restricts wildcard imports and clearly defines the module's public API.                                              
+4   MEDIUM    0          task_001  The static version comment (`# Version: 1.2`) might become outdated if versioning is managed externally (e.g., in `setup.py` or `pyproject.toml`). If you need t
+5   HIGH      0          task_001  When next_agent == 'complete' and passes the finish gate, the loop calls mark_task_status / complete_task and executes 'continue' rather than terminating the lo
+6   MEDIUM    0          task_001  The module uses a global variable `_active_work_seconds` to track iteration latency. If task cycles are run in parallel threads within the same worker process, 
+7   LOW       0          task_001  Repeated ephemeral connection creation (`get_db_connection()`) across loop cycles and helper lookups could lead to SQLite lock contention or unnecessary overhea
+8   MEDIUM    0          task_001  Ready for your request.                                                                                                                                         
+9   MEDIUM    0          task_001  Naive string replacement in `_apply_edit_payload` (`content.replace(old_text, new_text, 1)`). This is highly brittle and often fails in agentic workflows due to
+10  MEDIUM    0          task_001  The `is_banned_write_command` blocks specific strings like `python -c` and `base64`. This is easily bypassed by the LLM using other encodings (e.g., `xxd`, `od`
+11  LOW       0          task_001  Extensive use of broad `except Exception:` blocks in observability functions (e.g., `_record_model_health`, `_publish_shell_event`, `_save_trajectory`).        
+12  LOW       0          task_001  Corrupted Unicode / replacement character `` in retry log message.                                                                                              
+13  MEDIUM    0          task_001  Potential `TypeError` in `suggestions` parsing if `raw_suggestions` is a non-iterable primitive (e.g., `int`, `bool`).                                          
+14  LOW       0          task_001  Hardcoded single retry in `request_review_verdict` despite `max_attempts` parameter.                                                                            
+
+13 row(s)

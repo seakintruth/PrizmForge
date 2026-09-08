@@ -1,0 +1,6 @@
+
+================================================================================
+🩺 MODEL HEALTH (recency-weighted, half-life 45m) — C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+No outcome events recorded yet.

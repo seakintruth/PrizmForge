@@ -1,0 +1,15 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+agent_name         n   parse_ok
+-----------------  --  --------
+developer          25  21      
+prioritizer        9   9       
+jr_reviewer        7   7       
+orchestrator       3   3       
+reviewer           2   2       
+security_reviewer  2   2       
+
+6 row(s)

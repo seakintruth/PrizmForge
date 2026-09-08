@@ -1,0 +1,10 @@
+================================================================================
+PrizmForge Soak Diagnostic
+================================================================================
+Source repo: /home/user/jeremy.gerdes/github/PrizmForge
+Soak root:   /home/user/jeremy.gerdes/github/PrizmForge/../PrizmForge-Soak
+Selected:    Soak8
+Database:    /home/user/jeremy.gerdes/github/PrizmForge/../PrizmForge-Soak/Soak8-target/PrizmForge/.PrizmForge/agents.db
+Task:        task_001
+Python:      /home/user/jeremy.gerdes/github/PrizmForge/.venv/Scripts/python.exe
+Export dir:  /home/user/jeremy.gerdes/github/PrizmForge/docs/soak-artifacts

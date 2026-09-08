@@ -1,0 +1,15 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+cid  name          type  notnull  dflt_value  pk
+---  ------------  ----  -------  ----------  --
+0    id            TEXT  0        NULL        1 
+1    description   TEXT  0        NULL        0 
+2    status        TEXT  0        NULL        0 
+3    started_at    TEXT  0        NULL        0 
+4    completed_at  TEXT  0        NULL        0 
+5    result        TEXT  0        NULL        0 
+
+6 row(s)

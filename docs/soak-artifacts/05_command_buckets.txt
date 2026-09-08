@@ -1,0 +1,10 @@
+
+================================================================================
+🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
+================================================================================
+
+evidence_cmds  inspect_cmds  refusal_echo  other_cmds  cmd_rows
+-------------  ------------  ------------  ----------  --------
+1              5             0             11          17      
+
+1 row(s)
