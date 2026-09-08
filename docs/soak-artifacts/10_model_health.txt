@@ -5,7 +5,7 @@
 
 model_ref                      kind  ok  n 
 -----------------------------  ----  --  --
-gemini/gemini-3.1-pro-preview        1   34
-gemini/gemini-3.7-flash              1   14
+gemini/gemini-3.1-pro-preview        1   63
+gemini/gemini-3.7-flash              1   28
 
 2 row(s)

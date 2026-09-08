@@ -18,5 +18,25 @@ id  priority  addressed  task_id   msg
 12  LOW       0          task_001  Corrupted Unicode / replacement character `` in retry log message.                                                                                              
 13  MEDIUM    0          task_001  Potential `TypeError` in `suggestions` parsing if `raw_suggestions` is a non-iterable primitive (e.g., `int`, `bool`).                                          
 14  LOW       0          task_001  Hardcoded single retry in `request_review_verdict` despite `max_attempts` parameter.                                                                            
+15  LOW       0          task_001  {'severity': 'info', 'line': 'from .proposal_builder import create_proposal_from_developer_output', 'comment': 'Proper explicit import and encapsulation via __a
+16  LOW       0          task_001  {'severity': 'info', 'line': 'docstring', 'comment': 'Module-level docstring accurately reflects module purpose.'}                                              
+17  HIGH      0          task_001  After a task satisfies all finish gate criteria upon a 'complete' decision, `mark_task_status` or `complete_task` is called, followed by `continue` instead of e
+18  MEDIUM    0          task_001  The module uses a module-scoped global variable `_active_work_seconds` to track iteration latency. If multiple tasks are executed concurrently in different thre
+19  LOW       0          task_001  Multiple short-lived `get_db_connection()` context manager calls occur inside the main execution turn for feedback counting, target resolution, and backlog over
+20  LOW       0          task_001  Corrupted Unicode replacement characters in the log message string.                                                                                             
+21  MEDIUM    0          task_001  Potential `TypeError` if `raw_suggestions` is a non-iterable primitive type such as integer or boolean.                                                         
+22  LOW       0          task_001  Fixed single retry behavior when `max_attempts` is configurable.                                                                                                
+23  MEDIUM    0          task_001  In test_run_task_cycle_reviewer_reject, the assertion on edit_proposals status accepts almost all possible statuses ('rejected', 'pending', 'error', 'approved',
+24  LOW       0          task_001  The assertion `assert isinstance(rejected_events, list)` only checks type rather than verifying that the event was actually emitted.                            
+25  LOW       0          task_001  Hardcoding module path lists for monkeypatching get_config is prone to drift if modules are renamed or added.                                                   
+26  MEDIUM    0          task_001  Absolute paths (e.g., '/etc/passwd' or '/app/config.py') have their leading slash silently removed by splitting and filtering empty segments, converting absolut
+27  LOW       0          task_001  Hardcoded extension list is limited to 10 extensions (py, json, js, txt, md, html, css, yaml, yml, sh), omitting common modern project formats (e.g., .toml, .ts
+28  LOW       0          task_001  A path segment consisting only of dots (e.g., '...') matches `_SAFE_PATH` because dots are allowed characters.                                                  
+29  MEDIUM    0          task_001  Unescaped wildcards in prefix search                                                                                                                            
+30  LOW       0          task_001  Limited nesting depth support                                                                                                                                   
+31  LOW       0          task_001  Inline imports inside loop/function                                                                                                                             
+32  MEDIUM    0          task_001  Repeated DDL execution: 'CREATE TABLE IF NOT EXISTS' runs on every call to both 'publish_event' and 'list_events', adding unnecessary disk I/O and query overhea
+33  MEDIUM    0          task_001  Missing database indexes on queried columns ('task_id', 'type', 'proposal_id', 'ts').                                                                           
+34  LOW       0          task_001  Using 'print()' instead of the standard logging framework in 'publish_event'.                                                                                   
 
-13 row(s)
+33 row(s)

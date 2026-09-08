@@ -5,11 +5,12 @@
 
 agent_name         n   parse_ok
 -----------------  --  --------
-developer          25  21      
+developer          54  50      
+jr_reviewer        20  20      
 prioritizer        9   9       
-jr_reviewer        7   7       
 orchestrator       3   3       
 reviewer           2   2       
 security_reviewer  2   2       
+project_reporter   1   1       
 
-6 row(s)
+7 row(s)

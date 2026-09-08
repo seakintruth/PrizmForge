@@ -5,8 +5,8 @@
 
 type                           n
 -----------------------------  -
+shell_command_failed           6
 shell_protocol_prose_response  4
-shell_command_failed           3
 edit.materialized              2
 proposal.approved              2
 proposal.created               2
