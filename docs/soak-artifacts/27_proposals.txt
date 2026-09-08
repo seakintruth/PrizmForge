@@ -1,11 +1,15 @@
 
 ================================================================================
-📦 Edit Proposals — 2 rows
+📦 Edit Proposals — 6 rows
 ================================================================================
 
-proposal_id                           target_file_path      status   selected_mode  fallback_used  final_mode    created_at           rationale                                                   
-------------------------------------  --------------------  -------  -------------  -------------  ------------  -------------------  ------------------------------------------------------------
-03a8336e-6358-42f1-be42-8192427424a5  workflow/__init__.py  applied  full_replace   0              guid          2026-09-08 02:29:46  [mode=guid] Initial comprehensive review complete. The exist
-c6b81e99-c116-4b54-baf4-3413b0633533  workflow/__init__.py  applied  shell_session  0              full_replace  2026-09-08 02:28:25  [mode=full_replace] Shell developer session (Finished).
+proposal_id                           target_file_path      status    selected_mode  fallback_used  final_mode    created_at           rationale                                                   
+------------------------------------  --------------------  --------  -------------  -------------  ------------  -------------------  ------------------------------------------------------------
+069b44e7-d00e-404d-b9ac-d82bc0754030  workflow/__init__.py  applied   full_replace   0              guid          2026-09-08 04:11:14  [mode=guid] Updated docstring to accurately reflect that the
+d04bcb02-57fe-4a35-9683-348f1fe7505a  patch.py              rejected  shell_session  0              create_file   2026-09-08 03:48:56  [mode=create_file] Shell developer session (LlmUnavailable).
+89e267be-e571-4591-a490-1c561e69dc71  0                     rejected  shell_session  0              create_file   2026-09-08 03:20:46  [mode=create_file] Shell developer session (LlmUnavailable).
+66852b3c-630c-465b-808a-63167e885574  fix.py                rejected  shell_session  0              create_file   2026-09-08 02:56:33  [mode=create_file] Shell developer session (LlmUnavailable).
+03a8336e-6358-42f1-be42-8192427424a5  workflow/__init__.py  applied   full_replace   0              guid          2026-09-08 02:29:46  [mode=guid] Initial comprehensive review complete. The exist
+c6b81e99-c116-4b54-baf4-3413b0633533  workflow/__init__.py  applied   shell_session  0              full_replace  2026-09-08 02:28:25  [mode=full_replace] Shell developer session (Finished).
 
 Sum

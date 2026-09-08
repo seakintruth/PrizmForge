@@ -38,5 +38,9 @@ id  priority  addressed  task_id   msg
 32  MEDIUM    0          task_001  Repeated DDL execution: 'CREATE TABLE IF NOT EXISTS' runs on every call to both 'publish_event' and 'list_events', adding unnecessary disk I/O and query overhea
 33  MEDIUM    0          task_001  Missing database indexes on queried columns ('task_id', 'type', 'proposal_id', 'ts').                                                                           
 34  LOW       0          task_001  Using 'print()' instead of the standard logging framework in 'publish_event'.                                                                                   
+35  HIGH      0          task_001  Proposal 66852b3c-630c-465b-808a-63167e885574 REJECTED: Reviewer unavailable (empty response) - failing closed                                                  
+36  HIGH      0          task_001  Proposal 89e267be-e571-4591-a490-1c561e69dc71 REJECTED: Reviewer unavailable (empty response) - failing closed                                                  
+37  HIGH      0          task_001  Proposal d04bcb02-57fe-4a35-9683-348f1fe7505a REJECTED: Reviewer unavailable (empty response) - failing closed                                                  
+40  MEDIUM    0          task_002  There is no previous response or decision in this conversation to convert.                                                                                      
 
-33 row(s)
+37 row(s)

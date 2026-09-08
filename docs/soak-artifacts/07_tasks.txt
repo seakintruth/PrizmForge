@@ -3,8 +3,9 @@
 🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
 ================================================================================
 
-id        description                                           status       started_at                  completed_at  result
---------  ----------------------------------------------------  -----------  --------------------------  ------------  ------
-task_001  Initial comprehensive review of workflow/__init__.py  in_progress  2026-09-07T22:25:45.806445  NULL          NULL  
+id        description                                                               status     started_at                  completed_at                result                                  
+--------  ------------------------------------------------------------------------  ---------  --------------------------  --------------------------  ----------------------------------------
+task_001  Initial comprehensive review of workflow/__init__.py                      completed  2026-09-07T22:25:45.806445  2026-09-07T23:56:25.942877  token budget exhausted: files_modified=2
+task_002  Address 3 HIGH review_rejection issue(s) identified by background agents  completed  2026-09-08T00:01:31.472479  2026-09-08T00:25:03.719809  token budget exhausted: files_modified=1
 
-1 row(s)
+2 row(s)

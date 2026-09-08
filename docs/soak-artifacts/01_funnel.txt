@@ -5,6 +5,6 @@
 
 tasks  developer_replies  replies_with_command  commands_ok  proposals  applied  writes  file_mods
 -----  -----------------  --------------------  -----------  ---------  -------  ------  ---------
-1      54                 46                    40           2          2        2       2        
+2      206                188                   167          6          3        3       3        
 
 1 row(s)

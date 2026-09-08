@@ -3,13 +3,15 @@
 🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
 ================================================================================
 
-type                           n
------------------------------  -
-shell_command_failed           6
-shell_protocol_prose_response  4
-edit.materialized              2
-proposal.approved              2
-proposal.created               2
-shell_session_no_mutation      1
+type                           n 
+-----------------------------  --
+shell_command_failed           21
+proposal.created               6 
+shell_protocol_prose_response  6 
+edit.materialized              3 
+proposal.approved              3 
+proposal.rejected              3 
+shell_session_no_mutation      3 
+shell_stalled                  1 
 
-6 row(s)
+8 row(s)

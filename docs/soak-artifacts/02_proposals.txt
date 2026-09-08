@@ -3,9 +3,13 @@
 🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
 ================================================================================
 
-pid       target_file_path      status   selected_mode  final_mode    fallback_used  created_at           rationale                                                                                                                                                       
---------  --------------------  -------  -------------  ------------  -------------  -------------------  ----------------------------------------------------------------------------------------------------------------------------------------------------------------
-c6b81e99  workflow/__init__.py  applied  shell_session  full_replace  0              2026-09-08 02:28:25  [mode=full_replace] Shell developer session (Finished).  Summary: I have reviewed `workflow/__init__.py`. It was missing a module-level docstring, which I have 
-03a8336e  workflow/__init__.py  applied  full_replace   guid          0              2026-09-08 02:29:46  [mode=guid] Initial comprehensive review complete. The existing __init__.py file correctly establishes the module's docstring, metadata, and cleanly exposes 'cr
+pid       target_file_path      status    selected_mode  final_mode    fallback_used  created_at           rationale                                                                                                                                                       
+--------  --------------------  --------  -------------  ------------  -------------  -------------------  ----------------------------------------------------------------------------------------------------------------------------------------------------------------
+c6b81e99  workflow/__init__.py  applied   shell_session  full_replace  0              2026-09-08 02:28:25  [mode=full_replace] Shell developer session (Finished).  Summary: I have reviewed `workflow/__init__.py`. It was missing a module-level docstring, which I have 
+03a8336e  workflow/__init__.py  applied   full_replace   guid          0              2026-09-08 02:29:46  [mode=guid] Initial comprehensive review complete. The existing __init__.py file correctly establishes the module's docstring, metadata, and cleanly exposes 'cr
+66852b3c  fix.py                rejected  shell_session  create_file   0              2026-09-08 02:56:33  [mode=create_file] Shell developer session (LlmUnavailable).  Summary: LLM endpoint unavailable after 4 attempt(s) (kind=no_alternate_endpoint, model=gemini/gem
+89e267be  0                     rejected  shell_session  create_file   0              2026-09-08 03:20:46  [mode=create_file] Shell developer session (LlmUnavailable).  Summary: LLM endpoint unavailable after 4 attempt(s) (kind=no_alternate_endpoint, model=gemini/gem
+d04bcb02  patch.py              rejected  shell_session  create_file   0              2026-09-08 03:48:56  [mode=create_file] Shell developer session (LlmUnavailable).  Summary: LLM endpoint unavailable after 4 attempt(s) (kind=no_alternate_endpoint, model=gemini/gem
+069b44e7  workflow/__init__.py  applied   full_replace   guid          0              2026-09-08 04:11:14  [mode=guid] Updated docstring to accurately reflect that the module currently only contains proposal building imports, addressing ID 39. ID 38 is partially defe
 
-2 row(s)
+6 row(s)

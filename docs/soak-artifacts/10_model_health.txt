@@ -3,9 +3,16 @@
 🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
 ================================================================================
 
-model_ref                      kind  ok  n 
------------------------------  ----  --  --
-gemini/gemini-3.1-pro-preview        1   63
-gemini/gemini-3.7-flash              1   28
+model_ref                      kind                   ok  n  
+-----------------------------  ---------------------  --  ---
+gemini/gemini-3.1-pro-preview                         1   233
+gemini/gemini-3.7-flash                               1   68 
+gemini/gemini-3.1-pro-preview  no_alternate_endpoint  0   18 
+gemini/gemini-3.1-pro-preview  rate_limited           0   5  
+beta_genai/gpt-5.4             token_budget           0   3  
+gemini/gemini-3.1-pro-preview  token_budget           0   2  
+beta_genai/gpt-5.4             server_error           0   1  
+beta_genai/grok-4.3-fast       server_error           0   1  
+gemini/gemini-3.7-flash        no_alternate_endpoint  0   1  
 
-2 row(s)
+9 row(s)

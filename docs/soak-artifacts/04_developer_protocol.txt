@@ -3,11 +3,12 @@
 🗄️  Ad-hoc query on C:\git\home\user\jeremy.gerdes\github\PrizmForge-Soak\Soak8-target\PrizmForge\.PrizmForge\agents.db
 ================================================================================
 
-format_status                parse_error                  parse_success  n   avg_resp  avg_prompt
----------------------------  ---------------------------  -------------  --  --------  ----------
-VALID_BASH_BLOCK             (null)                       1              46  236.6     3949.3    
-PROSE_OR_UNSUPPORTED_FORMAT  prose_or_unsupported_format  0              4   705.8     3050.0    
-VALID_FINISH_SESSION         (null)                       1              3   202.3     1454.3    
-(null)                       (null)                       1              1   900.0     1907.0    
+format_status                parse_error                  parse_success  n    avg_resp  avg_prompt
+---------------------------  ---------------------------  -------------  ---  --------  ----------
+VALID_BASH_BLOCK             (null)                       1              185  286.6     3966.0    
+VALID_FINISH_SESSION         (null)                       1              7    234.6     2165.6    
+PROSE_OR_UNSUPPORTED_FORMAT  prose_or_unsupported_format  0              6    505.8     3366.7    
+(null)                       (null)                       1              5    948.0     72289.2   
+VALID_EDIT_BLOCK             (null)                       1              3    658.3     4000.0    
 
-4 row(s)
+5 row(s)
