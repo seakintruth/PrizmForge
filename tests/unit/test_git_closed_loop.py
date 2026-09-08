@@ -420,7 +420,7 @@ class TestGateAndMaterializeClosedLoop:
         )
 
         progress = {"edit_failures": 0}
-        status = _gate_and_materialize(
+        status, _reason = _gate_and_materialize(
             proposal_id=pid,
             payload_dict={},
             target_file_path="pkg/app.py",

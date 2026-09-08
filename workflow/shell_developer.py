@@ -59,6 +59,42 @@ MAX_RATIONALE_CHARS = 3000
 WORKSPACE_MARKER_DEFAULT = "workflow/__init__.py"
 EVIDENCE_PROMPT_COMMAND = "pwd && git rev-parse --show-toplevel && ls -la"
 
+# Soak6 mutation policy: a shell session may only promote bounded, coherent
+# changes to governed proposals, and inspect commands must not burn the write
+# budget.
+FULL_REPLACE_MAX_LINES = 200
+SHELL_PROMOTE_MAX_DIFF_LINES = 80
+INSPECT_STEP_CAP = 40  # extra budget; does not burn step_limit (mutate budget)
+
+
+def _fallback_order_for_targets(
+    fallback_order: list[str],
+    targets: list[str],
+    small_file_threshold: int,
+) -> list[str]:
+    """Never offer full_replace on a file over FULL_REPLACE_MAX_LINES.
+
+    Soak6: the edit_payload fallback ended its chain in full_replace, which
+    handed the reviewer truncated whole-file content for oversized targets.
+    Read each target on disk; if any exceeds the cap (bounded by the configured
+    small-file threshold), drop full_replace from the fallback chain entirely.
+    """
+    cap = min(small_file_threshold, FULL_REPLACE_MAX_LINES)
+    too_big = False
+    for rel in targets:
+        try:
+            text = Path(rel).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if text.count("\n") + 1 > cap:
+            too_big = True
+            break
+    if not too_big:
+        return list(fallback_order)
+    stripped = [m for m in fallback_order if m != "full_replace"]
+    print(f"   ⚠️  Skipping full_replace fallback ({cap}+ line target)")
+    return stripped or ["guid", "diff", "find_replace"]
+
 
 # =========================================================================
 # Configuration
@@ -585,6 +621,63 @@ def is_evidence_command(command: str | None) -> bool:
     return True
 
 
+def is_inspect_command(command: str | None) -> bool:
+    """Classify one model bash command as read-only inspection vs a mutation.
+
+    Inspection (`sed -n`, `grep`, `ls`, git log/diff/status, ...) must not burn
+    the session's `step_limit` mutate budget (Soak6: 30 calls of sed/cat/git
+    diff exhausted the session with zero edits). Any redirect, `python`,
+    `base64`, `tee`, `rm`, `mv`, or `cp` is treated as a write.
+    """
+    if not command:
+        return False
+    first = command.strip().splitlines()[0].strip()
+    # single-purpose readers; any redirect / python / tee is a write
+    if any(tok in first for tok in (">", ">>", "tee ", "python", "base64", "rm ", "mv ", "cp ")):
+        return False
+    heads = (
+        "sed -n",
+        "nl ",
+        "wc -l",
+        "grep ",
+        "rg ",
+        "cat ",
+        "head ",
+        "tail ",
+        "git diff",
+        "git status",
+        "git log",
+        "git rev-parse",
+        "git show",
+        "ls ",
+        "ls\t",
+        "pwd",
+        "find ",
+    )
+    return first.startswith(heads) or first in ("ls", "pwd", "git status", "git diff")
+
+
+_BANNED_WRITE = (
+    "base64.b64decode",
+    "base64 -d",
+    "base64 --decode",
+    "exec(",
+    "compile(",
+    ";exec",
+)
+
+
+def is_banned_write_command(command: str | None) -> bool:
+    """Block python/base64 write-exec paths that bypass the edit primitive."""
+    if not command:
+        return False
+    if "python" in command and any(tok in command for tok in _BANNED_WRITE):
+        return True
+    if "python -c" in command and ("open(" in command and any(m in command for m in ("'w'", '"w"', "'wb'", '"wb"'))):
+        return True
+    return False
+
+
 def augment_evidence_command(command: str, marker: str = WORKSPACE_MARKER_DEFAULT) -> str:
     cmd = (command or "").rstrip()
     test_bit = f"test -f {marker}"
@@ -646,7 +739,8 @@ class ShellWorktree:
             ["git", *args],
             cwd=str(cwd or self.project_directory),
             capture_output=True,
-            text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
         )
 
@@ -758,13 +852,22 @@ class ShellWorktree:
 
     def run_command(self, command: str, timeout: int) -> tuple[int, str]:
         """Run one agent bash command inside the worktree working directory."""
+        if is_banned_write_command(command):
+            return (
+                78,
+                "banned write path: python -c / base64-exec is not allowed. "
+                "Use the edit primitive (OLD/NEW or mode=full on a file under "
+                f"{FULL_REPLACE_MAX_LINES} lines) or a closed sed/python rewrite "
+                "of a bounded hunk.",
+            )
         try:
             proc = subprocess.run(
                 command,
                 shell=True,
                 cwd=str(self.working_dir()),
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
             )
             out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -781,7 +884,8 @@ class ShellWorktree:
                 argv,
                 cwd=str(self.working_dir()),
                 capture_output=True,
-                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
             )
             out = ((proc.stdout or "") + (proc.stderr or "")).strip()
@@ -932,6 +1036,11 @@ class SessionResult:
     evidence: dict[str, Any] = field(default_factory=dict)
     commands_executed: int = 0
     target_inspected: bool = False
+    # Soak6 mutate/inspect split: inspection commands run against
+    # INSPECT_STEP_CAP (they do NOT burn step_limit); every other executed
+    # step counts against the mutate budget.
+    mutate_calls: int = 0
+    inspect_calls: int = 0
     # Seed-resolved task target (populated by run()); surfaced on the mutation
     # result so a failed shell turn's fallback can name this file.
     target_path: str | None = None
@@ -1198,6 +1307,29 @@ class ShellDeveloperSession:
         self.result.commands_executed += 1
         return exit_code, output
 
+    def _guard_step_limits(self, command: str | None) -> bool:
+        """Count one executed model step and enforce the Soak6 budget split.
+
+        Inspection commands (`sed -n`, `grep`, `ls`, git log/diff/status, ...)
+        run against INSPECT_STEP_CAP; everything else (edits, writes, python)
+        burns the `step_limit` mutate budget. Returns True when a limit was
+        reached and the session should break.
+        """
+        r = self.result
+        if command is not None and is_inspect_command(command):
+            r.inspect_calls += 1
+        else:
+            r.mutate_calls += 1
+        if self.cfg.step_limit > 0 and r.mutate_calls >= self.cfg.step_limit:
+            r.exit_status = "LimitsExceeded"
+            r.summary = f"mutate step limit ({self.cfg.step_limit}) reached"
+            return True
+        if r.inspect_calls >= INSPECT_STEP_CAP:
+            r.exit_status = "LimitsExceeded"
+            r.summary = f"inspect step cap ({INSPECT_STEP_CAP}) reached"
+            return True
+        return False
+
     def _apply_edit_payload(self, payload: dict[str, Any]) -> tuple[int, str]:
         """Apply a structured edit payload to the worktree in-process (no shell).
 
@@ -1389,13 +1521,16 @@ class ShellDeveloperSession:
         consecutive_format_errors = 0
         while True:
             elapsed_min = (time.time() - self._start) / 60
-            if self.cfg.step_limit > 0 and r.n_model_calls >= self.cfg.step_limit:
-                r.exit_status = "LimitsExceeded"
-                r.summary = f"step limit ({self.cfg.step_limit}) reached"
-                break
             if self.cfg.wall_time_limit_minutes > 0 and elapsed_min >= self.cfg.wall_time_limit_minutes:
                 r.exit_status = "TimeExceeded"
                 r.summary = f"wall-clock limit ({self.cfg.wall_time_limit_minutes}m) reached"
+                break
+            # Hard model-call safety ceiling (mutate budget + inspect cap). The
+            # real budget split is enforced per-step in _guard_step_limits; this
+            # only bounds pathological loops that never run a command.
+            if self.cfg.step_limit > 0 and r.n_model_calls >= self.cfg.step_limit + INSPECT_STEP_CAP:
+                r.exit_status = "LimitsExceeded"
+                r.summary = f"model-call safety ceiling ({self.cfg.step_limit + INSPECT_STEP_CAP}) reached"
                 break
 
             response = self._llm()
@@ -1439,6 +1574,8 @@ class ShellDeveloperSession:
                 user_msg = self._observation(exit_code, output, action, None)
                 self.messages.append(user_msg)
                 self._emit_command_failed_if_needed(exit_code, action, r.n_model_calls)
+                if self._guard_step_limits(None):
+                    break
                 if self._note_step_outcome(exit_code, action):
                     self._mark_stalled(action, r.n_model_calls)
                     break
@@ -1464,6 +1601,8 @@ class ShellDeveloperSession:
                     step_number=r.n_model_calls,
                 )
                 self._mark_target_inspected(command)
+                if self._guard_step_limits(command):
+                    break
                 if self._note_step_outcome(exit_code, command):
                     self._mark_stalled(command, r.n_model_calls)
                     break
@@ -1583,6 +1722,8 @@ class ShellDeveloperSession:
                 response_format_status=shell_protocol.classify_shell_reply(response),
                 step_number=r.n_model_calls,
             )
+            if self._guard_step_limits(command):
+                break
             if self._note_step_outcome(exit_code, command):
                 self._mark_stalled(command, r.n_model_calls)
                 break
@@ -1627,13 +1768,25 @@ class ShellDeveloperSession:
 # =========================================================================
 # Changes → governed operations
 # =========================================================================
-def change_to_operation(change: dict[str, Any]) -> dict | None:
-    """Map one collected change into an EditPayload operation dict (or None to skip)."""
+def change_to_operation(change: dict[str, Any], *, exit_status: str = "") -> dict | None:
+    """Map one collected change into an EditPayload operation dict (or None to skip).
+
+    Soak6: a shell session must never promote an unbounded/truncated whole-file
+    replace to the governed reviewer. `M` changes are only promotable when the
+    proposed content stays under FULL_REPLACE_MAX_LINES and the diff stays under
+    SHELL_PROMOTE_MAX_DIFF_LINES — and a `LimitsExceeded` session is never the
+    vehicle for a promotion that just handed the reviewer a cut payload.
+    """
     status = change.get("status")
     path = change.get("path", "")
-    content = change.get("new_content", "")
+    content = change.get("new_content", "") or ""
+    diff_text = change.get("diff", "") or ""
+    line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+    diff_lines = sum(1 for ln in diff_text.splitlines() if ln.startswith(("+", "-")) and not ln.startswith(("+++", "---")))
 
     if status == "A":
+        if line_count > FULL_REPLACE_MAX_LINES:
+            return None
         return {
             "type": "create_file",
             "target_file_path": path,
@@ -1641,7 +1794,16 @@ def change_to_operation(change: dict[str, Any]) -> dict | None:
             "rationale": "Create file (shell developer session)",
         }
     if status == "M":
-        return {"type": "full_replace", "new_content": content, "rationale": "Full replace (shell developer session)"}
+        bounded = line_count <= FULL_REPLACE_MAX_LINES and diff_lines <= SHELL_PROMOTE_MAX_DIFF_LINES
+        if exit_status == "LimitsExceeded" and not bounded:
+            return None  # drop; do not hand reviewer a huge replace born of a capped session
+        if not bounded:
+            return None
+        return {
+            "type": "full_replace",
+            "new_content": content,
+            "rationale": f"Full replace (shell session, {line_count} lines, {diff_lines} diff lines)",
+        }
     if status == "D":
         return {"type": "delete_file", "target_file_path": path, "rationale": "Delete file (shell developer session)"}
     # S / anything else: no governed equivalent — caller warns.
@@ -1778,7 +1940,7 @@ Rules:
             reason=verdict.reason,
             suggestions=verdict.suggestions,
         )
-        return "rejected"
+        return "rejected", verdict.reason
 
     print(f"   ✅ Reviewer approved proposal {proposal_id}")
     update_proposal_status(proposal_id, "approved")
@@ -1793,7 +1955,7 @@ Rules:
         progress["last_file_change"] = current_turn
     elif mat_status not in ("success", "git_failed"):
         print(f"   ⚠️  Materialize status: {mat}")
-    return mat.get("status", "error")
+    return mat.get("status", "error"), ""
 
 
 def _test_evidence(result: SessionResult) -> str:
@@ -1827,9 +1989,10 @@ def _gate_and_materialize_changes(
     statuses: list[str] = []
     proposal_ids: list[str] = []
     gates_by_path: dict[str, str] = {}
+    rejected_reasons: dict[str, str] = {}
 
     for change in changes:
-        op = change_to_operation(change)
+        op = change_to_operation(change, exit_status=result.exit_status)
         if op is None:
             print(f"   ⚠️ Skipping unsupported change ({change.get('status')}): {change.get('path')}")
             continue
@@ -1856,7 +2019,7 @@ def _gate_and_materialize_changes(
 
         proposal_ids.append(prop["proposal_id"])
         print(f"   📦 Proposal created: {prop['proposal_id']} ({change['path']})")
-        gate = _gate_and_materialize(
+        gate, reject_reason = _gate_and_materialize(
             proposal_id=prop["proposal_id"],
             payload_dict=payload_dict,
             target_file_path=change["path"],
@@ -1869,8 +2032,10 @@ def _gate_and_materialize_changes(
         )
         statuses.append(gate)
         gates_by_path[change["path"]] = gate
+        if gate == "rejected" and reject_reason:
+            rejected_reasons[change["path"]] = reject_reason
 
-    return statuses, proposal_ids, gates_by_path
+    return statuses, proposal_ids, gates_by_path, rejected_reasons
 
 
 def _publish_shell_event(event_type: str, *, task_id: str, payload: dict) -> None:
@@ -2100,7 +2265,7 @@ def run_shell_developer_turn(  # noqa: C901
                 **_session_mut_fields(result),
             }
 
-        statuses, proposal_ids, gates_by_path = _gate_and_materialize_changes(
+        statuses, proposal_ids, gates_by_path, rejected_reasons = _gate_and_materialize_changes(
             changes=changes,
             result=result,
             cfg=cfg,
@@ -2108,6 +2273,18 @@ def run_shell_developer_turn(  # noqa: C901
             progress=progress,
             current_turn=current_turn,
         )
+
+        # Soak6: a LimitsExceeded session whose only edits were unbounded diff
+        # candidates is dropped wholesale — no proposal, and a distinct message
+        # so the orchestrator can distinguish it from a genuine edit failure.
+        if result.exit_status == "LimitsExceeded" and not proposal_ids:
+            print("   ⛔ LimitsExceeded with no bounded promotable diff; not creating proposals")
+            progress["edit_failures"] = progress.get("edit_failures", 0) + 1
+            return {
+                "status": "error",
+                "message": "limits_exceeded_unbounded_diff: session hit the limit with no bounded promotable diff",
+                **_session_mut_fields(result),
+            }
 
         # Only mark feedback addressed when the file it targets actually landed;
         # skipped (deletion/oversize) or rejected changes must stay open.
@@ -2131,6 +2308,8 @@ def run_shell_developer_turn(  # noqa: C901
             "status": overall,
             "proposal_ids": proposal_ids,
             "gates": statuses,
+            "reviewer_reason": "; ".join(rejected_reasons.values()) or None,
+            "target_file_path": next(iter(rejected_reasons), None),
             **_session_mut_fields(result),
         }
     finally:

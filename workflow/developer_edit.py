@@ -26,6 +26,7 @@ from file_editing.writer import materialize_proposal
 from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER, MODE_DIFF, MODE_FULL_REPLACE, MODE_GUID, next_fallback_mode, select_edit_mode
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
 from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict
+from workflow.shell_developer import _fallback_order_for_targets
 
 
 # =========================================================================
@@ -275,6 +276,14 @@ def run_developer_mutation(  # noqa: C901
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
         return {"status": "error", "message": "no files"}
 
+    # Soak6: never offer full_replace on a file over FULL_REPLACE_MAX_LINES,
+    # even on a direct edit_payload turn (not just the shell fallback bridge).
+    fallback_order = _fallback_order_for_targets(
+        fallback_order or list(DEFAULT_FALLBACK_ORDER),
+        requested_files,
+        small_file_threshold,
+    )
+
     primary_file = requested_files[0]
     primary_content = get_file_content_from_db(primary_file) or ""
     primary_lines = primary_content.count("\n") + (1 if primary_content else 0)
@@ -513,6 +522,9 @@ def run_developer_mutation(  # noqa: C901
             "proposal_id": proposal_id,
             "edit_method": edit_method,
             "fallback_used": fallback_used,
+            "target_file_path": target_file_path,
+            "reviewer_reason": verdict.reason,
+            "rationale": data.get("rationale") or data.get("summary") or "",
         }
 
     print(f"   ✅ Reviewer approved proposal {proposal_id}")

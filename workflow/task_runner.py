@@ -17,6 +17,10 @@ from workflow.backlog import apply_backlog_overrides, count_unaddressed_feedback
 from workflow.developer_edit import run_developer_mutation
 from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER
 from workflow.path_targets import extract_files_needed_from_text, sanitize_path_token
+from workflow.shell_developer import (
+    SHELL_PROMOTE_MAX_DIFF_LINES,
+    _fallback_order_for_targets,
+)
 
 # Governed editing imports
 
@@ -250,6 +254,11 @@ def _edit_payload_fallback(
     so callers (e.g. zero-command guard) can still see the failed shell attempt.
     """
     preferred_modes, fallback_order, small_file_threshold = _edit_mode_settings(get_config())
+    fallback_order = _fallback_order_for_targets(fallback_order, requested_files or [], small_file_threshold)
+    if not fallback_order:
+        shell_mut["status"] = "error"
+        shell_mut["message"] = "edit_payload fallback refused full_replace on oversized target"
+        return shell_mut
     fallback = run_developer_mutation(
         task_id=task_id,
         instructions=instructions or user_command,
@@ -544,6 +553,29 @@ def _is_uncompleted_session(mut: dict | None) -> bool:
     return True
 
 
+def _is_retryable_reject(mut: dict | None) -> bool:
+    """True when a reviewer REJECT describes a truncated/syntax-unsafe payload.
+
+    Soak6: a truncation or syntax REJECT means the payload was cut/corrupt, not
+    that the change is wrong — retrying the same file (bounded hunk) is the
+    right next move, so it must NOT feed the NoProgressLoopGuard stall streak.
+    """
+    if not mut or mut.get("status") != "rejected":
+        return False
+    blob = " ".join(str(mut.get(k) or "") for k in ("message", "reviewer_reason", "rationale")).lower()
+    return any(tok in blob for tok in _RETRYABLE_REJECT)
+
+
+_RETRYABLE_REJECT = (
+    "truncated",
+    "indentationerror",
+    "syntaxerror",
+    "deleting the vast majority",
+    "ending abruptly",
+    "unindented",
+)
+
+
 def _record_developer_progress(
     guard: NoProgressLoopGuard,
     task_id: str,
@@ -559,6 +591,12 @@ def _record_developer_progress(
     """
     if _is_uncompleted_session(mut):
         guard.record_neutral()
+        return
+    if _is_retryable_reject(mut):
+        guard.record_neutral()
+        progress["retry_same_file"] = mut.get("target_file_path") or mut.get("target_path") or next(iter(mut.get("files") or []), None)
+        progress["retry_reason"] = mut.get("reviewer_reason") or mut.get("message")
+        print("   🔁 Reviewer reject is retryable (truncation/syntax); stall streak not incremented")
         return
     before = files_before if files_before is not None else 0
     if progress["files_modified"] > before:
@@ -874,6 +912,17 @@ def run_task_cycle(  # noqa: C901
             # DEVELOPER PATH
             # =====================================================
             if next_agent == "developer":
+                # Soak6: a truncation/syntax REJECT means retry the SAME file
+                # with one bounded hunk instead of respinning as a stall.
+                retry_target = progress.get("retry_same_file")
+                if retry_target:
+                    print(f"   🔁 Retrying the same file only ({retry_target}) with one bounded hunk")
+                    instructions = (
+                        f"Retry the same file only ({retry_target}). Emit one bounded hunk "
+                        f"(find_replace or guid, < {SHELL_PROMOTE_MAX_DIFF_LINES} changed lines). "
+                        "Do not full_replace this file."
+                    )
+                    progress["retry_same_file"] = False
                 # Shell implementation skips Phase-1 file negotiation entirely;
                 # the worktree agent explores and verifies on its own.
                 dev_impl = (config.get("developer", {}) or {}).get("implementation", "edit_payload")
