@@ -174,7 +174,7 @@
     "_note": "shell = worktree + bash loop (workflow/shell_developer.py) using mini-swe-agent; edit_payload = legacy structured EditPayload flow"
   },
   "shell_developer": {
-    "step_limit": 30,
+    "step_limit": 100,
     "wall_time_limit_minutes": 20,
     "command_timeout_seconds": 120,
     "test_timeout_seconds": 600,
