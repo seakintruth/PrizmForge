@@ -73,6 +73,47 @@ def _edit_mode_settings(config: dict) -> tuple[list | None, list, int]:
     return preferred_modes, fallback_order, small_file_threshold
 
 
+_DISCOVERY_SEED_KEYWORDS = ("plan", "idea", "todo", "roadmap", "backlog")
+_DISCOVERY_DOC_NAMES = (
+    "TODO.md",
+    "ROADMAP.md",
+    "PLANS.md",
+    "PLAN.md",
+    "BACKLOG.md",
+    "IDEAS.md",
+    "tasks.md",
+    "todo.md",
+    "roadmap.md",
+)
+
+
+def _discovery_doc_file() -> str | None:
+    """Locate a repo-relative discovery doc (docs/TODO.md, ROADMAP.md, ...).
+
+    Returns a repo-relative path (e.g. ``docs/TODO.md``) or None. Read-only;
+    must be checked against the worktree later by the existing targeting
+    machinery (Soak18: the site's own TODO lives under docs/).
+    """
+    try:
+        from pathlib import Path
+
+        base = Path(str(get_config().get("project_directory", "") or "."))
+        docs = base / "docs"
+        for name in _DISCOVERY_DOC_NAMES:
+            if (docs / name).is_file():
+                return f"docs/{name}"
+        if docs.is_dir():
+            for p in sorted(docs.glob("*.md")):
+                if any(k in p.name.lower() for k in ("todo", "roadmap", "plan", "backlog", "idea")):
+                    return f"docs/{p.name}"
+        for name in _DISCOVERY_DOC_NAMES:
+            if (base / name).is_file():
+                return name
+    except Exception:
+        return None
+    return None
+
+
 def _inject_seed_feedback(task_id: str, user_command: str) -> None:
     """Insert the active seed/task description as HIGH feedback so the
     prioritizer/orchestrator/redirect machinery has concrete work from turn 1.
@@ -80,9 +121,20 @@ def _inject_seed_feedback(task_id: str, user_command: str) -> None:
     Without this, a cold-start run has backlog=0 and the orchestrator rationally
     chooses 'background', orphaning the seed task until reviewers happen to post
     findings. Idempotent per (task_id, category='seed_task').
+
+    Discovery-class seeds ("review the plans, ideas and todos") get the repo's
+    discovery doc (docs/TODO.md etc.) attached as file_path so §11.1 targeting
+    has an existence-checked target instead of a NULL file (Soak18: NULL
+    seed_task rows produced a phantom "fix seed_task" exploration).
     """
     if not user_command or not user_command.strip():
         return
+    seed_text = user_command.strip()[:1000]
+    lower = seed_text.lower()
+    is_discovery = any(k in lower for k in _DISCOVERY_SEED_KEYWORDS)
+    file_path = None
+    if is_discovery:
+        file_path = _discovery_doc_file()
     try:
         with get_db_connection() as conn:
             existing = conn.execute(
@@ -96,16 +148,19 @@ def _inject_seed_feedback(task_id: str, user_command: str) -> None:
                 INSERT INTO agent_feedback
                 (agent_name, file_path, priority, category, message, suggestion,
                  task_id, file_event_id, timestamp)
-                VALUES ('system', NULL, 'HIGH', 'seed_task', ?, NULL, ?, ?, ?)
+                VALUES ('system', ?, 'HIGH', 'seed_task', ?, NULL, ?, ?, ?)
                 """,
                 (
-                    f"[SEED TASK] {user_command.strip()[:1000]}",
+                    file_path,
+                    f"[SEED TASK] {seed_text}",
                     task_id,
                     f"seed-{task_id}",
                     datetime.now().isoformat(),
                 ),
             )
             print(f"🌱 Seed task registered as feedback item (task {task_id})")
+            if file_path:
+                print(f"   🎯 Discovery seed targets `{file_path}`")
     except Exception as e:
         print(f"   ⚠️  Seed feedback injection skipped: {e}")
 

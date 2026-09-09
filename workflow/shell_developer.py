@@ -126,6 +126,12 @@ class ShellDeveloperConfig:
     # instead of burning to the step limit (Soak16: 30 calls, 0 edits).
     # 0 disables the tripwire.
     no_change_stall_limit: int = 6
+    # No-progress tripwire: ANY step that leaves the worktree unchanged (even a
+    # novel command) counts toward no_progress_stall_limit; when it fires the
+    # session exits "NoProgress". Closes the Soak18 gap where a discovery loop
+    # circled the tree with novel grep/cat steps forever (no_change_stall_limit
+    # only counted repeated/failing actions). 0 disables.
+    no_progress_stall_limit: int = 10
     # Task-fiability pre-flight. "auto": an untargeted task ("review the
     # TODO list") gets its step_limit capped to explore_step_cap so it cannot
     # burn a full session hunting a file. "strict": an untargeted task
@@ -156,6 +162,7 @@ class ShellDeveloperConfig:
             workspace_marker=str(cfg.get("workspace_marker") or WORKSPACE_MARKER_DEFAULT),
             json_table=str(cfg.get("json_table", "auto") or "auto"),
             no_change_stall_limit=int(cfg.get("no_change_stall_limit", 6) or 6),
+            no_progress_stall_limit=int(cfg.get("no_progress_stall_limit", 10) or 10),
             task_scope=str(cfg.get("task_scope", "auto") or "auto"),
             explore_step_cap=int(cfg.get("explore_step_cap", 12) or 12),
         )
@@ -168,6 +175,9 @@ class ShellDeveloperConfig:
         if instance.no_change_stall_limit < 0:
             print(f"   ⚠️ shell_developer.no_change_stall_limit={instance.no_change_stall_limit} is invalid; using 6")
             instance.no_change_stall_limit = 6
+        if instance.no_progress_stall_limit < 0:
+            print(f"   ⚠️ shell_developer.no_progress_stall_limit={instance.no_progress_stall_limit} is invalid; using 10")
+            instance.no_progress_stall_limit = 10
         if instance.task_scope not in ("auto", "strict"):
             print(f"   ⚠️ shell_developer.task_scope={instance.task_scope!r} is invalid; using 'auto'")
             instance.task_scope = "auto"
@@ -1178,6 +1188,7 @@ class ShellDeveloperSession:
         # executed command OR exited non-zero.
         self._executed_command_counts: dict[str, int] = {}
         self._no_change_steps = 0
+        self._no_progress_steps = 0
         self._last_fed_change_key: frozenset[str] = frozenset()
         # Chat-JSON-table protocol: executed steps (append-only) and whether the
         # session drives the model with a JSON step table instead of bash fences.
@@ -1341,6 +1352,17 @@ class ShellDeveloperSession:
                 command=command if command_exit_code is not None else None,
                 command_exit_code=command_exit_code,
             )
+            if command is not None and command_exit_code is not None:
+                _publish_shell_event(
+                    "shell_command_executed",
+                    task_id=self.task_id,
+                    payload={
+                        "step_number": step_number,
+                        "command": command,
+                        "exit_code": command_exit_code,
+                        "format": response_format_status,
+                    },
+                )
         except Exception as e:
             print(f"   ⚠️  Shell step archival skipped: {e}")
 
@@ -1445,30 +1467,53 @@ class ShellDeveloperSession:
         return " ".join(action.split())
 
     def _note_step_outcome(self, exit_code: int, action: str) -> bool:
-        """Stall-tripwire bookkeeping for one executed step. Returns True only
-        when the tripwire fires (current step reached no_change_stall_limit with
-        the tree unchanged). Any worktree change resets the streak; unchanged
-        steps count only when the action repeated an already-executed action or
-        exited non-zero, so a new command that simply changed nothing does not
-        accumulate."""
-        if self.cfg.no_change_stall_limit <= 0:
+        """Tripwire bookkeeping for one executed step. Returns True only when a
+        tripwire fires with the tree unchanged:
+        - no_change_stall_limit: the step repeated an already-executed action or
+          exited non-zero (repeated/failing no-change steps);
+        - no_progress_stall_limit: ANY no-change step, novel or not, so a
+          discovery loop circling the tree with fresh greps also terminates
+          instead of burning to the step limit (Soak18).
+        Any worktree change resets both streaks."""
+        if self.cfg.no_change_stall_limit <= 0 and self.cfg.no_progress_stall_limit <= 0:
             return False
         change_lines, _dtext = _worktree_change_state(self.wt)
         if change_lines:
             self._no_change_steps = 0
+            self._no_progress_steps = 0
             return False
         key = self._normalize_stall_key(action)
         self._executed_command_counts[key] = self._executed_command_counts.get(key, 0) + 1
         repeated = self._executed_command_counts[key] > 1
-        if not (repeated or exit_code != 0):
-            return False
-        self._no_change_steps += 1
-        if self._no_change_steps >= self.cfg.no_change_stall_limit:
-            return True
+        if repeated or exit_code != 0:
+            self._no_change_steps += 1
+            if self.cfg.no_change_stall_limit > 0 and self._no_change_steps >= self.cfg.no_change_stall_limit:
+                return True
+        if self.cfg.no_progress_stall_limit > 0:
+            self._no_progress_steps += 1
+            if self._no_progress_steps >= self.cfg.no_progress_stall_limit:
+                return True
         return False
 
     def _mark_stalled(self, action: str, step_number: int) -> None:
         r = self.result
+        if self._no_progress_steps >= self.cfg.no_progress_stall_limit and self.cfg.no_progress_stall_limit > 0:
+            r.exit_status = "NoProgress"
+            r.summary = (
+                f"no tree change or edit across {self._no_progress_steps} consecutive steps "
+                f"(no_progress_stall_limit={self.cfg.no_progress_stall_limit}) around action {action!r} — stopping"
+            )
+            _publish_shell_event(
+                "shell_spinning",
+                task_id=self.task_id,
+                payload={
+                    "action": action,
+                    "step_number": step_number,
+                    "no_progress_steps": self._no_progress_steps,
+                },
+            )
+            print(f"   ⏹ {r.summary}")
+            return
         r.exit_status = "Stalled"
         r.summary = (
             f"stalled after {self._no_change_steps} consecutive no-change steps "
@@ -1613,6 +1658,20 @@ class ShellDeveloperSession:
                 r.summary = f"model-call safety ceiling ({self.cfg.step_limit + INSPECT_STEP_CAP}) reached"
                 break
 
+            # Operator console heartbeats (read view): a turn begins and the
+            # model call is awaited; _record_step later closes the loop with
+            # shell_command_executed. These are append-only and non-mutating.
+            hb_step = r.n_model_calls + 1
+            _publish_shell_event(
+                "shell_turn_start",
+                task_id=self.task_id,
+                payload={"step_number": hb_step, "model_ref": self.resolved_model},
+            )
+            _publish_shell_event(
+                "shell_model_call_started",
+                task_id=self.task_id,
+                payload={"step_number": hb_step, "model_ref": self.resolved_model},
+            )
             response = self._llm()
             r.n_model_calls += 1
             if not response:

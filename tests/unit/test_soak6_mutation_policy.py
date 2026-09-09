@@ -108,7 +108,13 @@ def test_thirty_five_inspect_commands_do_not_trip_mutate_limit(tmp_path):
     wt.create()
     script = ["```bash\nsed -n '1,80p' app.py\n```"] * 35
     session = sd.ShellDeveloperSession(
-        sd.ShellDeveloperConfig(step_limit=30, no_change_stall_limit=0),
+        # Budget-split test: isolate the mutate/inspect dimension by opting out
+        # of BOTH stall tripwires (the repeated-feature is covered elsewhere).
+        sd.ShellDeveloperConfig(
+            step_limit=30,
+            no_change_stall_limit=0,
+            no_progress_stall_limit=0,
+        ),
         worktree=wt,
         task_id="T-soak6-inspect",
     )
