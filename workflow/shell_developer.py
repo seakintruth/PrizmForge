@@ -290,7 +290,7 @@ _NO_SHELL_FINISH_MARKERS = (
 _ENTERPRISE_CHAT_MARKERS = ("genai.mil",)
 
 
-def build_instance_prompt(task_text: str, *, explore_note: bool = False) -> str:
+def build_instance_prompt(task_text: str, *, explore_note: bool = False, discovery_note: str = "") -> str:
     base = (
         f"TASK:\n{task_text}\n\n"
         "Begin by inspecting the relevant files, then implement the change and verify it. "
@@ -305,6 +305,8 @@ def build_instance_prompt(task_text: str, *, explore_note: bool = False) -> str:
             f"satisfies it, and if none exists, reply with {FINISH_TOKEN} and a short summary "
             "of what you inspected and why no change was warranted."
         )
+    if discovery_note:
+        base += f"\n\n{discovery_note}"
     return base
 
 
@@ -313,18 +315,19 @@ def build_inspect_prompt(
     evidence: dict[str, Any],
     target_path: str | None,
     explore_note: bool = False,
+    discovery_note: str = "",
 ) -> str:
     listing = (evidence.get("output_excerpt") or "").strip()
     header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
     if target_path:
         return (
             f"{header}Target file: {target_path}\n\n"
-            f"{build_instance_prompt(task_text, explore_note=explore_note)}\n"
+            f"{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
             "Reply with exactly one closed bash block or ```edit block. First command must be:\n"
             f"sed -n '1,80p' {target_path}"
         )
     return (
-        f"{header}{build_instance_prompt(task_text, explore_note=explore_note)}\n"
+        f"{header}{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
         "Reply with exactly one closed bash block or ```edit block. Inspect the relevant files first."
     )
 
@@ -387,11 +390,12 @@ def build_chat_prompt(
     target_path: str | None,
     steps: list[dict[str, Any]],
     explore_note: bool = False,
+    discovery_note: str = "",
 ) -> str:
     """Build the chat-mode user prompt: JSON table of past steps + the next-row
     instruction. Mirrors build_inspect_prompt but asks the model to complete the
     awaiting step of an append-only JSON table (chat-JSON-table protocol)."""
-    task_block = build_instance_prompt(task_text, explore_note=explore_note)
+    task_block = build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)
     if not steps:
         listing = (evidence.get("output_excerpt") or "").strip()
         header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
@@ -470,6 +474,70 @@ def _versionish_or_invalid(candidate: str) -> bool:
     if candidate.count(".") >= 2 and Path(candidate).suffix.lower() not in _SEED_KNOWN_EXTENSIONS:
         return True
     return False
+
+
+def _file_exists_on_disk(worktree: Any | None, rel_path: str | None) -> bool:
+    """True only when ``rel_path`` resolves to a real file inside the worktree.
+
+    Soak17 §11.1: a ``files_needed`` / addressed-feedback target counts only
+    when it exists on disk. ``resolve_seed_target_path`` already does this for
+    seed text; this is the decision-list counterpart.
+    """
+    if not rel_path:
+        return False
+    root = None
+    if worktree is not None:
+        try:
+            root = Path(worktree.working_dir())
+        except Exception:
+            root = Path(getattr(worktree, "path", "") or "")
+            if not str(root):
+                root = None
+    if root is None or not root.is_dir():
+        return False
+    try:
+        return (root / rel_path).is_file()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _feedback_file_path_for_id(feedback_id) -> str | None:
+    """Resolve an addressed feedback id to its ``file_path`` (None on miss).
+
+    Mirrors task_runner's fallback-target lookup so a targeted session is only
+    chosen when the feedback's file actually exists on disk (§11.1).
+    """
+    try:
+        fid = int(feedback_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        with get_db_connection() as conn:
+            row = conn.execute("SELECT file_path FROM agent_feedback WHERE id = ? LIMIT 1", (fid,)).fetchone()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    return str(row[0])
+
+
+_DISCOVERY_KEYWORDS = "todo|idea|plan|roadmap|backlog"
+
+
+def _discovery_glob_note(named: str) -> str:
+    """Soak17 §11.1: generic exploration hint when a seed names no existing file.
+
+    No hard-coded repo names — the model is pointed at a case-insensitive glob
+    over ``*.md`` / ``*.markdown`` matching discovery keywords, then asked to
+    complete the task against what it finds or finish with a summary.
+    """
+    return (
+        f"The named target ({named}) does not exist in this workspace. Treat this as an "
+        f"exploration task: locate the intended document with a case-insensitive glob of "
+        f"`{_DISCOVERY_KEYWORDS}` over `*.md` / `*.markdown`, then either make a safe "
+        "in-repo change that directly satisfies the task or finish with a summary of what "
+        "you inspected and why no change was warranted."
+    )
 
 
 def _path_like_seed_candidate(candidate: str) -> bool:
@@ -1101,6 +1169,9 @@ class ShellDeveloperSession:
         self._start = time.time()
         self._deferred_finish_count = 0
         self.target_path: str | None = None
+        # Soak17 §11.1: generic discovery hint injected into the prompt when a
+        # seed names no existing file (exploratory downgrade), else "".
+        self.discovery_note: str = ""
         # Stall tripwire bookkeeping: normalized commands already executed and
         # the current no-change streak. A step counts toward the streak only
         # when the worktree is unchanged AND the command repeated an already
@@ -1469,15 +1540,22 @@ class ShellDeveloperSession:
         except Exception:
             root = None
         if named and root is not None and root.is_dir() and self.target_path is None and _path_like_seed_candidate(named[0]):
-            r.exit_status = "WorkspaceValidationFailed"
-            r.summary = f"target missing after evidence: {named[0]}"
-            print(f"   ❌ {r.summary}")
+            # Soak17 §11.1: a seed that resolves to no existing file must not
+            # hard-abort the session. Downgrade to an exploration session with a
+            # generic discovery hint and raise a target_missing event. The
+            # target_path stays None so _mark_target_inspected rewards any
+            # inspection command.
+            self.discovery_note = _discovery_glob_note(named[0])
+            r.summary = f"target missing after evidence: {named[0]} (downgraded to exploration)"
+            print(f"   🔭 {r.summary}")
             _publish_shell_event(
-                "shell_workspace_validation_failed",
+                "shell_target_missing",
                 task_id=self.task_id,
                 payload={**r.evidence, "reason": "target_missing", "target": named[0]},
             )
-            return r
+            self.cfg.fiability = "exploratory"
+            if 0 < self.cfg.explore_step_cap < self.cfg.step_limit:
+                self.cfg.step_limit = self.cfg.explore_step_cap
         # Seed the JSON step table with the in-process evidence step (chat mode).
         if self.chat_mode:
             excerpt = (r.evidence.get("output_excerpt") or "").strip()
@@ -1501,6 +1579,7 @@ class ShellDeveloperSession:
                         self.target_path,
                         self.steps,
                         explore_note=self.cfg.fiability == "exploratory",
+                        discovery_note=self.discovery_note,
                     ),
                 }
             )
@@ -1514,6 +1593,7 @@ class ShellDeveloperSession:
                         r.evidence,
                         self.target_path,
                         explore_note=self.cfg.fiability == "exploratory",
+                        discovery_note=self.discovery_note,
                     ),
                 }
             )
@@ -2090,16 +2170,22 @@ def _task_is_targeted(
     worktree: Any | None = None,
     marker: str = WORKSPACE_MARKER_DEFAULT,
 ) -> bool:
-    """Task-fiability pre-flight: the orchestrator's decision names a concrete
-    file target (seed resolution) or the addressing list picks a file. Honoring
-    the evidence-only chat row (step 1) is not a target (Soak16: the model
-    fixated on the workspace listing and never found a file)."""
+    """Task-fiability pre-flight: the decision names a *concrete existing* file.
+
+    A file is only a target when it exists on disk. Phantom ``files_needed`` /
+    ``addressing_feedback_ids`` entries (e.g. a TODO.md/ROADMAP.md the tidy step
+    never created) must not force a targeted session that then hard-aborts on a
+    missing target (Soak17 §11.1). Honoring the evidence-only chat row (step 1,
+    Soak16) is not a target."""
     if resolve_seed_target_path(task_text, worktree, marker):
         return True
-    if decision.get("files_needed"):
-        return True
-    if decision.get("addressing_feedback_ids"):
-        return True
+    for rel in decision.get("files_needed") or []:
+        if _file_exists_on_disk(worktree, rel):
+            return True
+    for fid in decision.get("addressing_feedback_ids") or []:
+        path = _feedback_file_path_for_id(fid)
+        if path and _file_exists_on_disk(worktree, path):
+            return True
     return False
 
 

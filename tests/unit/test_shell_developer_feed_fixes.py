@@ -241,10 +241,44 @@ def test_task_is_targeted_by_seed_file(tmp_path):
         wt.cleanup()
 
 
-def test_task_is_targeted_by_decision():
-    assert sd._task_is_targeted("Do something", {"files_needed": ["app.py"]}) is True
-    assert sd._task_is_targeted("Do something", {"addressing_feedback_ids": [3]}) is True
-    assert sd._task_is_targeted("Do something", {}) is False
+def test_task_is_targeted_by_decision(tmp_path):
+    """Soak17 §11.1: files_needed / addressed feedback count only when the file
+    exists on disk; phantom names no longer force a targeted session."""
+    root = _repo(tmp_path / "repo")
+    wt = sd.ShellWorktree(root, parent_dir=str(root.parent))
+    wt.create()
+    try:
+        assert sd._task_is_targeted("Do something", {"files_needed": ["app.py"]}, wt, "workflow/__init__.py") is True
+        assert sd._task_is_targeted("Do something", {"files_needed": ["app.py", "TODO.md"]}, wt, "workflow/__init__.py") is True
+        assert sd._task_is_targeted("Do something", {"files_needed": ["TODO.md"]}, wt, "workflow/__init__.py") is False
+        assert sd._task_is_targeted("Do something", {}) is False
+    finally:
+        wt.cleanup()
+
+
+def test_task_is_targeted_by_feedback_id_resolves_real_file(tmp_path, temp_db):
+    """addressing_feedback_ids resolve to file_path and only target an existing file."""
+    from core.db_connection import get_db_connection
+
+    root = _repo(tmp_path / "repo")
+    wt = sd.ShellWorktree(root, parent_dir=str(root.parent))
+    wt.create()
+    try:
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO agent_feedback (id, agent_name, file_path, priority, category, message, addressed, timestamp) "
+                "VALUES (1, 'reviewer', 'app.py', 'P2', 'edit', 'fix greet', 0, 0)"
+            )
+            conn.execute(
+                "INSERT INTO agent_feedback (id, agent_name, file_path, priority, category, message, addressed, timestamp) "
+                "VALUES (2, 'reviewer', 'TODO.md', 'P2', 'edit', 'fix plan', 0, 0)"
+            )
+        marker = "workflow/__init__.py"
+        assert sd._task_is_targeted("Do something", {"addressing_feedback_ids": [1]}, wt, marker) is True
+        assert sd._task_is_targeted("Do something", {"addressing_feedback_ids": [2]}, wt, marker) is False
+        assert sd._task_is_targeted("Do something", {"addressing_feedback_ids": [999]}, wt, marker) is False
+    finally:
+        wt.cleanup()
 
 
 def test_exploratory_cap_and_note(tmp_path):

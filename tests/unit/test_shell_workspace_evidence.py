@@ -334,13 +334,26 @@ def test_version_token_in_seed_prose_does_not_abort(tmp_path):
     assert session.target_path is None
 
 
-def test_missing_path_like_target_still_aborts(tmp_path):
+def test_missing_path_like_target_downgrades_to_exploration(tmp_path, monkeypatch):
+    """Soak17 §11.1: a seed naming no existing file no longer aborts — it
+    downgrades to an exploration session with a generic discovery hint and
+    raises a target_missing event (no hard-coded repo names)."""
+    events = []
+    monkeypatch.setattr(sd, "publish_event", lambda *a, **kw: events.append((a, kw)))
     root = tmp_path / "wt"
     root.mkdir()
     session, _ = _session(
-        [f"{sd.FINISH_TOKEN}\nno change"],
+        [],
         wt=_RealDirWorktree(root),
     )
     result = session.run("Inspect workflow/task_runner.py")
-    assert result.exit_status == "WorkspaceValidationFailed"
-    assert "target missing after evidence" in result.summary
+    assert result.exit_status != "WorkspaceValidationFailed"
+    assert session.target_path is None
+    assert session.cfg.fiability == "exploratory"
+    user = [m["content"] for m in result.messages if m.get("role") == "user"]
+    hint = " ".join(user)
+    assert "does not exist in this workspace" in hint
+    assert "todo|idea|plan|roadmap|backlog" in hint
+    assert "PrizmForge" not in hint
+    types = [a[0] for a, _ in events]
+    assert "shell_target_missing" in types
