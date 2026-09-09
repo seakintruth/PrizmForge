@@ -167,10 +167,10 @@ endpoint gaps.
 
 ### 11.1 Existence-verified task targeting
 
-- [ ] `_task_is_targeted` must count a `files_needed` / addressed
+- [x] `_task_is_targeted` must count a `files_needed` / addressed
       feedback file only when the file exists on disk. A target that
       never existed must not abort the session.
-- [ ] A seed that resolves to no existing file downgrades to an
+- [x] A seed that resolves to no existing file downgrades to an
       exploration session with a generic discovery hint — a
       case-insensitive glob of `todo|idea|plan|roadmap|backlog` over
       `*.md` / `*.markdown` — instead of a hard "target missing"
@@ -179,11 +179,11 @@ endpoint gaps.
 
 ### 11.2 Config-failure vs transient classes + quota park
 
-- [ ] Treat `MissingSessionID`-class 400s as **permanent
+- [x] Treat `MissingSessionID`-class 400s as **permanent
       endpoint-config failures** (opencode/API session absent), not
       transient: surface the misconfiguration and demote without retry
-      loops. `EndpointStatus` has no `MISCONFIGURED` state today.
-- [ ] Quota park = `min(seconds_to_reset, 4h)`, so a short
+      loops. `EndpointStatus` now has a `MISCONFIGURED` state.
+- [x] Quota park = `min(seconds_to_reset, 4h)`, so a short
       `Retry-After` reopens on time instead of a fixed offline window.
 
 ### 11.3 Per-minute token-bucket headers + send pacing

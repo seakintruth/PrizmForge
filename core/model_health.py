@@ -103,6 +103,10 @@ DEMOTE_EXCLUDE_KINDS = frozenset(
         "key_locked",
         "token_exhausted",
         "unauthorized",
+        # Soak17 §11.2: endpoint misconfiguration (MissingSessionID-class 400)
+        # is not a model failure — never demote model quality over operator
+        # config problems.
+        "misconfig",
     }
 )
 # NOTE: only ever mutated under _LOCK inside record_model_outcome(), so the

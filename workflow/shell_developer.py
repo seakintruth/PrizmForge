@@ -1116,7 +1116,7 @@ class SessionResult:
 
 # Failure kinds that a bounded backoff+retry cannot fix — give up immediately
 # instead of burning retries (mirrors call_endpoint's own handling).
-PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_exhausted", "bad_payload"}
+PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_exhausted", "bad_payload", "misconfig"}
 
 
 def _recent_failure_kind(model_ref: str | None, max_age_s: int = 30) -> str:

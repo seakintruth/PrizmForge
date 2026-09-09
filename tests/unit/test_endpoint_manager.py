@@ -111,6 +111,7 @@ def test_endpoint_status_values():
     assert EndpointStatus.KEY_LOCKED.value == "key_locked"
     assert EndpointStatus.SERVER_ERROR.value == "server_error"
     assert EndpointStatus.UNAVAILABLE.value == "unavailable"
+    assert EndpointStatus.MISCONFIGURED.value == "misconfigured"
 
 
 def test_health_starts_healthy():

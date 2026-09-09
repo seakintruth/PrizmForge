@@ -101,6 +101,10 @@ class EndpointStatus(Enum):
     KEY_LOCKED = "key_locked"
     SERVER_ERROR = "server_error"
     UNAVAILABLE = "unavailable"
+    # Soak17 §11.2: permanent endpoint-config failure (e.g. MissingSessionID
+    # 400 — the request references an API session that does not exist).
+    # Surfaced and demoted without retry loops, unlike transient states.
+    MISCONFIGURED = "misconfigured"
 
 
 class EndpointConfig:
@@ -244,6 +248,8 @@ class EndpointHealth:
                     cooldown_minutes = 30
                 elif status == EndpointStatus.RATE_LIMITED:
                     cooldown_minutes = 2
+                elif status == EndpointStatus.MISCONFIGURED:
+                    cooldown_minutes = 240
                 else:
                     cooldown_minutes = 5
 

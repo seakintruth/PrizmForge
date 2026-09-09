@@ -62,6 +62,43 @@ _last_call_http_latency: float = 0.0
 # Agents that are allowed to return free-form text / markdown
 TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
 
+# Soak17 §11.2: MissingSessionID-class 400s are permanent endpoint-config
+# failures, not transient — latch long (operator must fix config) and never
+# retry in a loop.
+MISCONFIGURED_COOLDOWN_MINUTES = 240
+
+# Soak17 §11.2: quota park = min(seconds_to_reset, 4h) so a short Retry-After /
+# reset reopens the endpoint on time instead of a fixed offline window.
+QUOTA_PARK_MAX_SECONDS = 4 * 3600
+QUOTA_PARK_DEFAULT_SECONDS = 15 * 60
+
+# Bodies signalling a missing / invalid endpoint API session (opencode/API
+# "MissingSessionID"), i.e. permanent config problems on status 400.
+_SESSION_MISSING_PATTERNS = (
+    re.compile(r"missingsession\s*id", re.IGNORECASE),
+    re.compile(r"missing\s+session", re.IGNORECASE),
+    re.compile(r"session\s+(?:id|identifier|token)?\s*(?:missing|not\s+found|does\s+not\s+exist|invalid)", re.IGNORECASE),
+)
+
+
+def _is_session_missing_error(resp, error_data: dict | None) -> bool:
+    """True for MissingSessionID-class 400 bodies (Soak17 §11.2).
+
+    Matches the reported error type/code/message plus the raw body so both the
+    opencode ``error.type`` shape and free-form prose are caught.
+    """
+    text = " ".join(
+        str(part)
+        for part in (
+            (error_data or {}).get("type"),
+            (error_data or {}).get("code"),
+            (error_data or {}).get("message"),
+            getattr(resp, "text", "") or "",
+        )
+        if part
+    )
+    return any(pattern.search(text) for pattern in _SESSION_MISSING_PATTERNS)
+
 
 def get_rate_limiter(endpoint: EndpointConfig) -> RateLimiter:
     """Get rate limiter singleton"""
@@ -526,7 +563,11 @@ def call_endpoint(  # noqa: C901
                     reset_epoch = rl_info.reset_epoch
                     wait = (reset_epoch - time.time()) if reset_epoch is not None else 0.0
                     if wait > 60:
-                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
+                        # Soak17 §11.2: park = min(seconds_to_reset, 4h) so a
+                        # short reset reopens on time instead of a fixed 15m
+                        # offline window.
+                        park_seconds = max(1, int(min(wait, QUOTA_PARK_MAX_SECONDS)))
+                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_seconds=park_seconds)
                         record_model_outcome(
                             f"{endpoint.name}/{model_name}",
                             endpoint.name,
@@ -537,7 +578,7 @@ def call_endpoint(  # noqa: C901
                         reset_label = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(reset_epoch)) if reset_epoch is not None else "later"
                         print(
                             f"   Daily quota exhausted (free-models-per-day pattern) — "
-                            f"Retry-After={int(wait)}s reset {reset_label}; parking {endpoint.name} for 15m"
+                            f"Retry-After={int(wait)}s reset {reset_label}; parking {endpoint.name} for {park_seconds}s"
                         )
                         return _fallback_to_alternate(
                             messages,
@@ -552,10 +593,21 @@ def call_endpoint(  # noqa: C901
                             seen,
                         )
                     if wait <= 0 and reset_epoch is None:
-                        # body-quota, no Reset — park, do not 1s-hop
-                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
+                        # body-quota, no Reset — park, do not 1s-hop. Honor the
+                        # advertised window (Retry-After header > body > status
+                        # default 120s) so the endpoint reopens on time; cap at
+                        # 4h. Fall back to the 15m default only when no wait is
+                        # advertised at all.
+                        advertised = advertised_wait_seconds(
+                            resp.status_code,
+                            resp.headers,
+                            getattr(resp, "text", "") or "",
+                            max_wait=max_advertised_wait,
+                        )
+                        park_seconds = max(1, int(min(advertised if advertised else QUOTA_PARK_DEFAULT_SECONDS, QUOTA_PARK_MAX_SECONDS)))
+                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_seconds=park_seconds)
                         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
-                        print(f"   Daily quota exhausted (body signal, no Reset) — parking {endpoint.name} for 15m")
+                        print(f"   Daily quota exhausted (body signal, no Reset) — parking {endpoint.name} for {park_seconds}s")
                         return _fallback_to_alternate(
                             messages,
                             max_tokens,
@@ -666,6 +718,30 @@ def call_endpoint(  # noqa: C901
                     endpoint_mgr,
                     seen,
                     announce="→ Automatically falling back to {name}/{model}",
+                )
+
+            # ============= HANDLE 400 MISCONFIGURED (MISSING SESSION) =============
+            # Soak17 §11.2: MissingSessionID-class 400s are permanent
+            # endpoint-config failures. Surface the misconfiguration, latch
+            # MISCONFIGURED (long: only an operator fixing config clears it),
+            # and fall back immediately — no transient retry dance.
+            if resp.status_code == 400 and _is_session_missing_error(resp, error_data):
+                print(f"❌ Endpoint misconfigured — request references a missing API session ({endpoint.name}); parking {MISCONFIGURED_COOLDOWN_MINUTES}m")
+                endpoint.health.mark_failure(EndpointStatus.MISCONFIGURED, cooldown_minutes=MISCONFIGURED_COOLDOWN_MINUTES)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="misconfig")
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce="→ Endpoint misconfigured. Falling back to {name}/{model}",
+                    reason=EndpointStatus.MISCONFIGURED.value,
                 )
 
             # ============= HANDLE OTHER 5xx SERVER ERRORS =============
