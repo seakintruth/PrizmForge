@@ -226,6 +226,13 @@ def _migrate_schema(conn: sqlite3.Connection) -> None:
     # model_health: advertised Retry-After on rate_limited events (ROADMAP §5)
     _ensure_column(conn, "model_health_events", "retry_after_s", "INTEGER")
     _ensure_column(conn, "model_health_events", "detail", "TEXT")
+    # endpoint_health: per-minute token-bucket budget (Soak17 §11.3)
+    for col, coltype in (
+        ("tokens_per_minute", "INTEGER"),
+        ("tokens_remaining_minute", "INTEGER"),
+        ("tokens_reset_epoch", "REAL"),
+    ):
+        _ensure_column(conn, "endpoint_health", col, coltype)
     try:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_token_log_endpoint_ts ON token_log(endpoint_name, timestamp)")
     except sqlite3.OperationalError as e:

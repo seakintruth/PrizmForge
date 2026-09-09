@@ -58,6 +58,7 @@ class _FakeEndpoint:
             status=SimpleNamespace(value=EndpointStatus.HEALTHY.value),
             mark_success=lambda: None,
             mark_failure=lambda *a, **k: None,
+            record_token_window=lambda **k: None,
         )
 
     def extract_response(self, data):
@@ -91,7 +92,7 @@ class _FakeManager:
 
 class _RecordingHealth(SimpleNamespace):
     def __init__(self):
-        super().__init__(parked=[])
+        super().__init__(parked=[], token_windows=[])
 
     def is_available(self):
         return True
@@ -104,6 +105,9 @@ class _RecordingHealth(SimpleNamespace):
 
     def mark_failure(self, status, cooldown_minutes=None, cooldown_seconds=None):
         self.parked.append((status, cooldown_minutes, cooldown_seconds))
+
+    def record_token_window(self, *, limit, remaining, reset_epoch):
+        self.token_windows.append((limit, remaining, reset_epoch))
 
 
 @pytest.fixture
@@ -124,6 +128,7 @@ def call_endpoint_env(monkeypatch):
     # Reset caches so get_rate_limiter()/get_token_budget() rebuild cleanly.
     base._rate_limiter = None
     base._token_budgets = {}
+    base._token_pacers = {}
     return base
 
 
@@ -529,6 +534,116 @@ def test_429_quota_short_reset_sleeps_to_reset_then_retries(call_endpoint_env, c
     assert answer == "recovered"
     assert 25 <= sleeps[0] <= 35
     assert "sleeping to reset" in capfd.readouterr().out
+
+
+# ---- Soak17 §11.3: per-minute token-bucket exhaustion parks + send pacing ---
+def test_429_token_minute_exhaustion_parks_for_reset(call_endpoint_env, capfd):
+    """x-ratelimit-*-tokens-minute remaining 0 / reset 59 parks all consumers
+    for the reset (~59s, capped 4h) instead of the 120s burst hop, and records
+    the per-minute budget on health."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "Rate limit exceeded"}},
+            headers={
+                "x-ratelimit-limit-tokens-minute": "500000",
+                "x-ratelimit-remaining-tokens-minute": "0",
+                "x-ratelimit-reset-tokens-minute": "59",
+            },
+        )
+    ]
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({**kw}),
+            ):
+                with patch("time.sleep", side_effect=sleeps.append):
+                    answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked[0][0] == EndpointStatus.RATE_LIMITED
+    assert pytest.approx(59, abs=5) == health.parked[0][2]
+    assert sleeps == []
+    assert outcomes and outcomes[0]["kind"] == "rate_limited"
+    assert outcomes[0]["retry_after_s"] == pytest.approx(59, abs=5)
+    assert health.token_windows and health.token_windows[0][:2] == (500000, 0)
+    out = capfd.readouterr().out
+    assert "Per-minute token bucket exhausted" in out
+    assert "until reset" in out
+
+
+def test_429_token_minute_exhaustion_without_reset_uses_default_park(call_endpoint_env):
+    """remaining 0 with no token reset: park the default 15m offline window."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "Rate limit exceeded"}},
+            headers={
+                "x-ratelimit-limit-tokens-minute": "500000",
+                "x-ratelimit-remaining-tokens-minute": "0",
+            },
+        )
+    ]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked == [(EndpointStatus.RATE_LIMITED, None, 900)]
+
+
+def test_call_endpoint_paces_send_rate_after_budget_discovered(call_endpoint_env, capfd):
+    """Once a 200 response advertises a per-minute budget, the next large send
+    sleeps only the refill deficit (bounded) before hitting the wire."""
+    base = call_endpoint_env
+    # First call learns the budget from a 200 response (tokens-minute family).
+    scripted = [
+        _resp(
+            200,
+            {"choices": [{"message": {"content": "ok"}}]},
+            headers={
+                "x-ratelimit-limit-tokens-minute": "500000",
+                "x-ratelimit-remaining-tokens-minute": "1000",
+                "x-ratelimit-reset-tokens-minute": "59",
+            },
+        )
+    ]
+    with patch("agents.base.post_json", side_effect=scripted):
+        answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+    assert answer == "ok"
+    pacer = base.get_token_pacer(_FakeEndpoint())
+    assert pacer.limit == 500000
+    assert pacer.remaining == pytest.approx(1000.0)
+
+    # Second, much larger send must sleep to refill (~190k tokens vs 1000
+    # remaining at 500k/min ≈ 22s). Budget sleeps are patched out of wall time.
+    big = "a" * 400_000
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", return_value=_resp(200, {"choices": [{"message": {"content": "done"}}]})):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": big}], model="mock-model")
+
+    assert answer == "done"
+    assert sleeps and sleeps[0] >= 5.0
+    out = capfd.readouterr().out
+    assert "Token-pacing" in out
+    assert "fitting per-minute" in out or "per-minute token bucket" in out
 
 
 def test_429_burst_with_ratelimit_headers_not_quota(call_endpoint_env, capfd):

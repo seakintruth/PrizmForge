@@ -34,9 +34,11 @@ from core.rate_limit_headers import (
     MAX_ADVERTISED_WAIT,
     advertised_wait_seconds,
     classify_rate_limit,
+    parse_token_window_headers,
 )
 from core.rate_limiter import RateLimiter
 from core.token_budget import TokenBudget, token_cap_for_endpoint, token_daily_cap_for_endpoint
+from core.token_pacer import TokenPacer
 from file_editing.db import log_error
 
 # Background agents that call_agent() as part of a parallel/support pool.
@@ -53,6 +55,11 @@ _BACKGROUND_TRANSPORT_AGENTS = {
 # Initialize
 _rate_limiter = None
 _token_budgets: dict[str, TokenBudget] = {}
+
+# Soak17 §11.3: per-endpoint token send-rate pacers fed by
+# x-ratelimit-*-tokens-* headers (process-local; budget also persisted to
+# endpoint health).
+_token_pacers: dict[str, TokenPacer] = {}
 
 # Active-work tracking: HTTP latency (seconds) of the most recent call_endpoint
 # invocation. Rate-limit sleeps and DB lock backoffs are excluded so iteration
@@ -133,6 +140,14 @@ def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudge
         budget = TokenBudget(get_db_path(), cap, endpoint_name=ep_name, max_tokens_per_day=daily)
         _token_budgets[name] = budget
     return budget
+
+
+def get_token_pacer(endpoint: EndpointConfig | str | None = None) -> TokenPacer:
+    """Return the per-endpoint token-send pacer (Soak17 §11.3)."""
+    name = _endpoint_budget_key(endpoint)
+    if name not in _token_pacers:
+        _token_pacers[name] = TokenPacer(name)
+    return _token_pacers[name]
 
 
 def any_token_budget_remaining(tokens: int = 1) -> bool:
@@ -439,6 +454,13 @@ def call_endpoint(  # noqa: C901
     same_endpoint_retries_used = 0
 
     for attempt in range(retry_count):
+        # Soak17 §11.3: pace the token send-rate against the last discovered
+        # per-minute budget so parallel large prompts cannot re-trigger the
+        # 429 storm. Bounded; excluded from HTTP-latency accounting.
+        paced = get_token_pacer(endpoint).acquire(estimated_total)
+        if paced > 0:
+            print(f"   ⏳ Token-pacing {endpoint.name}: sleeping {paced:.1f}s to fit per-minute token bucket")
+            time.sleep(paced)
         _req_t0 = time.time()
         try:
             resp = post_json(
@@ -466,6 +488,18 @@ def call_endpoint(  # noqa: C901
                     error_data = resp_json["error"]
             except Exception as e:
                 print(f"    ⚠️  Response body was not valid JSON: {e}")
+
+            # Soak17 §11.3: persist any per-minute token-bucket budget the
+            # provider advertises (successes included) and feed the send-rate
+            # pacer so the next request can be throttled pre-flight.
+            token_win = parse_token_window_headers(resp.headers)
+            if token_win.present:
+                endpoint.health.record_token_window(
+                    limit=token_win.limit,
+                    remaining=token_win.remaining,
+                    reset_epoch=token_win.reset_epoch,
+                )
+                get_token_pacer(endpoint).update(token_win.limit, token_win.remaining)
 
             # ============= HANDLE 401 / UNAUTHORIZED (KEY LOCKED) =============
             if resp.status_code == 401 or error_data.get("type") == "unauthorized":
@@ -624,6 +658,40 @@ def call_endpoint(  # noqa: C901
                     print(f"   Quota reset in {sleep_for:.0f}s — sleeping to reset and retrying once...")
                     time.sleep(sleep_for)
                     continue
+
+                # Soak17 §11.3: per-minute token bucket exhausted (remaining 0) —
+                # park all consumers for the endpoint until the token-window
+                # reset (capped at 4h) instead of the short burst Retry-After
+                # hop, so consecutive windows cannot re-trigger the 429 storm.
+                if token_win.present and token_win.is_exhausted:
+                    if token_win.reset_epoch is not None:
+                        token_wait = max(1.0, token_win.reset_epoch - time.time())
+                        park_seconds = max(1, int(min(token_wait, QUOTA_PARK_MAX_SECONDS)))
+                    else:
+                        token_wait = None
+                        park_seconds = max(1, int(min(QUOTA_PARK_DEFAULT_SECONDS, QUOTA_PARK_MAX_SECONDS)))
+                    endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_seconds=park_seconds)
+                    record_model_outcome(
+                        f"{endpoint.name}/{model_name}",
+                        endpoint.name,
+                        ok=False,
+                        kind="rate_limited",
+                        retry_after_s=int(token_wait) if token_wait is not None else None,
+                    )
+                    wait_label = f"~{int(token_wait)}s" if token_wait is not None else "unknown reset"
+                    print(f"   Per-minute token bucket exhausted ({endpoint.name}) — parking {park_seconds}s until reset ({wait_label})")
+                    return _fallback_to_alternate(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        retry_count,
+                        task_id,
+                        agent_name,
+                        endpoint,
+                        model_name,
+                        endpoint_mgr,
+                        seen,
+                    )
 
                 # Advertised wait: Retry-After header (delta / HTTP-date) >
                 # error.retry_after_seconds > status default (429->120, 503->300).

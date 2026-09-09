@@ -188,13 +188,13 @@ endpoint gaps.
 
 ### 11.3 Per-minute token-bucket headers + send pacing
 
-- [ ] Parse `x-ratelimit-limit-tokens-minute` /
+- [x] Parse `x-ratelimit-limit-tokens-minute` /
       `x-ratelimit-remaining-tokens-minute` /
       `x-ratelimit-reset-tokens-minute` (and windowed `x-ratelimit-*`
       families) in `core/rate_limit_headers.py`; today only
       `X-RateLimit-Limit/Remaining/Reset` (daily free models) and
       `Retry-After` are read.
-- [ ] Persist the discovered per-minute budget to endpoint health; when
+- [x] Persist the discovered per-minute budget to endpoint health; when
       `remaining-tokens-minute == 0`, park all consumers for the
       endpoint until `reset-tokens-minute`, and pace client token
       send-rate so parallel large prompts (one reviewer prompt was
