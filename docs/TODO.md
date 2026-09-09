@@ -8,7 +8,7 @@ post-mortems, and acceptance evidence live in **git history**
 `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`). Do not paste shipped
 checklists back into this tracker.
 
-**Last updated:** 2026-09-07
+**Last updated:** 2026-09-08
 
 ## How to use this file
 
@@ -24,7 +24,7 @@ checklists back into this tracker.
 |---|---|---|
 | §0 Current state | — | Index |
 | **§11 Soak17 root-cause fixes (targeting / 400 class / headers)** | **P0** | Phantom-seed abort burned Soak17 at 0 model calls. Fix §11.1 existence-verified targeting first, then §11.2 config-failure class + quota park, then §11.3 per-minute token headers. |
-| §10 Mutation path | shipped #121–#124 | Proposal path + Soak16 fixes soak-validated; only §10.7 gate remains |
+| §10 Mutation path | shipped #121–#124 | Proposal path + Soak16/Soak6 fixes soak-validated to materialization (Soak8); only §10.7 gate remains |
 | §6 Next-soak 429 dump | **P0** | Partly paid by the Soak5 artifact; `Work: 0.0s` still open |
 | §8 Operator soak A-1 | **ran** | Soak4 ran after #121; remaining gate is §10.7 / §11 |
 | §5 Optional SQL hygiene | **P2** | Identifier quoting + comment-aware DDL split |
@@ -43,22 +43,38 @@ checklists back into this tracker.
   fail-closed workspace evidence, zero-command seed latch, task status
   vocabulary, demotion exclusions, `Retry-After` on `rate_limited`
   events, cold `cmd_init` one-writer ingest (#121); chat-JSON-table
-  protocol + Enterprise-chat developer driving (#123); in-worktree
-  edit primitive, command/change-state observations, stall tripwire,
-  task-fiability pre-flight, `edit_payload` fallback gating (#124). Do
-  not re-implement those.
+  protocol + Enterprise-chat developer driving, in-worktree edit
+  primitive, command/change-state observations, stall tripwire,
+  task-fiability pre-flight, `edit_payload` fallback gating (#122);
+  `diagnose_soak.sh` automation + shell step-count bump (#123); Soak6
+  mutation policy (#124) — bounded promo (`FULL_REPLACE_MAX_LINES`,
+  `SHELL_PROMOTE_MAX_DIFF_LINES`), `LimitsExceeded` never promotes an
+  unbounded diff, inspect/mutate step-budget split (`INSPECT_STEP_CAP`),
+  banned base64/python write-exec (exit 78), utf-8 `errors="replace"`
+  decode, `full_replace` fallback cap on oversized targets, retryable
+  (truncation/syntax) REJECT → retry-the-same-file instead of stall.
+  Do not re-implement those.
 - **Soak artifacts (review only):** `docs/soak_artifacts/`
   (`stdout.txt`, `model_dashboard.txt`, `soak-target-.prizmforge/`).
-  The Soak5 run validated the #124 fixes in a live soak; Soak17 aborted
-  on a **phantom seed** with 0 model calls — that is §11.
+  The Soak5 run validated the #122/#123 fixes in a live soak; Soak17
+  aborted on a **phantom seed** with 0 model calls — that is §11.
+  **Soak8** (`origin/self-edit/soak8`, `docs/soak-artifacts/`, do not
+  merge): mutation path ran end-to-end to materialization — 6 proposals,
+  3 applied, exit-78 banned-write fired, no `RepeatedFormatError`, no
+  "produced no file changes"; both tasks ended on `token budget
+  exhausted` (`files_modified=2` / `1`). See `02_proposals.txt`,
+  `20_diagnostic.txt`, `05_command_buckets.txt`.
 - **Next (do):** §11 — make targeting existence-verified, close the
   endpoint config/header gaps, then re-run the §10.7 acceptance gate on
-  a targeted task that names an existing file.
+  a targeted task that names an existing file. (Soak8 already shows a
+  real targeted run reaching materialization; §11 closes the phantom-seed
+  abort and the §11.2/§11.3 endpoint gaps.)
 - **Company endpoints** still need a **manual unlock ~every 8 hours**
   and **must keep falling back** when one key locks.
 - **Trajectories (do not merge):** `soak/doc-run-a-1` /
   `docs/soak-a-1-shell-trajectories/`; `soak/4-tmp-reporting` /
-  `docs/soak-a-4-example-tmp/`.
+  `docs/soak-a-4-example-tmp/`; `self-edit/soak8` /
+  `docs/soak-artifacts/`.
 
 ---
 
@@ -67,6 +83,12 @@ checklists back into this tracker.
 **Priority:** shipped (PRs #121–#124). Only the §10.7 acceptance gate
 is open, exercised by Soak17 (§11). Soak4–Soak16 post-mortem detail
 (§10.0–§10.5) is in git history — do not re-paste it here.
+**Soak8 update:** the mutation path reached **materialization** —
+proposals created, approved, and applied (`workflow/__init__.py`),
+banned base64 write rejected at exit 78 by the #124 policy, no
+repeated-format / no-file-changes emissions. Tasks landed on
+`token budget exhausted`, not a harness failure; Soak17 remains for
+the targeted-seed gate (§11).
 
 **Evidence:** `docs/soak_artifacts/stdout.txt` shows the proposal path
 creating and gating **real proposals** in a soak — `e6a85797`
@@ -91,6 +113,13 @@ pre-flight, `edit_payload` fallback gating; developer on
 
 ### 10.7 Acceptance (short soak, two endpoints, developer ≠ Enterprise chat)
 
+Soak8 (`self-edit/soak8`, review-only) already satisfied the
+materialization spine — proposals created/approved/applied on repeated
+target-run turns, exit-78 on the base64/python write attempt, no
+repeated-format, no no-file-changes emit. Still tracked as a gate
+because §11.2/§11.3 endpoints and the §11.1 targeted-seed run are not
+fully green:
+
 1. Trajectory `workspace_evidence` is filled **before** message[3]
    (no model-authored evidence fence required).
 2. First model bash, if any, is inspect-of-target, not `pwd && ls`.
@@ -106,11 +135,18 @@ pre-flight, `edit_payload` fallback gating; developer on
 7. `Work:` is not 0.0s for the whole duration solely because the
    latch yielded to reviewers.
 
-### 10.8 Soak16 remediation (shipped #124)
+### 10.8 Soak16 remediation (shipped #122)
 
 In-worktree edit primitive, command/change-state observations, stall
 tripwire, task-fiability pre-flight, `edit_payload` fallback gating —
-shipped and soak-validated. Details in git log (PR #124).
+shipped in PR #122 and soak-validated. Details in git log.
+
+### 10.9 Soak6 mutation policy (shipped #124)
+
+Bounded promotion + inspect/mutate step split, banned base64/python
+write-exec, utf-8 `errors="replace"` decode, `full_replace` fallback
+cap, retryable-reject handling — shipped in PR #124. Details in git
+log.
 
 ---
 
@@ -124,7 +160,10 @@ PLANS.md, IDEAS.md, ROADMAP.md, BACKLOG.md…") harvested `ROADMAP.md`
 via `_seed_path_candidates`, but that file does not exist; three of the
 five `files_needed` (`TODO.md`, `PLANS.md`, `IDEAS.md`) are **phantom**
 (never in `project_files`; their "2 lines" came from
-`get_file_content_from_db` stubs, not disk reads).
+`get_file_content_from_db` stubs, not disk reads). Soak8 confirmed the
+mutation path is healthy when the target exists on disk; the remaining
+gap is §11.1 (phantom seeds must not abort) plus the §11.2/§11.3
+endpoint gaps.
 
 ### 11.1 Existence-verified task targeting
 
@@ -400,7 +439,7 @@ evidence — that e2e is **§10**, not a second mini-swe port.
 
 | Order | Work item | Exit criterion |
 |---:|---|---|
-| 1 | **§11 Soak17 root-cause fixes** (11.1 → 11.2 → 11.3) | §10.7 acceptance 1–7 on a targeted seed naming an existing file; no `target missing` abort |
+| 1 | **§11 Soak17 root-cause fixes** (11.1 → 11.2 → 11.3) | §10.7 acceptance 1–7 on a targeted seed naming an existing file; no `target missing` abort under a phantom seed |
 | 2 | §5 optional SQL quoting + DDL split | Export uses quoted ids; `;` in comments/strings does not split DDL |
 | 3 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
 | 4 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
