@@ -342,12 +342,12 @@ to WAL unless this timing is still not enough.
 
 Demotion exclusions and `Retry-After` **shipped in #121**. Remaining:
 
-- [ ] Quote SQL identifiers in `cli/commands.py` DB exports
+- [x] Quote SQL identifiers in `cli/commands.py` DB exports
       (`cmd_export_db`, `cmd_export_specific_tables`,
       `table_has_task_id`). `_quote_identifier()` = double-quote +
       escape embedded `"`. (`sqlite_master name=?` is already
       parameterized.)
-- [ ] Comment/string-aware DDL split in `core/db.py`
+- [x] Comment/string-aware DDL split in `core/db.py`
       `_apply_schema` (current `endswith(";")` per-line split breaks on
       `;` inside a comment or string). No `sqlparse`.
 
@@ -439,8 +439,6 @@ evidence — that e2e is **§10**, not a second mini-swe port.
 
 | Order | Work item | Exit criterion |
 |---:|---|---|
-| 1 | **§11 Soak17 root-cause fixes** (11.1 → 11.2 → 11.3) | §10.7 acceptance 1–7 on a targeted seed naming an existing file; no `target missing` abort under a phantom seed |
-| 2 | §5 optional SQL quoting + DDL split | Export uses quoted ids; `;` in comments/strings does not split DDL |
-| 3 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
-| 4 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
-| 5 | §7 live-hook / mini-swe e2e | When endpoints and a hook-fail copy exist |
+| 1 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
+| 2 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
+| 3 | §7 live-hook / mini-swe e2e | When endpoints and a hook-fail copy exist |
