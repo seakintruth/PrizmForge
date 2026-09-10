@@ -15,7 +15,7 @@ Flow:
      materialize_proposal() pipeline. Nothing touches the governed tree without an
      approved proposal.
 
-Chat-capable models (chat_capable endpoint flag, or api.genai.mil / Gemini
+Chat-capable models (chat_capable endpoint flag, or Gemini
 Enterprise chat) are driven with the chat-JSON-table protocol instead of bash
 fences: the session maintains an append-only JSON table of executed steps and
 asks the model to complete the NEXT row (command or finish). The parser in
@@ -117,7 +117,7 @@ class ShellDeveloperConfig:
     workspace_marker: str = WORKSPACE_MARKER_DEFAULT
     # Chat-JSON-table protocol mode. "auto" -> enabled for models flagged
     # chat_capable in endpoint config or that resolve onto Gemini Enterprise
-    # chat (api.genai.mil). "on" forces it for every model; "off" disables it
+    # chat. "on" forces it for every model; "off" disables it
     # (falling back to the historical bash-fence-only protocol).
     json_table: str = "auto"
     # Stall tripwire: a step with no worktree change that repeats an already
@@ -230,7 +230,7 @@ Never attempt to interact outside this working copy; changes outside it are disc
 _SEED_PATH_RE = re.compile(r"[\w./-]+\.\w+")
 
 # Version-like / domain-like tokens harvested from seed prose (gemini-3.1,
-# v1.2, api.genai.mil) are not file targets. A suffix that is purely numeric
+# v1.2) are not file targets. A suffix that is purely numeric
 # (…\.3.1) is a version; multi-part dot tokens with no slash and no known code
 # extension (….mil) are domains. Neither should abort or drive the inspect path.
 _VERSIONISH_EXT_RE = re.compile(r"\.\d+(\.\w+)*$")
@@ -297,7 +297,7 @@ _NO_SHELL_FINISH_MARKERS = (
     "i operate as a conversational",
 )
 
-_ENTERPRISE_CHAT_MARKERS = ("genai.mil",)
+_ENTERPRISE_CHAT_MARKERS = ""
 
 
 def build_instance_prompt(task_text: str, *, explore_note: bool = False, discovery_note: str = "") -> str:
@@ -427,7 +427,7 @@ def _chat_table_mode(cfg: ShellDeveloperConfig | None, model_ref: str | None) ->
 
     ``json_table`` config knob: "on" forces, "off" disables, "auto" (default)
     enables when the resolved model is flagged chat_capable in endpoint config
-    or resolves onto Gemini Enterprise chat (api.genai.mil) — the models that
+    or resolves onto Gemini Enterprise chat — the models that
     refuse naked bash fences. Never raises.
     """
     mode = cfg.json_table if cfg is not None else "auto"
@@ -461,7 +461,7 @@ def _seed_path_candidates(task_text: str) -> list[str]:
     """File-like tokens from the seed, longest-first.
 
     Drops ``..`` / absolute candidates and version/domain-like tokens
-    (gemini-3.1, v1.2, api.genai.mil) that seed prose will otherwise harvest.
+    (gemini-3.1, v1.2) that seed prose will otherwise harvest.
     Mirrors ``parallel_workers._resolve_seed_target_path`` (longest-wins, then
     an in-repo existence check) so a false-positive token cannot abort the
     session (PR #122 review).
@@ -478,7 +478,7 @@ def _versionish_or_invalid(candidate: str) -> bool:
             return True
         return False
     # A bare token with a purely-numeric version suffix (3.1) or a non-code,
-    # multi-dot domain shape (api.genai.mil) is not a file target.
+    # multi-dot domain shape is not a file target.
     if _VERSIONISH_EXT_RE.search(candidate):
         return True
     if candidate.count(".") >= 2 and Path(candidate).suffix.lower() not in _SEED_KNOWN_EXTENSIONS:

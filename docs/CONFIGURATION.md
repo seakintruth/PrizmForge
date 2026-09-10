@@ -333,7 +333,7 @@ Supports any number of endpoints; no per-provider variable names.
   "_comment": "Secrets per endpoint. This file is gitignored.",
   "keys": {
     "gemini":     { "api_key": "..." },
-    "beta_genai": { "api_key": "...", "custom_field": "..." }
+    "beta_gemini": { "api_key": "...", "custom_field": "..." }
   }
 }
 ```

@@ -149,8 +149,8 @@ def test_chat_edit_row_applies_edit(tmp_path):
         chat_row,
         '{"thought": "done", "step": 3, "command": null, "finish": true, "summary": "Edited via chat row"}',
     ]
-    session, wt, _state = _real_session(root, script, model="company/gemini-3.1-pro-preview@api.genai.mil")
-    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
+    session, wt, _state = _real_session(root, script, model="company/gemini-3.1-pro-preview@api.company.com")
+    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.company.com"  # type: ignore[method-assign]
     try:
         result = session.run("Change greet to return 'chat'")
         assert session.chat_mode is True

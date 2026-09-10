@@ -1,5 +1,5 @@
 {
-  "description": "Exploratory list of models to test on GenAI.mil endpoints",
+  "description": "Exploratory list of models to test on endpoints",
   "models": [
     "gemini-2.5-flash",
     "gemini-2.5-pro",

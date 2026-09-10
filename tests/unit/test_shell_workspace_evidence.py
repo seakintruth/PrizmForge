@@ -178,8 +178,8 @@ def test_enterprise_chat_model_runs_chat_table_protocol():
         '{"thought": "Inspect the target", "step": 2, "command": "sed -n \'1,80p\' workflow/task_runner.py", "finish": false}',
         '{"thought": "Verified", "step": 3, "command": null, "finish": true, "summary": "Reviewed target"}',
     ]
-    session, state = _session(script, model="company/gemini-3.1-pro-preview@api.genai.mil")
-    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
+    session, state = _session(script, model="company/gemini-3.1-pro-preview@api.company.com")
+    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.company.com"  # type: ignore[method-assign]
     result = session.run("Inspect workflow/task_runner.py")
     assert session.chat_mode is True
     assert state["i"] == 2
@@ -195,14 +195,14 @@ def test_enterprise_chat_model_runs_chat_table_protocol():
 
 
 def test_resolved_enterprise_model_runs_chat_table_protocol_when_cfg_null():
-    """PR #123: even with a null cfg.model, a resolved genai.mil developer uses
+    """PR #123: even with a null cfg.model, a resolved company.com developer uses
     the chat-JSON-table protocol instead of the historical hard abort."""
     script = [
         '{"thought": "Inspect", "step": 2, "command": "sed -n \'1,80p\' workflow/task_runner.py", "finish": false}',
         '{"thought": "Done", "step": 3, "command": null, "finish": true, "summary": "ok"}',
     ]
     session, state = _session(script)
-    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
+    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.company.com"  # type: ignore[method-assign]
     result = session.run("Inspect workflow/task_runner.py")
     assert session.chat_mode is True
     assert state["i"] == 2
@@ -217,8 +217,8 @@ def test_chat_table_mode_can_be_disabled_via_config():
         "```bash\nsed -n '1,80p' workflow/task_runner.py\n```",
         f"{sd.FINISH_TOKEN}\nok",
     ]
-    session, state = _session(script, model="company/gemini-3.1-pro-preview@api.genai.mil", json_table="off")
-    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.genai.mil"  # type: ignore[method-assign]
+    session, state = _session(script, model="company/gemini-3.1-pro-preview@api.company.com", json_table="off")
+    session._resolve_developer_model = lambda: "company/gemini-3.1-pro-preview@api.company.com"  # type: ignore[method-assign]
     result = session.run("Inspect workflow/task_runner.py")
     assert session.chat_mode is False
     assert state["i"] == 2
@@ -292,7 +292,7 @@ def test_run_command_uses_worktree_cwd(tmp_path):
 # ---------------------------------------------------------------------------
 # PR #122: seed-path tokens harvested from prose must not latch developer.
 # Only a path-like surviving candidate may trigger the §10.4.2 missing-target
-# abort; version/domain tokens (gemini-3.1, api.genai.mil) resolve to None and
+# abort; version/domain tokens (gemini-3.1, api.company.com) resolve to None and
 # the session proceeds with the inspect prompt (target_path=None).
 # ---------------------------------------------------------------------------
 class _RealDirWorktree(_FakeWorktree):
@@ -305,17 +305,17 @@ class _RealDirWorktree(_FakeWorktree):
 
 
 def test_seed_path_candidate_filter_drops_version_and_domain_tokens():
-    assert sd._seed_path_candidates("update gemini-3.1 for api.genai.mil v1.2") == []
+    assert sd._seed_path_candidates("update gemini-3.1 for api.company.com v1.2") == []
     assert sd._seed_path_candidates("inspect workflow/task_runner.py") == ["workflow/task_runner.py"]
     assert sd._seed_path_candidates("fix bug in config.json") == ["config.json"]
-    assert "api.genai.mil" not in sd._seed_path_candidates("see docs/config.json on api.genai.mil")
+    assert "api.company.com" not in sd._seed_path_candidates("see docs/config.json on api.company.com")
 
 
 def test_path_like_seed_candidate_discriminates_targets_from_prose():
     assert sd._path_like_seed_candidate("workflow/task_runner.py") is True
     assert sd._path_like_seed_candidate("config.json") is True
     assert sd._path_like_seed_candidate("docs/README.md") is True
-    assert sd._path_like_seed_candidate("api.genai.mil") is False
+    assert sd._path_like_seed_candidate("api.company.com") is False
     assert sd._path_like_seed_candidate("gemini-3.1") is False
     assert sd._path_like_seed_candidate("../etc/passwd") is False
     assert sd._path_like_seed_candidate("/etc/hosts") is False
@@ -328,7 +328,7 @@ def test_version_token_in_seed_prose_does_not_abort(tmp_path):
         ["```bash\necho hi\n```", f"{sd.FINISH_TOKEN}\nok"],
         wt=_RealDirWorktree(root),
     )
-    result = session.run("update gemini-3.1 notes for api.genai.mil v1.2")
+    result = session.run("update gemini-3.1 notes for api.company.com v1.2")
     assert result.exit_status != "WorkspaceValidationFailed"
     assert result.evidence_ok is True
     assert session.target_path is None

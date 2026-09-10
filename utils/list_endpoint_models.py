@@ -2,7 +2,7 @@
 """
 utils/list_endpoint_models.py
 
-Exploratory model discovery tool for GenAI.mil endpoints.
+Exploratory model discovery tool for endpoints.
 Reads endpoints from config.json and models to test from list_models_to_test.json.
 """
 
@@ -177,7 +177,7 @@ def main() -> None:
 
     test_models = load_test_models()
 
-    print("\n🔍 GenAI.mil Exploratory Model Discovery")
+    print("\n🔍 Endpoint Exploratory Model Discovery")
     print("=" * 100)
     print(f"Proxy configured : {bool(proxy)}")
     print(f"Endpoints        : {list(endpoints.keys())}")
