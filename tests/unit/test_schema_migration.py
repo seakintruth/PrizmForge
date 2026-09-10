@@ -1,4 +1,9 @@
-"""Additive schema migration for databases created before column additions."""
+"""Non-backwards-compatible database initialization.
+
+Database initialization always builds the full canonical schema in one pass;
+an existing DB from an older schema version is discarded and rebuilt, never
+ALTER-migrated.
+"""
 
 from __future__ import annotations
 
@@ -6,13 +11,23 @@ import sqlite3
 from pathlib import Path
 
 
-def _create_legacy_edit_proposals_db(path: Path) -> None:
-    """Minimal pre-migration shape: edit_proposals without task_id / mode cols."""
+def _create_legacy_db(path: Path) -> None:
+    """Minimal pre-canonical shape: old agent_responses_archive without shell cols."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         path.unlink()
     conn = sqlite3.connect(str(path))
     conn.executescript("""
+        CREATE TABLE agent_responses_archive (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT,
+            agent_name TEXT,
+            prompt TEXT,
+            response TEXT,
+            parse_success INTEGER,
+            parse_error TEXT,
+            timestamp TEXT
+        );
         CREATE TABLE edit_proposals (
             proposal_id TEXT PRIMARY KEY,
             target_file_id INTEGER,
@@ -20,122 +35,65 @@ def _create_legacy_edit_proposals_db(path: Path) -> None:
             status TEXT DEFAULT 'pending',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
-        INSERT INTO edit_proposals (proposal_id, target_file_id, edit_payload, status)
-        VALUES ('legacy-prop-1', 1, '{"ops":[]}', 'pending');
+        CREATE TABLE endpoint_health (
+            endpoint_name TEXT PRIMARY KEY,
+            status TEXT
+        );
+        INSERT INTO agent_responses_archive (task_id, agent_name, response)
+        VALUES ('legacy-task', 'developer', 'old data');
         """)
     conn.commit()
     conn.close()
 
 
-def test_migrate_adds_task_id_and_mode_columns(temp_db, monkeypatch):
-    """init_db / _migrate_schema must ALTER existing edit_proposals tables."""
+def test_fresh_db_is_current_after_init(temp_db, monkeypatch):
+    """A freshly initialized DB carries the current schema version."""
     from core import db as db_mod
 
-    db_path = Path(temp_db)
-    # Replace with legacy shape after temp_db already initialized
-    _create_legacy_edit_proposals_db(db_path)
-
-    cols_before = {row[1] for row in sqlite3.connect(str(db_path)).execute("PRAGMA table_info(edit_proposals)").fetchall()}
-    assert "task_id" not in cols_before
-    assert "selected_mode" not in cols_before
-    assert "fallback_used" not in cols_before
-    assert "final_mode" not in cols_before
-
-    # Re-run init which applies _migrate_schema
-    monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(db_path))
-    db_mod.init_db()
-
-    conn = sqlite3.connect(str(db_path))
-    cols_after = {row[1] for row in conn.execute("PRAGMA table_info(edit_proposals)").fetchall()}
-    for required in ("task_id", "selected_mode", "fallback_used", "final_mode", "target_file_path"):
-        assert required in cols_after, f"missing migrated column: {required}"
-
-    # Legacy row still readable
-    row = conn.execute(
-        "SELECT proposal_id, task_id, status FROM edit_proposals WHERE proposal_id = ?",
-        ("legacy-prop-1",),
-    ).fetchone()
-    assert row is not None
-    assert row[0] == "legacy-prop-1"
-    assert row[2] == "pending"
-    # Newly added nullable column defaults to NULL for old rows
-    assert row[1] is None
+    conn = sqlite3.connect(temp_db)
+    assert conn.execute("PRAGMA user_version;").fetchone()[0] == db_mod.SCHEMA_VERSION
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_responses_archive)")}
+    for required in ("model", "step_number", "response_format_status", "command", "command_exit_code"):
+        assert required in cols, f"missing canonical column: {required}"
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(endpoint_health)")}
+    for required in ("tokens_per_minute", "tokens_remaining_minute", "tokens_reset_epoch"):
+        assert required in cols, f"missing canonical column: {required}"
     conn.close()
 
 
-def test_migrate_adds_token_log_endpoint_name(temp_db, monkeypatch):
-    """§8.1a: existing token_log tables gain endpoint_name."""
-    import sqlite3
-
+def test_stale_db_is_recreated_not_migrated(temp_db, monkeypatch):
+    """An old-schema DB is wiped and rebuilt, so legacy data is not preserved."""
     from core import db as db_mod
 
     db_path = Path(temp_db)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("DROP TABLE IF EXISTS token_log")
-    conn.execute("CREATE TABLE token_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, tokens_used INTEGER)")
-    conn.execute("INSERT INTO token_log (timestamp, tokens_used) VALUES ('2026-01-01T00:00:00', 12)")
-    conn.commit()
-    conn.close()
+    _create_legacy_db(db_path)
 
     monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(db_path))
     db_mod.init_db()
 
     conn = sqlite3.connect(str(db_path))
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(token_log)").fetchall()}
-    assert "endpoint_name" in cols
-    row = conn.execute("SELECT tokens_used, endpoint_name FROM token_log").fetchone()
-    assert row[0] == 12
-    assert row[1] is None
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(agent_responses_archive)")}
+    assert "model" in cols
+    row = conn.execute("SELECT COUNT(*) FROM agent_responses_archive WHERE task_id = 'legacy-task'").fetchone()
+    assert row[0] == 0
+    assert conn.execute("PRAGMA user_version;").fetchone()[0] == db_mod.SCHEMA_VERSION
     conn.close()
 
 
-def test_migrate_adds_model_health_retry_after_s(temp_db, monkeypatch):
-    """§5: existing model_health_events tables gain retry_after_s."""
+def test_init_is_idempotent(temp_db, monkeypatch):
+    """Re-initializing an already-current DB must not raise or wipe data."""
     from core import db as db_mod
+    from core.db_connection import get_db_connection
 
-    db_path = Path(temp_db)
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("DROP TABLE IF EXISTS model_health_events")
-    conn.execute("""
-        CREATE TABLE model_health_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            model_ref TEXT NOT NULL,
-            endpoint TEXT,
-            ok INTEGER NOT NULL,
-            latency_ms INTEGER DEFAULT 0,
-            kind TEXT
-        )
-        """)
-    conn.execute(
-        "INSERT INTO model_health_events (ts, model_ref, endpoint, ok, latency_ms, kind) VALUES ('2026-01-01T00:00:00', 'ep/m', 'ep', 0, 0, 'rate_limited')"
-    )
-    conn.commit()
-    conn.close()
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO messages (task_id, from_agent, content) VALUES ('t1', 'a', 'keep')")
 
-    monkeypatch.setenv("PRIZMFORGE_DB_PATH", str(db_path))
+    monkeypatch.setenv("PRIZMFORGE_DB_PATH", temp_db)
     db_mod.init_db()
 
-    conn = sqlite3.connect(str(db_path))
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(model_health_events)").fetchall()}
-    assert "retry_after_s" in cols
-    row = conn.execute("SELECT kind, retry_after_s FROM model_health_events").fetchone()
-    assert row[0] == "rate_limited"
-    assert row[1] is None
-    conn.close()
-
-
-def test_ensure_column_is_idempotent(temp_db):
-    """Second migration pass must not raise."""
-    from core.db import _migrate_schema, get_db_path
-
-    conn = sqlite3.connect(get_db_path())
-    _migrate_schema(conn)
-    _migrate_schema(conn)
-    conn.commit()
-    cols = {row[1] for row in conn.execute("PRAGMA table_info(edit_proposals)").fetchall()}
-    assert "task_id" in cols
-    conn.close()
+    with get_db_connection() as conn:
+        row = conn.execute("SELECT COUNT(*) FROM messages WHERE task_id = 't1' AND from_agent = 'a'").fetchone()
+    assert row[0] == 1
 
 
 def test_split_sql_keeps_semicolon_in_comment_and_string():

@@ -230,7 +230,7 @@ Governed editing tables (`files`, `file_lines`, `edit_proposals`, etc.) live in 
 
 The system uses a single SQLite database. The path can be overridden via the `PRIZMFORGE_DB_PATH` environment variable (especially useful during testing).
 
-Additive migrations run in `_migrate_schema()` so existing DBs pick up new columns (e.g. `edit_proposals.task_id`, mode fields) without recreate.
+Database initialization is **non-backwards-compatible**: `init_db()` always builds the complete canonical schema in one pass (tracked with `PRAGMA user_version`). A pre-existing database from an older schema version is discarded and rebuilt fresh — databases are never ALTER-migrated.
 
 #### Governed Editing Tables
 
