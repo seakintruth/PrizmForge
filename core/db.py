@@ -146,7 +146,7 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
                 raise
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _schema_is_current(conn: sqlite3.Connection) -> bool:
@@ -222,6 +222,24 @@ def init_db():
                 completed_at TEXT,
                 result TEXT
             );
+
+            -- Rollouts (harness-evolution §12.1): one row per task run with a
+            -- harness fingerprint + infra-abort label for pass@1 accounting.
+            CREATE TABLE IF NOT EXISTS rollouts (
+                rollout_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT,
+                iteration INTEGER DEFAULT 0,
+                harness_tag TEXT,
+                prompt_hash TEXT,
+                model TEXT,
+                status TEXT DEFAULT 'in_progress',
+                infra_abort INTEGER DEFAULT 0,
+                tokens INTEGER,
+                created_at TEXT,
+                completed_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_rollouts_task ON rollouts(task_id);
+            CREATE INDEX IF NOT EXISTS idx_rollouts_iteration ON rollouts(iteration);
 
             -- Token usage log
             CREATE TABLE IF NOT EXISTS token_log (

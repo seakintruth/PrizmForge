@@ -213,7 +213,7 @@ endpoint gaps.
 
 ## 12. Harness-evolution loop — deploy `HARNESS_EVOLUTION_DESIGN` (zero-dep path)
 
-**Priority:** P2 (behind §11 gates; P0 substrate partially shipped).
+**Priority:** P2 (behind §11 gates; P0 rollout substrate shipped).
 **Source:** `docs/HARNESS_EVOLUTION_DESIGN.md` (draft, not implemented).
 **Dependency posture:** zero new runtime deps — `requirements.txt` stays
 `requests` + `pathspec`. Uses stdlib sqlite3 JSON1 (verified here: 3.46.1,
@@ -234,17 +234,23 @@ Shipped and **not** repeated: `core/operator_view.py`, shell heartbeats
 (`shell_turn_start` / `shell_model_call_started` / `shell_command_executed` /
 `shell_spinning`), `utils/live_console.py`, run-effectiveness diagnostics.
 
-Still open:
+Shipped (2026-09-10, `harness/fingerprint.py` + `rollouts` table +
+`SCHEMA_VERSION = 2`):
 
-- [ ] **Per-run harness fingerprint:** persist `(harness git tag, resolved
-      prompt hash, model)` per rollout (`hashlib` over the resolved
-      `get_agent_prompts` dict). Prompts render at runtime (agents/base.py),
-      so without the fingerprint §5 edit-verdict claims are unverifiable.
-- [ ] **Infra-abort classifier:** label rollouts aborted by endpoint
-      infra (`empty_body` / `no_alternate_endpoint` / `misconfigured`, from
-      `model_health_events` + endpoint latches) so the Debugger's
-      `component_hint` never blames the harness for a flaky endpoint (Soak18
-      exact confound); report `failure_mode_mix` per iteration.
+- [x] **Per-run harness fingerprint:** persist `(harness git tag, resolved
+      prompt hash, model)` per rollout (`sha256` over the sorted resolved
+      `get_agent_prompts` dict at `core/config.py` `get_agent_prompts`). A
+      `rollouts` row is created at `run_task_cycle` start (task_runner) and
+      finalized (status, infra-abort label, token backfill from `token_log`)
+      at loop end. Prompts render at runtime (agents/base.py), so the
+      fingerprint makes §5 edit-verdict claims verifiable.
+- [x] **Infra-abort classifier:** label rollouts aborted by endpoint infra
+      (`empty_body` / `no_alternate_endpoint` / `misconfigured` /
+      `rate_limited` / `key_locked` / `token_budget` / `token_exhausted`,
+      from the `model_health_events` tail + endpoint `unavailable_until`
+      latches) so the Debugger's `component_hint` never blames the harness
+      for a flaky endpoint (Soak18 exact confound); `failure_mode_mix`
+      reports pass@1 + infra vs non-infra failures per iteration.
 
 ### 12.2 P1 boxed benchmark (internal soak-task set)
 
