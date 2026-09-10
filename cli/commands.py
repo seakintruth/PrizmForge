@@ -3,6 +3,7 @@
 import csv
 import json
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -481,6 +482,8 @@ def cmd_list_exports():
 
 def cmd_export_specific_tables(tables: list, output_dir: Path | None = None, task_id: str | None = None):
     """Export specific tables to CSV"""
+    identifier_re = re.compile(r"^[A-Za-z0-9_]+$")
+
     if output_dir is None:
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
@@ -505,6 +508,9 @@ def cmd_export_specific_tables(tables: list, output_dir: Path | None = None, tas
         total_rows = 0
 
         for table_name in tables:
+            if not identifier_re.match(table_name):
+                print(f"  ⚠️  {table_name}: Invalid table name")
+                continue
             try:
                 cursor.execute(
                     """
@@ -841,13 +847,25 @@ def cmd_show_report(report_name: str | None = None):
         return
 
     if report_name:
-        report_path = reports_dir / report_name
+        normalized_name = report_name.replace("\\", "/")
+        requested_path = Path(normalized_name)
+        if report_name in {".", ".."} or requested_path.is_absolute() or ".." in requested_path.parts:
+            print("\n❌ Invalid report name\n")
+            return
+        report_path = reports_dir / normalized_name
     else:
         reports = sorted(reports_dir.glob("project_report_*.md"), reverse=True)
         if not reports:
             print("\n📊 No reports found\n")
             return
         report_path = reports[0]
+
+    report_path = report_path.resolve()
+    try:
+        report_path.relative_to(reports_dir.resolve())
+    except ValueError:
+        print("\n❌ Report path is outside reports directory\n")
+        return
 
     if not report_path.exists():
         print(f"\n❌ Report not found: {report_path.name}\n")

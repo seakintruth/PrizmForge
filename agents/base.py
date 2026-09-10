@@ -34,9 +34,11 @@ from core.rate_limit_headers import (
     MAX_ADVERTISED_WAIT,
     advertised_wait_seconds,
     classify_rate_limit,
+    parse_token_window_headers,
 )
 from core.rate_limiter import RateLimiter
 from core.token_budget import TokenBudget, token_cap_for_endpoint, token_daily_cap_for_endpoint
+from core.token_pacer import TokenPacer
 from file_editing.db import log_error
 
 # Background agents that call_agent() as part of a parallel/support pool.
@@ -54,6 +56,11 @@ _BACKGROUND_TRANSPORT_AGENTS = {
 _rate_limiter = None
 _token_budgets: dict[str, TokenBudget] = {}
 
+# Soak17 §11.3: per-endpoint token send-rate pacers fed by
+# x-ratelimit-*-tokens-* headers (process-local; budget also persisted to
+# endpoint health).
+_token_pacers: dict[str, TokenPacer] = {}
+
 # Active-work tracking: HTTP latency (seconds) of the most recent call_endpoint
 # invocation. Rate-limit sleeps and DB lock backoffs are excluded so iteration
 # timeouts count only real work, not idle waits.
@@ -61,6 +68,43 @@ _last_call_http_latency: float = 0.0
 
 # Agents that are allowed to return free-form text / markdown
 TEXT_OUTPUT_AGENTS = {"project_reporter", "reviewer", "archivist"}
+
+# Soak17 §11.2: MissingSessionID-class 400s are permanent endpoint-config
+# failures, not transient — latch long (operator must fix config) and never
+# retry in a loop.
+MISCONFIGURED_COOLDOWN_MINUTES = 240
+
+# Soak17 §11.2: quota park = min(seconds_to_reset, 4h) so a short Retry-After /
+# reset reopens the endpoint on time instead of a fixed offline window.
+QUOTA_PARK_MAX_SECONDS = 4 * 3600
+QUOTA_PARK_DEFAULT_SECONDS = 15 * 60
+
+# Bodies signalling a missing / invalid endpoint API session (opencode/API
+# "MissingSessionID"), i.e. permanent config problems on status 400.
+_SESSION_MISSING_PATTERNS = (
+    re.compile(r"missingsession\s*id", re.IGNORECASE),
+    re.compile(r"missing\s+session", re.IGNORECASE),
+    re.compile(r"session\s+(?:id|identifier|token)?\s*(?:missing|not\s+found|does\s+not\s+exist|invalid)", re.IGNORECASE),
+)
+
+
+def _is_session_missing_error(resp, error_data: dict | None) -> bool:
+    """True for MissingSessionID-class 400 bodies (Soak17 §11.2).
+
+    Matches the reported error type/code/message plus the raw body so both the
+    opencode ``error.type`` shape and free-form prose are caught.
+    """
+    text = " ".join(
+        str(part)
+        for part in (
+            (error_data or {}).get("type"),
+            (error_data or {}).get("code"),
+            (error_data or {}).get("message"),
+            getattr(resp, "text", "") or "",
+        )
+        if part
+    )
+    return any(pattern.search(text) for pattern in _SESSION_MISSING_PATTERNS)
 
 
 def get_rate_limiter(endpoint: EndpointConfig) -> RateLimiter:
@@ -96,6 +140,14 @@ def get_token_budget(endpoint: EndpointConfig | str | None = None) -> TokenBudge
         budget = TokenBudget(get_db_path(), cap, endpoint_name=ep_name, max_tokens_per_day=daily)
         _token_budgets[name] = budget
     return budget
+
+
+def get_token_pacer(endpoint: EndpointConfig | str | None = None) -> TokenPacer:
+    """Return the per-endpoint token-send pacer (Soak17 §11.3)."""
+    name = _endpoint_budget_key(endpoint)
+    if name not in _token_pacers:
+        _token_pacers[name] = TokenPacer(name)
+    return _token_pacers[name]
 
 
 def any_token_budget_remaining(tokens: int = 1) -> bool:
@@ -402,6 +454,13 @@ def call_endpoint(  # noqa: C901
     same_endpoint_retries_used = 0
 
     for attempt in range(retry_count):
+        # Soak17 §11.3: pace the token send-rate against the last discovered
+        # per-minute budget so parallel large prompts cannot re-trigger the
+        # 429 storm. Bounded; excluded from HTTP-latency accounting.
+        paced = get_token_pacer(endpoint).acquire(estimated_total)
+        if paced > 0:
+            print(f"   ⏳ Token-pacing {endpoint.name}: sleeping {paced:.1f}s to fit per-minute token bucket")
+            time.sleep(paced)
         _req_t0 = time.time()
         try:
             resp = post_json(
@@ -429,6 +488,18 @@ def call_endpoint(  # noqa: C901
                     error_data = resp_json["error"]
             except Exception as e:
                 print(f"    ⚠️  Response body was not valid JSON: {e}")
+
+            # Soak17 §11.3: persist any per-minute token-bucket budget the
+            # provider advertises (successes included) and feed the send-rate
+            # pacer so the next request can be throttled pre-flight.
+            token_win = parse_token_window_headers(resp.headers)
+            if token_win.present:
+                endpoint.health.record_token_window(
+                    limit=token_win.limit,
+                    remaining=token_win.remaining,
+                    reset_epoch=token_win.reset_epoch,
+                )
+                get_token_pacer(endpoint).update(token_win.limit, token_win.remaining)
 
             # ============= HANDLE 401 / UNAUTHORIZED (KEY LOCKED) =============
             if resp.status_code == 401 or error_data.get("type") == "unauthorized":
@@ -526,7 +597,11 @@ def call_endpoint(  # noqa: C901
                     reset_epoch = rl_info.reset_epoch
                     wait = (reset_epoch - time.time()) if reset_epoch is not None else 0.0
                     if wait > 60:
-                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
+                        # Soak17 §11.2: park = min(seconds_to_reset, 4h) so a
+                        # short reset reopens on time instead of a fixed 15m
+                        # offline window.
+                        park_seconds = max(1, int(min(wait, QUOTA_PARK_MAX_SECONDS)))
+                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_seconds=park_seconds)
                         record_model_outcome(
                             f"{endpoint.name}/{model_name}",
                             endpoint.name,
@@ -537,7 +612,7 @@ def call_endpoint(  # noqa: C901
                         reset_label = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(reset_epoch)) if reset_epoch is not None else "later"
                         print(
                             f"   Daily quota exhausted (free-models-per-day pattern) — "
-                            f"Retry-After={int(wait)}s reset {reset_label}; parking {endpoint.name} for 15m"
+                            f"Retry-After={int(wait)}s reset {reset_label}; parking {endpoint.name} for {park_seconds}s"
                         )
                         return _fallback_to_alternate(
                             messages,
@@ -552,10 +627,21 @@ def call_endpoint(  # noqa: C901
                             seen,
                         )
                     if wait <= 0 and reset_epoch is None:
-                        # body-quota, no Reset — park, do not 1s-hop
-                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_minutes=15)
+                        # body-quota, no Reset — park, do not 1s-hop. Honor the
+                        # advertised window (Retry-After header > body > status
+                        # default 120s) so the endpoint reopens on time; cap at
+                        # 4h. Fall back to the 15m default only when no wait is
+                        # advertised at all.
+                        advertised = advertised_wait_seconds(
+                            resp.status_code,
+                            resp.headers,
+                            getattr(resp, "text", "") or "",
+                            max_wait=max_advertised_wait,
+                        )
+                        park_seconds = max(1, int(min(advertised if advertised else QUOTA_PARK_DEFAULT_SECONDS, QUOTA_PARK_MAX_SECONDS)))
+                        endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_seconds=park_seconds)
                         record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="rate_limited")
-                        print(f"   Daily quota exhausted (body signal, no Reset) — parking {endpoint.name} for 15m")
+                        print(f"   Daily quota exhausted (body signal, no Reset) — parking {endpoint.name} for {park_seconds}s")
                         return _fallback_to_alternate(
                             messages,
                             max_tokens,
@@ -572,6 +658,40 @@ def call_endpoint(  # noqa: C901
                     print(f"   Quota reset in {sleep_for:.0f}s — sleeping to reset and retrying once...")
                     time.sleep(sleep_for)
                     continue
+
+                # Soak17 §11.3: per-minute token bucket exhausted (remaining 0) —
+                # park all consumers for the endpoint until the token-window
+                # reset (capped at 4h) instead of the short burst Retry-After
+                # hop, so consecutive windows cannot re-trigger the 429 storm.
+                if token_win.present and token_win.is_exhausted:
+                    if token_win.reset_epoch is not None:
+                        token_wait = max(1.0, token_win.reset_epoch - time.time())
+                        park_seconds = max(1, int(min(token_wait, QUOTA_PARK_MAX_SECONDS)))
+                    else:
+                        token_wait = None
+                        park_seconds = max(1, int(min(QUOTA_PARK_DEFAULT_SECONDS, QUOTA_PARK_MAX_SECONDS)))
+                    endpoint.health.mark_failure(EndpointStatus.RATE_LIMITED, cooldown_seconds=park_seconds)
+                    record_model_outcome(
+                        f"{endpoint.name}/{model_name}",
+                        endpoint.name,
+                        ok=False,
+                        kind="rate_limited",
+                        retry_after_s=int(token_wait) if token_wait is not None else None,
+                    )
+                    wait_label = f"~{int(token_wait)}s" if token_wait is not None else "unknown reset"
+                    print(f"   Per-minute token bucket exhausted ({endpoint.name}) — parking {park_seconds}s until reset ({wait_label})")
+                    return _fallback_to_alternate(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        retry_count,
+                        task_id,
+                        agent_name,
+                        endpoint,
+                        model_name,
+                        endpoint_mgr,
+                        seen,
+                    )
 
                 # Advertised wait: Retry-After header (delta / HTTP-date) >
                 # error.retry_after_seconds > status default (429->120, 503->300).
@@ -666,6 +786,30 @@ def call_endpoint(  # noqa: C901
                     endpoint_mgr,
                     seen,
                     announce="→ Automatically falling back to {name}/{model}",
+                )
+
+            # ============= HANDLE 400 MISCONFIGURED (MISSING SESSION) =============
+            # Soak17 §11.2: MissingSessionID-class 400s are permanent
+            # endpoint-config failures. Surface the misconfiguration, latch
+            # MISCONFIGURED (long: only an operator fixing config clears it),
+            # and fall back immediately — no transient retry dance.
+            if resp.status_code == 400 and _is_session_missing_error(resp, error_data):
+                print(f"❌ Endpoint misconfigured — request references a missing API session ({endpoint.name}); parking {MISCONFIGURED_COOLDOWN_MINUTES}m")
+                endpoint.health.mark_failure(EndpointStatus.MISCONFIGURED, cooldown_minutes=MISCONFIGURED_COOLDOWN_MINUTES)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="misconfig")
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce="→ Endpoint misconfigured. Falling back to {name}/{model}",
+                    reason=EndpointStatus.MISCONFIGURED.value,
                 )
 
             # ============= HANDLE OTHER 5xx SERVER ERRORS =============

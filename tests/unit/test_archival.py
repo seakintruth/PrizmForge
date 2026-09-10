@@ -72,7 +72,7 @@ def test_archive_raw_response_shell_step_columns(temp_db):
 
 
 def test_archive_raw_response_old_schema_migrated(temp_db):
-    """A DB created before the new columns must still insert after migration."""
+    """Canonical schema rows lacking shell-observability fields default to NULL."""
     from core.archival import archive_raw_response
     from core.db_connection import get_db_connection
 

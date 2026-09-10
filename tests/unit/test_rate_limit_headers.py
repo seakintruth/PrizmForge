@@ -15,6 +15,7 @@ from core.rate_limit_headers import (
     advertised_wait_seconds,
     classify_rate_limit,
     parse_reset_to_epoch,
+    parse_token_window_headers,
 )
 
 
@@ -130,3 +131,67 @@ def test_advertised_wait_unknown_status_returns_none():
 def test_advertised_wait_clamps_min_to_one():
     assert advertised_wait_seconds(429, {"Retry-After": "0"}) == 1
     assert advertised_wait_seconds(503, {"Retry-After": "-5"}) == 1
+
+
+# ---- Soak17 §11.3: per-minute token-bucket header family --------------------
+def test_parse_token_window_minute_family():
+    info = parse_token_window_headers(
+        {
+            "x-ratelimit-limit-tokens-minute": "500000",
+            "x-ratelimit-remaining-tokens-minute": "400000",
+            "x-ratelimit-reset-tokens-minute": "59",
+        },
+        now=1000.0,
+    )
+    assert info.present is True
+    assert info.window == "minute"
+    assert info.limit == 500000
+    assert info.remaining == 400000
+    assert info.reset_epoch == pytest.approx(1059.0)
+    assert info.is_exhausted is False
+
+
+def test_parse_token_window_exhausted_detected():
+    info = parse_token_window_headers(
+        {"x-ratelimit-limit-tokens-minute": "500000", "x-ratelimit-remaining-tokens-minute": "0"},
+        now=0.0,
+    )
+    assert info.is_exhausted is True
+    assert info.remaining == 0
+    assert info.reset_epoch is None
+
+
+def test_parse_token_window_prefers_exhausted_family():
+    """The soak evidence (remaining 0, reset 59) wins even when the hour
+    window is also advertised and not exhausted."""
+    info = parse_token_window_headers(
+        {
+            "x-ratelimit-limit-tokens-hour": "1000000",
+            "x-ratelimit-remaining-tokens-hour": "500000",
+            "x-ratelimit-limit-tokens-minute": "500000",
+            "x-ratelimit-remaining-tokens-minute": "0",
+            "x-ratelimit-reset-tokens-minute": "59",
+        },
+        now=1000.0,
+    )
+    assert info.window == "minute"
+    assert info.is_exhausted is True
+    assert info.reset_epoch == pytest.approx(1059.0)
+
+
+def test_parse_token_window_case_insensitive_plural_suffix():
+    info = parse_token_window_headers(
+        {
+            "X-Ratelimit-Limit-Tokens-Hours": "100",
+            "X-Ratelimit-Remaining-Tokens-Hours": "0",
+        }
+    )
+    assert info.window == "hour"
+    assert info.is_exhausted is True
+
+
+def test_parse_token_window_absent_when_not_advertised():
+    info = parse_token_window_headers({"X-RateLimit-Remaining": "0", "Retry-After": "2"})
+    assert info.present is False
+    info = parse_token_window_headers(None)
+    assert info.present is False

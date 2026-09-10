@@ -126,6 +126,12 @@ class ShellDeveloperConfig:
     # instead of burning to the step limit (Soak16: 30 calls, 0 edits).
     # 0 disables the tripwire.
     no_change_stall_limit: int = 6
+    # No-progress tripwire: ANY step that leaves the worktree unchanged (even a
+    # novel command) counts toward no_progress_stall_limit; when it fires the
+    # session exits "NoProgress". Closes the Soak18 gap where a discovery loop
+    # circled the tree with novel grep/cat steps forever (no_change_stall_limit
+    # only counted repeated/failing actions). 0 disables.
+    no_progress_stall_limit: int = 10
     # Task-fiability pre-flight. "auto": an untargeted task ("review the
     # TODO list") gets its step_limit capped to explore_step_cap so it cannot
     # burn a full session hunting a file. "strict": an untargeted task
@@ -156,6 +162,7 @@ class ShellDeveloperConfig:
             workspace_marker=str(cfg.get("workspace_marker") or WORKSPACE_MARKER_DEFAULT),
             json_table=str(cfg.get("json_table", "auto") or "auto"),
             no_change_stall_limit=int(cfg.get("no_change_stall_limit", 6) or 6),
+            no_progress_stall_limit=int(cfg.get("no_progress_stall_limit", 10) or 10),
             task_scope=str(cfg.get("task_scope", "auto") or "auto"),
             explore_step_cap=int(cfg.get("explore_step_cap", 12) or 12),
         )
@@ -168,6 +175,9 @@ class ShellDeveloperConfig:
         if instance.no_change_stall_limit < 0:
             print(f"   ⚠️ shell_developer.no_change_stall_limit={instance.no_change_stall_limit} is invalid; using 6")
             instance.no_change_stall_limit = 6
+        if instance.no_progress_stall_limit < 0:
+            print(f"   ⚠️ shell_developer.no_progress_stall_limit={instance.no_progress_stall_limit} is invalid; using 10")
+            instance.no_progress_stall_limit = 10
         if instance.task_scope not in ("auto", "strict"):
             print(f"   ⚠️ shell_developer.task_scope={instance.task_scope!r} is invalid; using 'auto'")
             instance.task_scope = "auto"
@@ -290,7 +300,7 @@ _NO_SHELL_FINISH_MARKERS = (
 _ENTERPRISE_CHAT_MARKERS = ("genai.mil",)
 
 
-def build_instance_prompt(task_text: str, *, explore_note: bool = False) -> str:
+def build_instance_prompt(task_text: str, *, explore_note: bool = False, discovery_note: str = "") -> str:
     base = (
         f"TASK:\n{task_text}\n\n"
         "Begin by inspecting the relevant files, then implement the change and verify it. "
@@ -305,6 +315,8 @@ def build_instance_prompt(task_text: str, *, explore_note: bool = False) -> str:
             f"satisfies it, and if none exists, reply with {FINISH_TOKEN} and a short summary "
             "of what you inspected and why no change was warranted."
         )
+    if discovery_note:
+        base += f"\n\n{discovery_note}"
     return base
 
 
@@ -313,18 +325,19 @@ def build_inspect_prompt(
     evidence: dict[str, Any],
     target_path: str | None,
     explore_note: bool = False,
+    discovery_note: str = "",
 ) -> str:
     listing = (evidence.get("output_excerpt") or "").strip()
     header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
     if target_path:
         return (
             f"{header}Target file: {target_path}\n\n"
-            f"{build_instance_prompt(task_text, explore_note=explore_note)}\n"
+            f"{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
             "Reply with exactly one closed bash block or ```edit block. First command must be:\n"
             f"sed -n '1,80p' {target_path}"
         )
     return (
-        f"{header}{build_instance_prompt(task_text, explore_note=explore_note)}\n"
+        f"{header}{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
         "Reply with exactly one closed bash block or ```edit block. Inspect the relevant files first."
     )
 
@@ -387,11 +400,12 @@ def build_chat_prompt(
     target_path: str | None,
     steps: list[dict[str, Any]],
     explore_note: bool = False,
+    discovery_note: str = "",
 ) -> str:
     """Build the chat-mode user prompt: JSON table of past steps + the next-row
     instruction. Mirrors build_inspect_prompt but asks the model to complete the
     awaiting step of an append-only JSON table (chat-JSON-table protocol)."""
-    task_block = build_instance_prompt(task_text, explore_note=explore_note)
+    task_block = build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)
     if not steps:
         listing = (evidence.get("output_excerpt") or "").strip()
         header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
@@ -470,6 +484,70 @@ def _versionish_or_invalid(candidate: str) -> bool:
     if candidate.count(".") >= 2 and Path(candidate).suffix.lower() not in _SEED_KNOWN_EXTENSIONS:
         return True
     return False
+
+
+def _file_exists_on_disk(worktree: Any | None, rel_path: str | None) -> bool:
+    """True only when ``rel_path`` resolves to a real file inside the worktree.
+
+    Soak17 §11.1: a ``files_needed`` / addressed-feedback target counts only
+    when it exists on disk. ``resolve_seed_target_path`` already does this for
+    seed text; this is the decision-list counterpart.
+    """
+    if not rel_path:
+        return False
+    root = None
+    if worktree is not None:
+        try:
+            root = Path(worktree.working_dir())
+        except Exception:
+            root = Path(getattr(worktree, "path", "") or "")
+            if not str(root):
+                root = None
+    if root is None or not root.is_dir():
+        return False
+    try:
+        return (root / rel_path).is_file()
+    except (OSError, TypeError, ValueError):
+        return False
+
+
+def _feedback_file_path_for_id(feedback_id) -> str | None:
+    """Resolve an addressed feedback id to its ``file_path`` (None on miss).
+
+    Mirrors task_runner's fallback-target lookup so a targeted session is only
+    chosen when the feedback's file actually exists on disk (§11.1).
+    """
+    try:
+        fid = int(feedback_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        with get_db_connection() as conn:
+            row = conn.execute("SELECT file_path FROM agent_feedback WHERE id = ? LIMIT 1", (fid,)).fetchone()
+    except Exception:
+        return None
+    if not row or not row[0]:
+        return None
+    return str(row[0])
+
+
+_DISCOVERY_KEYWORDS = "todo|idea|plan|roadmap|backlog"
+
+
+def _discovery_glob_note(named: str) -> str:
+    """Soak17 §11.1: generic exploration hint when a seed names no existing file.
+
+    No hard-coded repo names — the model is pointed at a case-insensitive glob
+    over ``*.md`` / ``*.markdown`` matching discovery keywords, then asked to
+    complete the task against what it finds or finish with a summary.
+    """
+    return (
+        f"The named target ({named}) does not exist in this workspace. Treat this as an "
+        f"exploration task: locate the intended document with a case-insensitive glob of "
+        f"`{_DISCOVERY_KEYWORDS}` over `*.md` / `*.markdown`, then either make a safe "
+        "in-repo change that directly satisfies the task or finish with a summary of what "
+        "you inspected and why no change was warranted."
+    )
 
 
 def _path_like_seed_candidate(candidate: str) -> bool:
@@ -1048,7 +1126,7 @@ class SessionResult:
 
 # Failure kinds that a bounded backoff+retry cannot fix — give up immediately
 # instead of burning retries (mirrors call_endpoint's own handling).
-PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_exhausted", "bad_payload"}
+PERMANENT_FAILURE_KINDS = {"key_locked", "unauthorized", "token_exhausted", "bad_payload", "misconfig"}
 
 
 def _recent_failure_kind(model_ref: str | None, max_age_s: int = 30) -> str:
@@ -1101,12 +1179,16 @@ class ShellDeveloperSession:
         self._start = time.time()
         self._deferred_finish_count = 0
         self.target_path: str | None = None
+        # Soak17 §11.1: generic discovery hint injected into the prompt when a
+        # seed names no existing file (exploratory downgrade), else "".
+        self.discovery_note: str = ""
         # Stall tripwire bookkeeping: normalized commands already executed and
         # the current no-change streak. A step counts toward the streak only
         # when the worktree is unchanged AND the command repeated an already
         # executed command OR exited non-zero.
         self._executed_command_counts: dict[str, int] = {}
         self._no_change_steps = 0
+        self._no_progress_steps = 0
         self._last_fed_change_key: frozenset[str] = frozenset()
         # Chat-JSON-table protocol: executed steps (append-only) and whether the
         # session drives the model with a JSON step table instead of bash fences.
@@ -1270,6 +1352,17 @@ class ShellDeveloperSession:
                 command=command if command_exit_code is not None else None,
                 command_exit_code=command_exit_code,
             )
+            if command is not None and command_exit_code is not None:
+                _publish_shell_event(
+                    "shell_command_executed",
+                    task_id=self.task_id,
+                    payload={
+                        "step_number": step_number,
+                        "command": command,
+                        "exit_code": command_exit_code,
+                        "format": response_format_status,
+                    },
+                )
         except Exception as e:
             print(f"   ⚠️  Shell step archival skipped: {e}")
 
@@ -1374,30 +1467,53 @@ class ShellDeveloperSession:
         return " ".join(action.split())
 
     def _note_step_outcome(self, exit_code: int, action: str) -> bool:
-        """Stall-tripwire bookkeeping for one executed step. Returns True only
-        when the tripwire fires (current step reached no_change_stall_limit with
-        the tree unchanged). Any worktree change resets the streak; unchanged
-        steps count only when the action repeated an already-executed action or
-        exited non-zero, so a new command that simply changed nothing does not
-        accumulate."""
-        if self.cfg.no_change_stall_limit <= 0:
+        """Tripwire bookkeeping for one executed step. Returns True only when a
+        tripwire fires with the tree unchanged:
+        - no_change_stall_limit: the step repeated an already-executed action or
+          exited non-zero (repeated/failing no-change steps);
+        - no_progress_stall_limit: ANY no-change step, novel or not, so a
+          discovery loop circling the tree with fresh greps also terminates
+          instead of burning to the step limit (Soak18).
+        Any worktree change resets both streaks."""
+        if self.cfg.no_change_stall_limit <= 0 and self.cfg.no_progress_stall_limit <= 0:
             return False
         change_lines, _dtext = _worktree_change_state(self.wt)
         if change_lines:
             self._no_change_steps = 0
+            self._no_progress_steps = 0
             return False
         key = self._normalize_stall_key(action)
         self._executed_command_counts[key] = self._executed_command_counts.get(key, 0) + 1
         repeated = self._executed_command_counts[key] > 1
-        if not (repeated or exit_code != 0):
-            return False
-        self._no_change_steps += 1
-        if self._no_change_steps >= self.cfg.no_change_stall_limit:
-            return True
+        if repeated or exit_code != 0:
+            self._no_change_steps += 1
+            if self.cfg.no_change_stall_limit > 0 and self._no_change_steps >= self.cfg.no_change_stall_limit:
+                return True
+        if self.cfg.no_progress_stall_limit > 0:
+            self._no_progress_steps += 1
+            if self._no_progress_steps >= self.cfg.no_progress_stall_limit:
+                return True
         return False
 
     def _mark_stalled(self, action: str, step_number: int) -> None:
         r = self.result
+        if self._no_progress_steps >= self.cfg.no_progress_stall_limit and self.cfg.no_progress_stall_limit > 0:
+            r.exit_status = "NoProgress"
+            r.summary = (
+                f"no tree change or edit across {self._no_progress_steps} consecutive steps "
+                f"(no_progress_stall_limit={self.cfg.no_progress_stall_limit}) around action {action!r} — stopping"
+            )
+            _publish_shell_event(
+                "shell_spinning",
+                task_id=self.task_id,
+                payload={
+                    "action": action,
+                    "step_number": step_number,
+                    "no_progress_steps": self._no_progress_steps,
+                },
+            )
+            print(f"   ⏹ {r.summary}")
+            return
         r.exit_status = "Stalled"
         r.summary = (
             f"stalled after {self._no_change_steps} consecutive no-change steps "
@@ -1469,15 +1585,22 @@ class ShellDeveloperSession:
         except Exception:
             root = None
         if named and root is not None and root.is_dir() and self.target_path is None and _path_like_seed_candidate(named[0]):
-            r.exit_status = "WorkspaceValidationFailed"
-            r.summary = f"target missing after evidence: {named[0]}"
-            print(f"   ❌ {r.summary}")
+            # Soak17 §11.1: a seed that resolves to no existing file must not
+            # hard-abort the session. Downgrade to an exploration session with a
+            # generic discovery hint and raise a target_missing event. The
+            # target_path stays None so _mark_target_inspected rewards any
+            # inspection command.
+            self.discovery_note = _discovery_glob_note(named[0])
+            r.summary = f"target missing after evidence: {named[0]} (downgraded to exploration)"
+            print(f"   🔭 {r.summary}")
             _publish_shell_event(
-                "shell_workspace_validation_failed",
+                "shell_target_missing",
                 task_id=self.task_id,
                 payload={**r.evidence, "reason": "target_missing", "target": named[0]},
             )
-            return r
+            self.cfg.fiability = "exploratory"
+            if 0 < self.cfg.explore_step_cap < self.cfg.step_limit:
+                self.cfg.step_limit = self.cfg.explore_step_cap
         # Seed the JSON step table with the in-process evidence step (chat mode).
         if self.chat_mode:
             excerpt = (r.evidence.get("output_excerpt") or "").strip()
@@ -1501,6 +1624,7 @@ class ShellDeveloperSession:
                         self.target_path,
                         self.steps,
                         explore_note=self.cfg.fiability == "exploratory",
+                        discovery_note=self.discovery_note,
                     ),
                 }
             )
@@ -1514,6 +1638,7 @@ class ShellDeveloperSession:
                         r.evidence,
                         self.target_path,
                         explore_note=self.cfg.fiability == "exploratory",
+                        discovery_note=self.discovery_note,
                     ),
                 }
             )
@@ -1533,6 +1658,20 @@ class ShellDeveloperSession:
                 r.summary = f"model-call safety ceiling ({self.cfg.step_limit + INSPECT_STEP_CAP}) reached"
                 break
 
+            # Operator console heartbeats (read view): a turn begins and the
+            # model call is awaited; _record_step later closes the loop with
+            # shell_command_executed. These are append-only and non-mutating.
+            hb_step = r.n_model_calls + 1
+            _publish_shell_event(
+                "shell_turn_start",
+                task_id=self.task_id,
+                payload={"step_number": hb_step, "model_ref": self.resolved_model},
+            )
+            _publish_shell_event(
+                "shell_model_call_started",
+                task_id=self.task_id,
+                payload={"step_number": hb_step, "model_ref": self.resolved_model},
+            )
             response = self._llm()
             r.n_model_calls += 1
             if not response:
@@ -2090,16 +2229,22 @@ def _task_is_targeted(
     worktree: Any | None = None,
     marker: str = WORKSPACE_MARKER_DEFAULT,
 ) -> bool:
-    """Task-fiability pre-flight: the orchestrator's decision names a concrete
-    file target (seed resolution) or the addressing list picks a file. Honoring
-    the evidence-only chat row (step 1) is not a target (Soak16: the model
-    fixated on the workspace listing and never found a file)."""
+    """Task-fiability pre-flight: the decision names a *concrete existing* file.
+
+    A file is only a target when it exists on disk. Phantom ``files_needed`` /
+    ``addressing_feedback_ids`` entries (e.g. a TODO.md/ROADMAP.md the tidy step
+    never created) must not force a targeted session that then hard-aborts on a
+    missing target (Soak17 §11.1). Honoring the evidence-only chat row (step 1,
+    Soak16) is not a target."""
     if resolve_seed_target_path(task_text, worktree, marker):
         return True
-    if decision.get("files_needed"):
-        return True
-    if decision.get("addressing_feedback_ids"):
-        return True
+    for rel in decision.get("files_needed") or []:
+        if _file_exists_on_disk(worktree, rel):
+            return True
+    for fid in decision.get("addressing_feedback_ids") or []:
+        path = _feedback_file_path_for_id(fid)
+        if path and _file_exists_on_disk(worktree, path):
+            return True
     return False
 
 

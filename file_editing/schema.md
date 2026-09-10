@@ -5,7 +5,7 @@
 > `core/db.py` → `init_db()` (May 2026). This page is a pointer only — do not
 > copy CREATE TABLE statements from here; they would drift.
 
-**Canonical schema:** `core/db.py` (`init_db()` and `_migrate_schema()`).
+**Canonical schema:** `core/db.py` → `init_db()` (full schema in one pass; non-backwards-compatible, an old DB is rebuilt not migrated).
 
 **Documented dump:** `docs/architecture.md` (Database Schema).
 

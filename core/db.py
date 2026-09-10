@@ -137,7 +137,8 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
         try:
             conn.execute(stmt)
         except sqlite3.OperationalError as e:
-            # Index on a column not yet present (pre-migration DB) — continue
+            # Canonical schema is created in full, so "already exists" should
+            # never fire; keep a lenient fallback for a recreation race.
             msg = str(e).lower()
             if "no such column" in msg or "already exists" in msg:
                 print(f"   ℹ️  Schema statement skipped: {e}")
@@ -145,107 +146,54 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
                 raise
 
 
-def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    """Return existing column names for a table (empty set if missing)."""
+SCHEMA_VERSION = 1
+
+
+def _schema_is_current(conn: sqlite3.Connection) -> bool:
+    """True when an existing DB matches the canonical schema version.
+
+    Database initialization is non-backwards-compatible: a pre-existing file
+    created by an older version is discarded and rebuilt rather than
+    ALTER-migrated, because there is no need to preserve old databases.
+    """
     try:
-        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        return conn.execute("PRAGMA user_version;").fetchone()[0] == SCHEMA_VERSION
     except sqlite3.Error:
-        return set()
-    # PRAGMA table_info: cid, name, type, notnull, dflt_value, pk
-    return {row[1] for row in rows}
+        return False
 
 
-def _ensure_column(conn: sqlite3.Connection, table: str, column: str, coltype: str) -> None:
-    """ADD COLUMN if missing. Safe on existing DBs (CREATE IF NOT EXISTS never alters)."""
-    if column in _table_columns(conn, table):
-        return
+def _configure_conn(conn: sqlite3.Connection) -> None:
     try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
-        print(f"   🔧 Migrated {table}.{column} ({coltype})")
-    except sqlite3.OperationalError as e:
-        # Race or already-added by concurrent init
-        if "duplicate column" not in str(e).lower():
-            print(f"   ⚠️  Could not add {table}.{column}: {e}")
-
-
-def _migrate_schema(conn: sqlite3.Connection) -> None:
-    """
-    Apply additive column migrations for DBs created before schema changes.
-    CREATE TABLE IF NOT EXISTS does not add new columns to existing tables.
-    """
-    # edit_proposals: task_id required by reporting + query_developer_responses
-    for col, coltype in (
-        ("task_id", "TEXT"),
-        ("selected_mode", "TEXT"),
-        ("fallback_used", "INTEGER DEFAULT 0"),
-        ("final_mode", "TEXT"),
-        ("target_file_path", "TEXT"),
-        ("rationale", "TEXT"),
-        ("reviewed_at", "TIMESTAMP"),
-        ("write_started_at", "TIMESTAMP"),
-        ("write_completed_at", "TIMESTAMP"),
-        ("write_start_line_guid", "TEXT"),
-        ("write_end_line_guid", "TEXT"),
-        ("reviewed_by_agent_id", "INTEGER"),
-        ("proposed_by_agent_id", "INTEGER"),
-        ("affected_line_guids", "TEXT"),
-        ("expected_hashes", "TEXT"),
-        ("status", "TEXT DEFAULT 'pending'"),
-        ("edit_payload", "TEXT"),
-        ("target_file_id", "INTEGER"),
-        ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
-    ):
-        _ensure_column(conn, "edit_proposals", col, coltype)
-
-    try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_edit_proposals_task ON edit_proposals(task_id)")
-    except sqlite3.OperationalError as e:
-        print(f"   ⚠️  idx_edit_proposals_task: {e}")
-
-    # agent_feedback: Workstream B growth controls (dedupe key/count, stuck-id tracking)
-    for col, coltype in (
-        ("dup_key", "TEXT"),
-        ("dup_count", "INTEGER DEFAULT 1"),
-        ("targeted_count", "INTEGER DEFAULT 0"),
-        ("stuck", "INTEGER DEFAULT 0"),
-    ):
-        _ensure_column(conn, "agent_feedback", col, coltype)
-
-    # agent_responses_archive: Pass 1 shell observability (Phase 3.1)
-    for col, coltype in (
-        ("model", "TEXT"),
-        ("step_number", "INTEGER"),
-        ("response_format_status", "TEXT"),
-        ("command", "TEXT"),
-        ("command_exit_code", "INTEGER"),
-    ):
-        _ensure_column(conn, "agent_responses_archive", col, coltype)
-
-    # token_log: per-endpoint 4h windows (ROADMAP §8.1a)
-    _ensure_column(conn, "token_log", "endpoint_name", "TEXT")
-    # model_health: advertised Retry-After on rate_limited events (ROADMAP §5)
-    _ensure_column(conn, "model_health_events", "retry_after_s", "INTEGER")
-    _ensure_column(conn, "model_health_events", "detail", "TEXT")
-    try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_token_log_endpoint_ts ON token_log(endpoint_name, timestamp)")
-    except sqlite3.OperationalError as e:
-        print(f"   ⚠️  idx_token_log_endpoint_ts: {e}")
+        conn.execute("PRAGMA journal_mode=OFF;")
+        conn.execute("PRAGMA synchronous=OFF;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+    except Exception as e:
+        print(f"    ⚠️  Exception handled in db.py: {e}")
 
 
 def init_db():
-    """Initialize database with complete schema"""
+    """Initialize database with the complete canonical schema."""
     try:
         db_path = get_db_path()
+        path = Path(db_path)
         print(f"🔍 Initializing database at: {db_path}")
 
         conn = sqlite3.connect(db_path, timeout=60.0)
         cursor = conn.cursor()
-        try:
-            cursor.execute("PRAGMA journal_mode=OFF;")
-            cursor.execute("PRAGMA synchronous=OFF;")
-            cursor.execute("PRAGMA temp_store=MEMORY;")
-        except Exception as e:
-            print(f"    ⚠️  Exception handled in db.py: {e}")
+        _configure_conn(conn)
+
+        # Non-backwards-compatible policy: a pre-existing DB from an older
+        # schema version is discarded and rebuilt fresh — never ALTER-migrated.
+        if not _schema_is_current(conn):
+            conn.close()
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:
+                print(f"   ⚠️  Could not remove stale database, rebuilding in place: {e}")
+            conn = sqlite3.connect(db_path, timeout=60.0)
+            cursor = conn.cursor()
+            _configure_conn(conn)
+
         # foreign_keys after schema apply (some mounts fail mid-DDL with FKs on)
 
         _schema_sql = """
@@ -510,7 +458,12 @@ def init_db():
                 response TEXT,
                 parse_success INTEGER,
                 parse_error TEXT,
-                timestamp TEXT
+                timestamp TEXT,
+                model TEXT,
+                step_number INTEGER,
+                response_format_status TEXT,
+                command TEXT,
+                command_exit_code INTEGER
             );
 
             -- ============================================================
@@ -525,7 +478,10 @@ def init_db():
                 consecutive_failures INTEGER DEFAULT 0,
                 last_success TEXT,
                 unavailable_until TEXT,
-                last_updated TEXT
+                last_updated TEXT,
+                tokens_per_minute INTEGER,
+                tokens_remaining_minute INTEGER,
+                tokens_reset_epoch REAL
             );
 
             -- Per-model outcome events for recency-weighted flakiness tracking
@@ -719,10 +675,13 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_file_lines_sort_order ON file_lines(sort_order);
             CREATE INDEX IF NOT EXISTS idx_edit_proposals_status ON edit_proposals(status);
             CREATE INDEX IF NOT EXISTS idx_edit_proposals_file ON edit_proposals(target_file_id);
-            -- idx_edit_proposals_task created in _migrate_schema after column ensure
+            CREATE INDEX IF NOT EXISTS idx_edit_proposals_task ON edit_proposals(task_id);
+
+            -- Token logging indexes
+            CREATE INDEX IF NOT EXISTS idx_token_log_endpoint_ts ON token_log(endpoint_name, timestamp);
         """
         _apply_schema(conn, _schema_sql)
-        _migrate_schema(conn)
+        cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
         try:
             cursor.execute("PRAGMA foreign_keys = ON;")
         except Exception as e:

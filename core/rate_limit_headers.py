@@ -24,6 +24,14 @@ _EPOCH_FLOOR = 1_000_000_000
 _REMAINING_KEYS = ("x-ratelimit-remaining", "ratelimit-remaining")
 _RESET_KEYS = ("x-ratelimit-reset", "ratelimit-reset")
 
+# Soak17 §11.3: the per-minute (and windowed) token-bucket header family.
+# Providers report ``x-ratelimit-{limit,remaining,reset}-tokens-<window>``
+# (window ∈ minute/second/hour/day, often with the -second/-hour/-day suffix
+# instead of "s"). These replace the daily X-RateLimit-* on token-class 429s.
+_WINDOW_SUFFIXES = ("minute", "second", "hour", "day")
+_TOKEN_FIELDS = ("limit", "remaining", "reset")
+_WINDOW_PRIORITY = {"second": 0, "minute": 1, "hour": 2, "day": 3}
+
 # The 600 s ceiling (10 minutes). Advertised waits above this trip the
 # "cooldown too long -> fallback now" branch instead of a long in-process sleep.
 MAX_ADVERTISED_WAIT = 600
@@ -39,6 +47,87 @@ _QUOTA_BODY_TOKENS = (
     # Provider error types that are quota exhaustion, not a transient burst.
     "freeusagelimiterror",
 )
+
+
+def _to_int_or_none(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(str(value).strip()))
+    except (TypeError, ValueError):
+        return None
+
+
+def _select_token_window(candidates: list[dict[str, str]]) -> dict[str, str]:
+    """Pick the tightest token-bucket window among those the provider reports.
+
+    An exhausted window (remaining == 0) always wins; otherwise prefer the
+    shortest recurrence (second < minute < hour < day) since it is the most
+    binding near-term constraint.
+    """
+    exhausted = [c for c in candidates if (r := _to_int_or_none(c.get("remaining"))) is not None and r <= 0]
+    pool = exhausted or candidates
+    return min(pool, key=lambda c: _WINDOW_PRIORITY.get(str(c.get("window")).lower(), 99))
+
+
+@dataclass
+class TokenWindowInfo:
+    """Parsed ``x-ratelimit-*-tokens-<window>`` budget (Soak17 §11.3)."""
+
+    present: bool
+    limit: int | None = None
+    remaining: int | None = None
+    reset_epoch: float | None = None
+    window: str | None = None
+    is_exhausted: bool = False
+
+
+def parse_token_window_headers(headers: object, *, now: float | None = None) -> TokenWindowInfo:
+    """Parse the per-minute token-bucket headers returned by the provider.
+
+    Looks for ``x-ratelimit-{limit,remaining,reset}-tokens-<window>`` families
+    (window ∈ minute/second/hour/day). Prefers the tightest reported window, so
+    a ``-tokens-minute`` exhaustion (remaining ``0``, reset ``59`` — the soak
+    evidence) is surfaced even when the 429 body also carries daily
+    ``X-RateLimit-*`` headers. ``reset`` is normalized like ``X-RateLimit-Reset``
+    (ms epoch, s epoch, or relative-seconds count).
+
+    Returns ``TokenWindowInfo(present=False)`` when no token-window headers are
+    present; callers then fall through to the daily-quota / burst paths.
+    """
+    if headers is None:
+        norm: dict[str, str] = {}
+    else:
+        norm = {str(k).lower(): str(v) for k, v in cast("Mapping[object, object]", headers).items()}
+
+    candidates: list[dict[str, str]] = []
+    for window in _WINDOW_SUFFIXES:
+        entry: dict[str, str] = {}
+        for field in _TOKEN_FIELDS:
+            for key in (f"x-ratelimit-{field}-tokens-{window}", f"x-ratelimit-{field}-tokens-{window}s"):
+                raw = norm.get(key)
+                if raw is None:
+                    continue
+                entry[field] = raw
+                break
+        if entry:
+            entry["window"] = window
+            candidates.append(entry)
+    if not candidates:
+        return TokenWindowInfo(present=False)
+
+    chosen = _select_token_window(candidates)
+    limit = _to_int_or_none(chosen.get("limit"))
+    remaining = _to_int_or_none(chosen.get("remaining"))
+    reset_epoch = parse_reset_to_epoch(chosen.get("reset"), now=now)
+    return TokenWindowInfo(
+        present=True,
+        limit=limit,
+        remaining=remaining,
+        reset_epoch=reset_epoch,
+        window=chosen.get("window"),
+        is_exhausted=remaining is not None and remaining <= 0,
+    )
 
 
 def advertised_wait_seconds(

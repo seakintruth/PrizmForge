@@ -424,7 +424,17 @@ class ContextManager:
                         msg,
                         suggestion,
                     ) in enumerate(feedback_items[:10], 1):
-                        message += f"{i}. **[{priority}]** {category} in `{fpath}` (ID: {fid})\n"
+                        # A NULL file_path must never render as "in `None`"
+                        # (Soak18: seed_task rows were misread as a phantom
+                        # code-fix task). Seed rows carry the task description
+                        # itself, so surface that text instead of the category.
+                        label = category
+                        if category == "seed_task":
+                            label = "seed task"
+                        if fpath:
+                            message += f"{i}. **[{priority}]** {label} in `{fpath}` (ID: {fid})\n"
+                        else:
+                            message += f"{i}. **[{priority}]** {label} (ID: {fid})\n"
                         message += f"   {msg[:80]}{'...' if len(msg) > 80 else ''}\n"
                         if suggestion:
                             message += f"   💡 {suggestion[:60]}{'...' if len(suggestion) > 60 else ''}\n"

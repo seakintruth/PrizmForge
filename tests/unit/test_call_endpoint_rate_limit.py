@@ -58,6 +58,7 @@ class _FakeEndpoint:
             status=SimpleNamespace(value=EndpointStatus.HEALTHY.value),
             mark_success=lambda: None,
             mark_failure=lambda *a, **k: None,
+            record_token_window=lambda **k: None,
         )
 
     def extract_response(self, data):
@@ -91,7 +92,7 @@ class _FakeManager:
 
 class _RecordingHealth(SimpleNamespace):
     def __init__(self):
-        super().__init__(parked=[])
+        super().__init__(parked=[], token_windows=[])
 
     def is_available(self):
         return True
@@ -102,8 +103,11 @@ class _RecordingHealth(SimpleNamespace):
     def mark_success(self):
         pass
 
-    def mark_failure(self, status, cooldown_minutes=None):
-        self.parked.append((status, cooldown_minutes))
+    def mark_failure(self, status, cooldown_minutes=None, cooldown_seconds=None):
+        self.parked.append((status, cooldown_minutes, cooldown_seconds))
+
+    def record_token_window(self, *, limit, remaining, reset_epoch):
+        self.token_windows.append((limit, remaining, reset_epoch))
 
 
 @pytest.fixture
@@ -124,6 +128,7 @@ def call_endpoint_env(monkeypatch):
     # Reset caches so get_rate_limiter()/get_token_budget() rebuild cleanly.
     base._rate_limiter = None
     base._token_budgets = {}
+    base._token_pacers = {}
     return base
 
 
@@ -305,7 +310,8 @@ def test_429_dump_prints_once_per_latch_then_skip_is_one_line(call_endpoint_env,
 
 
 def test_429_quota_ms_reset_parks_and_does_not_hop(call_endpoint_env, capfd):
-    """Distant daily-quota reset (ms) parks the endpoint instead of the 60s hop."""
+    """Distant daily-quota reset (ms) parks min(seconds_to_reset, 4h), not a
+    fixed 15m window (Soak17 §11.2)."""
     base = call_endpoint_env
     health = _RecordingHealth()
     fake = _FakeEndpoint()
@@ -334,15 +340,70 @@ def test_429_quota_ms_reset_parks_and_does_not_hop(call_endpoint_env, capfd):
                 answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
 
     assert answer is None
-    assert health.parked == [(EndpointStatus.RATE_LIMITED, 15)]
+    assert health.parked[0][0] == EndpointStatus.RATE_LIMITED
+    # reset is ~7200s away -> park for ~7200s (min with the 4h cap), not 15m
+    assert pytest.approx(7200, abs=30) == health.parked[0][2]
     assert sleeps == []
     out = capfd.readouterr().out
     assert "Daily quota exhausted" in out
     assert "parking" in out
 
 
+def test_429_quota_park_caps_at_four_hours(call_endpoint_env):
+    """Reset beyond 4h parks exactly 4h (QUOTA_PARK_MAX_SECONDS), never more."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+
+    reset_ms = int((time.time() + 6 * 3600) * 1000)
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "quota"}},
+            headers={"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(reset_ms)},
+        )
+    ]
+
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked[0][0] == EndpointStatus.RATE_LIMITED
+    assert health.parked[0][2] == 14400
+
+
+def test_429_quota_short_retry_after_reopens_on_time(call_endpoint_env):
+    """Body-keyword quota with a short Retry-After parks for that window
+    (capped at 4h) instead of the fixed 15m offline window (Soak17 §11.2)."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "free-models-per-day daily quota. Add 10 credits to unlock more."}},
+            headers={"Retry-After": "120"},
+        )
+    ]
+
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked == [(EndpointStatus.RATE_LIMITED, None, 120)]
+
+
 def test_429_quota_body_token_parks_and_does_not_hop(call_endpoint_env, capfd):
-    """Body-keyword quota without a Reset header parks 15m; no 1s hop."""
+    """Body-keyword quota without a Reset header parks the advertised 429
+    window (120s default, capped at 4h); no 1s hop."""
     base = call_endpoint_env
     health = _RecordingHealth()
     fake = _FakeEndpoint()
@@ -364,11 +425,93 @@ def test_429_quota_body_token_parks_and_does_not_hop(call_endpoint_env, capfd):
                 answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
 
     assert answer is None
-    assert health.parked == [(EndpointStatus.RATE_LIMITED, 15)]
+    assert health.parked == [(EndpointStatus.RATE_LIMITED, None, 120)]
     assert sleeps == []
     out = capfd.readouterr().out
     assert "Daily quota exhausted" in out
     assert "body signal" in out
+
+
+# ---- Soak17 §11.2: MissingSessionID-class 400s are permanent config failures
+def test_400_missing_session_is_permanent_misconfig(call_endpoint_env, capfd):
+    """A MissingSessionID-class 400 latches MISCONFIGURED, records kind
+    'misconfig' (permanent, no retry loop), and falls back immediately."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    scripted = [
+        _resp(
+            400,
+            {"error": {"type": "MissingSessionID", "message": "session does not exist"}},
+        )
+    ]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, "endpoint": endpoint, **kw}),
+            ):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked == [(EndpointStatus.MISCONFIGURED, 240, None)]
+    assert outcomes and outcomes[0]["kind"] == "misconfig"
+    assert outcomes[0]["endpoint"] == "primary"
+    out = capfd.readouterr().out
+    assert "Endpoint misconfigured" in out
+    assert "missing API session" in out
+
+
+def test_400_sessionless_body_also_is_misconfig(call_endpoint_env):
+    """Free-form 400 prose ('missing session') classifies the same way."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    scripted = [_resp(400, {"error": {"message": "missing session"}})]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({**kw})):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked[0][0] == EndpointStatus.MISCONFIGURED
+    assert outcomes[0]["kind"] == "misconfig"
+
+
+def test_400_generic_not_session_still_falls_through(call_endpoint_env):
+    """A plain 400 (no session signature) keeps the existing fall-through
+    behavior (unexpected error), not MISCONFIGURED."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    resp = _resp(400, {"error": {"message": "bad request"}})
+
+    def _raise(*a):
+        raise RuntimeError("HTTP 400: bad request")
+
+    resp.raise_for_status = _raise
+    scripted = [resp]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({**kw})):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert all(s != EndpointStatus.MISCONFIGURED for s, *_ in health.parked)
+    assert outcomes and outcomes[0]["kind"] == "unexpected_error"
 
 
 def test_429_quota_short_reset_sleeps_to_reset_then_retries(call_endpoint_env, capfd):
@@ -391,6 +534,116 @@ def test_429_quota_short_reset_sleeps_to_reset_then_retries(call_endpoint_env, c
     assert answer == "recovered"
     assert 25 <= sleeps[0] <= 35
     assert "sleeping to reset" in capfd.readouterr().out
+
+
+# ---- Soak17 §11.3: per-minute token-bucket exhaustion parks + send pacing ---
+def test_429_token_minute_exhaustion_parks_for_reset(call_endpoint_env, capfd):
+    """x-ratelimit-*-tokens-minute remaining 0 / reset 59 parks all consumers
+    for the reset (~59s, capped 4h) instead of the 120s burst hop, and records
+    the per-minute budget on health."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "Rate limit exceeded"}},
+            headers={
+                "x-ratelimit-limit-tokens-minute": "500000",
+                "x-ratelimit-remaining-tokens-minute": "0",
+                "x-ratelimit-reset-tokens-minute": "59",
+            },
+        )
+    ]
+    sleeps: list[float] = []
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({**kw}),
+            ):
+                with patch("time.sleep", side_effect=sleeps.append):
+                    answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked[0][0] == EndpointStatus.RATE_LIMITED
+    assert pytest.approx(59, abs=5) == health.parked[0][2]
+    assert sleeps == []
+    assert outcomes and outcomes[0]["kind"] == "rate_limited"
+    assert outcomes[0]["retry_after_s"] == pytest.approx(59, abs=5)
+    assert health.token_windows and health.token_windows[0][:2] == (500000, 0)
+    out = capfd.readouterr().out
+    assert "Per-minute token bucket exhausted" in out
+    assert "until reset" in out
+
+
+def test_429_token_minute_exhaustion_without_reset_uses_default_park(call_endpoint_env):
+    """remaining 0 with no token reset: park the default 15m offline window."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    scripted = [
+        _resp(
+            429,
+            {"error": {"message": "Rate limit exceeded"}},
+            headers={
+                "x-ratelimit-limit-tokens-minute": "500000",
+                "x-ratelimit-remaining-tokens-minute": "0",
+            },
+        )
+    ]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked == [(EndpointStatus.RATE_LIMITED, None, 900)]
+
+
+def test_call_endpoint_paces_send_rate_after_budget_discovered(call_endpoint_env, capfd):
+    """Once a 200 response advertises a per-minute budget, the next large send
+    sleeps only the refill deficit (bounded) before hitting the wire."""
+    base = call_endpoint_env
+    # First call learns the budget from a 200 response (tokens-minute family).
+    scripted = [
+        _resp(
+            200,
+            {"choices": [{"message": {"content": "ok"}}]},
+            headers={
+                "x-ratelimit-limit-tokens-minute": "500000",
+                "x-ratelimit-remaining-tokens-minute": "1000",
+                "x-ratelimit-reset-tokens-minute": "59",
+            },
+        )
+    ]
+    with patch("agents.base.post_json", side_effect=scripted):
+        answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+    assert answer == "ok"
+    pacer = base.get_token_pacer(_FakeEndpoint())
+    assert pacer.limit == 500000
+    assert pacer.remaining == pytest.approx(1000.0)
+
+    # Second, much larger send must sleep to refill (~190k tokens vs 1000
+    # remaining at 500k/min ≈ 22s). Budget sleeps are patched out of wall time.
+    big = "a" * 400_000
+    sleeps: list[float] = []
+    with patch("agents.base.post_json", return_value=_resp(200, {"choices": [{"message": {"content": "done"}}]})):
+        with patch("time.sleep", side_effect=sleeps.append):
+            answer, _ = base.call_endpoint([{"role": "user", "content": big}], model="mock-model")
+
+    assert answer == "done"
+    assert sleeps and sleeps[0] >= 5.0
+    out = capfd.readouterr().out
+    assert "Token-pacing" in out
+    assert "fitting per-minute" in out or "per-minute token bucket" in out
 
 
 def test_429_burst_with_ratelimit_headers_not_quota(call_endpoint_env, capfd):
@@ -906,7 +1159,7 @@ def test_empty_policy_200_marks_failure_and_falls_back(call_endpoint_env, capfd)
                     answer, _tokens = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
 
     assert answer == "from fallback"
-    assert any(s == EndpointStatus.UNAVAILABLE for s, _ in primary.health.parked)
+    assert any(s == EndpointStatus.UNAVAILABLE for s, *_ in primary.health.parked)
     assert any(o.get("kind") == "policy" for o in outcomes)
     assert any(o.get("ok") is False for o in outcomes)
     assert "falling back" in capfd.readouterr().out.lower()

@@ -215,3 +215,121 @@ def test_export_keyword_table_name(tmp_path, temp_db, capsys):
     text = csv_path.read_text(encoding="utf-8")
     assert "t-kw" in text
     capsys.readouterr()
+
+
+class TestCmdShowReportGuard:
+    def _make_reports(self, tmp_path):
+
+        project_dir = tmp_path / "proj"
+        reports_dir = project_dir / ".PrizmForge" / "reports"
+        reports_dir.mkdir(parents=True, exist_ok=True)
+        (reports_dir / "project_report_secret.md").write_text("REPORT-CONTENT", encoding="utf-8")
+
+        fake_cfg = {"project_directory": str(project_dir)}
+        return reports_dir, fake_cfg
+
+    def test_traversal_attempts_blocked(self, tmp_path, monkeypatch, capsys):
+        _reports_dir, fake_cfg = self._make_reports(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("OUTSIDE-SECRET", encoding="utf-8")
+        monkeypatch.setattr(cli_commands, "get_config", lambda: fake_cfg)
+
+        for bad in ("../outside.txt", "..\\outside.txt", str(outside), ".", ".."):
+            capsys.readouterr()
+            cli_commands.cmd_show_report(bad)
+            out = capsys.readouterr().out
+            assert "Invalid report name" in out, f"expected rejection for {bad!r}"
+            assert "OUTSIDE-SECRET" not in out
+
+    def test_symlink_escape_blocked_by_containment(self, tmp_path, monkeypatch, capsys):
+        reports_dir, fake_cfg = self._make_reports(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("OUTSIDE-SECRET", encoding="utf-8")
+        (reports_dir / "project_report_link.md").symlink_to(outside)
+        monkeypatch.setattr(cli_commands, "get_config", lambda: fake_cfg)
+
+        cli_commands.cmd_show_report("project_report_link.md")
+        out = capsys.readouterr().out
+        assert "outside reports directory" in out
+        assert "OUTSIDE-SECRET" not in out
+
+    def test_backslash_normalization_used_for_join(self, tmp_path, monkeypatch, capsys):
+        reports_dir, fake_cfg = self._make_reports(tmp_path)
+        (reports_dir / "project_report-other.md").write_text("OTHER-CONTENT", encoding="utf-8")
+        monkeypatch.setattr(cli_commands, "get_config", lambda: fake_cfg)
+
+        cli_commands.cmd_show_report("project_report-other.md")
+        out = capsys.readouterr().out
+        assert "OTHER-CONTENT" in out
+
+    def test_specific_report_shown(self, tmp_path, monkeypatch, capsys):
+        _, fake_cfg = self._make_reports(tmp_path)
+        monkeypatch.setattr(cli_commands, "get_config", lambda: fake_cfg)
+
+        cli_commands.cmd_show_report("project_report_secret.md")
+        out = capsys.readouterr().out
+        assert "REPORT-CONTENT" in out
+
+    def test_latest_report_shown_when_no_name(self, tmp_path, monkeypatch, capsys):
+        _, fake_cfg = self._make_reports(tmp_path)
+        monkeypatch.setattr(cli_commands, "get_config", lambda: fake_cfg)
+
+        cli_commands.cmd_show_report()
+        out = capsys.readouterr().out
+        assert "REPORT-CONTENT" in out
+
+    def test_missing_report_not_found(self, tmp_path, monkeypatch, capsys):
+        _, fake_cfg = self._make_reports(tmp_path)
+        monkeypatch.setattr(cli_commands, "get_config", lambda: fake_cfg)
+
+        cli_commands.cmd_show_report("project_report_nope.md")
+        out = capsys.readouterr().out
+        assert "Report not found" in out
+
+    def test_no_reports_dir(self, tmp_path, monkeypatch, capsys):
+        fake_cfg = {"project_directory": str(tmp_path / "no_proj")}
+        monkeypatch.setattr(cli_commands, "get_config", lambda: fake_cfg)
+
+        cli_commands.cmd_show_report("x.md")
+        out = capsys.readouterr().out
+        assert "No reports directory found" in out
+
+
+class TestCmdExportSpecificTablesAllowlist:
+    def test_invalid_identifier_skipped(self, tmp_path, temp_db, capsys):
+        from core.db_connection import get_db_connection
+
+        with get_db_connection() as conn:
+            conn.execute("CREATE TABLE widgets (id INTEGER, name TEXT)")
+            conn.execute("INSERT INTO widgets (id, name) VALUES (1, 'gizmo')")
+
+        out = tmp_path / "exp"
+        cli_commands.cmd_export_specific_tables(
+            ["widgets", "widgets; DROP TABLE widgets;--", "task/log"],
+            output_dir=out,
+        )
+        capsys_out = capsys.readouterr().out
+        assert "Invalid table name" in capsys_out
+        assert (out / "widgets.csv").exists()
+        csv_files = {p.name for p in out.glob("*.csv")}
+        assert csv_files == {"widgets.csv"}
+
+        with get_db_connection() as conn:
+            row = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='widgets'").fetchone()
+        assert row[0] == 1
+
+
+def test_export_specific_tables_task_id_filter(tmp_path, temp_db, capsys):
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute("CREATE TABLE audit (id INTEGER, task_id TEXT)")
+        conn.execute("INSERT INTO audit (id, task_id) VALUES (1, 't-a')")
+        conn.execute("INSERT INTO audit (id, task_id) VALUES (2, 't-b')")
+
+    out = tmp_path / "exp"
+    cli_commands.cmd_export_specific_tables(["audit"], output_dir=out, task_id="t-a")
+    capsys.readouterr()
+    text = (out / "audit.csv").read_text(encoding="utf-8")
+    assert "t-a" in text
+    assert "t-b" not in text

@@ -101,6 +101,10 @@ class EndpointStatus(Enum):
     KEY_LOCKED = "key_locked"
     SERVER_ERROR = "server_error"
     UNAVAILABLE = "unavailable"
+    # Soak17 §11.2: permanent endpoint-config failure (e.g. MissingSessionID
+    # 400 — the request references an API session that does not exist).
+    # Surfaced and demoted without retry loops, unlike transient states.
+    MISCONFIGURED = "misconfigured"
 
 
 class EndpointConfig:
@@ -147,6 +151,11 @@ class EndpointHealth:
         self.last_success = datetime.now()
         self.unavailable_until: datetime | None = None
         self.consecutive_failures = 0
+        # Soak17 §11.3: last discovered per-minute token-bucket budget from
+        # x-ratelimit-*-tokens-minute headers. Persisted for restart survival.
+        self.tokens_per_minute: int | None = None
+        self.tokens_remaining_minute: int | None = None
+        self.tokens_reset_epoch: float | None = None
 
         if endpoint_name:
             self._load_from_db()
@@ -158,7 +167,8 @@ class EndpointHealth:
                 cursor.execute(
                     """
                     SELECT status, error_count, consecutive_failures,
-                           last_success, unavailable_until
+                           last_success, unavailable_until,
+                           tokens_per_minute, tokens_remaining_minute, tokens_reset_epoch
                     FROM endpoint_health
                     WHERE endpoint_name = ?
                     """,
@@ -173,6 +183,12 @@ class EndpointHealth:
                         self.last_success = datetime.fromisoformat(row[3])
                     if row[4]:
                         self.unavailable_until = datetime.fromisoformat(row[4])
+                    if row[5] is not None:
+                        self.tokens_per_minute = int(row[5])
+                    if row[6] is not None:
+                        self.tokens_remaining_minute = int(row[6])
+                    if row[7] is not None:
+                        self.tokens_reset_epoch = float(row[7])
         except Exception as e:
             logger.warning(f"Failed to load endpoint health from DB: {e}")
 
@@ -185,8 +201,9 @@ class EndpointHealth:
                     """
                     INSERT OR REPLACE INTO endpoint_health
                     (endpoint_name, status, error_count, consecutive_failures,
-                     last_success, unavailable_until, last_updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                     last_success, unavailable_until, last_updated,
+                     tokens_per_minute, tokens_remaining_minute, tokens_reset_epoch)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         self.endpoint_name,
@@ -196,6 +213,9 @@ class EndpointHealth:
                         self.last_success.isoformat() if self.last_success else None,
                         self.unavailable_until.isoformat() if self.unavailable_until else None,
                         datetime.now().isoformat(),
+                        self.tokens_per_minute,
+                        self.tokens_remaining_minute,
+                        self.tokens_reset_epoch,
                     ),
                 )
         except Exception as e:
@@ -212,6 +232,13 @@ class EndpointHealth:
             return 0
         remaining = (self.unavailable_until - datetime.now()).total_seconds()
         return max(0, int(remaining))
+
+    def record_token_window(self, *, limit: int | None, remaining: int | None, reset_epoch: float | None) -> None:
+        """Persist the per-minute token-bucket budget from Soak17 §11.3 headers."""
+        self.tokens_per_minute = limit
+        self.tokens_remaining_minute = remaining
+        self.tokens_reset_epoch = reset_epoch
+        self._save_to_db()
 
     def mark_success(self):
         self.status = EndpointStatus.HEALTHY
@@ -244,6 +271,8 @@ class EndpointHealth:
                     cooldown_minutes = 30
                 elif status == EndpointStatus.RATE_LIMITED:
                     cooldown_minutes = 2
+                elif status == EndpointStatus.MISCONFIGURED:
+                    cooldown_minutes = 240
                 else:
                     cooldown_minutes = 5
 

@@ -8,7 +8,7 @@ post-mortems, and acceptance evidence live in **git history**
 `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`). Do not paste shipped
 checklists back into this tracker.
 
-**Last updated:** 2026-09-07
+**Last updated:** 2026-09-09
 
 ## How to use this file
 
@@ -24,7 +24,8 @@ checklists back into this tracker.
 |---|---|---|
 | §0 Current state | — | Index |
 | **§11 Soak17 root-cause fixes (targeting / 400 class / headers)** | **P0** | Phantom-seed abort burned Soak17 at 0 model calls. Fix §11.1 existence-verified targeting first, then §11.2 config-failure class + quota park, then §11.3 per-minute token headers. |
-| §10 Mutation path | shipped #121–#124 | Proposal path + Soak16 fixes soak-validated; only §10.7 gate remains |
+| **§12 Harness-evolution loop (`HARNESS_EVOLUTION_DESIGN`)** | **P2** | Zero-dep closed loop; P0 substrate partially shipped (operator console). External benchmarks out of scope |
+| §10 Mutation path | shipped #121–#124 | Proposal path + Soak16/Soak6 fixes soak-validated to materialization (Soak8); only §10.7 gate remains |
 | §6 Next-soak 429 dump | **P0** | Partly paid by the Soak5 artifact; `Work: 0.0s` still open |
 | §8 Operator soak A-1 | **ran** | Soak4 ran after #121; remaining gate is §10.7 / §11 |
 | §5 Optional SQL hygiene | **P2** | Identifier quoting + comment-aware DDL split |
@@ -43,22 +44,43 @@ checklists back into this tracker.
   fail-closed workspace evidence, zero-command seed latch, task status
   vocabulary, demotion exclusions, `Retry-After` on `rate_limited`
   events, cold `cmd_init` one-writer ingest (#121); chat-JSON-table
-  protocol + Enterprise-chat developer driving (#123); in-worktree
-  edit primitive, command/change-state observations, stall tripwire,
-  task-fiability pre-flight, `edit_payload` fallback gating (#124). Do
-  not re-implement those.
+  protocol + Enterprise-chat developer driving, in-worktree edit
+  primitive, command/change-state observations, stall tripwire,
+  task-fiability pre-flight, `edit_payload` fallback gating (#122);
+  `diagnose_soak.sh` automation + shell step-count bump (#123); Soak6
+  mutation policy (#124) — bounded promo (`FULL_REPLACE_MAX_LINES`,
+  `SHELL_PROMOTE_MAX_DIFF_LINES`), `LimitsExceeded` never promotes an
+  unbounded diff, inspect/mutate step-budget split (`INSPECT_STEP_CAP`),
+  banned base64/python write-exec (exit 78), utf-8 `errors="replace"`
+  decode, `full_replace` fallback cap on oversized targets, retryable
+  (truncation/syntax) REJECT → retry-the-same-file instead of stall.
+  Do not re-implement those.
 - **Soak artifacts (review only):** `docs/soak_artifacts/`
   (`stdout.txt`, `model_dashboard.txt`, `soak-target-.prizmforge/`).
-  The Soak5 run validated the #124 fixes in a live soak; Soak17 aborted
-  on a **phantom seed** with 0 model calls — that is §11.
+  The Soak5 run validated the #122/#123 fixes in a live soak; Soak17
+  aborted on a **phantom seed** with 0 model calls — that is §11.
+  **Soak8** (`origin/self-edit/soak8`, `docs/soak-artifacts/`, do not
+  merge): mutation path ran end-to-end to materialization — 6 proposals,
+  3 applied, exit-78 banned-write fired, no `RepeatedFormatError`, no
+  "produced no file changes"; both tasks ended on `token budget
+  exhausted` (`files_modified=2` / `1`). See `02_proposals.txt`,
+  `20_diagnostic.txt`, `05_command_buckets.txt`.
 - **Next (do):** §11 — make targeting existence-verified, close the
   endpoint config/header gaps, then re-run the §10.7 acceptance gate on
-  a targeted task that names an existing file.
+  a targeted task that names an existing file. (Soak8 already shows a
+  real targeted run reaching materialization; §11 closes the phantom-seed
+  abort and the §11.2/§11.3 endpoint gaps.)
+- **Harness-evolution substrate (§12):** P0 observability base landed
+  (operator console: `core/operator_view.py`, shell heartbeats,
+  `utils/live_console.py`, run-effectiveness views). §12.1 still needs
+  the per-run harness fingerprint + infra-abort classifier before any
+  harness-edit attribution is trustworthy.
 - **Company endpoints** still need a **manual unlock ~every 8 hours**
   and **must keep falling back** when one key locks.
 - **Trajectories (do not merge):** `soak/doc-run-a-1` /
   `docs/soak-a-1-shell-trajectories/`; `soak/4-tmp-reporting` /
-  `docs/soak-a-4-example-tmp/`.
+  `docs/soak-a-4-example-tmp/`; `self-edit/soak8` /
+  `docs/soak-artifacts/`.
 
 ---
 
@@ -67,6 +89,12 @@ checklists back into this tracker.
 **Priority:** shipped (PRs #121–#124). Only the §10.7 acceptance gate
 is open, exercised by Soak17 (§11). Soak4–Soak16 post-mortem detail
 (§10.0–§10.5) is in git history — do not re-paste it here.
+**Soak8 update:** the mutation path reached **materialization** —
+proposals created, approved, and applied (`workflow/__init__.py`),
+banned base64 write rejected at exit 78 by the #124 policy, no
+repeated-format / no-file-changes emissions. Tasks landed on
+`token budget exhausted`, not a harness failure; Soak17 remains for
+the targeted-seed gate (§11).
 
 **Evidence:** `docs/soak_artifacts/stdout.txt` shows the proposal path
 creating and gating **real proposals** in a soak — `e6a85797`
@@ -91,6 +119,13 @@ pre-flight, `edit_payload` fallback gating; developer on
 
 ### 10.7 Acceptance (short soak, two endpoints, developer ≠ Enterprise chat)
 
+Soak8 (`self-edit/soak8`, review-only) already satisfied the
+materialization spine — proposals created/approved/applied on repeated
+target-run turns, exit-78 on the base64/python write attempt, no
+repeated-format, no no-file-changes emit. Still tracked as a gate
+because §11.2/§11.3 endpoints and the §11.1 targeted-seed run are not
+fully green:
+
 1. Trajectory `workspace_evidence` is filled **before** message[3]
    (no model-authored evidence fence required).
 2. First model bash, if any, is inspect-of-target, not `pwd && ls`.
@@ -106,11 +141,18 @@ pre-flight, `edit_payload` fallback gating; developer on
 7. `Work:` is not 0.0s for the whole duration solely because the
    latch yielded to reviewers.
 
-### 10.8 Soak16 remediation (shipped #124)
+### 10.8 Soak16 remediation (shipped #122)
 
 In-worktree edit primitive, command/change-state observations, stall
 tripwire, task-fiability pre-flight, `edit_payload` fallback gating —
-shipped and soak-validated. Details in git log (PR #124).
+shipped in PR #122 and soak-validated. Details in git log.
+
+### 10.9 Soak6 mutation policy (shipped #124)
+
+Bounded promotion + inspect/mutate step split, banned base64/python
+write-exec, utf-8 `errors="replace"` decode, `full_replace` fallback
+cap, retryable-reject handling — shipped in PR #124. Details in git
+log.
 
 ---
 
@@ -124,14 +166,17 @@ PLANS.md, IDEAS.md, ROADMAP.md, BACKLOG.md…") harvested `ROADMAP.md`
 via `_seed_path_candidates`, but that file does not exist; three of the
 five `files_needed` (`TODO.md`, `PLANS.md`, `IDEAS.md`) are **phantom**
 (never in `project_files`; their "2 lines" came from
-`get_file_content_from_db` stubs, not disk reads).
+`get_file_content_from_db` stubs, not disk reads). Soak8 confirmed the
+mutation path is healthy when the target exists on disk; the remaining
+gap is §11.1 (phantom seeds must not abort) plus the §11.2/§11.3
+endpoint gaps.
 
 ### 11.1 Existence-verified task targeting
 
-- [ ] `_task_is_targeted` must count a `files_needed` / addressed
+- [x] `_task_is_targeted` must count a `files_needed` / addressed
       feedback file only when the file exists on disk. A target that
       never existed must not abort the session.
-- [ ] A seed that resolves to no existing file downgrades to an
+- [x] A seed that resolves to no existing file downgrades to an
       exploration session with a generic discovery hint — a
       case-insensitive glob of `todo|idea|plan|roadmap|backlog` over
       `*.md` / `*.markdown` — instead of a hard "target missing"
@@ -140,22 +185,22 @@ five `files_needed` (`TODO.md`, `PLANS.md`, `IDEAS.md`) are **phantom**
 
 ### 11.2 Config-failure vs transient classes + quota park
 
-- [ ] Treat `MissingSessionID`-class 400s as **permanent
+- [x] Treat `MissingSessionID`-class 400s as **permanent
       endpoint-config failures** (opencode/API session absent), not
       transient: surface the misconfiguration and demote without retry
-      loops. `EndpointStatus` has no `MISCONFIGURED` state today.
-- [ ] Quota park = `min(seconds_to_reset, 4h)`, so a short
+      loops. `EndpointStatus` now has a `MISCONFIGURED` state.
+- [x] Quota park = `min(seconds_to_reset, 4h)`, so a short
       `Retry-After` reopens on time instead of a fixed offline window.
 
 ### 11.3 Per-minute token-bucket headers + send pacing
 
-- [ ] Parse `x-ratelimit-limit-tokens-minute` /
+- [x] Parse `x-ratelimit-limit-tokens-minute` /
       `x-ratelimit-remaining-tokens-minute` /
       `x-ratelimit-reset-tokens-minute` (and windowed `x-ratelimit-*`
       families) in `core/rate_limit_headers.py`; today only
       `X-RateLimit-Limit/Remaining/Reset` (daily free models) and
       `Retry-After` are read.
-- [ ] Persist the discovered per-minute budget to endpoint health; when
+- [x] Persist the discovered per-minute budget to endpoint health; when
       `remaining-tokens-minute == 0`, park all consumers for the
       endpoint until `reset-tokens-minute`, and pace client token
       send-rate so parallel large prompts (one reviewer prompt was
@@ -166,7 +211,110 @@ five `files_needed` (`TODO.md`, `PLANS.md`, `IDEAS.md`) are **phantom**
 
 ---
 
+## 12. Harness-evolution loop — deploy `HARNESS_EVOLUTION_DESIGN` (zero-dep path)
+
+**Priority:** P2 (behind §11 gates; P0 substrate partially shipped).
+**Source:** `docs/HARNESS_EVOLUTION_DESIGN.md` (draft, not implemented).
+**Dependency posture:** zero new runtime deps — `requirements.txt` stays
+`requests` + `pathspec`. Uses stdlib sqlite3 JSON1 (verified here: 3.46.1,
+`json_each` OK — the §5.2 verdict SQL runs natively), `importlib`, `base64`/`re`/
+`json`, plus existing machinery: `call_agent`, `parallel_workers` (`threading`),
+the governed pipeline (`apply_edit_proposal` → reviewer →
+`materialize_proposal` / `undo_proposal`), `ShellWorktree`,
+`model_health_events` / endpoint latches / `agent_responses_archive`.
+The three new-dep triggers — Terminal-Bench 2 (`terminal-bench` pip pkg),
+HuggingFace `datasets` (SWE-bench-verified), Docker OS-sandboxing — are
+**out of scope** (§8-d1 internal soak-task set wins).
+
+Phase order and exit criteria at the bottom (§12.7).
+
+### 12.1 P0 substrate observability (partially shipped)
+
+Shipped and **not** repeated: `core/operator_view.py`, shell heartbeats
+(`shell_turn_start` / `shell_model_call_started` / `shell_command_executed` /
+`shell_spinning`), `utils/live_console.py`, run-effectiveness diagnostics.
+
+Still open:
+
+- [ ] **Per-run harness fingerprint:** persist `(harness git tag, resolved
+      prompt hash, model)` per rollout (`hashlib` over the resolved
+      `get_agent_prompts` dict). Prompts render at runtime (agents/base.py),
+      so without the fingerprint §5 edit-verdict claims are unverifiable.
+- [ ] **Infra-abort classifier:** label rollouts aborted by endpoint
+      infra (`empty_body` / `no_alternate_endpoint` / `misconfigured`, from
+      `model_health_events` + endpoint latches) so the Debugger's
+      `component_hint` never blames the harness for a flaky endpoint (Soak18
+      exact confound); report `failure_mode_mix` per iteration.
+
+### 12.2 P1 boxed benchmark (internal soak-task set)
+
+- [ ] Verifier + tracer harness around existing soak seeds using
+      `ShellWorktree`; `k >= 2` rollouts/task; infra-aborted / timeout trials
+      count as failures (§7 pass@1). No Terminal-Bench-2 / SWE-bench-verified /
+      Docker sandbox (out of scope).
+
+### 12.3 P1 trajectory corpus
+
+- [ ] Extract base64-drop + consecutive-frame-dedup cleaning into a reusable
+      function → `runs/<iter>/cleaned/<task_id>.jsonl`; raw `shell_trajectories`
+      stay untouched.
+- [ ] **Debugger producer** (parallel_workers pattern) consuming `cleaned/` →
+      `runs/<iter>/analysis/<task_id>.md` + `overview.md` + `index.json`
+      (entry → tasks → traces drill-down); every claim carries a file path and
+      a `component_hint` from the fixed enum.
+
+### 12.4 P2 decision observability (manifest + verdict)
+
+- [ ] Manifest JSON per iteration (`harness/manifest/iteration-<t>.json`) with
+      `predicted_fixes` / `predicted_regressions` per edit; mirror into
+      `harness_change_manifest(iteration, payload)` +
+      `task_outcomes(iteration, task_id, passed, tokens)` for the §5.2 verdict
+      SQL (json_each verified). Fold `predicted_regressions` into the verdict so
+      the §5.3 rollback rule has real inputs.
+- [ ] Rollback: `git revert <edit.commit>` on the harness workspace (or
+      `undo_proposal`) when confirms == 0 and flagged/extra regressions land;
+      reverts happen before the next distillation so verdicts stay in the
+      corpus.
+
+### 12.5 P2 Evolve gate
+
+- [ ] **Evolve Agent** edits only `harness/` via the governed pipeline with the
+      reviewer gate mandatory + non-editable; one logical edit per commit,
+      tagged `iter-<t>`; RC-style edit budget (`max_tokens_per_4h`-class) gates
+      the loop.
+- [ ] Harness mount loader: `harness/system_prompt/<role>.md` + tools /
+      middleware / skills / memory resolve at runtime (single prompt-assembly
+      path replacing direct `agent_prompts.json` reads) so the fingerprint stays
+      truthful.
+- [ ] `runs/`, tracer/verifier/sandbox config, and LLM endpoint / model config
+      are read-only for the Evolve Agent; seed prompt files non-deletable.
+
+### 12.6 P3 attribution (after a working loop)
+
+- [ ] Single-component swaps (`+ memory` / `+ tool` / `+ middleware` /
+      `+ system_prompt`) to attribute pass@1 deltas (§7 component ablation).
+- [ ] `H_best <- H_t` tracking; then cross-benchmark / cross-model transfer
+      (deferred until the internal loop is stable).
+
+### 12.7 Phase order & exit criteria
+
+| Phase | Exit criterion |
+|---|---|
+| P0 (§12.1) | Rollouts carry fingerprints; infra aborts excluded and counted |
+| P1 (§12.2–12.3) | One iteration produces cleaned/ + analysis/ + overview/ + index.json for the internal set |
+| P2 (§12.4–12.5) | An iteration round-trips: harness edits → verdict → rollback |
+| P3 (§12.6) | A single-component swap changes measured pass@1 |
+
+**Out of scope (do not start):** Terminal-Bench 2, SWE-bench-verified
+(`datasets`), Docker / enclave OS-sandboxing, editing `runs/` or endpoint
+config (even by the Evolve Agent), PostgreSQL / SQLAlchemy mirror, and any
+dependency entry beyond `requests` / `pathspec` for this loop.
+
+---
+
 ## 8. Operator soak A-1 — ran (Soak4)
+
+---
 
 **Priority:** ran. Recursive fallback, per-endpoint budget, fail-closed
 evidence shipped in #121; Soak4 confirmed worktree + evidence. The
@@ -303,12 +451,12 @@ to WAL unless this timing is still not enough.
 
 Demotion exclusions and `Retry-After` **shipped in #121**. Remaining:
 
-- [ ] Quote SQL identifiers in `cli/commands.py` DB exports
+- [x] Quote SQL identifiers in `cli/commands.py` DB exports
       (`cmd_export_db`, `cmd_export_specific_tables`,
       `table_has_task_id`). `_quote_identifier()` = double-quote +
       escape embedded `"`. (`sqlite_master name=?` is already
       parameterized.)
-- [ ] Comment/string-aware DDL split in `core/db.py`
+- [x] Comment/string-aware DDL split in `core/db.py`
       `_apply_schema` (current `endswith(";")` per-line split breaks on
       `;` inside a comment or string). No `sqlparse`.
 
@@ -400,8 +548,9 @@ evidence — that e2e is **§10**, not a second mini-swe port.
 
 | Order | Work item | Exit criterion |
 |---:|---|---|
-| 1 | **§11 Soak17 root-cause fixes** (11.1 → 11.2 → 11.3) | §10.7 acceptance 1–7 on a targeted seed naming an existing file; no `target missing` abort |
-| 2 | §5 optional SQL quoting + DDL split | Export uses quoted ids; `;` in comments/strings does not split DDL |
-| 3 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
-| 4 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
-| 5 | §7 live-hook / mini-swe e2e | When endpoints and a hook-fail copy exist |
+| 1 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
+| 2 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
+| 3 | §7 live-hook / mini-swe e2e | When endpoints and a hook-fail copy exist |
+| 4 | §12.1 fingerprint + infra-abort classifier | Rollouts carry a harness fingerprint; infra aborts excluded from root-cause |
+| 5 | §12.2–12.5 internal benchmark → corpus → manifest/Evolve first iteration | An iteration round-trips edits → verdict → rollback on the internal set |
+| 6 | §12.6 attribution ablations | A single-component swap changes measured pass@1 |
