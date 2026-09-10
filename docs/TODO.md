@@ -65,151 +65,16 @@ checklists back into this tracker.
   "produced no file changes"; both tasks ended on `token budget
   exhausted` (`files_modified=2` / `1`). See `02_proposals.txt`,
   `20_diagnostic.txt`, `05_command_buckets.txt`.
-- **Next (do):** §11 — make targeting existence-verified, close the
-  endpoint config/header gaps, then re-run the §10.7 acceptance gate on
-  a targeted task that names an existing file. (Soak8 already shows a
-  real targeted run reaching materialization; §11 closes the phantom-seed
-  abort and the §11.2/§11.3 endpoint gaps.)
-- **Harness-evolution substrate (§12):** P0 observability base landed
+- **Next (do):** §12 Harness-evolution substrate (§12):** P0 observability base landed
   (operator console: `core/operator_view.py`, shell heartbeats,
   `utils/live_console.py`, run-effectiveness views). §12.1 still needs
   the per-run harness fingerprint + infra-abort classifier before any
   harness-edit attribution is trustworthy.
-- **Company endpoints** still need a **manual unlock ~every 8 hours**
-  and **must keep falling back** when one key locks.
-- **Trajectories (do not merge):** `soak/doc-run-a-1` /
-  `docs/soak-a-1-shell-trajectories/`; `soak/4-tmp-reporting` /
-  `docs/soak-a-4-example-tmp/`; `self-edit/soak8` /
-  `docs/soak-artifacts/`.
+
 
 ---
-
-## 10. Soak4 → Soak17 — mutation path (shipped; gate open)
-
-**Priority:** shipped (PRs #121–#124). Only the §10.7 acceptance gate
-is open, exercised by Soak17 (§11). Soak4–Soak16 post-mortem detail
-(§10.0–§10.5) is in git history — do not re-paste it here.
-**Soak8 update:** the mutation path reached **materialization** —
-proposals created, approved, and applied (`workflow/__init__.py`),
-banned base64 write rejected at exit 78 by the #124 policy, no
-repeated-format / no-file-changes emissions. Tasks landed on
-`token budget exhausted`, not a harness failure; Soak17 remains for
-the targeted-seed gate (§11).
-
-**Evidence:** `docs/soak_artifacts/stdout.txt` shows the proposal path
-creating and gating **real proposals** in a soak — `e6a85797`
-(`workflow/__init__.py`, approved + materialized first), then
-`c5d6fb78` / `df6cd912` / `754abb94` / `f0872af5` / `1226b947` — with
-the Soak16 fixes behaving as designed (edit primitive,
-command/change-state observations, stall tripwire, task-fiability
-pre-flight, `edit_payload` fallback gating; developer on
-`gemini-3.1-pro-preview` @ api.genai.mil).
-
-### 10.6 Out of scope
-
-- Do not merge `soak/4-tmp-reporting` or `soak/doc-run-a-1`.
-- Do not disable company↔public fallback on 401.
-- Do not treat the RC 150M window as this soak’s spend.
-- Do not “fix” mutation by widening fence repair or by asking the
-  model harder that it has `/bin/sh`.
-- Do not start §1 cold ingest or WAL ahead of this section.
-- Mini-swe is not “folded in wrong.” The runner executed a real
-  command in a real worktree. The developer **model** will not
-  drive that runner past step 1.
-
-### 10.7 Acceptance (short soak, two endpoints, developer ≠ Enterprise chat)
-
-Soak8 (`self-edit/soak8`, review-only) already satisfied the
-materialization spine — proposals created/approved/applied on repeated
-target-run turns, exit-78 on the base64/python write attempt, no
-repeated-format, no no-file-changes emit. Still tracked as a gate
-because §11.2/§11.3 endpoints and the §11.1 targeted-seed run are not
-fully green:
-
-1. Trajectory `workspace_evidence` is filled **before** message[3]
-   (no model-authored evidence fence required).
-2. First model bash, if any, is inspect-of-target, not `pwd && ls`.
-3. At least one session either writes a proposal or finishes
-   `no_change_required` **after** printing the target file — never
-   23 finishes that only deny having a shell.
-4. `edit_proposals` ≥ 1 **or** an explicit
-   `developer_model_not_shell_capable` / validation-failed status.
-   `files_modified=0` with 30× evidence-only is a failed gate.
-5. Zero-command latch does not freeze developer after a successful
-   in-process evidence + `LlmUnavailable`.
-6. `--model-health` is not empty after `kind=unknown`.
-7. `Work:` is not 0.0s for the whole duration solely because the
-   latch yielded to reviewers.
-
-### 10.8 Soak16 remediation (shipped #122)
-
-In-worktree edit primitive, command/change-state observations, stall
-tripwire, task-fiability pre-flight, `edit_payload` fallback gating —
-shipped in PR #122 and soak-validated. Details in git log.
-
-### 10.9 Soak6 mutation policy (shipped #124)
-
-Bounded promotion + inspect/mutate step split, banned base64/python
-write-exec, utf-8 `errors="replace"` decode, `full_replace` fallback
-cap, retryable-reject handling — shipped in PR #124. Details in git
-log.
-
----
-
-## 11. Soak17 — target-missing abort (open, P0)
-
-**Priority:** P0 — next work.
-**Soak17 symptom:** `workflow/shell_developer.py:1339` aborted the
-session ("target missing after evidence") after **0 model calls**. The
-driver: the orchestrator's own seed-hint list ("Look for TODO.md,
-PLANS.md, IDEAS.md, ROADMAP.md, BACKLOG.md…") harvested `ROADMAP.md`
-via `_seed_path_candidates`, but that file does not exist; three of the
-five `files_needed` (`TODO.md`, `PLANS.md`, `IDEAS.md`) are **phantom**
-(never in `project_files`; their "2 lines" came from
-`get_file_content_from_db` stubs, not disk reads). Soak8 confirmed the
-mutation path is healthy when the target exists on disk; the remaining
-gap is §11.1 (phantom seeds must not abort) plus the §11.2/§11.3
-endpoint gaps.
-
-### 11.1 Existence-verified task targeting
-
-- [x] `_task_is_targeted` must count a `files_needed` / addressed
-      feedback file only when the file exists on disk. A target that
-      never existed must not abort the session.
-- [x] A seed that resolves to no existing file downgrades to an
-      exploration session with a generic discovery hint — a
-      case-insensitive glob of `todo|idea|plan|roadmap|backlog` over
-      `*.md` / `*.markdown` — instead of a hard "target missing"
-      abort (no hard-coded repo names), raising a `target_missing`
-      event.
-
-### 11.2 Config-failure vs transient classes + quota park
-
-- [x] Treat `MissingSessionID`-class 400s as **permanent
-      endpoint-config failures** (opencode/API session absent), not
-      transient: surface the misconfiguration and demote without retry
-      loops. `EndpointStatus` now has a `MISCONFIGURED` state.
-- [x] Quota park = `min(seconds_to_reset, 4h)`, so a short
-      `Retry-After` reopens on time instead of a fixed offline window.
-
-### 11.3 Per-minute token-bucket headers + send pacing
-
-- [x] Parse `x-ratelimit-limit-tokens-minute` /
-      `x-ratelimit-remaining-tokens-minute` /
-      `x-ratelimit-reset-tokens-minute` (and windowed `x-ratelimit-*`
-      families) in `core/rate_limit_headers.py`; today only
-      `X-RateLimit-Limit/Remaining/Reset` (daily free models) and
-      `Retry-After` are read.
-- [x] Persist the discovered per-minute budget to endpoint health; when
-      `remaining-tokens-minute == 0`, park all consumers for the
-      endpoint until `reset-tokens-minute`, and pace client token
-      send-rate so parallel large prompts (one reviewer prompt was
-      183k+ chars) cannot re-trigger the 429 storm.
-      (Evidence: `docs/soak_artifacts/stdout.txt` 356-363 and 1007-1098 —
-      `500000` tokens/min, `remaining 0`, `reset 59`; `Retry-After` is
-      honored correctly, but consecutive windows keep re-tripping.)
-
----
+## 1. All ./utils/*.sh should follow same .env python patterns as run_tests.sh
+- needs investigation and todo expantion
 
 ## 12. Harness-evolution loop — deploy `HARNESS_EVOLUTION_DESIGN` (zero-dep path)
 
@@ -486,10 +351,9 @@ Source: `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`.
 
 Port itself is shipped (`docs/mini_swe_agent.md`). Soak4 showed the
 runner executes real commands; Gemini Enterprise will not drive past
-evidence — that e2e is **§10**, not a second mini-swe port.
+evidence, not a second mini-swe port.
 
-- [ ] Real-model end-to-end validation + prompt/limit tuning **after
-      §10** (developer model that emits a second bash block).
+- [ ] Real-model end-to-end validation + prompt/limit tuning (developer model that emits a second bash block).
 - [ ] Manual cold-start smoke: seed consumed on turn 1, no
       `Unknown model` lines.
 - [ ] Enclave sandboxing (container / approved-workstation). Shell
@@ -543,14 +407,3 @@ evidence — that e2e is **§10**, not a second mini-swe port.
 - `cli/__init__.py` empty / `datetime.now()` cosmetics.
 
 ---
-
-## Implementation sequence (open work only)
-
-| Order | Work item | Exit criterion |
-|---:|---|---|
-| 1 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
-| 2 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
-| 3 | §7 live-hook / mini-swe e2e | When endpoints and a hook-fail copy exist |
-| 4 | §12.1 fingerprint + infra-abort classifier | Rollouts carry a harness fingerprint; infra aborts excluded from root-cause |
-| 5 | §12.2–12.5 internal benchmark → corpus → manifest/Evolve first iteration | An iteration round-trips edits → verdict → rollback on the internal set |
-| 6 | §12.6 attribution ablations | A single-component swap changes measured pass@1 |
