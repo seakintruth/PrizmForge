@@ -149,17 +149,94 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
 SCHEMA_VERSION = 3
 
 
-def _schema_is_current(conn: sqlite3.Connection) -> bool:
-    """True when an existing DB matches the canonical schema version.
+#: Tables every canonical DB must present to pass the honest gate. `init_db`
+#: never trusts a matching `user_version` blind — it verifies the actual shape.
+REQUIRED_TABLES = (
+    "agent_feedback",
+    "agent_processing_status",
+    "agent_profiles",
+    "agent_responses_archive",
+    "agent_review_tracking",
+    "archived_context",
+    "cli_checkpoints",
+    "conversation_history",
+    "edit_proposals",
+    "endpoint_fallbacks",
+    "endpoint_health",
+    "errors",
+    "events",
+    "file_documentation",
+    "file_events",
+    "file_lines",
+    "file_metadata_bus",
+    "file_modifications",
+    "files",
+    "file_summaries",
+    "file_symbols",
+    "file_write_log",
+    "llm_interactions",
+    "messages",
+    "model_health_events",
+    "project_files",
+    "project_reports",
+    "project_structure",
+    "reporter_state",
+    "resource_decisions",
+    "resource_model_overrides",
+    "rollouts",
+    "tasks",
+    "token_log",
+)
 
-    Database initialization is non-backwards-compatible: a pre-existing file
-    created by an older version is discarded and rebuilt rather than
-    ALTER-migrated, because there is no need to preserve old databases.
-    """
-    try:
-        return conn.execute("PRAGMA user_version;").fetchone()[0] == SCHEMA_VERSION
-    except sqlite3.Error:
+#: Columns beyond the PK/lifecycle that pin a table to its canonical shape.
+REQUIRED_COLUMNS = {
+    "rollouts": ("rollout_id", "contract_hash", "verdict", "verdict_note"),
+    "endpoint_health": (
+        "tokens_per_minute",
+        "tokens_remaining_minute",
+        "tokens_reset_epoch",
+    ),
+    "agent_responses_archive": (
+        "step_number",
+        "response_format_status",
+        "command",
+        "command_exit_code",
+    ),
+}
+
+
+def _user_version(conn: sqlite3.Connection) -> int:
+    return int(conn.execute("PRAGMA user_version;").fetchone()[0])
+
+
+def _schema_matches_canonical(conn: sqlite3.Connection) -> bool:
+    """True when every required table + column checks out against the gate."""
+    names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if not set(REQUIRED_TABLES) <= names:
         return False
+    for table, cols in REQUIRED_COLUMNS.items():
+        have = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if not set(cols) <= have:
+            return False
+    return True
+
+
+def _discard_db(path: Path) -> None:
+    """Remove the DB + sidecar files; raise rather than rebuild in place.
+
+    The caller must have closed its connection first. Any failure here aborts
+    initialization — a stale DB is never "rebuilt in place" and never stamped
+    with a version it does not implement.
+    """
+    for candidate in (
+        path,
+        path.with_name(path.name + "-wal"),
+        path.with_name(path.name + "-shm"),
+    ):
+        try:
+            candidate.unlink(missing_ok=True)
+        except OSError as e:
+            raise RuntimeError(f"refusing to lie about schema: cannot remove {candidate}: {e}") from e
 
 
 def _configure_conn(conn: sqlite3.Connection) -> None:
@@ -172,27 +249,43 @@ def _configure_conn(conn: sqlite3.Connection) -> None:
 
 
 def init_db():
-    """Initialize database with the complete canonical schema."""
+    """Open database or enforce the canonical schema without lying.
+
+    Honest gate policy:
+      * no file / version 0 → build a fresh DB: create empty → apply canonical
+        DDL → verify → set the version once.
+      * ``user_version == SCHEMA_VERSION`` and the gate passes → open only;
+        no unlink, no DDL, no rewrite of ``user_version``.
+      * ``user_version == SCHEMA_VERSION`` but the gate fails → refuse to
+        start; never stamp a version over a broken file.
+      * any other version (a stale soak DB) → discard the file + sidecars,
+        rebuild, verify, and stamp the version exactly once.
+      * discard fails → raise; never apply in place, never set the version.
+    """
     try:
         db_path = get_db_path()
         path = Path(db_path)
         print(f"🔍 Initializing database at: {db_path}")
 
         conn = sqlite3.connect(db_path, timeout=60.0)
-        cursor = conn.cursor()
         _configure_conn(conn)
 
-        # Non-backwards-compatible policy: a pre-existing DB from an older
-        # schema version is discarded and rebuilt fresh — never ALTER-migrated.
-        if not _schema_is_current(conn):
+        if _user_version(conn) == SCHEMA_VERSION:
+            if not _schema_matches_canonical(conn):
+                conn.close()
+                raise RuntimeError(f"{db_path} claims user_version={SCHEMA_VERSION} but required tables/columns are missing")
+            # Current and honest → leave the file alone, version untouched.
             conn.close()
-            try:
-                path.unlink(missing_ok=True)
-            except OSError as e:
-                print(f"   ⚠️  Could not remove stale database, rebuilding in place: {e}")
-            conn = sqlite3.connect(db_path, timeout=60.0)
-            cursor = conn.cursor()
-            _configure_conn(conn)
+            print(f"✅ Database initialized successfully (unchanged): {db_path}")
+            return True
+
+        # Mismatch (0 = fresh file or a pre-versioned soak DB) → discard + rebuild.
+        conn.close()
+        _discard_db(path)
+
+        conn = sqlite3.connect(db_path, timeout=60.0)
+        cursor = conn.cursor()
+        _configure_conn(conn)
 
         # foreign_keys after schema apply (some mounts fail mid-DDL with FKs on)
 
@@ -702,27 +795,22 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_token_log_endpoint_ts ON token_log(endpoint_name, timestamp);
         """
         _apply_schema(conn, _schema_sql)
-        cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
         try:
             cursor.execute("PRAGMA foreign_keys = ON;")
         except Exception as e:
             print(f"    ⚠️  Exception handled in db.py: {e}")
         conn.commit()
 
-        # Verify critical tables exist
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
-        tables = [row[0] for row in cursor.fetchall()]
-
-        critical_tables = ["files", "file_lines", "errors", "messages", "tasks"]
-        missing_tables = [t for t in critical_tables if t not in tables]
-
-        if missing_tables:
+        # Verify BEFORE stamping: never record a version the file does not have.
+        if not _schema_matches_canonical(conn):
             conn.close()
-            raise RuntimeError(f"❌ Failed to create tables: {missing_tables}")
+            raise RuntimeError("canonical DDL applied but verify failed; user_version not set")
+        cursor.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+        conn.commit()
 
         conn.close()
         print(f"✅ Database initialized successfully: {db_path}")
-        print(f"   📊 Total tables created: {len(tables)}")
+        print(f"   📊 Total tables created: {len(REQUIRED_TABLES)}")
         return True
 
     except Exception as e:

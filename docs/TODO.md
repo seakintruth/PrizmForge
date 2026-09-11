@@ -8,12 +8,13 @@ post-mortems, and acceptance evidence live in **git history**
 `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`). Do not paste shipped
 checklists back into this tracker.
 
-**Last updated:** 2026-09-09
+**Last updated:** 2026-09-11
 
 ## How to use this file
 
-- Tick a box when the change lands on `main`; then delete that item on
-  the next pass (do not leave `[x]` museums).
+- Tick a box when the change lands as a commit on the working branch
+  (`feat/roadmap-soak17`) and mark it `(branch)`; delete the item on the
+  pass after that branch merges to `main` (no `[x]` museums there).
 - Detailed *design* for an open item stays in this file until it ships.
 - Do not merge `soak/doc-run-a-1` or `soak/4-tmp-reporting`
   (trajectories + docs only).
@@ -23,8 +24,8 @@ checklists back into this tracker.
 | Section | Priority | Why |
 |---|---|---|
 | §0 Current state | — | Index |
-| **§11 Soak17 root-cause fixes (targeting / 400 class / headers)** | **P0** | Phantom-seed abort burned Soak17 at 0 model calls. Fix §11.1 existence-verified targeting first, then §11.2 config-failure class + quota park, then §11.3 per-minute token headers. |
-| **§12 Harness-evolution loop (`HARNESS_EVOLUTION_DESIGN`)** | **P2** | Zero-dep closed loop; P0 substrate partially shipped (operator console). External benchmarks out of scope |
+| §11 Soak17 root-cause fixes | **shipped (branch)** | §11.1–§11.3 landed (`a2cc0d2`/`6abe86e`/`7ed6a15`) + Soak22 notes (§11.4) on `feat/roadmap-soak17`; merge to `main`, then purge |
+| **§12 Harness-evolution loop (`HARNESS_EVOLUTION_DESIGN`)** | **P2** | Zero-dep closed loop; P0+P1 (§12.1–§12.3) shipped on branch; §12.4/§12.5 next. External benchmarks out of scope |
 | §10 Mutation path | shipped #121–#124 | Proposal path + Soak16/Soak6 fixes soak-validated to materialization (Soak8); only §10.7 gate remains |
 | §6 Next-soak 429 dump | **P0** | Partly paid by the Soak5 artifact; `Work: 0.0s` still open |
 | §8 Operator soak A-1 | **ran** | Soak4 ran after #121; remaining gate is §10.7 / §11 |
@@ -65,16 +66,20 @@ checklists back into this tracker.
   "produced no file changes"; both tasks ended on `token budget
   exhausted` (`files_modified=2` / `1`). See `02_proposals.txt`,
   `20_diagnostic.txt`, `05_command_buckets.txt`.
-- **Next (do):** §11 — make targeting existence-verified, close the
-  endpoint config/header gaps, then re-run the §10.7 acceptance gate on
-  a targeted task that names an existing file. (Soak8 already shows a
-  real targeted run reaching materialization; §11 closes the phantom-seed
-  abort and the §11.2/§11.3 endpoint gaps.)
+- **Working branch `feat/roadmap-soak17` (not on `main` yet):** §11.1–§11.3
+  (`a2cc0d2`/`6abe86e`/`7ed6a15`), Soak22 console + rollout-finalize fixes
+  (`593b69d`/`b20c814`, §11.4), §12.1 substrate (`4ca8338`), §12.2 benchmark
+  (`8bcaf14`), and §12.3 corpus (uncommitted) are ticked here against the
+  branch. They are purged from this tracker after the merge.
+- **Next (do):** commit the §12.3 corpus modules + the §11.5 honest schema
+  gate, then push into §12.4 (decision manifest) → §12.5 (Evolve gate)
+  first iteration. Re-run the §10.7 acceptance gate on the §11-verified
+  endpoints at the next live soak; the §11 closure is already committed.
 - **Harness-evolution substrate (§12):** P0 observability base landed
   (operator console: `core/operator_view.py`, shell heartbeats,
-  `utils/live_console.py`, run-effectiveness views). §12.1 still needs
-  the per-run harness fingerprint + infra-abort classifier before any
-  harness-edit attribution is trustworthy.
+  `utils/live_console.py`, run-effectiveness views). §12.1 fingerprint +
+  infra-abort classifier, §12.2 boxed benchmark, and §12.3 trajectory
+  corpus are shipped on `feat/roadmap-soak17`; §12.4/§12.5 remain.
 - **Company endpoints** still need a **manual unlock ~every 8 hours**
   and **must keep falling back** when one key locks.
 - **Trajectories (do not merge):** `soak/doc-run-a-1` /
@@ -156,9 +161,9 @@ log.
 
 ---
 
-## 11. Soak17 — target-missing abort (open, P0)
+## 11. Soak17 — target-missing abort (shipped on branch; §11.4 notes)
 
-**Priority:** P0 — next work.
+**Priority:** shipped on branch (§11.1–§11.3 + §11.4 Soak22 notes).
 **Soak17 symptom:** `workflow/shell_developer.py:1339` aborted the
 session ("target missing after evidence") after **0 model calls**. The
 driver: the orchestrator's own seed-hint list ("Look for TODO.md,
@@ -248,12 +253,38 @@ Fixes shipped:
   normalize to naive host wall-clock via `_wallclock_naive` (mirror of
   the console helper); regression tests cover aware↔naive mixes.
 
+### 11.5 Honest schema gate (uncommitted in work tree)
+
+`init_db()` (`core/db.py`) must never stamp a `PRAGMA user_version` it
+cannot verify:
+
+- Matching version + broken shape → **raise**, do not stamp. A `claimed
+  user_version` is checked against `REQUIRED_TABLES` /
+  `REQUIRED_COLUMNS` (`_schema_matches_canonical`), not trusted blind.
+- Version mismatch (incl. `0`) → `_discard_db` deletes the DB +
+  `-wal` + `-shm`, applies canonical DDL, **verifies before stamping**,
+  then sets `user_version` once on a brand-new file.
+- Any unlink failure → **raise** (`refusing to lie about schema: …`);
+  the old "rebuild in place" `except OSError` branch (which stamped a
+  new version over differing tables) is gone.
+- Current + honest → open only; no unlink, no DDL, no version rewrite.
+
+Tests: `tests/unit/test_db_schema.py` — fresh→v3+shape; second init →
+same inode / same rows / version unchanged; v3 but `rollouts` dropped →
+raises, version still 3; v2 → replaced, the rollouts `verdict` column
+present, legacy rows gone; unlink fails on stale DB → `RuntimeError`,
+version stays 2.
+Docs: `docs/architecture.md` "Database initialization" paragraph updated.
+
+- [ ] (uncommitted — staged `core/db.py` + `docs/architecture.md`,
+      untracked `tests/unit/test_db_schema.py`; tick on commit)
+
 ---
 
 ## 12. Harness-evolution loop — deploy `HARNESS_EVOLUTION_DESIGN` (zero-dep path)
 
-**Priority:** P2 (behind §11 gates; P0 rollout substrate shipped).
-**Source:** `docs/HARNESS_EVOLUTION_DESIGN.md` (draft, not implemented).
+**Priority:** P2 — P0 rollout substrate shipped on branch (§12.1–§12.3).
+**Source:** `docs/HARNESS_EVOLUTION_DESIGN.md` (implemented through §12.3 on branch).
 **Dependency posture:** zero new runtime deps — `requirements.txt` stays
 `requests` + `pathspec`. Uses stdlib sqlite3 JSON1 (verified here: 3.46.1,
 `json_each` OK — the §5.2 verdict SQL runs natively), `importlib`, `base64`/`re`/
@@ -267,14 +298,14 @@ HuggingFace `datasets` (SWE-bench-verified), Docker OS-sandboxing — are
 
 Phase order and exit criteria at the bottom (§12.7).
 
-### 12.1 P0 substrate observability (partially shipped)
+### 12.1 P0 substrate observability (shipped)
 
 Shipped and **not** repeated: `core/operator_view.py`, shell heartbeats
 (`shell_turn_start` / `shell_model_call_started` / `shell_command_executed` /
 `shell_spinning`), `utils/live_console.py`, run-effectiveness diagnostics.
 
 Shipped (2026-09-10, `harness/fingerprint.py` + `rollouts` table +
-`SCHEMA_VERSION = 2`):
+`schema v2`, later bumped to `SCHEMA_VERSION = 3` in §12.2):
 
 - [x] **Per-run harness fingerprint:** persist `(harness git tag, resolved
       prompt hash, model)` per rollout (`sha256` over the sorted resolved
@@ -315,13 +346,26 @@ sequential k trials sharing the single DB writer.
 
 ### 12.3 P1 trajectory corpus
 
-- [ ] Extract base64-drop + consecutive-frame-dedup cleaning into a reusable
-      function → `runs/<iter>/cleaned/<task_id>.jsonl`; raw `shell_trajectories`
-      stay untouched.
-- [ ] **Debugger producer** (parallel_workers pattern) consuming `cleaned/` →
-      `runs/<iter>/analysis/<task_id>.md` + `overview.md` + `index.json`
-      (entry → tasks → traces drill-down); every claim carries a file path and
-      a `component_hint` from the fixed enum.
+Shipped (2026-09-11) — the §4.1 layered layout under `runs/<iter>/`; the §12.7
+P1 exit criterion (one iteration produces `cleaned/` + `analysis/` +
+`overview.md` + `index.json`) is now satisfied.
+
+- [x] **Cleaning pass** (`harness/cleaning.py`): reusable base64-drop
+      (`data:...;base64,...` blobs + long standalone base64 runs replaced by an
+      elision marker) and consecutive-frame dedup (identical adjacent frames
+      collapse with a `dup_count`) → `cleaned/<task_id>.jsonl`, one frame per
+      line, every turn merged and chronologically ordered. Raw
+      `shell_trajectories` stay untouched.
+- [x] **Debugger producer** (`harness/debugger.py` + `harness/corpus.py`):
+      parallel support-worker (ThreadPoolExecutor) consuming `cleaned/` →
+      `analysis/<task_id>.md` + `overview.md` (failing tasks grouped by
+      `component_hint`, passing by `success_patterns`) + `index.json`
+      (entry → tasks → raw-traces drill-down, verdict cross-ref from
+      `results.json`). Every root cause carries an evidence file + a
+      `component_hint` from the fixed enum; LLM / parse / invalid-hint failures
+      degrade to an explicit `inference_error`, never fabricated evidence.
+      CLI: `python -m harness.corpus --iter N --raw <.PrizmForge/shell_trajectories>
+      --runs <runs/iter_N> [--results results.json] [--max-workers 4]`.
 
 ### 12.4 P2 decision observability (manifest + verdict)
 
@@ -361,7 +405,7 @@ sequential k trials sharing the single DB writer.
 | Phase | Exit criterion |
 |---|---|
 | P0 (§12.1) | Rollouts carry fingerprints; infra aborts excluded and counted |
-| P1 (§12.2–12.3) | One iteration produces cleaned/ + analysis/ + overview/ + index.json for the internal set |
+| P1 (§12.2–12.3) | One iteration produces cleaned/ + analysis/ + overview/ + index.json for the internal set — **satisfied** (§12.3) |
 | P2 (§12.4–12.5) | An iteration round-trips: harness edits → verdict → rollback |
 | P3 (§12.6) | A single-component swap changes measured pass@1 |
 
@@ -608,9 +652,10 @@ evidence — that e2e is **§10**, not a second mini-swe port.
 
 | Order | Work item | Exit criterion |
 |---:|---|---|
+| 0 | Commit §12.3 corpus modules + §11.5 honest gate (branch) | Pre-commit + full suite green on `feat/roadmap-soak17` |
 | 1 | §1 NUC wiped `cmd_init` timing | Short burst; DELETE+NORMAL after return |
 | 2 | §6 next-soak 429 dump | One dump; `Work:` not 0.0s from support latch |
 | 3 | §7 live-hook / mini-swe e2e | When endpoints and a hook-fail copy exist |
-| 4 | §12.1 fingerprint + infra-abort classifier | Rollouts carry a harness fingerprint; infra aborts excluded from root-cause |
-| 5 | §12.2–12.5 internal benchmark → corpus → manifest/Evolve first iteration | An iteration round-trips edits → verdict → rollback on the internal set |
+| 4 | §12.4 decision manifest | `harness/manifest/iteration-<t>.json` + `task_outcomes` feed the §5.2 verdict SQL |
+| 5 | §12.5 Evolve gate first iteration | An iteration round-trips edits → verdict → rollback on the internal set |
 | 6 | §12.6 attribution ablations | A single-component swap changes measured pass@1 |
