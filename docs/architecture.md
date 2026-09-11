@@ -230,7 +230,23 @@ Governed editing tables (`files`, `file_lines`, `edit_proposals`, etc.) live in 
 
 The system uses a single SQLite database. The path can be overridden via the `PRIZMFORGE_DB_PATH` environment variable (especially useful during testing).
 
-Database initialization is **non-backwards-compatible**: `init_db()` always builds the complete canonical schema in one pass (tracked with `PRAGMA user_version`). A pre-existing database from an older schema version is discarded and rebuilt fresh — databases are never ALTER-migrated.
+Database initialization is **honest-gated**. `init_db()` never stamps a
+`PRAGMA user_version` it cannot verify:
+
+| On disk | Action |
+|---|---|
+| no file | create → apply canonical DDL → **verify** → set `user_version` |
+| `user_version == SCHEMA_VERSION` and verify passes | open only — no unlink, no DDL, no version rewrite |
+| `user_version == SCHEMA_VERSION` but verify fails | refuse to start (raise); version is never stamped over a broken file |
+| `user_version != SCHEMA_VERSION` (incl. `0`) | unlink DB + `-wal` + `-shm` → rebuild → verify → set version |
+| unlink fails | **raise** — never apply in place, never set the version |
+
+A `user_version` match is verified against `REQUIRED_TABLES` /
+`REQUIRED_COLUMNS` (`core/db.py`) rather than trusted blind. Databases are
+never ALTER-migrated; `SCHEMA_VERSION` is bumped only when a `CREATE TABLE`
+shape changes. Pre-version-3 artifacts (e.g. Soak8-era DBs at `user_version`
+0/1) are replaced the moment `init_db()` sees them; read old artifacts
+read-only (`query_developer_responses.py --mode ro`) if you still need them.
 
 #### Governed Editing Tables
 
