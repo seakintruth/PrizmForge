@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "default_k": 2,
+  "tasks": [
+    {
+      "task_id": "t01_rename_constant",
+      "seed": "Rename OLD to NEW in app.py",
+      "k": 2,
+      "fixture": {"app.py": "value = OLD\n"},
+      "contract": [
+        {"file_path": "app.py", "fragment": "value = NEW\n", "mode": "contains"}
+      ]
+    },
+    {
+      "task_id": "t02_update_signature",
+      "seed": "Change the add() function in app.py to accept a third parameter c and return a + b + c",
+      "k": 2,
+      "fixture": {"app.py": "def add(a, b):\n    return a + b\n"},
+      "contract": [
+        {"file_path": "app.py", "fragment": "def add(a, b, c):", "mode": "contains"},
+        {"file_path": "app.py", "fragment": "return a + b + c", "mode": "contains"}
+      ]
+    },
+    {
+      "task_id": "t03_fix_syntax_error",
+      "seed": "app.py has a syntax error in the function definition; fix it",
+      "k": 2,
+      "fixture": {"app.py": "def broken(:\n    pass\n"},
+      "contract": [
+        {"file_path": "app.py", "fragment": "def broken():", "mode": "contains"}
+      ]
+    },
+    {
+      "task_id": "t04_add_missing_import",
+      "seed": "app.py uses json.dumps but never imports json; add the missing import",
+      "k": 2,
+      "fixture": {"app.py": "def use_json():\n    return json.dumps({})\n"},
+      "contract": [
+        {"file_path": "app.py", "fragment": "import json", "mode": "contains"}
+      ]
+    },
+    {
+      "task_id": "t05_todo_to_marker",
+      "seed": "Replace the TODO comment in app.py with a DONE marker comment",
+      "k": 2,
+      "fixture": {"app.py": "# TODO: implement\nclass C:\n    pass\n"},
+      "contract": [
+        {"file_path": "app.py", "fragment": "# DONE", "mode": "contains"}
+      ]
+    }
+  ]
+}

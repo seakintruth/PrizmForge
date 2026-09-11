@@ -146,7 +146,7 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
                 raise
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _schema_is_current(conn: sqlite3.Connection) -> bool:
@@ -236,7 +236,10 @@ def init_db():
                 infra_abort INTEGER DEFAULT 0,
                 tokens INTEGER,
                 created_at TEXT,
-                completed_at TEXT
+                completed_at TEXT,
+                contract_hash TEXT,
+                verdict TEXT,
+                verdict_note TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_rollouts_task ON rollouts(task_id);
             CREATE INDEX IF NOT EXISTS idx_rollouts_iteration ON rollouts(iteration);

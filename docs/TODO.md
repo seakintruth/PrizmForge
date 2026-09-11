@@ -254,10 +254,25 @@ Shipped (2026-09-10, `harness/fingerprint.py` + `rollouts` table +
 
 ### 12.2 P1 boxed benchmark (internal soak-task set)
 
-- [ ] Verifier + tracer harness around existing soak seeds using
-      `ShellWorktree`; `k >= 2` rollouts/task; infra-aborted / timeout trials
-      count as failures (§7 pass@1). No Terminal-Bench-2 / SWE-bench-verified /
-      Docker sandbox (out of scope).
+Spec: `docs/benchmark_v1.md`. Verifier + tracer harness around existing soak
+seeds using `ShellWorktree`; `k >= 2` rollouts/task; infra-aborted / timeout
+trials count as failures (§7 pass@1). No Terminal-Bench-2 / SWE-bench-verified /
+Docker sandbox (out of scope).
+
+Decisions (2026-09-10): verifier = FINISH-evidence gate **+** content
+assertions; 5 crafted canonical tasks in `harness/benchmark/tasks.json`;
+sequential k trials sharing the single DB writer.
+
+- [x] **Spec** (`docs/benchmark_v1.md`): task manifest format, verifier rules,
+      driver/CLI, pass@1 accounting, out-of-scope list.
+- [x] Implement `harness/benchmark/tasks.json` (5 canonical tasks) + loader.
+- [x] Implement `harness/verify.py`: evidence gate → content assert → verdict
+      (`passed | failed | infra_aborted`) + `component_hint`.
+- [x] Implement `harness/benchmark/driver.py` + `python -m harness.benchmark`
+      (sequential trials, contract_hash + verdict on `rollouts`,
+      `runs/<iter>/results.json`, pass@1 via `failure_mode_mix`).
+- [x] `SCHEMA_VERSION = 3`: `rollouts.contract_hash / verdict / verdict_note`.
+- [x] Unit tests (verifier + driver) and slow integration (mocked LLM full run).
 
 ### 12.3 P1 trajectory corpus
 

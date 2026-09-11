@@ -78,6 +78,9 @@ _ROLLOUT_COLS = (
     "tokens",
     "created_at",
     "completed_at",
+    "contract_hash",
+    "verdict",
+    "verdict_note",
 )
 
 
