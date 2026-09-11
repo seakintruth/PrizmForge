@@ -13,7 +13,7 @@ Nothing in this module writes to the database.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from core.db import get_db_path
@@ -27,23 +27,44 @@ def _ro_conn(db_path: str | None = None) -> sqlite3.Connection:
 
 
 def _normalize_ts(value: str | None) -> datetime | None:
-    """Parse an ISO timestamp (with or without tz suffix) as timezone-aware UTC."""
+    """Parse an ISO timestamp as timezone-aware UTC.
+
+    Naive timestamps — written by ``datetime.now().isoformat()`` across the
+    runtime — are wall-clock local on this host, so they are interpreted as
+    local time before conversion (Soak22: panes were off by the host offset
+    when treated as UTC).
+    """
     if not value:
         return None
     try:
         dt = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)
+
+
+def _local_naive(dt: datetime) -> datetime:
+    """Local wall-clock version of ``dt`` (matching ``datetime.now()`` writes)."""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
 
 
 def _age_seconds(value: str | None, now: datetime) -> int | None:
     dt = _normalize_ts(value)
     if dt is None:
         return None
-    return max(int((now - dt).total_seconds()), 0)
+    now_u = now.astimezone(timezone.utc)
+    return max(int((now_u - dt).total_seconds()), 0)
+
+
+def _remaining_seconds(value: str | None, now: datetime) -> int | None:
+    """Seconds until ``value`` passes (0 when already passed / unparseable)."""
+    dt = _normalize_ts(value)
+    if dt is None:
+        return None
+    now_u = now.astimezone(timezone.utc)
+    return max(int((dt - now_u).total_seconds()), 0)
 
 
 def _row_fields(row: sqlite3.Row, fields: list[str]) -> dict[str, Any]:
@@ -91,7 +112,7 @@ def snapshot(db_path: str | None = None, now: datetime | None = None) -> dict[st
                     "tokens_reset_epoch",
                 ],
             )
-            item["unavailable_in_s"] = _age_seconds(item["unavailable_until"], now) if item.get("unavailable_until") else None
+            item["unavailable_in_s"] = _remaining_seconds(item["unavailable_until"], now) if item.get("unavailable_until") else None
             out["endpoints"].append(item)
 
         row = conn.execute("""
@@ -105,11 +126,15 @@ def snapshot(db_path: str | None = None, now: datetime | None = None) -> dict[st
             "stuck": row["stuck"] or 0,
         }
 
-        # token_log.timestamp is an ISO string; compare lexically for the window.
-        iso_window = now.isoformat(timespec="seconds")
+        # token_log.timestamp is an ISO string written as naive local time
+        # (core/token_budget.py add_usage). The window cutoff is now minus the
+        # configured window, reformatted to the same naive-local shape so the
+        # lexical compare is fair (Soak22: the cutoff was `now`, so the pane
+        # only ever counted future rows).
+        cutoff_str = (_local_naive(now) - timedelta(seconds=int(out["spend"]["window_seconds"]))).isoformat()
         row = conn.execute(
             "SELECT COALESCE(SUM(tokens_used), 0) AS w FROM token_log WHERE timestamp >= ?",
-            (iso_window,),
+            (cutoff_str,),
         ).fetchone()
         out["spend"]["window_tokens"] = row["w"]
         row = conn.execute("SELECT COALESCE(SUM(tokens_used), 0) AS t FROM token_log").fetchone()

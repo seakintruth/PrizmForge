@@ -103,6 +103,50 @@ def test_snapshot_tolerates_missing_token_columns(temp_db):
     assert snap["endpoints"][0]["tokens_per_minute"] is None
 
 
+def test_snapshot_spend_window_counts_recent_tokens(temp_db):
+    """Soak22: window cutoff must be now - window, counted in naive-local."""
+    from core.db_connection import get_db_connection
+
+    now = datetime.now(timezone.utc)
+    recent = (datetime.now() - timedelta(hours=1)).isoformat()
+    old = (datetime.now() - timedelta(hours=5)).isoformat()
+    future = (datetime.now() + timedelta(hours=1)).isoformat()
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO token_log (timestamp, tokens_used) VALUES (?, 500)", (recent,))
+        conn.execute("INSERT INTO token_log (timestamp, tokens_used) VALUES (?, 700)", (old,))
+        conn.execute("INSERT INTO token_log (timestamp, tokens_used) VALUES (?, 300)", (future,))
+
+    snap = ov.snapshot(db_path=temp_db, now=now)
+    # recent (1h ago) + future (1h ahead) are both >= cutoff → counted; the 5h
+    # row is the only one excluded. Pre-fix (cutoff = now) counted only the
+    # future row (300), so 800 proves the cutoff no longer points at `now`.
+    assert snap["spend"]["window_tokens"] == 800
+    assert snap["spend"]["total_tokens"] == 1500
+
+
+def test_snapshot_latch_countdown_is_remaining_not_age(temp_db):
+    """Soak22: unavailable_in_s = seconds until unlatched (not seconds since)."""
+    from core.db_connection import get_db_connection
+
+    now = datetime.now(timezone.utc)
+    in_future = (datetime.now() + timedelta(seconds=300)).isoformat()
+    expired = (datetime.now() - timedelta(seconds=60)).isoformat()
+    with get_db_connection() as conn:
+        conn.execute(
+            "INSERT INTO endpoint_health (endpoint_name, status, unavailable_until) VALUES ('ep1', 'rate_limited', ?)",
+            (in_future,),
+        )
+        conn.execute(
+            "INSERT INTO endpoint_health (endpoint_name, status, unavailable_until) VALUES ('ep2', 'rate_limited', ?)",
+            (expired,),
+        )
+
+    snap = ov.snapshot(db_path=temp_db, now=now)
+    by_name = {e["endpoint_name"]: e for e in snap["endpoints"]}
+    assert 0 < by_name["ep1"]["unavailable_in_s"] <= 300
+    assert by_name["ep2"]["unavailable_in_s"] == 0
+
+
 def test_task_trace_returns_steps_and_events(temp_db):
     from core.db_connection import get_db_connection
 
