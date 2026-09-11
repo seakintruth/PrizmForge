@@ -209,11 +209,50 @@ endpoint gaps.
       `500000` tokens/min, `remaining 0`, `reset 59`; `Retry-After` is
       honored correctly, but consecutive windows keep re-tripping.)
 
+### 11.4 Soak22 soak notes — hardening verified, two fixes shipped
+
+Soak22 (2026-09-10, unattended run, `task_001` = discovery seed on
+`docs/TODO.md`) stopped after ~1h with `files_modified=0` because both
+endpoint families were unusable; the degradation paths handled it as
+designed:
+
+- openrouter free tier hit its daily 429 quota (`X-RateLimit-Reset:
+  1789171200000` → 2026-09-12 00:00 UTC; `Retry-After=75812s`) → §11.2
+  quota park `min(reset, 4h)` fired, then "No alternate endpoints
+  available — recheck in 120s"; background workers auto-disabled;
+  resource controller throttled 118→11 calls/min, feeder 30s→180s.
+- The fallback target `opencode/big-pickle` is **misconfigured**
+  (`MissingSessionID` 400 — "free tier can only be used in OpenCode"),
+  so every fallback burned a request into a §11.2 misconfig park (240m)
+  instead of retrying. Config hygiene item, not a code defect.
+- Orchestrator 3/3 fail → task_001 finalized `timed_out`
+  (`token budget exhausted: files_modified=0`). Note: the console's
+  "Budget: 99.4% (19,889,292 tokens)" readout is **tokens remaining**,
+  not a spent alarm.
+
+Verified working in situ: TimeExceeded shell-session exit (10 model
+calls), `no_progress` stall guard (13 calls vs limit 10), one-shot JSON
+repair, the reviewer legitimately rejecting the §8/§10 heading deletion,
+and background-agent lane isolation during developer sessions.
+
+Fixes shipped:
+
+- **Operator console (593b69d):** spend-window cutoff and latch
+  countdown were off by the host offset (aware seeds vs naive-local
+  writes) — `core/operator_view.py` `_normalize_ts` / `_local_naive`.
+- **Rollout finalize (2026-09-11):** `classify_infra_abort` compared a
+  naive-local `endpoint_health.unavailable_until` against an aware-UTC
+  rollout `completed_at` raw → `TypeError: can't compare offset-naive
+  and offset-aware datetimes` left the rollout stuck `in_progress`
+  (mis-bucketed as plain failed, infra signal lost). Both sides now
+  normalize to naive host wall-clock via `_wallclock_naive` (mirror of
+  the console helper); regression tests cover aware↔naive mixes.
+
 ---
 
 ## 12. Harness-evolution loop — deploy `HARNESS_EVOLUTION_DESIGN` (zero-dep path)
 
-**Priority:** P2 (behind §11 gates; P0 substrate partially shipped).
+**Priority:** P2 (behind §11 gates; P0 rollout substrate shipped).
 **Source:** `docs/HARNESS_EVOLUTION_DESIGN.md` (draft, not implemented).
 **Dependency posture:** zero new runtime deps — `requirements.txt` stays
 `requests` + `pathspec`. Uses stdlib sqlite3 JSON1 (verified here: 3.46.1,
@@ -234,24 +273,45 @@ Shipped and **not** repeated: `core/operator_view.py`, shell heartbeats
 (`shell_turn_start` / `shell_model_call_started` / `shell_command_executed` /
 `shell_spinning`), `utils/live_console.py`, run-effectiveness diagnostics.
 
-Still open:
+Shipped (2026-09-10, `harness/fingerprint.py` + `rollouts` table +
+`SCHEMA_VERSION = 2`):
 
-- [ ] **Per-run harness fingerprint:** persist `(harness git tag, resolved
-      prompt hash, model)` per rollout (`hashlib` over the resolved
-      `get_agent_prompts` dict). Prompts render at runtime (agents/base.py),
-      so without the fingerprint §5 edit-verdict claims are unverifiable.
-- [ ] **Infra-abort classifier:** label rollouts aborted by endpoint
-      infra (`empty_body` / `no_alternate_endpoint` / `misconfigured`, from
-      `model_health_events` + endpoint latches) so the Debugger's
-      `component_hint` never blames the harness for a flaky endpoint (Soak18
-      exact confound); report `failure_mode_mix` per iteration.
+- [x] **Per-run harness fingerprint:** persist `(harness git tag, resolved
+      prompt hash, model)` per rollout (`sha256` over the sorted resolved
+      `get_agent_prompts` dict at `core/config.py` `get_agent_prompts`). A
+      `rollouts` row is created at `run_task_cycle` start (task_runner) and
+      finalized (status, infra-abort label, token backfill from `token_log`)
+      at loop end. Prompts render at runtime (agents/base.py), so the
+      fingerprint makes §5 edit-verdict claims verifiable.
+- [x] **Infra-abort classifier:** label rollouts aborted by endpoint infra
+      (`empty_body` / `no_alternate_endpoint` / `misconfigured` /
+      `rate_limited` / `key_locked` / `token_budget` / `token_exhausted`,
+      from the `model_health_events` tail + endpoint `unavailable_until`
+      latches) so the Debugger's `component_hint` never blames the harness
+      for a flaky endpoint (Soak18 exact confound); `failure_mode_mix`
+      reports pass@1 + infra vs non-infra failures per iteration.
 
 ### 12.2 P1 boxed benchmark (internal soak-task set)
 
-- [ ] Verifier + tracer harness around existing soak seeds using
-      `ShellWorktree`; `k >= 2` rollouts/task; infra-aborted / timeout trials
-      count as failures (§7 pass@1). No Terminal-Bench-2 / SWE-bench-verified /
-      Docker sandbox (out of scope).
+Spec: `docs/benchmark_v1.md`. Verifier + tracer harness around existing soak
+seeds using `ShellWorktree`; `k >= 2` rollouts/task; infra-aborted / timeout
+trials count as failures (§7 pass@1). No Terminal-Bench-2 / SWE-bench-verified /
+Docker sandbox (out of scope).
+
+Decisions (2026-09-10): verifier = FINISH-evidence gate **+** content
+assertions; 5 crafted canonical tasks in `harness/benchmark/tasks.json`;
+sequential k trials sharing the single DB writer.
+
+- [x] **Spec** (`docs/benchmark_v1.md`): task manifest format, verifier rules,
+      driver/CLI, pass@1 accounting, out-of-scope list.
+- [x] Implement `harness/benchmark/tasks.json` (5 canonical tasks) + loader.
+- [x] Implement `harness/verify.py`: evidence gate → content assert → verdict
+      (`passed | failed | infra_aborted`) + `component_hint`.
+- [x] Implement `harness/benchmark/driver.py` + `python -m harness.benchmark`
+      (sequential trials, contract_hash + verdict on `rollouts`,
+      `runs/<iter>/results.json`, pass@1 via `failure_mode_mix`).
+- [x] `SCHEMA_VERSION = 3`: `rollouts.contract_hash / verdict / verdict_note`.
+- [x] Unit tests (verifier + driver) and slow integration (mocked LLM full run).
 
 ### 12.3 P1 trajectory corpus
 

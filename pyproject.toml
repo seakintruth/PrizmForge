@@ -67,6 +67,9 @@ ignore = ["S101", "S105","RUF001"] # Allow assert in tests, ignore hardcoded moc
 "agents/prioritizer_worker.py" = ["E402", "PLC0415"]
 "agents/reporter_worker.py" = ["S603", "S607"]
 
+# Harness-evolution substrate (best-effort guarded git/fingerprint probes)
+"harness/*" = ["S603", "S607", "S110", "S112"]
+
 # File editing & CLI
 "file_editing/writer.py" = ["S603", "S607"]
 

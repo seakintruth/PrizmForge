@@ -199,8 +199,8 @@ Produce ONLY a JSON report with:
 - passed: bool
 - root_causes: [ {evidence_file, inferred_root_cause, component_hint} ]
   where component_hint is one of:
-  system_prompt | tool_description | tool_implementation | middleware |
-  skill | subagent_config | long_term_memory | none
+  harness_prompt | tool | middleware | skill | memory | subagent |
+  worktree | endpoint | task_contract | parallel_worker | database | verifier
 - success_patterns: [ ... ] (when passed)
 
 Ground every claim in a file path. Do not speculate past the evidence.

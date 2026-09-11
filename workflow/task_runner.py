@@ -22,6 +22,13 @@ from workflow.shell_developer import (
     _fallback_order_for_targets,
 )
 
+# Harness-evolution §12.1: rollout observability (best-effort, never raises).
+try:
+    from harness.fingerprint import create_rollout, finalize_rollout
+except Exception:  # pragma: no cover - package import guard
+    create_rollout = None
+    finalize_rollout = None
+
 # Governed editing imports
 
 # Active-work tracking: accumulates HTTP latency (seconds) across call_agent
@@ -380,6 +387,12 @@ def _finalize_task(task_id: str, progress: dict, reason: str, status: str | None
     except Exception as e:
         print(f"   ⚠️  Failed to finalize task {task_id}: {e}")
 
+    try:
+        if finalize_rollout is not None:
+            finalize_rollout(task_id, status)
+    except Exception as e:
+        print(f"   ⚠️  Rollout finalization failed (task {task_id}): {e}")
+
 
 def _ensure_pool_started(
     agent_pool: Any,
@@ -686,6 +699,13 @@ def run_task_cycle(  # noqa: C901
     create_task(task_id, user_command)
     _inject_seed_feedback(task_id, user_command)
     start_time = time.time()
+
+    # Harness-evolution §12.1: record the per-run fingerprint on a rollout row.
+    try:
+        if create_rollout is not None:
+            create_rollout(task_id)
+    except Exception as e:
+        print(f"   ⚠️  Rollout recording failed (task {task_id}): {e}")
 
     # Backlog hygiene: age out old LOW items and cap unbounded growth
     try:
