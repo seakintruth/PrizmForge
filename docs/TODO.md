@@ -209,6 +209,45 @@ endpoint gaps.
       `500000` tokens/min, `remaining 0`, `reset 59`; `Retry-After` is
       honored correctly, but consecutive windows keep re-tripping.)
 
+### 11.4 Soak22 soak notes — hardening verified, two fixes shipped
+
+Soak22 (2026-09-10, unattended run, `task_001` = discovery seed on
+`docs/TODO.md`) stopped after ~1h with `files_modified=0` because both
+endpoint families were unusable; the degradation paths handled it as
+designed:
+
+- openrouter free tier hit its daily 429 quota (`X-RateLimit-Reset:
+  1789171200000` → 2026-09-12 00:00 UTC; `Retry-After=75812s`) → §11.2
+  quota park `min(reset, 4h)` fired, then "No alternate endpoints
+  available — recheck in 120s"; background workers auto-disabled;
+  resource controller throttled 118→11 calls/min, feeder 30s→180s.
+- The fallback target `opencode/big-pickle` is **misconfigured**
+  (`MissingSessionID` 400 — "free tier can only be used in OpenCode"),
+  so every fallback burned a request into a §11.2 misconfig park (240m)
+  instead of retrying. Config hygiene item, not a code defect.
+- Orchestrator 3/3 fail → task_001 finalized `timed_out`
+  (`token budget exhausted: files_modified=0`). Note: the console's
+  "Budget: 99.4% (19,889,292 tokens)" readout is **tokens remaining**,
+  not a spent alarm.
+
+Verified working in situ: TimeExceeded shell-session exit (10 model
+calls), `no_progress` stall guard (13 calls vs limit 10), one-shot JSON
+repair, the reviewer legitimately rejecting the §8/§10 heading deletion,
+and background-agent lane isolation during developer sessions.
+
+Fixes shipped:
+
+- **Operator console (593b69d):** spend-window cutoff and latch
+  countdown were off by the host offset (aware seeds vs naive-local
+  writes) — `core/operator_view.py` `_normalize_ts` / `_local_naive`.
+- **Rollout finalize (2026-09-11):** `classify_infra_abort` compared a
+  naive-local `endpoint_health.unavailable_until` against an aware-UTC
+  rollout `completed_at` raw → `TypeError: can't compare offset-naive
+  and offset-aware datetimes` left the rollout stuck `in_progress`
+  (mis-bucketed as plain failed, infra signal lost). Both sides now
+  normalize to naive host wall-clock via `_wallclock_naive` (mirror of
+  the console helper); regression tests cover aware↔naive mixes.
+
 ---
 
 ## 12. Harness-evolution loop — deploy `HARNESS_EVOLUTION_DESIGN` (zero-dep path)

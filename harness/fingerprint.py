@@ -202,6 +202,25 @@ def latest_rollout(task_id: str) -> dict[str, Any] | None:
         return None
 
 
+def _wallclock_naive(value: str | None) -> datetime | None:
+    """Parse a timestamp as naive host-local wall-clock.
+
+    ``endpoint_health.unavailable_until`` is written naive-local
+    (``datetime.now()``), while rollout ``created_at``/``completed_at`` are
+    aware UTC. Comparing them raw raises ``TypeError`` (Soak22: "can't compare
+    offset-naive and offset-aware datetimes"), so both sides normalize to the
+    same local wall-clock basis before comparing. Mirror of
+    ``core/operator_view._local_naive``.
+    """
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+    return dt.astimezone().replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
 def classify_infra_abort(task_id: str, start_ts: str | None, end_ts: str | None) -> tuple[bool, str]:
     """Label a rollout that died on endpoint infra rather than harness/task work.
 
@@ -238,15 +257,11 @@ def classify_infra_abort(task_id: str, start_ts: str | None, end_ts: str | None)
     for _name, status, unavailable_until in latched:
         if str(status or "").lower() not in ENDPOINT_LATCH_STATUSES or not unavailable_until:
             continue
-        try:
-            latch_until = datetime.fromisoformat(unavailable_until)
-        except (ValueError, TypeError):
+        latch_until = _wallclock_naive(unavailable_until)
+        end_local = _wallclock_naive(end_ts)
+        if latch_until is None or end_local is None:
             continue
-        try:
-            end_dt = datetime.fromisoformat(end_ts)
-        except (ValueError, TypeError):
-            continue
-        if latch_until > end_dt and (latch_until - end_dt).total_seconds() > 60:
+        if latch_until > end_local and (latch_until - end_local).total_seconds() > 60:
             return True, f"endpoint_latched:{_name}:{status}"
 
     return False, "no_infra_abort"

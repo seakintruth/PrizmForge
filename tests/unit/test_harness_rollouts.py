@@ -146,6 +146,35 @@ class TestRolloutLifecycle:
 
         assert finalize_rollout("t-no-rollout", "completed") is None
 
+    def test_finalize_with_naive_latched_endpoint_does_not_raise(self):
+        # Soak22: endpoint_health.unavailable_until is written naive-local
+        # (datetime.now()) while rollout created_at/completed_at are aware UTC;
+        # the raw compare raised "can't compare offset-naive and offset-aware
+        # datetimes" and left the rollout permanently in_progress.
+        from core.db_connection import get_db_connection
+        from harness.fingerprint import create_rollout, finalize_rollout, latest_rollout
+
+        create_rollout("t-soak22", fingerprint={"harness_tag": "t", "prompt_hash": "p", "model": "m"})
+        latch_until = (datetime.now() + timedelta(hours=2)).isoformat()
+        last_checked = datetime.now().isoformat()
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO tasks (id, description, status, started_at, completed_at, result) VALUES (?,?,?,?,?,?)",
+                ("t-soak22", "d", "failed", "2026-09-10T00:00:00", None, ""),
+            )
+            conn.execute(
+                "INSERT INTO endpoint_health (endpoint_name, status, error_count, "
+                "consecutive_failures, last_success, unavailable_until, last_updated) VALUES (?,?,?,?,?,?,?)",
+                ("ep-soak22", "misconfigured", 5, 5, None, latch_until, last_checked),
+            )
+
+        row = finalize_rollout("t-soak22", "failed")
+        assert row is not None
+        assert row["status"] == "infra_aborted"
+        assert row["infra_abort"] == 1
+        assert row["completed_at"] is not None
+        assert latest_rollout("t-soak22")["status"] == "infra_aborted"
+
 
 @pytest.mark.usefixtures("temp_db")
 class TestInfraAbort:
@@ -253,6 +282,64 @@ class TestInfraAbort:
         row = finalize_rollout("t-passed", "completed")
         assert row["status"] == "passed"
         assert row["infra_abort"] == 0
+
+
+@pytest.mark.usefixtures("temp_db")
+class TestInfraAbortNaiveAware:
+    """Soak22 regression: naive-local endpoint latches vs aware-to-naive rollouts.
+
+    ``endpoint_health.unavailable_until`` is written naive-local but rollout
+    window stamps are aware UTC; classification must normalize both sides to
+    wall-clock local instead of comparing them raw.
+    """
+
+    def _seed_endpoint(self, name: str, status: str, latch_naive: datetime):
+        from core.db_connection import get_db_connection
+
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO endpoint_health (endpoint_name, status, error_count, "
+                "consecutive_failures, last_success, unavailable_until, last_updated) VALUES (?,?,?,?,?,?,?)",
+                (name, status, 5, 5, None, latch_naive.isoformat(), datetime.now().isoformat()),
+            )
+
+    def test_aware_window_with_naive_latch_detects_abort(self):
+        from harness.fingerprint import classify_infra_abort
+
+        end_aware = datetime(2026, 9, 10, 23, 0, 0, tzinfo=timezone.utc)
+        start_aware = end_aware - timedelta(hours=1)
+        end_local = end_aware.astimezone().replace(tzinfo=None)
+        self._seed_endpoint("ep-naive-future", "rate_limited", end_local + timedelta(hours=2))
+
+        assert classify_infra_abort("t-naive-1", start_aware.isoformat(), end_aware.isoformat()) == (
+            True,
+            "endpoint_latched:ep-naive-future:rate_limited",
+        )
+
+    def test_aware_window_with_expired_naive_latch_is_not_abort(self):
+        from harness.fingerprint import classify_infra_abort
+
+        end_aware = datetime(2026, 9, 10, 23, 0, 0, tzinfo=timezone.utc)
+        start_aware = end_aware - timedelta(hours=1)
+        end_local = end_aware.astimezone().replace(tzinfo=None)
+        self._seed_endpoint("ep-naive-past", "rate_limited", end_local - timedelta(minutes=5))
+
+        assert classify_infra_abort("t-naive-2", start_aware.isoformat(), end_aware.isoformat()) == (
+            False,
+            "no_infra_abort",
+        )
+
+    def test_naive_window_with_naive_latch_detects_abort(self):
+        from harness.fingerprint import classify_infra_abort
+
+        end_local = datetime(2026, 9, 10, 23, 0, 0)
+        start_local = end_local - timedelta(hours=1)
+        self._seed_endpoint("ep-naive-window", "misconfigured", end_local + timedelta(hours=2))
+
+        assert classify_infra_abort("t-naive-3", start_local.isoformat(), end_local.isoformat()) == (
+            True,
+            "endpoint_latched:ep-naive-window:misconfigured",
+        )
 
 
 @pytest.mark.usefixtures("temp_db")
