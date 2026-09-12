@@ -372,16 +372,20 @@ P1 exit criterion (one iteration produces `cleaned/` + `analysis/` +
 
 ### 12.4 P2 decision observability (manifest + verdict)
 
-- [ ] Manifest JSON per iteration (`harness/manifest/iteration-<t>.json`) with
-      `predicted_fixes` / `predicted_regressions` per edit; mirror into
-      `harness_change_manifest(iteration, payload)` +
-      `task_outcomes(iteration, task_id, passed, tokens)` for the §5.2 verdict
-      SQL (json_each verified). Fold `predicted_regressions` into the verdict so
-      the §5.3 rollback rule has real inputs.
+- [x] Manifest JSON per iteration (`harness/manifest/iteration-<t>.json`, written
+      by `write_manifest_file`) with `predicted_fixes` / `predicted_regressions`
+      per edit; mirrored into `harness_change_manifest(iteration, payload)`
+      (`harness/evolve.py`, schema in `core/db.py`, `SCHEMA_VERSION=4`).
+      `task_outcomes(iteration, task_id, passed, tokens)` recorded from a
+      `run_benchmark` results dict (`record_iteration_outcomes`);
+      `edit_verdicts(prior, cur)` runs the §5.2 prediction∩delta SQL via
+      `json_each` (verified) and folds the verdict into per-edit precision —
+      the §5.3 rollback rule now has real inputs.
 - [ ] Rollback: `git revert <edit.commit>` on the harness workspace (or
       `undo_proposal`) when confirms == 0 and flagged/extra regressions land;
-      reverts happen before the next distillation so verdicts stay in the
-      corpus.
+      `revert_candidates(prior, cur)` SELECTS the offenders (§5.3) — the
+      executor (`git revert`/governed undo) runs in the §12.5 Evolve loop
+      before the next distillation so verdicts stay in the corpus.
 
 ### 12.5 P2 Evolve gate
 
