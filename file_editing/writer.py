@@ -427,6 +427,11 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         task_id = proposal["task_id"] if "task_id" in proposal.keys() else None
         git_failed = None
         lint_failed = None
+        # Symbol refreshes run AFTER the write transaction commits: refreshing
+        # inside it opens a second writer against a connection that already
+        # holds a RESERVED lock (multi-file materialize), busy-waits 30s,
+        # then silently drops — never do DB writes inside the open txn.
+        symbol_refreshes: list[tuple[str, str]] = []
 
         for target_path in affected_paths:
             op_file_id = before_state[target_path]["file_id"]
@@ -465,20 +470,10 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     resolved_path = None
                     rel_path = None
 
-                # Refresh symbol index (only when we have a clean relative path)
+                # Refresh symbol index (only when we have a clean relative path) —
+                # deferred until the write transaction below has committed.
                 if rel_path and rel_path.endswith(".py"):
-                    try:
-                        from core.index_context import refresh_file_symbols
-
-                        refresh_file_symbols(rel_path, content_after)
-                    except Exception as _idx_err:
-                        log_error(
-                            "LOW",
-                            "file_editing",
-                            "index_refresh",
-                            f"Symbol index refresh failed: {_idx_err}",
-                            proposal_id=proposal_id,
-                        )
+                    symbol_refreshes.append((rel_path, content_after))
 
                 # Update files table (skipped for deletions — row stays is_deleted)
                 if not is_deleted:
@@ -607,6 +602,22 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             task_id=task_id,
         )
         _record_lint_failure(task_id, proposal_id, lint_failed)
+
+    # Refresh symbols now that the write transaction has committed (see the
+    # deferred-collection note above — never a DB writer inside the open txn).
+    for _rel_path, _content_after in symbol_refreshes:
+        try:
+            from core.index_context import refresh_file_symbols
+
+            refresh_file_symbols(_rel_path, _content_after)
+        except Exception as idx_err:
+            log_error(
+                "LOW",
+                "file_editing",
+                "index_refresh",
+                f"Symbol index refresh failed: {idx_err}",
+                proposal_id=proposal_id,
+            )
 
     return {
         "status": status,

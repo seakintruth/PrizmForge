@@ -6,6 +6,7 @@ from uuid import uuid4
 from core.events import publish_event
 from file_editing.db import get_db_connection, log_error
 from file_editing.edit_payload import EditPayload
+from file_editing.editing import _validate_operation_shape
 
 # =============================================================================
 # PrizmForge/workflow/proposal_builder.py
@@ -110,6 +111,12 @@ def create_proposal_from_developer_output(
             payload = EditPayload.model_validate_json(developer_output)
         else:
             payload = EditPayload.model_validate(developer_output)
+
+        # Op-shape guard: a content-level rebuild op must be alone on its file.
+        shape_error = _validate_operation_shape(payload, target_file_path)
+        if shape_error is not None:
+            log_error("HIGH", "proposal_builder", "create_proposal", shape_error)
+            return {"status": "error", "message": shape_error}
 
         with get_db_connection() as conn:
             file_id = _get_or_create_file_id(conn, target_file_path)

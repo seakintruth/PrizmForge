@@ -8,6 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+#: Manifest schema version understood by this loader (tasks.json says 1).
+SUPPORTED_SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True)
 class ContentAssertion:
@@ -70,14 +73,21 @@ def parse_bench_task(raw: dict[str, Any], default_k: int = 2) -> BenchTask:
 
 
 def load_task_manifest(path: str | Path) -> dict[str, Any]:
-    """Load tasks.json → ``{default_k, tasks: [BenchTask, ...]}``."""
+    """Load tasks.json → ``{schema_version, default_k, tasks: [BenchTask, ...]}``."""
     tasks_path = Path(path)
     raw = json.loads(tasks_path.read_text(encoding="utf-8"))
+    schema_version = int(raw.get("schema_version", SUPPORTED_SCHEMA_VERSION))
+    if schema_version > SUPPORTED_SCHEMA_VERSION:
+        raise ValueError(
+            f"tasks.json schema_version {schema_version} is newer than the "
+            f"supported {SUPPORTED_SCHEMA_VERSION} — refusing to run an "
+            f"unvalidated manifest: {tasks_path}"
+        )
     default_k = int(raw.get("default_k", 2))
     tasks = [parse_bench_task(t, default_k) for t in raw.get("tasks") or []]
     if not tasks:
         raise ValueError(f"No tasks in manifest: {tasks_path}")
-    return {"default_k": default_k, "tasks": tasks}
+    return {"schema_version": schema_version, "default_k": default_k, "tasks": tasks}
 
 
 def default_manifest_path() -> Path:

@@ -492,3 +492,175 @@ class TestApplyContracts:
                     "operations": [{"type": "apply_diff", "diff": "   ", "rationale": "empty"}],
                 }
             )
+
+    # -------------------------------------------------------------------
+    # §13.1 — atomic apply (all-or-nothing) + op-shape guard
+    # -------------------------------------------------------------------
+    def test_multi_op_failure_rolls_back_whole_proposal(self, temp_db, monkeypatch):
+        import file_editing.editing as editing_mod
+        from file_editing.db import get_db_connection
+        from file_editing.editing import apply_edit_proposal
+        from file_editing.writer import initialize_file_lines
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        initialize_file_lines("ops/atomic.py", "a\nb\n")
+        g = _guids("ops/atomic.py")
+        prop = create_proposal_from_developer_output(
+            {
+                "target_file_path": "ops/atomic.py",
+                "summary": "atomic multi-op",
+                "rationale": "op1 must roll back when op2 returns error",
+                "operations": [
+                    {
+                        "type": "insert_after",
+                        "after_guid": g[0],
+                        "new_content": ["inserted"],
+                        "rationale": "op1",
+                    },
+                    {
+                        "type": "replace_block",
+                        "start_line_guid": g[1],
+                        "new_content": ["LINE2"],
+                        "rationale": "op2",
+                    },
+                ],
+            },
+            1,
+            "ops/atomic.py",
+        )
+        assert prop["status"] == "success"
+        _approve(prop["proposal_id"])
+
+        def _boom(conn, file_id, op):
+            return {"status": "error", "message": "simulated op-2 failure"}
+
+        monkeypatch.setattr(editing_mod, "apply_replace_block", _boom)
+        result = apply_edit_proposal(prop["proposal_id"])
+        assert result["status"] == "error"
+        assert "simulated op-2 failure" in result["message"]
+        assert _content("ops/atomic.py") == "a\nb\n"
+        with get_db_connection() as conn:
+            st = conn.execute(
+                "SELECT status FROM edit_proposals WHERE proposal_id = ?",
+                (prop["proposal_id"],),
+            ).fetchone()[0]
+        assert st == "error"
+
+    def test_multi_op_exception_rolls_back_whole_proposal(self, temp_db, monkeypatch):
+        import file_editing.editing as editing_mod
+        from file_editing.db import get_db_connection
+        from file_editing.editing import apply_edit_proposal
+        from file_editing.writer import initialize_file_lines
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        initialize_file_lines("ops/atomic_exc.py", "a\nb\n")
+        g = _guids("ops/atomic_exc.py")
+        prop = create_proposal_from_developer_output(
+            {
+                "target_file_path": "ops/atomic_exc.py",
+                "summary": "atomic crash",
+                "rationale": "op1 must roll back when op2 raises",
+                "operations": [
+                    {
+                        "type": "insert_after",
+                        "after_guid": g[0],
+                        "new_content": ["inserted"],
+                        "rationale": "op1",
+                    },
+                    {
+                        "type": "replace_block",
+                        "start_line_guid": g[1],
+                        "new_content": ["LINE2"],
+                        "rationale": "op2",
+                    },
+                ],
+            },
+            1,
+            "ops/atomic_exc.py",
+        )
+        assert prop["status"] == "success"
+        _approve(prop["proposal_id"])
+
+        def _explode(conn, file_id, op):
+            raise RuntimeError("simulated op-2 crash")
+
+        monkeypatch.setattr(editing_mod, "apply_replace_block", _explode)
+        result = apply_edit_proposal(prop["proposal_id"])
+        assert result["status"] == "error"
+        assert "simulated op-2 crash" in result["message"]
+        assert _content("ops/atomic_exc.py") == "a\nb\n"
+        with get_db_connection() as conn:
+            st = conn.execute(
+                "SELECT status FROM edit_proposals WHERE proposal_id = ?",
+                (prop["proposal_id"],),
+            ).fetchone()[0]
+        assert st == "error"
+
+    def test_mixed_content_and_line_ops_rejected(self, temp_db):
+        from file_editing.writer import initialize_file_lines
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        initialize_file_lines("ops/mixed.py", "a\nb\n")
+        g = _guids("ops/mixed.py")
+        prop = create_proposal_from_developer_output(
+            {
+                "target_file_path": "ops/mixed.py",
+                "summary": "mixed ops",
+                "rationale": "content-level op mixed with line op must be rejected",
+                "operations": [
+                    {
+                        "type": "delete_lines",
+                        "start_line_guid": g[1],
+                        "rationale": "line-level",
+                    },
+                    {
+                        "type": "find_replace",
+                        "find": "a",
+                        "replace": "z",
+                        "rationale": "content-level",
+                    },
+                ],
+            },
+            1,
+            "ops/mixed.py",
+        )
+        assert prop["status"] == "error"
+        assert "only operation" in prop["message"]
+        assert "z" not in _content("ops/mixed.py")
+
+    def test_multiple_line_level_ops_apply(self, temp_db):
+        from file_editing.editing import apply_edit_proposal
+        from file_editing.writer import initialize_file_lines
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        initialize_file_lines("ops/multi_line.py", "a\nb\nc\n")
+        g = _guids("ops/multi_line.py")
+        prop = create_proposal_from_developer_output(
+            {
+                "target_file_path": "ops/multi_line.py",
+                "summary": "multi line-level ops",
+                "rationale": "several line-level ops apply atomically",
+                "operations": [
+                    {
+                        "type": "insert_after",
+                        "after_guid": g[0],
+                        "new_content": ["ab"],
+                        "rationale": "op1",
+                    },
+                    {
+                        "type": "delete_lines",
+                        "start_line_guid": g[2],
+                        "rationale": "op2",
+                    },
+                ],
+            },
+            1,
+            "ops/multi_line.py",
+        )
+        assert prop["status"] == "success"
+        _approve(prop["proposal_id"])
+        result = apply_edit_proposal(prop["proposal_id"])
+        assert result["status"] == "success", result
+        body = _content("ops/multi_line.py")
+        assert "ab" in body
+        assert "c" not in body

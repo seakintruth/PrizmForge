@@ -26,6 +26,7 @@ checklists back into this tracker.
 | §0 Current state | — | Index |
 | §11 Soak17 root-cause fixes | **shipped (branch)** | §11.1–§11.3 landed (`a2cc0d2`/`6abe86e`/`7ed6a15`) + Soak22 notes (§11.4) on `feat/roadmap-soak17`; merge to `main`, then purge |
 | **§12 Harness-evolution loop (`HARNESS_EVOLUTION_DESIGN`)** | **P2** | Zero-dep closed loop; P0+P1 (§12.1–§12.3) shipped on branch; §12.4/§12.5 next. External benchmarks out of scope |
+| §13 Edit-process hardening | **P1** | Atomic apply, materialize crash recovery, and bench trial isolation are mutation-path + bench correctness; same tier as the remaining P1 work |
 | §10 Mutation path | shipped #121–#124 | Proposal path + Soak16/Soak6 fixes soak-validated to materialization (Soak8); only §10.7 gate remains |
 | §6 Next-soak 429 dump | **P0** | Partly paid by the Soak5 artifact; `Work: 0.0s` still open |
 | §8 Operator soak A-1 | **ran** | Soak4 ran after #121; remaining gate is §10.7 / §11 |
@@ -69,12 +70,14 @@ checklists back into this tracker.
 - **Working branch `feat/roadmap-soak17` (not on `main` yet):** §11.1–§11.3
   (`a2cc0d2`/`6abe86e`/`7ed6a15`), Soak22 console + rollout-finalize fixes
   (`593b69d`/`b20c814`, §11.4), §12.1 substrate (`4ca8338`), §12.2 benchmark
-  (`8bcaf14`), and §12.3 corpus (uncommitted) are ticked here against the
-  branch. They are purged from this tracker after the merge.
-- **Next (do):** commit the §12.3 corpus modules + the §11.5 honest schema
-  gate, then push into §12.4 (decision manifest) → §12.5 (Evolve gate)
-  first iteration. Re-run the §10.7 acceptance gate on the §11-verified
-  endpoints at the next live soak; the §11 closure is already committed.
+  (`8bcaf14`), and §12.3 corpus + §11.5 honest schema gate (`ca68d62`) are
+  ticked here against the branch. They are purged from this tracker after
+  the merge.
+- **Next (do):** start §13.1/§13.2/§13.6 (edit-process hardening — atomic
+  apply, materialize crash recovery, bench trial isolation), then §12.4
+  (decision manifest) → §12.5 (Evolve gate) first iteration. Re-run the
+  §10.7 acceptance gate on the §11-verified endpoints at the next live
+  soak; the §11 closure is already committed.
 - **Harness-evolution substrate (§12):** P0 observability base landed
   (operator console: `core/operator_view.py`, shell heartbeats,
   `utils/live_console.py`, run-effectiveness views). §12.1 fingerprint +
@@ -253,7 +256,7 @@ Fixes shipped:
   normalize to naive host wall-clock via `_wallclock_naive` (mirror of
   the console helper); regression tests cover aware↔naive mixes.
 
-### 11.5 Honest schema gate (uncommitted in work tree)
+### 11.5 Honest schema gate (shipped ca68d62, branch)
 
 `init_db()` (`core/db.py`) must never stamp a `PRAGMA user_version` it
 cannot verify:
@@ -276,8 +279,8 @@ present, legacy rows gone; unlink fails on stale DB → `RuntimeError`,
 version stays 2.
 Docs: `docs/architecture.md` "Database initialization" paragraph updated.
 
-- [ ] (uncommitted — staged `core/db.py` + `docs/architecture.md`,
-      untracked `tests/unit/test_db_schema.py`; tick on commit)
+- [x] Shipped in `ca68d62` on `feat/roadmap-soak17` (branch) — purge on
+      merge to `main`.
 
 ---
 
@@ -413,6 +416,113 @@ P1 exit criterion (one iteration produces `cleaned/` + `analysis/` +
 (`datasets`), Docker / enclave OS-sandboxing, editing `runs/` or endpoint
 config (even by the Evolve Agent), PostgreSQL / SQLAlchemy mirror, and any
 dependency entry beyond `requests` / `pathspec` for this loop.
+
+---
+
+## 13. Edit-process hardening (resiliency / efficiency / testability / bench-worthiness)
+
+**Priority:** P1 — same tier as remaining P1 work; no new deps.
+**Source of truth:** `file_editing/`, `workflow/developer_edit.py`,
+`workflow/shell_developer.py`, `harness/verify.py`,
+`harness/benchmark/driver.py`.
+
+### 13.1 Atomic apply — all-or-nothing proposals (P1)
+
+- [x] `apply_edit_proposal` must apply a proposal's operations in ONE
+      transaction: any per-op failure rolls back the whole proposal (status
+      `error`, governed store untouched) instead of committing partial state.
+      Today `file_editing/editing.py:807-821` returns a dict for a failed op,
+      and `file_editing/db.py` commits on clean exit of the context — op1
+      lands, op2 does not. Wrap ops in an explicit transaction helper
+      (e.g. a SAVEPOINT the dispatcher rolls back on first failure).
+- [x] **Op-shape guard (no mixed re-init):** content-level ops
+      (`find_replace` / `full_replace` / `apply_diff` / `create_file` /
+      `delete_file`) recreate the whole line store (`initialize_file_lines`
+      DELETEs all rows); a proposal mixing them with line-level ops
+      silently drops prior ops' lines/GUIDs. Reject the mix in the apply
+      path (and at `EditPayload` / proposal-creation time), same benign-gate
+      pattern as `validate_operation`.
+- [x] Tests: multi-op proposal with failing op #2 → governed store unchanged,
+      status `error`; mixed line+content proposal → rejected before apply.
+
+### 13.2 Materialize crash consistency + multi-file correctness (P1)
+
+- [ ] Recovery scanner for `status='applied'` orphans: on
+      `init_db`/bench-iteration start, find proposals whose `file_write_log`
+      lacks success rows for every touched path and mark
+      `materialize_pending` / re-materialize — never silently leave DB≠disk.
+- [ ] Multi-file `undo_proposal` must snapshot/restore EVERY affected path,
+      not only `target_file_path` (`file_editing/undo.py`); add multi-file
+      undo tests.
+- [ ] Surface materialize results per file: `write_log` already records
+      per-file status; expose `materialized_files` + per-file status in a
+      dedicated `partial_materialized` result instead of collapsing to a
+      single bin (`file_editing/writer.py:573-581`).
+- [x] Symbol refresh moved out of the materialize write transaction: a DB
+      writer inside the open txn (multi-file materialize) busy-waited 30s on
+      its own RESERVED lock then silently dropped. Refreshes now run
+      post-commit (`file_editing/writer.py`).
+
+### 13.3 Diff / replace strictness (P1, bench fidelity)
+
+- [ ] `_apply_unified_diff` (heuristic resync, soft-deletion matching) is
+      either made strict (context must match exactly, ambiguity fails) or
+      post-verified: reconstruct result == intended target, fail loudly on
+      mismatch.
+- [ ] Contract tests for `find_replace` `regex=True` / `count` application
+      (currently only schema-level) and partially-matching diff hunks.
+
+### 13.4 Efficiency — token cost per edit (P1)
+
+- [ ] Chat-table mode: stop re-serializing the full step table each turn
+      (`workflow/shell_developer.py`); send delta step + compact summaries
+      (bounded) so a long session does not balloon the observation.
+- [ ] Legacy fallback: reuse the primary attempt's file content across
+      fallback re-queries (`workflow/developer_edit.py`), resending only
+      instructions + prior failure reason.
+- [ ] Reviewer prompt: cap re-pasted file content to the changed regions
+      when the file is large (keep full content for small files).
+
+### 13.5 Verifier honesty — disk + pre/post (P2)
+
+- [ ] `harness/verify.py` reads governed DB only; check the on-disk file
+      under the bench project dir (DB as fallback), recording which source
+      satisfied.
+- [ ] Add `mode: "new"` (absent in fixture, present after) so a `contains`
+      fragment that was already true pre-task cannot pass.
+- [ ] For the bench path, cross-check `status passed` against evidence
+      (`edit.materialized` + `file_write_log` success) instead of trusting
+      the runner's own label.
+
+### 13.6 Benchmark isolation + timeboxing (P1)
+
+- [x] Per-trial fresh project dir and per-iteration DB reset (or explicit
+      cleanup deleting non-fixture files/rows) — the driver reuses one
+      `bench_dir` + the global DB (cross-trial leakage today).
+- [x] Per-trial wall-clock timeout + hard per-iteration cap (`max_turns`
+      alone lets a hung shell command stall the bench).
+- [x] Honor `tasks.json` `schema_version` in `harness/benchmark/tasks.py`
+      (currently ignored).
+- [x] Isolation tests: trial-1-created file absent from trial-2 fixture dir /
+      DB; `absent` assertions robust across trials.
+
+### 13.7 Live/control runs (P2)
+
+- [ ] `bench_config` (`harness/benchmark/config.py`) hardcodes `endpoints:
+      {}` / `mock-model`; add `--live` endpoint/model injection +
+      deterministic ordering + iteration-labeled results so pass@1 is
+      comparable across real control runs. `python -m harness.benchmark
+      --dry-run` validates the manifest + isolated DB without LLM calls.
+
+### 13.8 Test seams for the pipeline (P1)
+
+- [ ] Split `apply_edit_proposal` / `materialize_proposal` (both C901) into
+      small helpers — op-dispatch table, affected-path resolver,
+      write-log status reducer — so atomicity/status logic is unit-testable
+      without a DB.
+- [ ] Cover the identified gaps: multi-op rollback, crash recovery, trial
+      isolation, sort-order renumber stress (gap < `MIN_GAP_THRESHOLD`),
+      regex/count find_replace, diff ambiguity.
 
 ---
 
@@ -659,3 +769,4 @@ evidence — that e2e is **§10**, not a second mini-swe port.
 | 4 | §12.4 decision manifest | `harness/manifest/iteration-<t>.json` + `task_outcomes` feed the §5.2 verdict SQL |
 | 5 | §12.5 Evolve gate first iteration | An iteration round-trips edits → verdict → rollback on the internal set |
 | 6 | §12.6 attribution ablations | A single-component swap changes measured pass@1 |
+| 7 | §13.1/§13.2/§13.6 — atomic apply, crash recovery, bench isolation | Proposals apply all-or-nothing; no orphan `applied` rows; trials hermetic |
