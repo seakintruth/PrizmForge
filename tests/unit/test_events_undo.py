@@ -124,6 +124,123 @@ def test_undo_without_snapshot_errors(temp_db):
     assert "snapshot" in result["message"].lower() or "no snapshot" in result["message"].lower()
 
 
+def test_undo_restores_every_multi_file_path(temp_db):
+    """§13.2 — undo must snapshot/restore ALL affected paths, not just target."""
+    from file_editing.db import get_db_connection, reconstruct_file_content
+    from file_editing.editing import apply_edit_proposal
+    from file_editing.undo import snapshot_before_apply, undo_proposal
+    from file_editing.writer import initialize_file_lines
+    from workflow.proposal_builder import create_proposal_from_developer_output
+
+    initialize_file_lines("undo/a.py", "a = 1\n")
+    initialize_file_lines("undo/b.py", "b = 1\n")
+    prop = create_proposal_from_developer_output(
+        {
+            "target_file_path": "undo/a.py",
+            "summary": "touch two files",
+            "rationale": "Multi-file undo correctness",
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "a = 1",
+                    "replace": "a = 2",
+                    "rationale": "bump a",
+                },
+                {
+                    "type": "find_replace",
+                    "find": "b = 1",
+                    "replace": "b = 2",
+                    "target_file_path": "undo/b.py",
+                    "rationale": "bump b",
+                },
+            ],
+        },
+        1,
+        "undo/a.py",
+    )
+    assert prop["status"] == "success"
+    pid = prop["proposal_id"]
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?",
+            (pid,),
+        )
+
+    snap = snapshot_before_apply(pid)
+    assert snap["status"] == "success"
+    assert snap["file_paths"] == ["undo/a.py", "undo/b.py"]
+
+    assert apply_edit_proposal(pid)["status"] == "success"
+    with get_db_connection() as conn:
+        for path in ("undo/a.py", "undo/b.py"):
+            fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (path,)).fetchone()[0]
+            assert "= 2" in reconstruct_file_content(conn, fid)
+
+    und = undo_proposal(pid, write_disk=False)
+    assert und["status"] == "success", und
+    assert sorted(und["file_paths"]) == ["undo/a.py", "undo/b.py"]
+    with get_db_connection() as conn:
+        for path, expected in (("undo/a.py", "a = 1"), ("undo/b.py", "b = 1")):
+            fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (path,)).fetchone()[0]
+            assert reconstruct_file_content(conn, fid) == expected + "\n"
+
+
+def test_undo_removes_created_second_file(temp_db):
+    """§13.2 — a path that did not exist before apply is removed, not recreated."""
+
+    from file_editing.db import get_db_connection, reconstruct_file_content
+    from file_editing.editing import apply_edit_proposal
+    from file_editing.undo import snapshot_before_apply, undo_proposal
+    from file_editing.writer import initialize_file_lines
+    from workflow.proposal_builder import create_proposal_from_developer_output
+
+    initialize_file_lines("undo/keep.py", "keep = 1\n")
+    prop = create_proposal_from_developer_output(
+        {
+            "target_file_path": "undo/keep.py",
+            "summary": "create a second file",
+            "rationale": "Undo should drop a proposal-created secondary file",
+            "operations": [
+                {
+                    "type": "find_replace",
+                    "find": "keep = 1",
+                    "replace": "keep = 2",
+                    "rationale": "bump",
+                },
+                {
+                    "type": "create_file",
+                    "target_file_path": "undo/created.py",
+                    "initial_content": ["created = 1"],
+                    "rationale": "brand new file",
+                },
+            ],
+        },
+        1,
+        "undo/keep.py",
+    )
+    assert prop["status"] == "success"
+    pid = prop["proposal_id"]
+    with get_db_connection() as conn:
+        conn.execute(
+            "UPDATE edit_proposals SET status = 'approved' WHERE proposal_id = ?",
+            (pid,),
+        )
+    snapshot_before_apply(pid)
+    assert apply_edit_proposal(pid)["status"] == "success"
+    with get_db_connection() as conn:
+        fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/created.py",)).fetchone()
+        assert fid is not None and "created = 1" in reconstruct_file_content(conn, fid[0])
+
+    und = undo_proposal(pid, write_disk=False)
+    assert und["status"] == "success", und
+
+    with get_db_connection() as conn:
+        gone = conn.execute("SELECT is_deleted FROM files WHERE file_path = ?", ("undo/created.py",)).fetchone()
+        assert gone is not None and gone[0] == 1
+        kept_fid = conn.execute("SELECT file_id FROM files WHERE file_path = ?", ("undo/keep.py",)).fetchone()[0]
+        assert reconstruct_file_content(conn, kept_fid) == "keep = 1\n"
+
+
 def test_proposal_created_emits_event(temp_db):
     from core.events import list_events
     from workflow.proposal_builder import create_proposal_from_developer_output

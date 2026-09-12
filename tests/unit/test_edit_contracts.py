@@ -205,6 +205,46 @@ class TestDeveloperSchemaFile:
 
 
 class TestApplyContracts:
+    def test_secondary_path_op_targets_its_own_file(self, temp_db):
+        """§13.2 — a content op with a target_file_path other than the proposal's
+        primary must run against THAT file, not the primary target."""
+        from file_editing.editing import apply_edit_proposal
+        from file_editing.writer import initialize_file_lines
+        from workflow.proposal_builder import create_proposal_from_developer_output
+
+        initialize_file_lines("ops/pri.py", "p = 1\n")
+        initialize_file_lines("ops/sec.py", "s = 1\n")
+        prop = create_proposal_from_developer_output(
+            {
+                "target_file_path": "ops/pri.py",
+                "summary": "bump both",
+                "rationale": "Per-op target_file_path must be honored",
+                "operations": [
+                    {
+                        "type": "find_replace",
+                        "find": "p = 1",
+                        "replace": "p = 2",
+                        "rationale": "bump primary",
+                    },
+                    {
+                        "type": "find_replace",
+                        "find": "s = 1",
+                        "replace": "s = 2",
+                        "target_file_path": "ops/sec.py",
+                        "rationale": "bump secondary",
+                    },
+                ],
+            },
+            1,
+            "ops/pri.py",
+        )
+        assert prop["status"] == "success"
+        _approve(prop["proposal_id"])
+        res = apply_edit_proposal(prop["proposal_id"])
+        assert res["status"] == "success", res
+        assert _content("ops/pri.py") == "p = 2\n"
+        assert _content("ops/sec.py") == "s = 2\n"
+
     def test_find_replace_apply(self, temp_db):
         from file_editing.editing import apply_edit_proposal
         from file_editing.writer import initialize_file_lines

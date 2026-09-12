@@ -199,6 +199,15 @@ def run_benchmark(
     total = 0
 
     with _iteration_db(bench_dir):
+        # Crash recovery (open §13.2 lint item): heal 'applied' proposals whose
+        # disk write never committed (DB≠disk) before the iteration runs; a no-op
+        # SELECT on the fresh iteration DB.
+        from file_editing.writer import recover_orphaned_applied
+
+        recovery = recover_orphaned_applied()
+        if recovery["recovered"] or recovery["failed"]:
+            print(f"   ♻️  orphan recovery: {recovery}")
+
         for task in tasks:
             task_rows: list[dict[str, Any]] = []
             for t in range(1, max(1, task.k) + 1):

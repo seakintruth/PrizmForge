@@ -358,10 +358,123 @@ class TestMaterializeStatus:
         assert mat["status"] == "success"
         assert mat["git_failed"] is None
 
+    def test_partial_materialize_names_every_file(self, git_config_env, monkeypatch, temp_db):
+        """§13.2 — per-file statuses + a partial bin, not one collapsed status."""
+        pid = _make_proposal(
+            [
+                {"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]},
+                {"type": "create_file", "target_file_path": "pkg/other.py", "initial_content": ["y = 2"]},
+            ]
+        )
+        monkeypatch.setattr(
+            "file_editing.writer.git_commit",
+            lambda fp, msg, **kwargs: _git_success_result(file_path=fp),
+        )
+
+        def fake_write(file_path, content, proposal_id=None):
+            if file_path == "pkg/other.py":
+                return {"status": "error", "message": "disk full"}
+            real = _real_write_file_to_disk(file_path, content, proposal_id=proposal_id)
+            return real
+
+        import file_editing.writer as writer_mod
+
+        _real_write_file_to_disk = writer_mod.write_file_to_disk
+        monkeypatch.setattr(writer_mod, "write_file_to_disk", fake_write)
+
+        from file_editing.writer import materialize_proposal
+
+        mat = materialize_proposal(pid)
+        assert mat["status"] == "error"
+        assert mat["partial_materialized"] is True
+        assert mat["file_statuses"] == {"pkg/app.py": "success", "pkg/other.py": "error"}
+        assert {r.get("status") for r in mat["results"]} == {"success", "error"}
+
 
 # ---------------------------------------------------------------------------
 # record_git_failure helper (shared by both callers)
 # ---------------------------------------------------------------------------
+
+
+class TestRecoverOrphans:
+    """§13.2 — crash-after-apply orphans are detected and re-materialized."""
+
+    def _apply_only(self, pid):
+        """Simulate a crash between apply (status='applied') and materialize."""
+        from file_editing.editing import apply_edit_proposal
+
+        res = apply_edit_proposal(pid)
+        assert res["status"] == "success", res
+        from file_editing.db import get_db_connection
+
+        with get_db_connection() as conn:
+            assert conn.execute("SELECT status FROM edit_proposals WHERE proposal_id = ?", (pid,)).fetchone()[0] == "applied"
+        return pid
+
+    def test_single_file_orphan_is_healed(self, git_config_env, monkeypatch, temp_db):
+        monkeypatch.setattr(
+            "file_editing.writer.git_commit",
+            lambda fp, msg, **kwargs: _git_success_result(file_path=fp),
+        )
+        from file_editing.db import get_db_connection
+        from file_editing.writer import find_orphaned_applied, recover_orphaned_applied
+
+        pid = self._apply_only(_make_proposal([{"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]}]))
+
+        with get_db_connection() as conn:
+            assert find_orphaned_applied(conn) == [pid]
+
+        res = recover_orphaned_applied()
+        assert res["recovered"] == [pid]
+        assert res["failed"] == []
+
+        _cfg, project_dir = git_config_env
+        disk = project_dir / "pkg/app.py"
+        assert disk.exists() and disk.read_text() == "x = 1"
+        with get_db_connection() as conn:
+            assert find_orphaned_applied(conn) == []
+
+    def test_multi_file_orphan_covers_every_path(self, git_config_env, monkeypatch, temp_db):
+        monkeypatch.setattr(
+            "file_editing.writer.git_commit",
+            lambda fp, msg, **kwargs: _git_success_result(file_path=fp),
+        )
+        from file_editing.db import get_db_connection
+        from file_editing.writer import find_orphaned_applied, recover_orphaned_applied
+
+        pid = self._apply_only(
+            _make_proposal(
+                [
+                    {"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]},
+                    {"type": "create_file", "target_file_path": "pkg/other.py", "initial_content": ["y = 2"]},
+                ]
+            )
+        )
+        with get_db_connection() as conn:
+            assert find_orphaned_applied(conn) == [pid]
+
+        res = recover_orphaned_applied()
+        assert res["recovered"] == [pid]
+
+        _cfg, project_dir = git_config_env
+        assert (project_dir / "pkg/app.py").read_text() == "x = 1"
+        assert (project_dir / "pkg/other.py").read_text() == "y = 2"
+        with get_db_connection() as conn:
+            assert find_orphaned_applied(conn) == []
+
+    def test_materialized_proposal_is_not_orphaned(self, git_config_env, monkeypatch, temp_db):
+        monkeypatch.setattr(
+            "file_editing.writer.git_commit",
+            lambda fp, msg, **kwargs: _git_success_result(file_path=fp),
+        )
+        from file_editing.db import get_db_connection
+        from file_editing.writer import find_orphaned_applied, materialize_proposal
+
+        pid = _make_proposal([{"type": "create_file", "target_file_path": "pkg/app.py", "initial_content": ["x = 1"]}])
+        assert materialize_proposal(pid)["status"] == "success"
+
+        with get_db_connection() as conn:
+            assert find_orphaned_applied(conn) == []
 
 
 class TestRecordGitFailureHelper:

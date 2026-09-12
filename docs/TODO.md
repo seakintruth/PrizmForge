@@ -447,17 +447,28 @@ dependency entry beyond `requests` / `pathspec` for this loop.
 
 ### 13.2 Materialize crash consistency + multi-file correctness (P1)
 
-- [ ] Recovery scanner for `status='applied'` orphans: on
-      `init_db`/bench-iteration start, find proposals whose `file_write_log`
-      lacks success rows for every touched path and mark
-      `materialize_pending` / re-materialize — never silently leave DB≠disk.
-- [ ] Multi-file `undo_proposal` must snapshot/restore EVERY affected path,
-      not only `target_file_path` (`file_editing/undo.py`); add multi-file
-      undo tests.
-- [ ] Surface materialize results per file: `write_log` already records
-      per-file status; expose `materialized_files` + per-file status in a
-      dedicated `partial_materialized` result instead of collapsing to a
-      single bin (`file_editing/writer.py:573-581`).
+- [x] Recovery scanner for `status='applied'` orphans: get `find_orphaned_applied`
+      (applied proposals whose `file_write_log` lacks a row per touched path) +
+      `recover_orphaned_applied()` (idempotent re-materialize); `run_benchmark`
+      runs it at iteration start (`file_editing/writer.py`, `harness/benchmark/
+      driver.py`). Global `init_db` hook deferred to the §13.7 live bootstrap —
+      a blanket hook would fire git/disk writes on every app/test wake. Note:
+      `git_failed`/`lint_failed` count as healed (disk written) since write-log
+      rows exist.
+- [x] Multi-file `undo_proposal` must snapshot/restore EVERY affected path,
+      not only `target_file_path` (`file_editing/undo.py`): snapshots are
+      keyed `(proposal_id, file_path)`; paths that did not exist pre-apply
+      (`content_before` NULL) are soft-deleted + unlinked, not recreated
+      empty. Multi-file + created-secondary-file tests added.
+- [x] Surface materialize results per file: `write_log` already records
+      per-file status; `materialize_proposal` now returns `file_statuses`
+      (path → success/error/lint_failed) + a `partial_materialized` flag
+      instead of collapsing to a single bin (`file_editing/writer.py`).
+- [x] **Multi-file apply dispatch:** `apply_edit_proposal` ran EVERY op against
+      the proposal's primary `file_id`, so a content op with its own
+      `target_file_path` silently edited the wrong file (find_replace
+      reported "No matches; file unchanged"). Ops now resolve their own file
+      id via `_resolve_op_file_id` (GUID check + SAVEPOINT dispatch).
 - [x] Symbol refresh moved out of the materialize write transaction: a DB
       writer inside the open txn (multi-file materialize) busy-waited 30s on
       its own RESERVED lock then silently dropped. Refreshes now run

@@ -763,6 +763,20 @@ def apply_delete_file(conn: sqlite3.Connection, file_id: int, op) -> dict[str, A
     }
 
 
+def _resolve_op_file_id(conn, op, proposal_row, primary_file_id: int) -> int:
+    """File id an operation acts on: its explicit ``target_file_path`` or the
+    proposal's primary file (§13.2 — secondary-path ops must hit their file,
+    not the primary one). Content ops on a path with no ``files`` row yet
+    resolve/create that path's id so ``create_file`` lands on the right row.
+    """
+    op_path = getattr(op, "target_file_path", None)
+    if not op_path or op_path == proposal_row["target_file_path"]:
+        return primary_file_id
+    from .writer import _get_or_create_file_id_short
+
+    return _get_or_create_file_id_short(conn, op_path)
+
+
 def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     with get_db_connection() as conn:
         proposal_row = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
@@ -808,7 +822,8 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
 
             # Strict GUID validation
             for op in payload.operations:
-                if not _validate_operation_guids(conn, file_id, op):
+                op_file_id = _resolve_op_file_id(conn, op, proposal_row, file_id)
+                if not _validate_operation_guids(conn, op_file_id, op):
                     log_error(
                         "HIGH",
                         "file_editing",
@@ -827,31 +842,32 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             operation_results = []
             try:
                 for op in payload.operations:
+                    op_file_id = _resolve_op_file_id(conn, op, proposal_row, file_id)
                     if op.type == "replace_block":
-                        result = apply_replace_block(conn, file_id, op)
+                        result = apply_replace_block(conn, op_file_id, op)
                         operation_results.append(result)
                     elif op.type == "insert_after":
-                        result = apply_insert_after(conn, file_id, op)
+                        result = apply_insert_after(conn, op_file_id, op)
                         operation_results.append(result)
                     elif op.type == "delete_lines":
-                        result = apply_delete_lines(conn, file_id, op)
+                        result = apply_delete_lines(conn, op_file_id, op)
                         operation_results.append(result)
                     elif op.type == "update_documentation":
-                        apply_update_documentation(conn, file_id, op)
+                        apply_update_documentation(conn, op_file_id, op)
                     elif op.type == "find_replace":
-                        result = apply_find_replace(conn, file_id, op)
+                        result = apply_find_replace(conn, op_file_id, op)
                         operation_results.append(result)
                     elif op.type == "full_replace":
-                        result = apply_full_replace(conn, file_id, op)
+                        result = apply_full_replace(conn, op_file_id, op)
                         operation_results.append(result)
                     elif op.type == "apply_diff":
-                        result = apply_diff(conn, file_id, op)
+                        result = apply_diff(conn, op_file_id, op)
                         operation_results.append(result)
                     elif op.type == "create_file":
-                        result = apply_create_file(conn, file_id, op)
+                        result = apply_create_file(conn, op_file_id, op)
                         operation_results.append(result)
                     elif op.type == "delete_file":
-                        result = apply_delete_file(conn, file_id, op)
+                        result = apply_delete_file(conn, op_file_id, op)
                         operation_results.append(result)
                     else:
                         operation_results.append(
