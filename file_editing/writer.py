@@ -625,9 +625,15 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                 # Git add + commit using the structured git_commit() helper
                 # ----------------------------------------------------------
                 if lint_failed is None and resolved_path is not None and rel_path is not None:
+                    from core.config import get_config
+
+                    git_message = f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"
+                    commit_tag = get_config().get("git_commit_tag")
+                    if commit_tag:
+                        git_message += f" [{commit_tag}]"
                     git_result = git_commit(
                         rel_path,
-                        f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
+                        git_message,
                         delete=is_deleted,
                     )
                     if not git_result.get("ok") and git_result.get("attempted"):

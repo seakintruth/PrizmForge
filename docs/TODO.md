@@ -389,16 +389,29 @@ P1 exit criterion (one iteration produces `cleaned/` + `analysis/` +
 
 ### 12.5 P2 Evolve gate
 
-- [ ] **Evolve Agent** edits only `harness/` via the governed pipeline with the
+- [x] **Evolve Agent** edits only `harness/` via the governed pipeline with the
       reviewer gate mandatory + non-editable; one logical edit per commit,
       tagged `iter-<t>`; RC-style edit budget (`max_tokens_per_4h`-class) gates
-      the loop.
-- [ ] Harness mount loader: `harness/system_prompt/<role>.md` + tools /
-      middleware / skills / memory resolve at runtime (single prompt-assembly
-      path replacing direct `agent_prompts.json` reads) so the fingerprint stays
-      truthful.
-- [ ] `runs/`, tracer/verifier/sandbox config, and LLM endpoint / model config
+      the loop. `harness/evolve_loop.py`: `run_evolve_iteration` (outcomes →
+      evidence → propose → gate → snapshot+materialize → manifest →
+      budget.spend), `run_evolve_session` (bench t → evolve → bench t+1 →
+      `run_evolve_reverts` executing `revert_candidates` via `git revert` /
+      injectable executor), `EvolveBudget` (edits + token caps, gated before
+      any propose), and the `evolve.enabled` config gate. Harness-edit commits
+      carry `[iter-<t>]` via the new `git_commit_tag` config in
+      `materialize_proposal`.
+- [x] Harness mount loader: `harness/system_prompt/<role>.md` + `{{include:file}}`
+      + `{{placeholder}}` fill resolve at runtime (`resolve_harness_prompt` —
+      the single prompt-assembly path, with a fallback to the legacy
+      `agent_prompts.json` entry when no seed file exists so other agents keep
+      one, truthful story). Evolve's personality lives in
+      `harness/system_prompt/evolve.md`, which the harness git tag already
+      fingerprints (follow-up: fold seeded prompt contents into `prompt_hash`).
+- [x] `runs/`, tracer/verifier/sandbox config, and LLM endpoint / model config
       are read-only for the Evolve Agent; seed prompt files non-deletable.
+      `validate_evolve_target` enforces `harness/`-only targets, blocks
+      `runs/` + `config.json`/`agent_prompts.json`/`endpoints.json`, and
+      denies deleting `system_prompt/` seeds (edits allowed).
 
 ### 12.6 P3 attribution (after a working loop)
 
