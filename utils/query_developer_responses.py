@@ -11,13 +11,22 @@ at another project's database (e.g. a scratch repo running a smoke test).
 
 Ad-hoc queries: --sql "SELECT ..." executes any single read query and prints the
 result table; writes fail by virtue of the read-only connection.
+
+CSV exports: --export-all dumps every table to its own <table>.csv (one file per
+table) into .PrizmForge/agents_exports/<stamp>/, mirroring the interactive
+console's `export` command, and --export-tables a,b,c does the same for a
+chosen subset. Like every query here the DB connection stays READ-ONLY; only
+the .csv files are written.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
+import re
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -585,6 +594,184 @@ def run_adhoc_sql(sql: str):
     return 0
 
 
+# ---------------------------------------------------------------------------
+# CSV export (read-only DB -> one .csv per table; audit-friendly)
+# ---------------------------------------------------------------------------
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _quote_identifier(name: str) -> str:
+    """Double-quote a SQLite identifier and escape embedded quotes."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+def _table_has_task_id(cur, table_name: str) -> bool:
+    """True when the table carries its own task_id column."""
+    try:
+        cur.execute(f'PRAGMA table_info("{table_name}")')
+        return any(row[1] == "task_id" for row in cur.fetchall())
+    except sqlite3.Error:
+        return False
+
+
+def _default_export_dir(prefix: str = "") -> Path:
+    """Resolve `.PrizmForge/agents_exports/<stamp>` under the project directory.
+
+    Mirrors the interactive console's `export` command layout so an audit export
+    lands where an operator would expect it.
+    """
+    project_dir = Path.cwd()
+    try:
+        from core.config import get_config
+
+        configured = get_config().get("project_directory")
+    except Exception:
+        configured = None
+    if configured:
+        project_dir = Path(str(configured))
+    base = project_dir / ".PrizmForge" / "agents_exports"
+    kind = f"{prefix}_" if prefix else ""
+    return base / f"{kind}{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+
+def _export_table_csv(cur, table_name: str, task_id: str | None, out_dir: Path) -> int:
+    """Write one table to `out_dir/<table_name>.csv`; returns rows written or -1 when skipped.
+
+    Reads use the caller's read-only cursor. Under a task scope, tables without
+    a task_id column are skipped loudly instead of silently exporting every
+    task's rows (Soak24 §15.2-A1).
+    """
+    if not _IDENTIFIER_RE.match(table_name):
+        print(f"  ⏭️  {table_name}: invalid table name — skipped")
+        return -1
+
+    ident = _quote_identifier(table_name)
+    try:
+        if task_id:
+            if not _table_has_task_id(cur, table_name):
+                print(f"  ⏭️  {table_name}: no task_id column — excluded under task scope (full-scope rows would leak)")
+                return -1
+            cur.execute(f"SELECT * FROM {ident} WHERE task_id = ?", (task_id,))
+        else:
+            cur.execute(f"SELECT * FROM {ident}")
+    except sqlite3.Error as e:
+        print(f"  ❌ {table_name}: {e}")
+        return -1
+
+    rows = cur.fetchall()
+    if not rows or cur.description is None:
+        print(f"  ⏭️  {table_name}: (empty)")
+        return -1
+
+    csv_file = out_dir / f"{table_name}.csv"
+    with open(csv_file, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow([desc[0] for desc in cur.description])
+        writer.writerows(rows)
+
+    print(f"  ✅ {table_name}: {len(rows)} rows → {csv_file.name}")
+    return len(rows)
+
+
+def export_all_tables_csv(task_id: str | None = None, out_dir: Path | None = None) -> Path:
+    """Export every database table to one CSV per table.
+
+    Read-only against the target agents.db, so it is safe to run against a live
+    unattended session. With `task_id` set, tables without a task_id column are
+    skipped loudly instead of silently exporting full scope.
+    """
+    conn = _connect_ro()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+        tables = [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+    if out_dir is None:
+        out_dir = _default_export_dir(f"task_{task_id}" if task_id else "")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'=' * 80}")
+    print("📦 Exporting Database to CSV (read-only)")
+    print(f"{'=' * 80}")
+    print(f"DB     : {_db_file()}")
+    print(f"Output : {out_dir.absolute()}")
+    print(f"Scope  : {'task ' + task_id if task_id else 'FULL database (all tasks)'}")
+    print()
+
+    conn = _connect_ro()
+    try:
+        cur = conn.cursor()
+        exported = 0
+        total = 0
+        for table_name in tables:
+            rows = _export_table_csv(cur, table_name, task_id, out_dir)
+            if rows >= 0:
+                exported += 1
+                total += rows
+    finally:
+        conn.close()
+
+    print()
+    print(f"✅ Exported {exported}/{len(tables)} table(s), {total:,} total rows")
+    print(f"📁 {out_dir.absolute()}")
+    print()
+    return out_dir
+
+
+def export_specific_tables_csv(tables: list, task_id: str | None = None, out_dir: Path | None = None) -> Path:
+    """Export a chosen set of tables (comma-separated) to CSV, one file per table.
+
+    Same scope discipline as export_all_tables_csv: under --task, tables without
+    a task_id column are skipped loudly rather than shipped full-scope.
+    """
+    if out_dir is None:
+        out_dir = _default_export_dir(f"task_{task_id}" if task_id else "custom")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'=' * 80}")
+    print("📦 Exporting Selected Tables to CSV (read-only)")
+    print(f"{'=' * 80}")
+    print(f"DB     : {_db_file()}")
+    print(f"Output : {out_dir.absolute()}")
+    print(f"Tables : {', '.join(tables)}")
+    if task_id:
+        print(f"Scope  : task {task_id}")
+    print()
+
+    conn = _connect_ro()
+    try:
+        cur = conn.cursor()
+        exported = 0
+        total = 0
+        for table_name in tables:
+            table_name = table_name.strip()
+            if not _IDENTIFIER_RE.match(table_name):
+                print(f"  ⚠️  {table_name}: invalid table name")
+                continue
+            cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+                (table_name,),
+            )
+            if not cur.fetchone():
+                print(f"  ⚠️  {table_name}: table not found")
+                continue
+            rows = _export_table_csv(cur, table_name, task_id, out_dir)
+            if rows >= 0:
+                exported += 1
+                total += rows
+    finally:
+        conn.close()
+
+    print()
+    print(f"✅ Exported {exported} table(s), {total:,} total rows")
+    print(f"📁 {out_dir.absolute()}")
+    print()
+    return out_dir
+
+
 def run_model_health(limit: int = 30):
     """Per-model flakiness report from core.model_health (recency-weighted)."""
     try:
@@ -689,12 +876,16 @@ Examples:
   %(prog)s --line-counts                    # file sizes
   %(prog)s --sql "SELECT * FROM agent_feedback WHERE addressed=0"
   %(prog)s --model-health                    # per-model flakiness (recency-weighted)
+  %(prog)s --export-all                      # one CSV per table (full scope, read-only)
+  %(prog)s --export-all --task task_001      # task-scoped; non-task tables skipped
+  %(prog)s --export-tables messages,errors --task task_001
+  %(prog)s --out /tmp/audit --export-all
   %(prog)s --db /path/to/other/repo/.PrizmForge/agents.db --diagnostic
         """,
     )
     parser.add_argument("--db", help="Path to an agents.db (default: this project's .PrizmForge/agents.db)")
     parser.add_argument("--diagnostic", action="store_true", help="Run full diagnostic dump")
-    parser.add_argument("--task", help="Scope diagnostic to a specific task_id")
+    parser.add_argument("--task", help="Scope diagnostic run / CSV export to a specific task_id")
     parser.add_argument("--limit", type=int, default=40, help="Row limit for list views (default 40)")
     parser.add_argument("--responses", action="store_true", help="List recent agent responses from agent_responses_archive")
     parser.add_argument("--agent", default="developer", help="Agent name for --responses (default: developer)")
@@ -709,6 +900,9 @@ Examples:
     parser.add_argument("--keyword", help="Filter errors by keyword in message/context/file/function")
     parser.add_argument("--write-log", action="store_true", help="Show file_write_log")
     parser.add_argument("--line-counts", action="store_true", help="Show file line counts")
+    parser.add_argument("--export-all", action="store_true", help="Export every table to one CSV per table (read-only; --task scopes, skips non-task tables)")
+    parser.add_argument("--export-tables", help="Export specific tables to CSV (comma-separated), e.g. messages,agent_feedback")
+    parser.add_argument("--out", help="Output directory for --export-all / --export-tables (default: .PrizmForge/agents_exports/<stamp>)")
 
     args = parser.parse_args()
 
@@ -724,6 +918,15 @@ Examples:
 
     if args.diagnostic:
         run_full_diagnostic(task_id=args.task, limit=args.limit)
+        return 0
+
+    if args.export_all:
+        export_all_tables_csv(task_id=args.task, out_dir=Path(args.out) if args.out else None)
+        return 0
+
+    if args.export_tables:
+        tables = [t.strip() for t in args.export_tables.split(",") if t.strip()]
+        export_specific_tables_csv(tables, task_id=args.task, out_dir=Path(args.out) if args.out else None)
         return 0
 
     if args.responses:

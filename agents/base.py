@@ -853,22 +853,32 @@ def call_endpoint(  # noqa: C901
                 print(f"❌ Failed to parse response from {endpoint.name}: {e}")
                 print(f"   Response keys: {list(data.keys())}")
 
-                # Mark endpoint as having issues
-                endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
-                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="bad_payload")
-                return _fallback_to_alternate(
-                    messages,
-                    max_tokens,
-                    temperature,
-                    retry_count,
-                    task_id,
-                    agent_name,
-                    endpoint,
-                    model_name,
-                    endpoint_mgr,
-                    seen,
-                    announce="→ Falling back to {name}/{model}",
-                )
+                if attempt == retry_count - 1:
+                    # Mark endpoint as having issues (final attempt only)
+                    endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+                    record_model_outcome(
+                        f"{endpoint.name}/{model_name}",
+                        endpoint.name,
+                        ok=False,
+                        kind="bad_payload",
+                    )
+                    return _fallback_to_alternate(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        retry_count,
+                        task_id,
+                        agent_name,
+                        endpoint,
+                        model_name,
+                        endpoint_mgr,
+                        seen,
+                        announce="→ Falling back to {name}/{model}",
+                    )
+
+                print(f"  🔄 Bad payload from {endpoint.name} — retrying same endpoint ({attempt + 1}/{retry_count})")
+                time.sleep(2**attempt)
+                continue
 
             # HTTP 200 with an empty or policy-blocked extract is not success.
             # Dump once, latch the endpoint, record kind + detail, then fall
@@ -876,30 +886,41 @@ def call_endpoint(  # noqa: C901
             # x4 with empty health; §8.1 company→public fallback applies).
             empty_kind = _classify_empty_or_policy_body(data, answer)
             if empty_kind:
-                excerpt = _dump_unknown_llm_body_once(endpoint.name, model_name, data)
-                record_model_outcome(
-                    f"{endpoint.name}/{model_name}",
-                    endpoint.name,
-                    ok=False,
-                    latency_ms=int((time.time() - _req_t0) * 1000),
-                    kind=empty_kind,
-                    detail=excerpt,
-                )
-                endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
-                return _fallback_to_alternate(
-                    messages,
-                    max_tokens,
-                    temperature,
-                    retry_count,
-                    task_id,
-                    agent_name,
-                    endpoint,
-                    model_name,
-                    endpoint_mgr,
-                    seen,
-                    announce="→ Empty/policy extract. Falling back to {name}/{model}",
-                    reason=empty_kind,
-                )
+                # Deterministic content-filter blocks are not transient: latch
+                # and fall back immediately (policy). Transient empty-body
+                # responses get the same retry-on-non-final-attempt treatment
+                # as timeout/5xx — defer demotion and latch until the last
+                # attempt, so a single transient empty does not park the
+                # endpoint for 5 minutes.
+                if empty_kind != "empty_body" or attempt == retry_count - 1:
+                    excerpt = _dump_unknown_llm_body_once(endpoint.name, model_name, data)
+                    record_model_outcome(
+                        f"{endpoint.name}/{model_name}",
+                        endpoint.name,
+                        ok=False,
+                        latency_ms=int((time.time() - _req_t0) * 1000),
+                        kind=empty_kind,
+                        detail=excerpt,
+                    )
+                    endpoint.health.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+                    return _fallback_to_alternate(
+                        messages,
+                        max_tokens,
+                        temperature,
+                        retry_count,
+                        task_id,
+                        agent_name,
+                        endpoint,
+                        model_name,
+                        endpoint_mgr,
+                        seen,
+                        announce="→ Empty/policy extract. Falling back to {name}/{model}",
+                        reason=empty_kind,
+                    )
+
+                print(f"  🔄 Empty LLM body on {endpoint.name} — retrying same endpoint ({attempt + 1}/{retry_count})")
+                time.sleep(2**attempt)
+                continue
 
             # ============= SUCCESS =============
             # Mark endpoint as healthy
