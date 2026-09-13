@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+_MINIMAL_TASK = {"task_id": "t_a", "seed": "s", "fixture": {"f.py": "x"}, "contract": []}
+
 _SOLVED = {
     "t01_rename_constant": {"app.py": "value = NEW\n"},
     "t02_update_signature": {"app.py": "def add(a, b, c):\n    return a + b + c\n"},
@@ -186,3 +188,37 @@ class TestRunBenchmark:
         assert results["pass@1"] == 0.5
         assert results["tasks"][0]["trials"][0]["verdict"] == "passed"
         assert results["tasks"][1]["trials"][0]["verdict"] == "failed"
+
+
+class TestTaskManifestSchema:
+    """§13.6 — tasks.json schema_version is honored by the loader."""
+
+    def test_manifest_reports_schema_version(self, tmp_path):
+        from harness.benchmark.tasks import load_task_manifest
+
+        p = tmp_path / "tasks.json"
+        p.write_text(
+            json.dumps({"schema_version": 1, "default_k": 1, "tasks": [_MINIMAL_TASK]}),
+            encoding="utf-8",
+        )
+        manifest = load_task_manifest(p)
+        assert manifest["schema_version"] == 1
+        assert manifest["tasks"][0].task_id == "t_a"
+
+    def test_manifest_missing_schema_defaults_to_supported(self, tmp_path):
+        from harness.benchmark.tasks import load_task_manifest
+
+        p = tmp_path / "tasks.json"
+        p.write_text(json.dumps({"tasks": [_MINIMAL_TASK]}), encoding="utf-8")
+        assert load_task_manifest(p)["schema_version"] == 1
+
+    def test_manifest_refuses_unknown_future_version(self, tmp_path):
+        from harness.benchmark.tasks import load_task_manifest
+
+        p = tmp_path / "tasks.json"
+        p.write_text(
+            json.dumps({"schema_version": 99, "tasks": [_MINIMAL_TASK]}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="schema_version 99"):
+            load_task_manifest(p)

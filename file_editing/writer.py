@@ -358,6 +358,100 @@ def invalidate_other_proposals(conn, current_proposal_id: str, affected_guids: l
         )
 
 
+def _proposal_affected_paths(proposal) -> set[str]:
+    """Every file a proposal touches (primary target + per-op override paths)."""
+    from file_editing.edit_payload import EditPayload
+
+    affected: set[str] = set()
+    if proposal["target_file_path"]:
+        affected.add(proposal["target_file_path"])
+    try:
+        payload = EditPayload.model_validate_json(proposal["edit_payload"])
+        for op in payload.operations:
+            op_path = getattr(op, "target_file_path", None)
+            if op_path:
+                affected.add(op_path)
+    except Exception as e:
+        log_error(
+            "MEDIUM",
+            "file_editing",
+            "materialize",
+            f"Payload parse warning: {e}",
+            proposal_id=proposal["proposal_id"],
+        )
+    return affected
+
+
+def find_orphaned_applied(conn) -> list[str]:
+    """Proposal ids stuck at ``applied`` with no materialize write-log coverage.
+
+    ``apply_edit_proposal`` marks a proposal ``applied`` inside its own
+    transaction; ``materialize_proposal`` then writes disk + audit rows in ONE
+    second transaction. If the process dies between the two (or inside the
+    second one), the DB claims the apply happened while the disk never got the
+    file — DB≠disk. Such orphans are exactly ``applied`` proposals whose
+    ``file_write_log`` lacks a row for ≥1 affected path (the materialize txn
+    commits those rows atomically, so partial coverage implies a crash).
+    """
+    orphans: list[str] = []
+    rows = conn.execute("SELECT proposal_id, target_file_path, edit_payload, affected_line_guids FROM edit_proposals WHERE status = 'applied'").fetchall()
+    for row in rows:
+        affected = _proposal_affected_paths(row)
+        if not affected:
+            continue
+        logged = {
+            r[0]
+            for r in conn.execute(
+                "SELECT file_id FROM file_write_log WHERE proposal_id = ?",
+                (row["proposal_id"],),
+            ).fetchall()
+        }
+        for path in affected:
+            fid_rec = conn.execute("SELECT file_id FROM files WHERE file_path = ?", (path,)).fetchone()
+            fid = fid_rec[0] if fid_rec else None
+            if fid is None or fid not in logged:
+                orphans.append(row["proposal_id"])
+                break
+    return orphans
+
+
+def recover_orphaned_applied() -> dict[str, Any]:
+    """Re-materialize crash-orphaned proposals so DB and disk agree again.
+
+    Run at bench-iteration start and exported for the live bootstrap (§13.7):
+    a ``recover_orphaned_applied()`` call is a cheap SELECT on a clean DB and
+    heals only genuinely orphaned ``applied`` proposals. ``materialize_proposal``
+    is idempotent on the apply half, so re-running it writes the missing disk
+    content + audit rows without double-applying.
+    """
+    from file_editing.db import get_db_connection as _fe_db
+
+    with _fe_db() as conn:
+        orphans = find_orphaned_applied(conn)
+
+    recovered: list[str] = []
+    failed: list[str] = []
+    for pid in orphans:
+        try:
+            mat = materialize_proposal(pid)
+        except Exception as e:
+            log_error("HIGH", "file_editing", "recovery", f"re-materialize raised: {e}", proposal_id=pid)
+            failed.append(pid)
+            continue
+        if mat.get("status") not in ("success", "git_failed", "lint_failed"):
+            log_error(
+                "HIGH",
+                "file_editing",
+                "recovery",
+                f"orphan not healed (status={mat.get('status')}): " + str(mat.get("message", ""))[:300],
+                proposal_id=pid,
+            )
+            failed.append(pid)
+            continue
+        recovered.append(pid)
+    return {"checked": len(orphans), "recovered": recovered, "failed": failed}
+
+
 def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     """
     Apply proposal (if needed), write ALL modified files in the proposal to disk,
@@ -365,7 +459,6 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
     and perform git commit if enabled.
     """
     from core.config import get_config
-    from file_editing.edit_payload import EditPayload
 
     with get_db_connection() as conn:
         proposal = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
@@ -379,18 +472,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         # ------------------------------------------------------------------
         # 1. Capture BEFORE state for every file that will be touched
         # ------------------------------------------------------------------
-        affected_paths: set[str] = set()
-        if proposal["target_file_path"]:
-            affected_paths.add(proposal["target_file_path"])
-
-        try:
-            payload = EditPayload.model_validate_json(proposal["edit_payload"])
-            for op in payload.operations:
-                op_path = getattr(op, "target_file_path", None)
-                if op_path:
-                    affected_paths.add(op_path)
-        except Exception as e:
-            log_error("MEDIUM", "file_editing", "materialize", f"Payload parse warning: {e}", proposal_id=proposal_id)
+        affected_paths = _proposal_affected_paths(proposal)
 
         before_state: dict[str, dict] = {}
         for path in affected_paths:
@@ -424,9 +506,16 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         # 3. Materialize each affected file to disk + record audit row
         # ------------------------------------------------------------------
         write_results = []
+        file_statuses: dict[str, str] = {}
         task_id = proposal["task_id"] if "task_id" in proposal.keys() else None
         git_failed = None
         lint_failed = None
+        lint_failed_path: str | None = None
+        # Symbol refreshes run AFTER the write transaction commits: refreshing
+        # inside it opens a second writer against a connection that already
+        # holds a RESERVED lock (multi-file materialize), busy-waits 30s,
+        # then silently drops — never do DB writes inside the open txn.
+        symbol_refreshes: list[tuple[str, str]] = []
 
         for target_path in affected_paths:
             op_file_id = before_state[target_path]["file_id"]
@@ -442,6 +531,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             else:
                 res = write_file_to_disk(target_path, content_after, proposal_id)
             write_results.append(res)
+            file_statuses[target_path] = res.get("status", "error")
             write_completed_at = datetime.now().isoformat()
 
             if res.get("status") == "success":
@@ -465,20 +555,10 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     resolved_path = None
                     rel_path = None
 
-                # Refresh symbol index (only when we have a clean relative path)
+                # Refresh symbol index (only when we have a clean relative path) —
+                # deferred until the write transaction below has committed.
                 if rel_path and rel_path.endswith(".py"):
-                    try:
-                        from core.index_context import refresh_file_symbols
-
-                        refresh_file_symbols(rel_path, content_after)
-                    except Exception as _idx_err:
-                        log_error(
-                            "LOW",
-                            "file_editing",
-                            "index_refresh",
-                            f"Symbol index refresh failed: {_idx_err}",
-                            proposal_id=proposal_id,
-                        )
+                    symbol_refreshes.append((rel_path, content_after))
 
                 # Update files table (skipped for deletions — row stays is_deleted)
                 if not is_deleted:
@@ -532,6 +612,7 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     precheck = _run_ruff_precheck(resolved_path, project_dir, rel_path or target_path)
                     if precheck.get("attempted") and not precheck.get("ok"):
                         lint_failed = precheck
+                        lint_failed_path = target_path
                         # Residual P5: a file whose write passed the ruff
                         # pre-check is NOT "success" — flip its write-log row so
                         # the audit trail carries the actual single status.
@@ -544,9 +625,15 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                 # Git add + commit using the structured git_commit() helper
                 # ----------------------------------------------------------
                 if lint_failed is None and resolved_path is not None and rel_path is not None:
+                    from core.config import get_config
+
+                    git_message = f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"
+                    commit_tag = get_config().get("git_commit_tag")
+                    if commit_tag:
+                        git_message += f" [{commit_tag}]"
                     git_result = git_commit(
                         rel_path,
-                        f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}",
+                        git_message,
                         delete=is_deleted,
                     )
                     if not git_result.get("ok") and git_result.get("attempted"):
@@ -580,6 +667,14 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         else:
             status = "success"
 
+        if lint_failed_path is not None:
+            file_statuses[lint_failed_path] = "lint_failed"
+        # §13.2: name the genuinely-per-file outcome instead of hiding it inside
+        # the single status bin. Some files written + others not = partial.
+        partial_materialized = (bool(write_results) and status not in ("success", "error")) or (
+            status == "error" and any(r.get("status") == "success" for r in write_results)
+        )
+
     # Log the hook failure AFTER the write transaction has committed: a
     # log_error inside the open transaction hits "database is locked" and its
     # errors row is silently dropped, breaking the closed loop.
@@ -608,10 +703,28 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         )
         _record_lint_failure(task_id, proposal_id, lint_failed)
 
+    # Refresh symbols now that the write transaction has committed (see the
+    # deferred-collection note above — never a DB writer inside the open txn).
+    for _rel_path, _content_after in symbol_refreshes:
+        try:
+            from core.index_context import refresh_file_symbols
+
+            refresh_file_symbols(_rel_path, _content_after)
+        except Exception as idx_err:
+            log_error(
+                "LOW",
+                "file_editing",
+                "index_refresh",
+                f"Symbol index refresh failed: {idx_err}",
+                proposal_id=proposal_id,
+            )
+
     return {
         "status": status,
         "proposal_id": proposal_id,
         "materialized_files": list(affected_paths),
+        "file_statuses": file_statuses,
+        "partial_materialized": partial_materialized,
         "results": write_results,
         "git_failed": git_failed,
         "lint_failed": lint_failed,

@@ -162,3 +162,106 @@ def test_run_benchmark_fails_when_content_untouched(mock_llm, bench_env):
     trial = results["tasks"][0]["trials"][0]
     assert trial["verdict"] == "failed"
     assert trial["note"] == "content:app.py:contains"
+
+
+def _leak_task(k: int = 1):
+    from harness.benchmark.tasks import parse_bench_task
+
+    return parse_bench_task(
+        {
+            "task_id": "t10_create_leak",
+            "seed": "Create leak.py with a secret module",
+            "fixture": {"app.py": "value = OLD\n"},
+            "contract": [{"file_path": "leak.py", "fragment": "secret = 1", "mode": "contains"}],
+            "k": k,
+        }
+    )
+
+
+def _absent_leak_task(k: int = 1):
+    """Noop task whose only assertion is that the leaked path must NOT exist."""
+    from harness.benchmark.tasks import parse_bench_task
+
+    return parse_bench_task(
+        {
+            "task_id": "t11_absent_leak",
+            "seed": "Do nothing to leak.py",
+            "fixture": {"app.py": "value = OLD\n"},
+            "contract": [{"file_path": "leak.py", "fragment": "secret = 1", "mode": "absent"}],
+            "k": k,
+        }
+    )
+
+
+def _leak_responses(mock_llm) -> None:
+    """Trial 1 creates leak.py via a governed create_file op."""
+    mock_llm.set_responses(
+        "orchestrator",
+        [
+            json.dumps(
+                {
+                    "next_agent": "developer",
+                    "instructions": "Create leak.py with a secret module",
+                    "files_needed": ["app.py"],
+                    "reasoning": "leak",
+                }
+            ),
+            json.dumps({"next_agent": "complete", "instructions": "done", "reasoning": "finished"}),
+            json.dumps({"next_agent": "complete", "instructions": "done", "reasoning": "finished"}),
+            json.dumps({"next_agent": "complete", "instructions": "done", "reasoning": "finished"}),
+        ],
+    )
+    mock_llm.set_responses(
+        "developer",
+        [
+            "FILES_NEEDED: app.py\nPLAN: create",
+            json.dumps(
+                {
+                    "target_file_path": "app.py",
+                    "summary": "create leak module",
+                    "rationale": "Leak module for trial-isolation test",
+                    "operations": [
+                        {
+                            "type": "create_file",
+                            "target_file_path": "leak.py",
+                            "initial_content": ["secret = 1"],
+                            "rationale": "leak",
+                        }
+                    ],
+                }
+            ),
+        ],
+    )
+    mock_llm.set_response(
+        "reviewer",
+        json.dumps({"decision": "APPROVE", "reason": "safe", "suggestions": []}),
+    )
+
+
+def test_trials_are_isolated_from_previous_agent_files(mock_llm, bench_env):
+    """A file one trial's agent creates must not satisfy the next trial.
+
+    Trial 1 proves leak.py exists (contains passes); trial 2 asserts the same
+    path must be absent. Isolation (fresh per-trial project dir + scrubbed
+    governed store) makes trial 2 pass; without it the leftover leak.py would
+    fail the `absent` assertion.
+    """
+    from harness.benchmark.driver import run_benchmark
+
+    _leak_responses(mock_llm)  # orchestrator keeps returning 'complete' → trial 2 is a noop
+
+    with mock_llm.patch_call_agent():
+        results = run_benchmark(
+            iteration=23,
+            tasks=[_leak_task(k=1), _absent_leak_task(k=1)],
+            max_turns=3,
+            project_dir=bench_env,
+        )
+
+    assert results["total_trials"] == 2
+    per_task = {t["task_id"]: t for t in results["tasks"]}
+    leak_trial = per_task["t10_create_leak"]["trials"][0]
+    assert leak_trial["verdict"] == "passed", leak_trial
+    absent_trial = per_task["t11_absent_leak"]["trials"][0]
+    assert absent_trial["verdict"] == "passed", absent_trial
+    assert absent_trial["note"] == "content_ok"

@@ -78,104 +78,103 @@ For the test suite see **[tests/README.md](tests/README.md)** (and the architect
 ### System Architecture Diagram
 
 ```mermaid
-flowchart TB
+flowchart TD
     subgraph PrizmForge["PrizmForge System"]
-        direction TB
+        MainOrch["Main Orchestrator<br/>Sequential Task Loop"]
 
-        MainOrch["Main Orchestrator\n(Sequential Task Loop)"]
-        
         subgraph Governed["Governed Edit Pipeline"]
-            direction TB
             EditPayload["EditPayload"]
             Proposal["Proposal"]
-            Reviewer["Reviewer\n(Safety Gate)"]
+            Reviewer["Reviewer<br/>Safety Gate"]
             Materialize["Materialize"]
-            
-            EditPayload --> Proposal --> Reviewer
+
+            EditPayload --> Proposal
+            Proposal --> Reviewer
             Reviewer -->|Approve| Materialize
         end
-        
+
         DeveloperAgent["Developer Agent"]
-        Parallel["Parallel Background Agents\n(jr_reviewer, archivist, report builder, etc.)"]
-        Resource["Resource Controller\n(Throttling & Prioritization)"]
-        DB[(SQLite Database\nUnified Schema)]
+        Parallel["Parallel Background Agents<br/>jr_reviewer, archivist, report builder"]
+        ResourceCtrl["Resource Controller<br/>Throttling and Prioritization"]
+        DB[("SQLite Database<br/>Unified Schema")]
 
         MainOrch -->|developer| DeveloperAgent
         DeveloperAgent -->|EditPayload| EditPayload
         Materialize --> DB
         Parallel --> DB
-        Resource --> Parallel
-        
-        %% Autonomous loop - Orchestrator reads proposals/tasks from DB (unattended mode)
+        ResourceCtrl --> Parallel
         DB --> MainOrch
     end
 
-    Human["Human"] -.->|Optional: High-level goals & oversight| MainOrch
+    Human["Human"] -.->|Optional: high-level goals and oversight| MainOrch
     Reviewer -->|Deny with Comments| DeveloperAgent
-    LLM["LLM Endpoints\n(OpenAI, Gemini, etc.)"] <--> MainOrch
-    LLM <--> Parallel
-    LLM <--> DeveloperAgent
-    LLM <--> Reviewer
+
+    LLM["LLM Endpoints<br/>OpenAI, Gemini, and others"]
+    LLM --> MainOrch
+    MainOrch --> LLM
+    LLM --> Parallel
+    Parallel --> LLM
+    LLM --> DeveloperAgent
+    DeveloperAgent --> LLM
+    LLM --> Reviewer
+    Reviewer --> LLM
 ```
 
 ### Agent Classes
 
 ```mermaid
-flowchart BT
+flowchart TD
     subgraph Class3["Class 3: Specialist Review Agents"]
-        direction TB
         JrReviewer["jr_reviewer"]
         Security["security_reviewer"]
         TechWriter["tech_writer"]
         JrResearcher["jr_researcher"]
-
-        JrReviewer --> Feedback["Feedback Store"]
-        Security --> Feedback
-        TechWriter --> Feedback
-        JrResearcher --> Feedback
     end
 
     subgraph Class2["Class 2: Tool-Enabled Parallel Agents"]
-        direction TB
         Prioritizer["Prioritizer"]
         Archivist["Archivist"]
         ReportBuilder["Report Builder"]
         ResourceCtrl["Resource Controller"]
-
-        Prioritizer --> Feedback
-        Archivist --> Feedback
-        ReportBuilder --> Reports["Report Files"]
-        ResourceCtrl --> Throttling["Throttling & Prioritization"]
     end
 
     subgraph Class1["Class 1: Strict File Edit Cycle"]
-        direction TB
         Orchestrator["Orchestrator"]
         Developer["Developer"]
         Reviewer["Reviewer"]
         Materialize["Materialize"]
-        DBMat["DB + File Materialization"]
+        DBMat["DB and File Materialization"]
+        Files["Project Files"]
 
-        Orchestrator --> Feedback
         Orchestrator --> Developer
         Developer --> Reviewer
         Reviewer -->|Approve| Materialize
         Reviewer -->|Deny with Comments| Developer
         Materialize --> DBMat
-        DBMat --> Files["Project Files"]
-
-        Files -.->|Triggers review upon commit| Class3
+        DBMat --> Files
     end
 
-    Feedback --> Orchestrator
-    Class3 --> Feedback
-    Class2 --> Feedback
-
-    Class2 --> Class1
-    Class1 --> Class2
-
+    Feedback["Feedback Store"]
     Reports["Report Files"]
-    Throttling["Throttling & Prioritization"]
+    Throttling["Throttling and Prioritization"]
+
+    JrReviewer --> Feedback
+    Security --> Feedback
+    TechWriter --> Feedback
+    JrResearcher --> Feedback
+
+    Prioritizer --> Feedback
+    Archivist --> Feedback
+    ReportBuilder --> Reports
+    ResourceCtrl --> Throttling
+
+    Orchestrator --> Feedback
+    Feedback --> Orchestrator
+
+    Files -.->|Triggers review upon commit| JrReviewer
+
+    ResourceCtrl --> Orchestrator
+    Orchestrator --> ResourceCtrl
 ```
 
 ## Current File Editing Methodology (Governed Editing)

@@ -146,7 +146,7 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
                 raise
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 #: Tables every canonical DB must present to pass the honest gate. `init_db`
@@ -174,6 +174,7 @@ REQUIRED_TABLES = (
     "file_summaries",
     "file_symbols",
     "file_write_log",
+    "harness_change_manifest",
     "llm_interactions",
     "messages",
     "model_health_events",
@@ -184,6 +185,7 @@ REQUIRED_TABLES = (
     "resource_decisions",
     "resource_model_overrides",
     "rollouts",
+    "task_outcomes",
     "tasks",
     "token_log",
 )
@@ -202,6 +204,8 @@ REQUIRED_COLUMNS = {
         "command",
         "command_exit_code",
     ),
+    "harness_change_manifest": ("iteration", "payload"),
+    "task_outcomes": ("iteration", "task_id", "passed", "tokens"),
 }
 
 
@@ -336,6 +340,28 @@ def init_db():
             );
             CREATE INDEX IF NOT EXISTS idx_rollouts_task ON rollouts(task_id);
             CREATE INDEX IF NOT EXISTS idx_rollouts_iteration ON rollouts(iteration);
+
+            -- Harness change manifests (§12.4): one JSON payload per evolution
+            -- iteration listing the Evolve Agent's edits with per-edit
+            -- predicted_fixes / predicted_regressions (decision observability).
+            CREATE TABLE IF NOT EXISTS harness_change_manifest (
+                iteration INTEGER PRIMARY KEY,
+                payload TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Task-level outcomes per iteration (§12.4, §5.2 verdict input):
+            -- the observed promise-to-reality deltas the next round's verdict
+            -- SQL intersects with the prior iteration's predictions.
+            CREATE TABLE IF NOT EXISTS task_outcomes (
+                iteration INTEGER NOT NULL,
+                task_id TEXT NOT NULL,
+                passed INTEGER NOT NULL DEFAULT 0,
+                tokens INTEGER NOT NULL DEFAULT 0,
+                result TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (iteration, task_id)
+            );
 
             -- Token usage log
             CREATE TABLE IF NOT EXISTS token_log (
