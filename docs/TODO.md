@@ -22,10 +22,10 @@ Do not paste shipped checklists back into this tracker.
 
 | Section | Priority | Why |
 |---|---|---|
+| **§15 Soak24 findings** | **do now** | Ships first, before §14: 4 confirmed `cli/commands.py` bugs + all 5 §15.3 nits (incl. UTC normalization) on branch `fix/soak24-findings`; small, verified, keeps soak evidence clean |
 | **§14 Terminal-class CLI benchmarks** | **next** | Route A approved in plan mode; own crafted set first, strict TB adapter later. Phases 1–4 ship on the bench harness with zero new deps |
-| §13 Edit-process hardening | **P1** | Atomic apply, materialize crash recovery, bench trial isolation shipped on `soak/23`; §13.3–§13.5/§13.7/§13.8 remain (bench fidelity + verifier honesty) |
-| §12 Harness-evolution loop | **P2** | P0/P1/P2 backbone shipped (§12.1–§12.3, §12.4 manifest, §12.5 Evolve gate); §12.4 rollback executor + §12.6 attribution wait on a live round-trip |
-| §15 Soak24 findings | **fix on next branch** | First clean approve→materialize mutation since Soak8 (real, verifiable evidence); 4 confirmed code findings from the soak DB + 5 observability nits |
+| §13 Edit-process hardening | **P1** | Atomic apply, materialize crash recovery, bench trial isolation shipped on `soak/23`; §13.5/§13.7 fold into §14.3/§14.6; §13.3/§13.4/§13.8 remain (bench fidelity + verifier honesty) |
+| §12 Harness-evolution loop | **P2** | P0/P1/P2 backbone shipped (§12.1–§12.3, §12.4 manifest, §12.5 Evolve gate); §12.4 rollback executor + §12.6 attribution wait on a live round-trip (§14.6) |
 | §7 Closed-loop / mini-swe | **MEDIUM** | Unblocked by live endpoints/hooks, not code |
 | Soak-era backlog (§1, §2.3, §3, §6) | **watch** | Lower priority; paid only if the next live soak shows them |
 | §9 Annexes | **LOW / parked** | Do not start without new evidence |
@@ -48,9 +48,12 @@ Do not paste shipped checklists back into this tracker.
   seed `evolve.md`, `[iter-<t>]` tagged materialize commits, and 23 new
   tests. Evolve needs a live model to be meaningful — it starts consuming
   verdicts at §14.6.
-- **Next (do):** §14.1–§14.4 — manifest v2, command verifier, driver
-  wiring to land before the §14.5 crafted terminal task set. All mock /
-  deterministic first; live runs (§14.6) after the seeds are green.
+- **Next (do):** the §15 Soak24 branch `fix/soak24-findings` — the 4
+  confirmed `cli/commands.py` bugs + all 5 §15.3 observability nits (incl.
+  UTC timestamp normalization per the §15 review) — ships **before** §14.
+  Then §14.1–§14.4 (manifest v2, command verifier, driver wiring) land
+  before the §14.5 crafted terminal task set. All mock / deterministic
+  first; live runs (§14.6) after the seeds are green.
 - **Soak24 (2026-09-12):** first governed mutation **materialized via the
   approve→materialize path since Soak8** — proposal `b4041e15` on
   `docs/TODO.md`, reviewer-approved, written to disk (verified in the
@@ -71,7 +74,7 @@ Do not paste shipped checklists back into this tracker.
 
 Extend the boxed benchmark (§12.2) to **terminal / command-line-task**
 style jobs: the agent works in a cloned repo under a real host bash shell
-and is graded by a command that must exit 0. Shipped as **R-oute A on the
+and is graded by a command that must exit 0. Shipped as **Route A on the
 native harness** — no new deps, no Docker, deterministic/mock-first — with
 a **strict Terminal-Bench (Harbor) translation seam** queued behind a gate
 (§14.7). Source of truth: this section + `docs/benchmark_v1.md`.
@@ -275,6 +278,9 @@ correctness (`recover_orphaned_applied`, per-file `file_statuses` /
 
 ### 13.5 Verifier honesty — disk + pre/post (P2)
 
+The bench-path cross-check item below lands with **§14.3** (command
+verifier); the disk + `mode: "new"` items stay independent.
+
 - [ ] `harness/verify.py` reads governed DB only; check the on-disk file
       under the bench project dir (DB as fallback), recording which source
       satisfied.
@@ -285,6 +291,8 @@ correctness (`recover_orphaned_applied`, per-file `file_statuses` /
       the runner's own label.
 
 ### 13.7 Live/control runs (P2)
+
+Lands via **§14.6** (`--live` runs consume this); exercised there.
 
 - [ ] `bench_config` (`harness/benchmark/config.py`) hardcodes `endpoints:
       {}` / `mock-model`; add `--live` endpoint/model injection +
@@ -310,8 +318,9 @@ correctness (`recover_orphaned_applied`, per-file `file_statuses` /
 Soak24 evidence: `/home/jeremy-gerdes/git/github/PrizmForge-Soak/Soak24-target/
 PrizmForge/.PrizmForge/agents.db` (read `mode=ro`; sqlite3 absent — use
 `.venv/bin/python` + stdlib sqlite3), `shell_trajectories/`, `reports/`, and
-the target `git status`/`git diff`. Purge this section after the next branch
-that carries its fixes merges.
+the target `git status`/`git diff`. Fix branch (next, off `soak/23`):
+`fix/soak24-findings`. Tick boxes `(branch)` as each lands; purge this
+section after that branch merges.
 
 ### 15.1 Outcome (verifiable, keep as evidence until purge)
 
@@ -338,7 +347,7 @@ that carries its fixes merges.
       calls / 261,982 tokens; resource `tokens_remaining` reconciles
       (20M-day budget).
 
-### 15.2 Confirmed code findings from the soak DB (fix on next branch)
+### 15.2 Confirmed code findings from the soak DB (branch `fix/soak24-findings`)
 
 - [ ] **`cmd_export_db` task-scoped export leaks cross-task rows.** Tables
       without a `task_id` column fall through to `SELECT *` full-scope
@@ -359,12 +368,12 @@ that carries its fixes merges.
       matching `content_hash` increments `indexed` and continues, so a
       partial/cleared index leaves rows silently missing. Verify both
       tables exist for the path before skipping, else re-sync.
-- [ ] (**likely false positive — do not reopen without evidence**)
-      `resource_controller.json` "UUID metadata brackets" finding: the file
-      is valid JSON with documented `_note` keys; the reviewer conflated DB
-      schema-line format with this JSON (§9.5 posture).
+- (**likely false positive — do not reopen without evidence; not a fix
+  item**) `resource_controller.json` "UUID metadata brackets" finding: the
+  file is valid JSON with documented `_note` keys; the reviewer conflated DB
+  schema-line format with this JSON (§9.5 posture).
 
-### 15.3 Observability / data-hygiene nits (design accepted, track)
+### 15.3 Observability / data-hygiene nits (all five on the fix branch, incl. UTC normalization)
 
 - [ ] **`Work: 0.0s` header is a reset-then-print ordering bug**
       (`workflow/task_runner.py:771-778`): `_active_work_seconds = 0.0`
@@ -389,7 +398,7 @@ that carries its fixes merges.
       `token_log`, `endpoint_health` = local EDT), which breaks
       cross-table joins and confused this review. Normalize to UTC.
 
-### 15.4 Ops posture (matches backlog, confirmed again)
+### 15.4 Ops posture (operator action — not on the fix branch; confirmed again)
 
 - [ ] **Free-only 8h unattended is not viable**: the `free-models-per-day`
       ceiling (~262K tokens ≈ 17 min here) plus the misconfigured opencode
@@ -529,11 +538,13 @@ for non-quota 429/503.
 
 | Order | Work item | Exit criterion |
 |---:|---|---|
-| 1 | §14.2 manifest v2 + repo fixture | 5 terminal tasks parse; `contract_hash` folds new fields |
-| 2 | §14.3 command verifier | Exit-0/exit-1 graded; honest with evidence gate |
-| 3 | §14.4 driver wiring | Terminal task end-to-end on mocked LLM; hermetic |
-| 4 | §14.5 tasks_terminal.json + tests | Full suite green on `soak/23` |
-| 5 | §14.6 live-run gate (mock → live) | Comparable pass@1; §12.5 consumes verdicts → unblocks §12.4 rollback |
-| 6 | §13.3 / §13.4 / §13.5 / §13.8 | Strict diff, token-efficient prompts, honest verifier, test seams |
-| 7 | §12.6 attribution ablations | A single-component swap changes measured pass@1 |
-| 8 | §14.7 TB translation seam (gated) | Board gate opens §12.7 out-of-scope; TB tasks translate or fail loudly |
+| 1 | §15 Soak24 findings (branch `fix/soak24-findings`) | A1–A4 `cli/commands.py` fixes + §15.3 all 5 (incl. UTC normalization) + tests; full suite green on `soak/23` |
+| 2 | §14.2 manifest v2 + repo fixture | 5 terminal tasks parse; `contract_hash` folds new fields |
+| 3 | §14.3 command verifier (folds §13.5 bench cross-check) | Exit-0/exit-1 graded; honest with the §13.5 evidence gate |
+| 4 | §14.4 driver wiring | Terminal task end-to-end on mocked LLM; hermetic |
+| 5 | §14.5 tasks_terminal.json + tests | Full suite green on `soak/23` |
+| 6 | §14.6 live-run gate (mock → live; folds §13.7 `--live`) | Comparable pass@1; §12.5 consumes verdicts → unblocks §12.4 |
+| 7 | §12.4 rollback executor | `git revert`/governed undo on `revert_candidates` when confirms == 0 + regressions |
+| 8 | §13.3 / §13.4 / §13.8 (independent P1 hardening) | Strict diff, token-efficient prompts, test seams — interleaved with §14 as capacity allows |
+| 9 | §12.6 attribution ablations | A single-component swap changes measured pass@1 |
+| 10 | §14.7 TB translation seam (gated) | Board gate opens §12.7 out-of-scope; TB tasks translate or fail loudly |
