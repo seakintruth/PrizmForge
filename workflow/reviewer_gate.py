@@ -127,6 +127,82 @@ def request_review_verdict(
     return verdict
 
 
+REVIEWER_CONTENT_REGION_CAP = 16_000
+_REVIEWER_REGION_CONTEXT = 8
+
+
+def _hunk_original_regions(diff_text: str) -> list[tuple[int, int]]:
+    """Extract (lo, hi) 0-based-ranges of the *original* file each diff hunk touches."""
+    import re
+
+    regions: list[tuple[int, int]] = []
+    for m in re.finditer(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@", diff_text, re.M):
+        start = int(m.group(1)) - 1
+        count = int(m.group(2) or 1)
+        hi = start + count
+        if count == 0:
+            # Pure insertion: the region around the insertion point.
+            regions.append((max(0, start), start + 1))
+        else:
+            regions.append((start, hi))
+    return regions
+
+
+def _merge_regions(regions: list[tuple[int, int]], context: int) -> list[tuple[int, int]]:
+    merged: list[tuple[int, int]] = []
+    for lo, hi in sorted((max(0, lo - context), hi + context) for lo, hi in regions):
+        if merged and lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def _bounded_region_view(text: str, cap: int) -> str:
+    """Cap *text* on a newline boundary, marking the cut so reviewers can tell
+    a bounded payload from a corrupt one (never split a token mid-word)."""
+    if len(text) <= cap:
+        return text
+    cut = text[:cap]
+    nl = cut.rfind("\n")
+    if nl != -1:
+        cut = cut[: nl + 1]
+    return f"{cut}...\n[TRUNCATED: content exceeds {cap} chars — bounded, not corrupt]"
+
+
+def reviewer_original_view(original_content: str, diff_text: str | None = None) -> str:
+    """§13.4 — cap file content re-pasted into reviewer prompts.
+
+    Small files (< REVIEWER_CONTENT_REGION_CAP chars) keep their full content —
+    a coherent verdict needs the whole context. Large files get only the regions
+    the diff touches (plus a small context margin, merged across adjacent hunks),
+    visibly marked as a region view. With no parseable hunks the head is bounded,
+    also explicitly marked. Either way the reviewer never sees an unbounded or
+    silently-split paste.
+    """
+    cap = REVIEWER_CONTENT_REGION_CAP
+    if len(original_content) <= cap:
+        return original_content
+
+    regions = _merge_regions(_hunk_original_regions(diff_text or ""), _REVIEWER_REGION_CONTEXT)
+    lines = original_content.splitlines(keepends=True)
+    if not regions:
+        return _bounded_region_view(original_content, cap)
+
+    pieces = []
+    for lo, hi in regions:
+        lo = max(0, lo)
+        hi = min(len(lines), hi)
+        if lo < hi:
+            pieces.append("".join(lines[lo:hi]))
+    if not pieces:
+        return _bounded_region_view(original_content, cap)
+
+    joined = "\n[...]\n[SNIPPED: showing only changed regions of a large file]\n\n".join(pieces)
+    head = f"[REGION VIEW: file exceeds {cap} chars; only the changed regions are shown — small files get full content.]\n"
+    return head + _bounded_region_view(joined, cap)
+
+
 def post_reviewer_suggestions(proposal_id: str, task_id: str, suggestions: list[Any]) -> None:
     """Surface reviewer suggestions to the prioritizer at MEDIUM priority."""
     if not suggestions:
@@ -184,7 +260,7 @@ def handle_reviewer_rejection(
     ``proposal.rejected`` event, and notifies the orchestrator so the next
     developer turn can address the rejection (the previous-attempt injection).
     """
-    update_proposal_status(proposal_id, "rejected")
+    update_proposal_status(proposal_id, "rejected", reviewed_by_agent_id=2)
     log_reviewer_rejection(task_id, target_file_path, proposal_id, reason, suggestions)
     publish_event(
         "proposal.rejected",

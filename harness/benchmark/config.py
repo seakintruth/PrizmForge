@@ -13,9 +13,20 @@ from pathlib import Path
 from typing import Any
 
 
-def bench_config(project_dir: str | Path) -> dict[str, Any]:
-    """Config used for benchmark trials (single-writer, no background LLM)."""
-    return {
+def bench_config(
+    project_dir: str | Path,
+    overrides: dict[str, Any] | None = None,
+    *,
+    endpoints: dict[str, Any] | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    """Config used for benchmark trials (single-writer, no background LLM).
+
+    ``endpoints`` / ``model`` inject a live (§13.7/§14.6) endpoint set: when
+    given they replace the hermetic ``endpoints: {}`` + ``mock-model`` default
+    so real control runs measure a real model with a comparable pass@1.
+    """
+    cfg = {
         "project_directory": str(project_dir),
         "background_agents_enabled": False,
         "file_editing": {
@@ -23,15 +34,18 @@ def bench_config(project_dir: str | Path) -> dict[str, Any]:
             "fallback_order": ["find_replace", "full_replace"],
             "small_file_threshold_lines": 180,
         },
-        "endpoints": {},
+        "endpoints": endpoints or {},
         "git": True,
         "token_budget": {"max_tokens_per_4h": 1_000_000},
-        "default_model": "mock-model",
+        "default_model": model or "mock-model",
         "default_iteration_minutes": 1,
         "min_iterations_before_complete": 1,
         "background_agents": {},
         "background_feeder": {},
     }
+    if overrides:
+        cfg.update(overrides)
+    return cfg
 
 
 #: Modules holding a module-level ``from core.config import get_config`` binding.
@@ -51,11 +65,22 @@ _CONFIG_BINDING_MODULES = (
 
 
 @contextmanager
-def use_bench_config(project_dir: str | Path):
+def use_bench_config(
+    project_dir: str | Path,
+    overrides: dict[str, Any] | None = None,
+    *,
+    endpoints: dict[str, Any] | None = None,
+    model: str | None = None,
+):
     """Install bench_config() as get_config everywhere, then restore."""
     import importlib
 
-    cfg = bench_config(project_dir)
+    cfg = bench_config(
+        project_dir,
+        overrides=overrides,
+        endpoints=endpoints,
+        model=model,
+    )
     originals: dict[str, Any] = {}
     modules: dict[str, Any] = {}
 

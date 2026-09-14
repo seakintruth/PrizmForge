@@ -11,6 +11,7 @@
   "background_agents_enabled": true,
   "default_model": "opencode/big-pickle",
   "cli_mode": {
+    "_comment_mode": "Accepted: semi_attended | unattended. Anything else falls back to semi_attended.",
     "mode": "unattended",
     "unattended": {
       "max_duration_hours": 2,
@@ -148,12 +149,18 @@
     "jr_reviewer": {
       "enabled": true,
       "on_modification": true,
-      "random_review": true
+      "random_review": false
     },
     "security_reviewer": {
       "enabled": true,
       "on_modification": true
-    }
+    },
+    "_note": "random_review defaults OFF (§16.1): peer review is map-first plus blast-radius on real changes. Set random_review: true to enable the periodic random pick-a-file feeder as an explicit override."
+  },
+  "background_sweep": {
+    "enabled": true,
+    "interval_seconds": 300,
+    "_note": "§16.2 long-horizon coverage sweep. When enabled the background pool periodically reviews the next uncovered chunk (~80-120 lines) per reviewer agent. Paused during a foreground developer session. Set enabled: false to disable in soak-only runs."
   },
   "file_editing": {
     "preferred_modes": [

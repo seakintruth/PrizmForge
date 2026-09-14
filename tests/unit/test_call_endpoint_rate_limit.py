@@ -1163,3 +1163,154 @@ def test_empty_policy_200_marks_failure_and_falls_back(call_endpoint_env, capfd)
     assert any(o.get("kind") == "policy" for o in outcomes)
     assert any(o.get("ok") is False for o in outcomes)
     assert "falling back" in capfd.readouterr().out.lower()
+
+
+class _DualManager(_FakeManager):
+    """Two-endpoint fake (primary + fallback) for fallback-path tests."""
+
+    def __init__(self, primary, fallback):
+        self.endpoints = {"primary": primary, "fallback": fallback}
+        self._fallback = fallback
+
+    def normalize_model_reference(self, raw):
+        if "fallback" in str(raw):
+            return SimpleNamespace(endpoint_name="fallback", model_name="fallback-model")
+        return _Choice()
+
+    def get_fallback_model(self, endpoint, exclude=None):
+        if endpoint.name == "fallback" or (exclude and "fallback" in exclude):
+            return None
+        return ("fallback-model", self._fallback)
+
+
+def _empty_body_resp():
+    return _resp(200, {"choices": [{"message": {"content": "", "role": "assistant"}, "finish_reason": "stop"}]})
+
+
+def test_empty_body_retries_same_endpoint_once_before_latching(call_endpoint_env):
+    """Retry-before-latch: a single transient empty 200 re-attempts the SAME
+    endpoint and succeeds without ever latching it UNAVAILABLE."""
+    base = call_endpoint_env
+    primary = _FakeEndpoint()
+    primary.health = _RecordingHealth()
+
+    class _SingleManager(_FakeManager):
+        def __init__(self):
+            self.endpoints = {"primary": primary}
+
+    scripted = [_empty_body_resp(), _resp(200, {"choices": [{"message": {"content": "the real answer", "role": "assistant"}}]})]
+    outcomes: list[dict] = []
+
+    with patch.object(base, "get_endpoint_manager", lambda: _SingleManager()):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}),
+            ):
+                with patch("time.sleep") as sleep_mock:
+                    answer, _tokens = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "the real answer"
+    assert primary.health.parked == []
+    assert len(outcomes) == 1 and outcomes[0].get("ok") is True
+    assert sleep_mock.call_count >= 1
+
+
+def test_empty_body_latches_and_falls_back_after_retries(call_endpoint_env):
+    """Retry-before-latch: only after its retry budget is exhausted does an
+    all-empty endpoint get parked, then falls back to an alternate with a
+    single demoting empty_body outcome."""
+    base = call_endpoint_env
+    primary = _FakeEndpoint()
+    primary.health = _RecordingHealth()
+    fallback = _FakeEndpoint()
+    fallback.name = "fallback"
+
+    scripted = [
+        _empty_body_resp(),
+        _empty_body_resp(),
+        _empty_body_resp(),
+        _resp(200, {"choices": [{"message": {"content": "from fallback"}}]}),
+    ]
+    outcomes: list[dict] = []
+
+    with patch.object(base, "get_endpoint_manager", lambda: _DualManager(primary, fallback)):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}),
+            ):
+                with patch("time.sleep"):
+                    answer, _tokens = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "from fallback"
+    assert any(s == EndpointStatus.UNAVAILABLE for s, *_ in primary.health.parked)
+    failures = [o for o in outcomes if o.get("ok") is False]
+    assert len(failures) == 1
+    assert failures[0]["kind"] == "empty_body"
+
+
+def test_bad_payload_retries_same_endpoint_once_before_latching(call_endpoint_env):
+    """Retry-before-latch: a transient unparseable body re-attempts the SAME
+    endpoint and succeeds without latching UNAVAILABLE."""
+    base = call_endpoint_env
+    primary = _FakeEndpoint()
+    primary.health = _RecordingHealth()
+
+    class _SingleManager(_FakeManager):
+        def __init__(self):
+            self.endpoints = {"primary": primary}
+
+    scripted = [_resp(200, {"choices": []}), _resp(200, {"choices": [{"message": {"content": "recovered", "role": "assistant"}}]})]
+    outcomes: list[dict] = []
+
+    with patch.object(base, "get_endpoint_manager", lambda: _SingleManager()):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}),
+            ):
+                with patch("time.sleep") as sleep_mock:
+                    answer, _tokens = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "recovered"
+    assert primary.health.parked == []
+    assert len(outcomes) == 1 and outcomes[0].get("ok") is True
+    assert sleep_mock.call_count >= 1
+
+
+def test_bad_payload_latches_and_falls_back_after_retries(call_endpoint_env):
+    """Retry-before-latch: persistent unparseable bodies park UNAVAILABLE only
+    after the retry budget, then fall back to an alternate."""
+    base = call_endpoint_env
+    primary = _FakeEndpoint()
+    primary.health = _RecordingHealth()
+    fallback = _FakeEndpoint()
+    fallback.name = "fallback"
+
+    scripted = [
+        _resp(200, {"choices": []}),
+        _resp(200, {"choices": []}),
+        _resp(200, {"choices": []}),
+        _resp(200, {"choices": [{"message": {"content": "from fallback"}}]}),
+    ]
+    outcomes: list[dict] = []
+
+    with patch.object(base, "get_endpoint_manager", lambda: _DualManager(primary, fallback)):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, **kw}),
+            ):
+                with patch("time.sleep"):
+                    answer, _tokens = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer == "from fallback"
+    assert any(s == EndpointStatus.UNAVAILABLE for s, *_ in primary.health.parked)
+    failures = [o for o in outcomes if o.get("ok") is False]
+    assert len(failures) == 1
+    assert failures[0]["kind"] == "bad_payload"

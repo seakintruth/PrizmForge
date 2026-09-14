@@ -4,13 +4,12 @@ import fnmatch
 import hashlib
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from core.config import get_config
 from core.db_connection import get_db_connection
-from core.db_helpers import post_message
+from core.db_helpers import post_message, utcnow_iso
 from core.gitignore import should_ignore_by_gitignore
 from core.token_estimator import estimate_tokens
 
@@ -359,10 +358,10 @@ def sync_file_to_database(file_path: str, content: str, conn=None) -> bool:
             file_path,
             content,
             content_hash,
-            datetime.now().isoformat(),
+            utcnow_iso(),
             size_bytes,
             file_type,
-            datetime.now().isoformat(),
+            utcnow_iso(),
             is_binary,
             estimated_tokens,
         )
@@ -484,7 +483,7 @@ def save_file_summary(file_path: str, summary: dict, conn=None):
             json.dumps(summary.get("imports", [])),
             summary.get("purpose", ""),
             summary.get("line_count", 0),
-            datetime.now().isoformat(),
+            utcnow_iso(),
             summary_tokens,  # Store pre-computed value
         )
         sql = """
@@ -527,7 +526,7 @@ def post_file_metadata_to_bus(file_path: str, operation: str, summary: dict, tas
                     json.dumps(metadata),
                     summary.get("purpose", ""),
                     task_id,
-                    datetime.now().isoformat(),
+                    utcnow_iso(),
                 ),
             )
 

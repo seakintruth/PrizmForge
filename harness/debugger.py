@@ -212,13 +212,22 @@ def run_producer(
     *,
     model: str | None = None,
     llm: Callable[..., tuple[str | None, int]] | None = None,
-    max_workers: int = 4,
+    max_workers: int = 1,
 ) -> dict[str, DebuggerReport]:
-    """Analyze every task in parallel (support-worker pattern, order preserved)."""
+    """Analyze every task, order preserved (support-worker pattern).
+
+    §12.8: defaults to ``max_workers=1`` — serial production runs against
+    company (real / paid) endpoint keys until TokenPacer budgets are verified
+    per endpoint. Parallelism above 1 is an explicit, deliberate opt-in.
+    """
     reports: dict[str, DebuggerReport] = {}
     if not frames_by_task:
         return reports
-    with ThreadPoolExecutor(max_workers=max(max_workers, 1)) as pool:
+    if max_workers <= 1:
+        for task_id, frames in frames_by_task.items():
+            reports[task_id] = analyze_task(task_id, frames, model=model, llm=llm)
+        return reports
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {pool.submit(analyze_task, task_id, frames, model=model, llm=llm): task_id for task_id, frames in frames_by_task.items()}
         for future in as_completed(futures):
             reports[futures[future]] = future.result()

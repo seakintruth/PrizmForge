@@ -12,7 +12,7 @@ from typing import Any
 from agents.base import call_agent
 from agents.worker_utils import hold_while_foreground_session_active, interruptible_sleep
 from core.db_connection import get_db_connection
-from core.db_helpers import post_message
+from core.db_helpers import post_message, utcnow
 
 
 class ArchivistWorker:
@@ -103,7 +103,7 @@ class ArchivistWorker:
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                cutoff_time = (datetime.now() - timedelta(minutes=10)).isoformat()
+                cutoff_time = (utcnow() - timedelta(minutes=10)).isoformat()
                 cursor.execute(
                     """
                     SELECT id, from_agent, to_agent, content, timestamp, priority, task_id
@@ -179,7 +179,7 @@ class ArchivistWorker:
                 last_archive = cursor.fetchone()[0]
                 if last_archive:
                     last_time = datetime.fromisoformat(last_archive)
-                    if datetime.now() - last_time < timedelta(minutes=10):
+                    if utcnow() - last_time < timedelta(minutes=10):
                         return
                 cursor.execute(
                     """
@@ -236,7 +236,7 @@ class ArchivistWorker:
         try:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
-                recent_time = (datetime.now() - timedelta(minutes=5)).isoformat()
+                recent_time = (utcnow() - timedelta(minutes=5)).isoformat()
                 cursor.execute(
                     """
                     SELECT id, content, task_id
@@ -388,7 +388,7 @@ class ArchivistWorker:
             summary,
             key_decisions,
             files_modified,
-            datetime.now().isoformat(),
+            utcnow().isoformat(),
             len(messages),
         )
         if conn is not None:

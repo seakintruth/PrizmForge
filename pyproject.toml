@@ -67,8 +67,9 @@ ignore = ["S101", "S105","RUF001"] # Allow assert in tests, ignore hardcoded moc
 "agents/prioritizer_worker.py" = ["E402", "PLC0415"]
 "agents/reporter_worker.py" = ["S603", "S607"]
 
-# Harness-evolution substrate (best-effort guarded git/fingerprint probes)
-"harness/*" = ["S603", "S607", "S110", "S112"]
+# Harness-evolution substrate (best-effort guarded git/fingerprint probes; and
+# S602 is intentional — terminal benchmark `setup` runs arbitrary bash by design)
+"harness/*" = ["S602", "S603", "S607", "S110", "S112"]
 
 # File editing & CLI
 "file_editing/writer.py" = ["S603", "S607"]
@@ -82,6 +83,7 @@ ignore = ["S101", "S105","RUF001"] # Allow assert in tests, ignore hardcoded moc
 "core/db_helpers.py" = ["S608"]
 "core/symbol_index.py" = ["S608"]
 "core/agent_schemas.py" = ["S608"]
+"core/review_feed.py" = ["S608"]
 "cli/commands.py" = ["S608"]
 "file_editing/db.py" = ["S608"]
 "workflow/proposal_builder.py" = ["S608"]

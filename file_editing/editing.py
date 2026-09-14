@@ -565,90 +565,94 @@ def apply_diff(conn: sqlite3.Connection, file_id: int, op) -> dict[str, Any]:
         return {"status": "error", "message": str(e)}
 
 
-def _apply_unified_diff(original_lines, diff_lines):  # noqa: C901
-    """
-    Minimal unified-diff applicator.
-    Returns new list of lines, or None on failure.
-    """
-    # Strip optional file headers
-    i = 0
-    while i < len(diff_lines) and (
-        diff_lines[i].startswith("---") or diff_lines[i].startswith("+++") or diff_lines[i].startswith("Index:") or diff_lines[i].startswith("diff ")
-    ):
-        i += 1
+def _parse_unified_hunks(diff_lines: list[str]) -> list[dict[str, Any]]:
+    """Parse ``@@ -old,count +new,count @@`` hunks from a unified diff.
 
-    list(original_lines)
-    # Work with lines without requiring keepends consistency
-    # Renamed 'l' -> 'line_item' to fix E741
-    src = [line_item.rstrip("\n\r") for line_item in original_lines]
-    out = []
-    src_idx = 0
+    Ignores leading file headers and any metadata-only lines. Each hunk is
+    ``{old_pos, old_count, new_pos, new_count, lines}`` with positions 1-based.
+    """
+    import re
 
-    while i < len(diff_lines):
-        line = diff_lines[i]
+    hunks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for line in diff_lines:
         raw = line.rstrip("\n\r")
+        m = re.search(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", raw)
+        if m:
+            if current is not None:
+                hunks.append(current)
+            current = {
+                "old_pos": int(m.group(1)),
+                "old_count": int(m.group(2) or 1),
+                "new_pos": int(m.group(3)),
+                "new_count": int(m.group(4) or 1),
+                "lines": [],
+            }
+        elif current is not None:
+            current["lines"].append(raw)
+    if current is not None:
+        hunks.append(current)
+    return hunks
 
-        if raw.startswith("@@"):
-            # Parse hunk header: @@ -start,count +start,count @@
-            import re
 
-            m = re.search(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", raw)
-            if not m:
-                i += 1
-                continue
-            old_start = int(m.group(1)) - 1  # 0-based
-            # Copy unchanged lines up to hunk start
-            while src_idx < old_start and src_idx < len(src):
-                out.append(src[src_idx] + "\n")
-                src_idx += 1
-            i += 1
-            continue
+def _apply_unified_diff(original_lines: list[str], diff_lines: list[str]) -> list[str] | None:
+    """
+    Strict unified-diff applicator (§13.3).
 
-        if raw.startswith(" "):
-            # Context line - must match
-            expected = raw[1:]
-            if src_idx >= len(src) or src[src_idx] != expected:
-                # Try to resync: search forward a little
-                found = False
-                for look in range(src_idx, min(src_idx + 20, len(src))):
-                    if src[look] == expected:
-                        while src_idx < look:
-                            out.append(src[src_idx] + "\n")
-                            src_idx += 1
-                        found = True
-                        break
-                if not found:
-                    return None
+    Context and deleted lines must match the source exactly at the given
+    position — there is no soft resync / forward-search. Each hunk header's
+    line counts must equal what the hunk actually consumed/produced, otherwise
+    the apply fails (None). A diff that once applied only via fuzzy matching
+    could silently corrupt the file; now it fails loudly instead. A diff with
+    no hunks also fails. Result is the reconstructed (== intended target) new
+    line list, else None.
+    """
+    src = [line_item.rstrip("\n\r") for line_item in original_lines]
+    hunks = _parse_unified_hunks(diff_lines)
+    if not hunks:
+        return None
+
+    out: list[str] = []
+    src_idx = 0
+    for hunk in hunks:
+        # Copy unchanged lines up to the hunk start. Pure-insertion hunks
+        # (`@@ -0,0 +X,Y @@`) insert before 1-based new_pos; others begin at
+        # 1-based old_pos. Reaching the point requires the region to be intact
+        # and non-overlapping with anything already consumed (strict).
+        stop = (hunk["new_pos"] - 1) if hunk["old_count"] == 0 else (hunk["old_pos"] - 1)
+        if src_idx > stop:
+            return None
+        while src_idx < stop and src_idx < len(src):
             out.append(src[src_idx] + "\n")
             src_idx += 1
-            i += 1
-        elif raw.startswith("-"):
-            # Deletion - skip source line
-            expected = raw[1:]
-            if src_idx < len(src) and src[src_idx] == expected:
-                src_idx += 1
-            else:
-                # Soft: skip if nearby
-                for look in range(src_idx, min(src_idx + 5, len(src))):
-                    if src[look] == expected:
-                        src_idx = look + 1
-                        break
-            i += 1
-        elif raw.startswith("+"):
-            # Addition
-            out.append(raw[1:] + "\n")
-            i += 1
-        elif raw.startswith("\\"):
-            # "\ No newline at end of file"
-            i += 1
-        else:
-            i += 1
 
-    # Copy remaining source lines
+        consumed = 0
+        produced = 0
+        for raw in hunk["lines"]:
+            if raw.startswith(" "):
+                expected = raw[1:]
+                if src_idx >= len(src) or src[src_idx] != expected:
+                    return None
+                out.append(src[src_idx] + "\n")
+                src_idx += 1
+                consumed += 1
+                produced += 1
+            elif raw.startswith("-"):
+                expected = raw[1:]
+                if src_idx >= len(src) or src[src_idx] != expected:
+                    return None
+                src_idx += 1
+                consumed += 1
+            elif raw.startswith("+"):
+                out.append(raw[1:] + "\n")
+                produced += 1
+
+        if consumed != hunk["old_count"] or produced != hunk["new_count"]:
+            return None
+
     while src_idx < len(src):
         out.append(src[src_idx] + "\n")
         src_idx += 1
-
     return out
 
 
@@ -777,7 +781,55 @@ def _resolve_op_file_id(conn, op, proposal_row, primary_file_id: int) -> int:
     return _get_or_create_file_id_short(conn, op_path)
 
 
-def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
+#: Op dispatch table (type -> (applicator name, records_result)). The
+#: applicators are looked up by name in this module's globals at call time so
+#: tests can monkeypatch them and so every op stays individually unit-testable
+#: without a DB (§13.8). Applicator signature: ``(conn, file_id, op) -> dict``.
+#: ``update_documentation`` writes documentation rows and therefore does not
+#: participate in the atomic-apply operation_results bookkeeping.
+_OP_APPLICATORS: dict[str, tuple[str, bool]] = {
+    "replace_block": ("apply_replace_block", True),
+    "insert_after": ("apply_insert_after", True),
+    "delete_lines": ("apply_delete_lines", True),
+    "update_documentation": ("apply_update_documentation", False),
+    "find_replace": ("apply_find_replace", True),
+    "full_replace": ("apply_full_replace", True),
+    "apply_diff": ("apply_diff", True),
+    "create_file": ("apply_create_file", True),
+    "delete_file": ("apply_delete_file", True),
+}
+
+
+def _dispatch_operation(conn: sqlite3.Connection, op, op_file_id: int) -> dict[str, Any] | None:
+    """Run one operation via the dispatch table (§13.8).
+
+    Returns the result dict to record (None for non-recording ops), or an
+    ``{"status": "error", ...}`` result for an unknown type so an unsupported
+    op fails the whole atomic chain instead of silently passing.
+    """
+    entry = _OP_APPLICATORS.get(getattr(op, "type", ""))
+    if entry is None:
+        return {"status": "error", "message": f"Unknown operation type: {getattr(op, 'type', op)}"}
+    fn = globals().get(entry[0])
+    if not callable(fn):
+        return {"status": "error", "message": f"Missing applicator for {op.type}"}
+    result = fn(conn, op_file_id, op)
+    if not entry[1]:
+        return None
+    if not isinstance(result, dict):
+        return {"status": "error", "message": f"{op.type} returned no result"}
+    return result
+
+
+def _first_operation_error(results: list) -> str | None:
+    """Write-log status reducer: the chain fails on the first errored op."""
+    for r in results:
+        if isinstance(r, dict) and r.get("status") == "error":
+            return r.get("message", "operation failed")
+    return None
+
+
+def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:
     with get_db_connection() as conn:
         proposal_row = conn.execute("SELECT * FROM edit_proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
 
@@ -820,7 +872,7 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                     "message": shape_error,
                 }
 
-            # Strict GUID validation
+            # Strict GUID validation (every op, resolved to its own file).
             for op in payload.operations:
                 op_file_id = _resolve_op_file_id(conn, op, proposal_row, file_id)
                 if not _validate_operation_guids(conn, op_file_id, op):
@@ -839,52 +891,20 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
             # All-or-nothing apply: any failed operation rolls back every
             # earlier operation's writes (page 1 lands only if page 2 does).
             conn.execute("SAVEPOINT apply_proposal")
-            operation_results = []
             try:
-                for op in payload.operations:
-                    op_file_id = _resolve_op_file_id(conn, op, proposal_row, file_id)
-                    if op.type == "replace_block":
-                        result = apply_replace_block(conn, op_file_id, op)
-                        operation_results.append(result)
-                    elif op.type == "insert_after":
-                        result = apply_insert_after(conn, op_file_id, op)
-                        operation_results.append(result)
-                    elif op.type == "delete_lines":
-                        result = apply_delete_lines(conn, op_file_id, op)
-                        operation_results.append(result)
-                    elif op.type == "update_documentation":
-                        apply_update_documentation(conn, op_file_id, op)
-                    elif op.type == "find_replace":
-                        result = apply_find_replace(conn, op_file_id, op)
-                        operation_results.append(result)
-                    elif op.type == "full_replace":
-                        result = apply_full_replace(conn, op_file_id, op)
-                        operation_results.append(result)
-                    elif op.type == "apply_diff":
-                        result = apply_diff(conn, op_file_id, op)
-                        operation_results.append(result)
-                    elif op.type == "create_file":
-                        result = apply_create_file(conn, op_file_id, op)
-                        operation_results.append(result)
-                    elif op.type == "delete_file":
-                        result = apply_delete_file(conn, op_file_id, op)
-                        operation_results.append(result)
-                    else:
-                        operation_results.append(
-                            {
-                                "status": "error",
-                                "message": f"Unknown operation type: {getattr(op, 'type', op)}",
-                            }
-                        )
+                operation_results = [
+                    result
+                    for op in payload.operations
+                    if (result := _dispatch_operation(conn, op, _resolve_op_file_id(conn, op, proposal_row, file_id))) is not None
+                ]
             except Exception:
                 # An op raised mid-chain: undo its partial writes, then surface.
                 conn.execute("ROLLBACK TO SAVEPOINT apply_proposal")
                 conn.execute("RELEASE SAVEPOINT apply_proposal")
                 raise
 
-            # Any failed op => roll back the whole proposal; nothing applied.
-            failed = [r for r in operation_results if isinstance(r, dict) and r.get("status") == "error"]
-            if failed:
+            error_message = _first_operation_error(operation_results)
+            if error_message is not None:
                 conn.execute("ROLLBACK TO SAVEPOINT apply_proposal")
                 conn.execute("RELEASE SAVEPOINT apply_proposal")
                 conn.execute(
@@ -894,7 +914,7 @@ def apply_edit_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
                 return {
                     "status": "error",
                     "proposal_id": proposal_id,
-                    "message": failed[0].get("message", "operation failed"),
+                    "message": error_message,
                     "operations": operation_results,
                 }
 

@@ -108,6 +108,31 @@ class TestMountLoader:
         (tmp_path / "evolve.md").write_text("{{include:absent.md}}", encoding="utf-8")
         assert resolve_harness_prompt("evolve", prompt_root=tmp_path).strip() == ""
 
+    def test_include_traversal_rejected(self, tmp_path):
+        """§12.8 — `{{include:../...}}` must not resolve outside the prompt
+        root; the include inlines to nothing."""
+        from harness.evolve_loop import resolve_harness_prompt
+
+        secret = tmp_path / "secret.md"
+        secret.write_text("SECRET", encoding="utf-8")
+        (tmp_path / "evolve.md").write_text(
+            "{{include:../secret.md}}",
+            encoding="utf-8",
+        )
+        text = resolve_harness_prompt("evolve", prompt_root=tmp_path)
+        assert "SECRET" not in text
+        assert text.strip() == ""
+
+    def test_include_slashes_stay_inside_root(self, tmp_path):
+        from harness.evolve_loop import resolve_harness_prompt
+
+        nested = tmp_path / "snippets"
+        nested.mkdir()
+        (nested / "helper.md").write_text("HELPER", encoding="utf-8")
+        (tmp_path / "evolve.md").write_text("{{include:snippets/helper.md}}", encoding="utf-8")
+        text = resolve_harness_prompt("evolve", prompt_root=tmp_path)
+        assert "HELPER" in text
+
     def test_falls_back_to_legacy_prompts_when_no_seed(self, tmp_path, monkeypatch):
         import harness.evolve_loop as evo
 
@@ -181,7 +206,7 @@ class TestRunEvolveIteration:
         import harness.evolve_loop as evo
 
         target = "harness/benchmark/new_feature.py"
-        monkeypatch.setattr(evo, "_latest_commit_sha", lambda: "cafe1234")
+        monkeypatch.setattr(evo, "_materialize_commit_sha", lambda *a, **k: "cafe1234")
 
         results = {
             "tasks": [
@@ -231,6 +256,46 @@ class TestRunEvolveIteration:
         )
         assert res.status == "blocked"
         assert "harness/" in res.message
+        assert created["called"] is False
+
+    def test_every_op_path_is_validated(self, temp_db, monkeypatch):
+        """§12.8 — an op targeting an out-of-harness path must block even when
+        the top-level target_file_path is clean (validation of EVERY op path)."""
+        import harness.evolve_loop as evo
+
+        created = {"called": False}
+
+        def fake_create(*args, **kwargs):
+            created["called"] = True
+            return {"status": "success", "proposal_id": "p-1"}
+
+        monkeypatch.setattr(evo, "create_proposal_from_developer_output", fake_create)
+
+        payload = {
+            "developer_output": {
+                "target_file_path": "harness/benchmark/x.py",
+                "summary": "evolve harness",
+                "rationale": "seed and a sneaky op",
+                "operations": [
+                    {"type": "create_file", "target_file_path": "harness/benchmark/x.py", "initial_content": ["pass"]},
+                    {"type": "full_replace", "target_file_path": "../../etc/passwd", "new_content": "evil"},
+                ],
+            },
+            "target_file_path": "harness/benchmark/x.py",
+            "rationale": "seed and a sneaky op",
+            "predicted_fixes": ["task-a"],
+            "predicted_regressions": [],
+            "inferred_root_cause": "x",
+        }
+
+        res = evo.run_evolve_iteration(
+            1,
+            results={"tasks": []},
+            propose=lambda **kw: payload,
+            reviewer=_approve_reviewer,
+        )
+        assert res.status == "blocked"
+        assert "../../etc/passwd" in res.message
         assert created["called"] is False
 
     def test_rejected_proposal_goes_fail_closed(self, temp_db, monkeypatch):
@@ -294,7 +359,9 @@ class TestRunEvolveReverts:
         assert out[0]["ok"] is False
         assert events
 
-    def test_non_git_action_unwired_is_ok_false(self, temp_db, monkeypatch, tmp_path):
+    def test_missing_sha_falls_back_to_undo_proposal(self, temp_db, monkeypatch, tmp_path):
+        """§12.4 — an untraceable SHA must never guess a commit; it falls back
+        to `undo_proposal` on the recorded proposal id (edit_id)."""
         import harness.evolve_loop as evo
 
         monkeypatch.setattr(
@@ -305,7 +372,21 @@ class TestRunEvolveReverts:
         out = evo.run_evolve_reverts(1, 2, workspace=str(tmp_path))
         assert out[0]["action"] == "undo_proposal"
         assert out[0]["ok"] is False
-        assert out[0]["detail"] == "undo_proposal executor not wired"
+        assert out[0]["detail"].startswith("undo_proposal failed")
+        assert evo._git_revert is not None  # git revert is not silently guessed
+
+    def test_recorded_sha_uses_git_revert(self, temp_db, monkeypatch, tmp_path):
+        import harness.evolve_loop as evo
+
+        monkeypatch.setattr(
+            evo,
+            "revert_candidates",
+            lambda *a, **k: [{"edit_id": "iter-1-01", "target_file": "harness/x.py", "commit": "deadbeef", "action": "git revert deadbeef"}],
+        )
+        monkeypatch.setattr(evo, "_git_revert", lambda workspace, sha: "cafe1234" and True)
+        out = evo.run_evolve_reverts(1, 2, workspace=str(tmp_path))
+        assert out[0]["ok"] is True
+        assert out[0]["detail"] == "git revert deadbeef"
 
 
 # ---------------------------------------------------------------------------

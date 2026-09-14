@@ -6,13 +6,12 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
-from datetime import datetime
 
 from agents.base import call_agent
 from agents.worker_utils import hold_while_foreground_session_active
 from core.config import get_config
 from core.db_connection import get_db_connection
-from core.db_helpers import is_praise_only_feedback, post_message
+from core.db_helpers import is_praise_only_feedback, post_message, utcnow_iso
 from core.events import publish_event
 from core.index_context import load_index_text, load_symbol_json_context
 from core.json_parser import parse_json_response
@@ -215,7 +214,7 @@ class PrioritizerWorker:
                                     addressed_at = ?
                                 WHERE id = ?
                             """,
-                                (datetime.now().isoformat(), item.raw_id),
+                                (utcnow_iso(), item.raw_id),
                             )
                         elif item.item_type == "message":
                             conn.execute(

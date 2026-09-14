@@ -1,8 +1,7 @@
 """Track fallback statistics"""
 
-from datetime import datetime
-
 from core.db_connection import get_db_connection
+from core.db_helpers import utcnow_iso
 
 
 def log_fallback(
@@ -22,7 +21,7 @@ def log_fallback(
                 VALUES (?, ?, ?, ?, ?, ?)
             """,
                 (
-                    datetime.now().isoformat(),
+                    utcnow_iso(),
                     task_id,
                     agent_name,
                     original_endpoint,

@@ -327,3 +327,53 @@ class TestRepoRootContainment:
         path = config_mod.ensure_project_directory({"project_directory": str(outside)})
         assert path.exists()
         assert path.resolve() == outside.resolve()
+
+
+class TestReviewerRegionView:
+    """§13.4 — reviewer prompts must not re-paste whole large files."""
+
+    def test_small_file_keeps_full_content(self):
+        from workflow.reviewer_gate import reviewer_original_view
+
+        content = "def a():\n    return 1\n"
+        assert reviewer_original_view(content, "@@ -1,2 +1,2 @@") == content
+
+    def test_large_file_pastes_changed_regions_only(self):
+        from workflow.reviewer_gate import reviewer_original_view
+
+        filler = "".join(f"line {i:04d} filler content here\n" for i in range(4000))
+        content = "def foo():\n    return MAGIC\n" + filler
+        diff = "@@ -2,1 +2,1 @@\n-    return MAGIC\n+    return 42\n@@ -1000,1 +1000,1 @@\n-removed-line\n+replacement\n"
+        view = reviewer_original_view(content, diff)
+        assert view.startswith("[REGION VIEW:")
+        assert "return MAGIC" in view
+        assert "line 1000" in view
+        assert "[SNIPPED" in view
+        assert "line 3000" not in view  # untouched region is dropped
+
+    def test_large_file_no_hunks_bounded_head(self):
+        from workflow.reviewer_gate import reviewer_original_view
+
+        content = "x\n" * 100_000
+        view = reviewer_original_view(content, "")
+        assert "[TRUNCATED" in view
+        assert "[REGION VIEW" not in view
+
+    def test_pure_insertion_hunk_yields_region(self):
+        from workflow.reviewer_gate import reviewer_original_view
+
+        filler = "".join(f"line {i:04d}\n" for i in range(4000))
+        content = filler + "TRAILING ANCHOR\n"
+        diff = "@@ -0,0 +5,2 @@\n+def new_fn():\n+    pass\n"
+        view = reviewer_original_view(content, diff)
+        assert "[REGION VIEW" in view
+        assert "line 0004" in view
+        assert "TRAILING ANCHOR" not in view
+
+    def test_region_view_never_exceeds_cap(self):
+        from workflow.reviewer_gate import REVIEWER_CONTENT_REGION_CAP, reviewer_original_view
+
+        content = "".join(f"line {i:04d} abcdefghijklmnopqrstuvwxyz\n" for i in range(200_000))
+        diff = "@@ -1,2 +1,2 @@\n a\n-b\n+B\n@@ -100,2 +100,2 @@\n c\n-d\n+D\n"
+        view = reviewer_original_view(content, diff)
+        assert len(view) <= REVIEWER_CONTENT_REGION_CAP

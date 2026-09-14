@@ -190,6 +190,92 @@ class TestRunBenchmark:
         assert results["tasks"][1]["trials"][0]["verdict"] == "failed"
 
 
+class TestLiveAndDryRun:
+    """§13.7/§14.6 — live endpoint/model injection + dry-run without LLM calls."""
+
+    @pytest.mark.usefixtures("temp_db")
+    def test_live_labels_in_results(self, bench_env):
+        from harness.benchmark.driver import run_benchmark
+        from harness.benchmark.tasks import parse_bench_task
+
+        project_dir, _use = bench_env
+        task = parse_bench_task(
+            {
+                "task_id": "t_live",
+                "seed": "Rename OLD to NEW in app.py",
+                "fixture": {"app.py": "value = OLD\n"},
+                "contract": [{"file_path": "app.py", "fragment": "value = NEW\n", "mode": "contains"}],
+                "k": 1,
+            }
+        )
+        results = run_benchmark(
+            iteration=3,
+            tasks=[task],
+            max_turns=5,
+            project_dir=project_dir,
+            endpoints={"op-test": {"base_url": "https://example.invalid"}},
+            model="acme/tiny",
+        )
+        assert results["endpoint"] == "op-test"
+        assert results["model"] == "acme/tiny"
+        assert results["tasks"][0]["task_id"] == "t_live"
+
+    @pytest.mark.usefixtures("temp_db")
+    def test_dry_run_parses_and_reports_no_llm(self, tmp_path):
+        from harness.benchmark.driver import run_benchmark
+        from harness.benchmark.tasks import load_task_manifest
+
+        manifest = tmp_path / "tasks.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "default_k": 1,
+                    "tasks": [
+                        {
+                            "task_id": "c1_check",
+                            "kind": "terminal",
+                            "seed": "fix scripts/config.py",
+                            "fixture": {"scripts/config.py": "x = 1\n"},
+                            "verifier": {"command": "bash -c 'true'", "timeout": 30},
+                            "contract": [],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        tasks = load_task_manifest(manifest)["tasks"]
+        base = tmp_path / "base"
+        base.mkdir(exist_ok=True)
+        results = run_benchmark(iteration=1, tasks=tasks, project_dir=base, dry_run=True)
+        assert results["dry_run"] is True
+        assert results["tasks_parse_ok"] is True
+        assert results["tasks"][0]["task_id"] == "c1_check"
+        assert "mock-model" in results["model"]
+
+    def test_deterministic_ordering_matches_input(self, bench_env):
+        from harness.benchmark.driver import run_benchmark
+        from harness.benchmark.tasks import parse_bench_task
+
+        project_dir, _use = bench_env
+        tasks = [
+            parse_bench_task(
+                {
+                    "task_id": f"t{n}_ord",
+                    "seed": f"edit {n}",
+                    "fixture": {f"f{n}.py": "x\n"},
+                    "contract": [{"file_path": f"f{n}.py", "fragment": "y\n", "mode": "absent"}],
+                    "k": 1,
+                }
+            )
+            for n in (3, 1, 2)
+        ]
+        results = run_benchmark(iteration=9, tasks=tasks, max_turns=5, project_dir=project_dir)
+        assert [t["task_id"] for t in results["tasks"]] == ["t3_ord", "t1_ord", "t2_ord"]
+        assert [t["trials"][0]["trial"] for t in results["tasks"]] == [1, 1, 1]
+
+
 class TestTaskManifestSchema:
     """§13.6 — tasks.json schema_version is honored by the loader."""
 
@@ -210,7 +296,7 @@ class TestTaskManifestSchema:
 
         p = tmp_path / "tasks.json"
         p.write_text(json.dumps({"tasks": [_MINIMAL_TASK]}), encoding="utf-8")
-        assert load_task_manifest(p)["schema_version"] == 1
+        assert load_task_manifest(p)["schema_version"] == 2
 
     def test_manifest_refuses_unknown_future_version(self, tmp_path):
         from harness.benchmark.tasks import load_task_manifest

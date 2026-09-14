@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 
 from core.endpoint_manager import (
@@ -372,3 +374,68 @@ def test_unavailable_until_expiry_unfreezes_support():
     assert support_frozen()  # is_available must not probe freeze
     m.get_available_endpoints()
     assert not support_frozen()
+
+
+# ---------------------------------------------------------------------------
+# Never-shrink latch (Soak §15.3): a shorter cooldown must not clobber an
+# active longer one, in-memory or in the persisted endpoint_health row.
+# ---------------------------------------------------------------------------
+
+
+def test_mark_failure_never_shrinks_active_longer_latch():
+    """A short cooldown must never truncate an already-active longer latch;
+    the observation still bumps status/counters."""
+    h = EndpointHealth()
+    h.mark_failure(EndpointStatus.TOKEN_EXHAUSTED, cooldown_minutes=15)
+    long_until = h.unavailable_until
+    assert long_until is not None
+
+    h.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+    assert h.unavailable_until == long_until
+    assert h.status == EndpointStatus.UNAVAILABLE
+    assert h.error_count == 2
+    assert h.consecutive_failures == 2
+
+
+def test_persisted_longest_latch_wins_across_instances(temp_db):
+    """A later process persisting a shorter cooldown cannot shrink the longer
+    latch another instance already stored (the original 4h-vs-300s symptom)."""
+    a = EndpointHealth(endpoint_name="primary")
+    a.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=240)
+    long_until = a.unavailable_until
+    assert long_until is not None
+
+    b = EndpointHealth(endpoint_name="primary")
+    assert b.unavailable_until == long_until
+    b.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+    assert b.unavailable_until == long_until
+
+    c = EndpointHealth(endpoint_name="primary")
+    assert c.unavailable_until == long_until
+
+
+def test_expired_stored_latch_does_not_block_fresh_latch(temp_db):
+    """An already-expired persisted latch is ignored, so a fresh cooldown can
+    take over instead of being pinned to a stale timestamp."""
+    stale = EndpointHealth(endpoint_name="primary")
+    stale.unavailable_until = datetime.now() - timedelta(seconds=60)
+    stale._save_to_db(preserve_longest_latch=True)
+
+    h = EndpointHealth(endpoint_name="primary")
+    h.mark_failure(EndpointStatus.UNAVAILABLE, cooldown_minutes=5)
+    assert h.unavailable_until is not None
+    assert h.unavailable_until > datetime.now()
+
+
+def test_mark_success_clears_even_long_latch(temp_db):
+    """Recovery still wins: mark_success must clear a persisted long latch."""
+    a = EndpointHealth(endpoint_name="primary")
+    a.mark_failure(EndpointStatus.TOKEN_EXHAUSTED, cooldown_minutes=240)
+
+    b = EndpointHealth(endpoint_name="primary")
+    assert b.unavailable_until is not None
+    b.mark_success()
+
+    c = EndpointHealth(endpoint_name="primary")
+    assert c.status == EndpointStatus.HEALTHY
+    assert c.unavailable_until is None

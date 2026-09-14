@@ -1,0 +1,85 @@
+{
+  "schema_version": 2,
+  "default_k": 1,
+  "tasks": [
+    {
+      "task_id": "c1_rename_script",
+      "kind": "terminal",
+      "seed": "In tools/, rename old_script.sh to new_script.sh (move the file, don't duplicate it) and keep the shebang on the first line.",
+      "k": 2,
+      "fixture": {
+        "tools/old_script.sh": "#!/usr/bin/env bash\nset -euo pipefail\necho \"hi\"\n"
+      },
+      "verifier": {
+        "command": "bash -c \"test -f tools/new_script.sh && ! test -f tools/old_script.sh\"",
+        "timeout": 30
+      },
+      "contract": [
+        {"file_path": "tools/new_script.sh", "fragment": "#!/usr/bin/env bash", "mode": "contains"},
+        {"file_path": "tools/old_script.sh", "fragment": "old_script", "mode": "absent"}
+      ]
+    },
+    {
+      "task_id": "c2_fix_flag_default",
+      "kind": "terminal",
+      "seed": "In scripts/config.py, change the --retries CLI flag default from 1 to 3.",
+      "fixture": {
+        "scripts/config.py": "import argparse\n\ndef main():\n    p = argparse.ArgumentParser()\n    p.add_argument('--retries', type=int, default=1)\n    args = p.parse_args()\n    print(args.retries)\n\nif __name__ == '__main__':\n    main()\n"
+      },
+      "verifier": {
+        "command": "bash -c \"test \\\"$(python3 scripts/config.py)\\\" = 3\"",
+        "timeout": 60
+      },
+      "contract": [
+        {"file_path": "scripts/config.py", "fragment": "default=3", "mode": "contains"}
+      ]
+    },
+    {
+      "task_id": "c3_make_script_executable",
+      "kind": "terminal",
+      "seed": "Make deploy.sh executable with chmod +x, then add a '# usage' comment line to the top of the file.",
+      "fixture": {
+        "deploy.sh": "#!/usr/bin/env bash\n# deploy target\n"
+      },
+      "verifier": {
+        "command": "bash -c \"test -x deploy.sh && grep -q '# usage' deploy.sh\"",
+        "timeout": 30
+      },
+      "contract": [
+        {"file_path": "deploy.sh", "fragment": "# usage", "mode": "contains"}
+      ]
+    },
+    {
+      "task_id": "c4_fix_failing_test",
+      "kind": "terminal",
+      "seed": "tests/test_math.py has a bug in the add() function body that makes it fail when run; fix it so 'python3 tests/test_math.py' exits 0.",
+      "fixture": {
+        "tests/test_math.py": "def add(a, b):\n    return a + b + 1\n\ndef main():\n    assert add(1, 2) == 3, \"add is broken\"\n\nif __name__ == '__main__':\n    main()\n"
+      },
+      "verifier": {
+        "command": "bash -c \"python3 tests/test_math.py\"",
+        "timeout": 60
+      },
+      "contract": [
+        {"file_path": "tests/test_math.py", "fragment": "return a + b", "mode": "contains"}
+      ]
+    },
+    {
+      "task_id": "c5_color_flag",
+      "kind": "terminal",
+      "seed": "In app/cli.py, make parse() also drop color when the argument '--color=off' is passed (in addition to the existing --no-color). app/check.py asserts this.",
+      "fixture": {
+        "app/__init__.py": "",
+        "app/cli.py": "def parse(argv):\n    color = True\n    for arg in argv:\n        if arg == '--no-color':\n            color = False\n    return color\n",
+        "app/check.py": "from app.cli import parse\n\nassert parse(['--color=off']) is False, '--color=off must disable color'\nassert parse(['--no-color']) is False, '--no-color must disable color'\nassert parse([]) is True, 'default is color on'\n"
+      },
+      "verifier": {
+        "command": "bash -c \"python3 -m app.check\"",
+        "timeout": 60
+      },
+      "contract": [
+        {"file_path": "app/cli.py", "fragment": "--color=off", "mode": "contains"}
+      ]
+    }
+  ]
+}

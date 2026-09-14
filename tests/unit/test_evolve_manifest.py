@@ -198,3 +198,54 @@ def test_revert_candidates_skips_when_fix_confirms(temp_db, sample_manifest):
     )
 
     assert revert_candidates(1, 2) == []
+
+
+def test_revert_candidates_ignores_unflagged_regressions(temp_db, sample_manifest):
+    """§12.4 — dropped the iteration-global `regressions_outnumber` heuristic:
+    a zero-confirm edit is NOT reverted over an unrelated regression it never
+    flagged (only `predicted_regressions ∩ landed` triggers)."""
+    from harness.evolve import record_change_manifest, record_task_outcomes, revert_candidates
+
+    record_change_manifest(1, sample_manifest)
+    record_task_outcomes(
+        1,
+        [
+            {"task_id": "task-17", "passed": 1, "tokens": 1},
+            # task-XX was passing at it-1 and passes at it-2 -> no regression.
+        ],
+    )
+    record_task_outcomes(
+        2,
+        [
+            {"task_id": "task-17", "passed": 0, "tokens": 9},  # unrelated regression (not predicted)
+            {"task_id": "other-1", "passed": 0, "tokens": 9},  # only in it-2 (absent prior -> excluded)
+        ],
+    )
+
+    assert revert_candidates(1, 2) == []
+
+
+def test_revert_candidates_only_flagged_regressions_trigger(temp_db, sample_manifest):
+    """§12.4 — many unrelated regressions with zero confirms must NOT revert;
+    only the flagged task (task-41) landing does."""
+    from harness.evolve import record_change_manifest, record_task_outcomes, revert_candidates
+
+    record_change_manifest(1, sample_manifest)
+    record_task_outcomes(
+        1,
+        [
+            {"task_id": "task-17", "passed": 1, "tokens": 1},
+            {"task_id": "task-41", "passed": 1, "tokens": 1},
+        ],
+    )
+    record_task_outcomes(
+        2,
+        [
+            {"task_id": "task-17", "passed": 0, "tokens": 9},  # unrelated
+            {"task_id": "task-41", "passed": 0, "tokens": 9},  # flagged + landed
+        ],
+    )
+
+    candidates = revert_candidates(1, 2)
+    assert len(candidates) == 1
+    assert candidates[0]["edit_id"] == "iter-1-01"

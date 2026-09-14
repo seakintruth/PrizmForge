@@ -58,7 +58,7 @@ def test_malformed_json_retries_with_stricter_prompt(temp_db, monkeypatch):
 def test_valid_json_parses_first_attempt(temp_db, monkeypatch):
     pool, calls = _make_pool(
         monkeypatch,
-        ['{"findings": [], "summary": "clean"}'],
+        ['{"findings": [], "covered": [{"path": "src/app.py", "start": 1, "end": 10, "hash": "h"}], "summary": "clean"}'],
     )
     parsed = {}
 

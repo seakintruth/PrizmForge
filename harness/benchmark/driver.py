@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from harness.benchmark.config import use_bench_config
+from harness.benchmark.repo_fixture import materialize_terminal_task
 from harness.benchmark.tasks import BenchTask
 from harness.fingerprint import create_rollout, failure_mode_mix, finalize_rollout, latest_rollout
 from harness.verify import FAILED, Verdict, record_verdict, verify_trial
@@ -60,7 +61,9 @@ def scrub_governed_store(fixture_paths) -> None:
     params = list(fixture_paths)
     with get_db_connection() as conn:
         conn.execute(
-            f"UPDATE file_lines SET is_deleted = 1 WHERE file_id IN (SELECT file_id FROM files WHERE file_path NOT IN ({placeholders}))",  # noqa: S608 - static "?" placeholders, values parameterized
+            f"UPDATE file_lines SET is_deleted = 1 "  # noqa: S608 - static "?" placeholders, values parameterized
+            f"WHERE file_id IN (SELECT file_id FROM files "
+            f"WHERE file_path NOT IN ({placeholders}))",
             params,
         )
         conn.execute(
@@ -119,8 +122,9 @@ def run_trial(
 ) -> dict[str, Any]:
     """Run one task instance in an isolated trial dir; returns the result dict.
 
-    ``project_dir`` is a fresh per-trial workspace (caller creates it). Before
-    writing fixtures the shared iteration DB is scrubbed of any non-fixture
+    ``project_dir`` is a fresh per-trial workspace (caller creates it; for a
+    terminal repo task it is the prepared clone checkout). Before turning over
+    the workspace the shared iteration DB is scrubbed of any non-fixture
     governed content. When ``trial_timeout_s`` is set, the task cycle runs on a
     daemon thread and is abandoned (and recorded ``timed_out``) past the bound
     — a bounding guard for a genuinely hung run, not a clean cancel.
@@ -128,8 +132,22 @@ def run_trial(
     from workflow.task_runner import run_task_cycle
 
     task_id = f"{task.task_id}_i{iteration}_t{trial}"
-    scrub_governed_store(task.fixture)
-    write_fixtures(task, project_dir)
+    if task.is_terminal:
+        from harness.benchmark.repo_fixture import ensure_git_baseline, fixture_paths_for_task
+
+        if task.repo:
+            repo_paths = fixture_paths_for_task(task, project_dir)
+            scrub_set = sorted(set(repo_paths) | set(task.fixture))
+            scrub_governed_store(scrub_set)
+            if task.fixture:
+                write_fixtures(task, project_dir)
+        else:
+            scrub_governed_store(task.fixture)
+            write_fixtures(task, project_dir)
+            ensure_git_baseline(project_dir)
+    else:
+        scrub_governed_store(task.fixture)
+        write_fixtures(task, project_dir)
     create_rollout(task_id, iteration=iteration)
 
     def _cycle() -> None:
@@ -156,7 +174,7 @@ def run_trial(
     if overran:
         verdict = Verdict(FAILED, note="status:trial-timeout", component_hint="task_contract")
     else:
-        verdict = verify_trial(task, rollout)
+        verdict = verify_trial(task, rollout, workdir=project_dir)
     if rollout is not None:
         record_verdict(int(rollout["rollout_id"]), verdict, task.contract_hash)
 
@@ -177,6 +195,9 @@ def run_benchmark(
     project_dir: str | Path | None = None,
     trial_timeout_s: float | None = None,
     iteration_timeout_s: float | None = None,
+    endpoints: dict[str, Any] | None = None,
+    model: str | None = None,
+    dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark; returns the aggregated results dict (also persisted).
 
@@ -185,44 +206,80 @@ def run_benchmark(
     gets a fresh project subdir and a scrubbed governed store (no cross-trial
     leakage of agent-created files). ``trial_timeout_s`` / ``iteration_timeout_s``
     bound a hung run; the config is swapped to a hermetic bench config for the
-    duration.
+    duration — or, when ``endpoints`` / ``model`` are given, to a live config
+    (§13.7/§14.6). ``dry_run`` validates the manifest + an isolated DB without
+    any LLM calls.
     """
     base = Path(project_dir) if project_dir else prepare_workspace(Path("."))
     bench_dir = prepare_workspace(base)
 
-    deadline = time.monotonic() + iteration_timeout_s if iteration_timeout_s else None
-    capped = False
-
-    all_trials: list[dict[str, Any]] = []
-    per_task: list[dict[str, Any]] = []
-    passed = 0
-    total = 0
-
     with _iteration_db(bench_dir):
+        from file_editing.writer import recover_orphaned_applied
+
+        if dry_run:
+            recovery = recover_orphaned_applied()
+            return {
+                "iteration": iteration,
+                "dry_run": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "endpoint": ",".join(sorted(endpoints or {})) if endpoints else "mock-model",
+                "model": model or "mock-model",
+                "tasks": [
+                    {
+                        "task_id": t.task_id,
+                        "kind": t.kind,
+                        "k": t.k,
+                        "contract_hash": t.contract_hash,
+                    }
+                    for t in tasks
+                ],
+                "tasks_parse_ok": True,
+                "recovery": recovery,
+            }
+
+        deadline = time.monotonic() + iteration_timeout_s if iteration_timeout_s else None
+        capped = False
+
+        all_trials: list[dict[str, Any]] = []
+        per_task: list[dict[str, Any]] = []
+        passed = 0
+        total = 0
+
         # Crash recovery (open §13.2 lint item): heal 'applied' proposals whose
         # disk write never committed (DB≠disk) before the iteration runs; a no-op
         # SELECT on the fresh iteration DB.
-        from file_editing.writer import recover_orphaned_applied
-
         recovery = recover_orphaned_applied()
         if recovery["recovered"] or recovery["failed"]:
             print(f"   ♻️  orphan recovery: {recovery}")
 
+        # Shared clone mirror cache: every trial of the iteration materializes
+        # from one mirror, never re-cloning from the origin per trial.
+        clone_cache = bench_dir / ".clone-cache"
+        clone_cache.mkdir(parents=True, exist_ok=True)
+
         for task in tasks:
             task_rows: list[dict[str, Any]] = []
+            turn_budget = task.max_turns if task.max_turns is not None else max_turns
             for t in range(1, max(1, task.k) + 1):
                 if deadline and time.monotonic() > deadline:
                     capped = True
                     break
                 trial_dir = prepare_workspace(bench_dir)
-                with use_bench_config(trial_dir):
+                overrides = None
+                if task.is_terminal:
+                    overrides = {"developer": {"implementation": "shell", "task_scope": "strict"}}
+                    work_dir = materialize_terminal_task(task, trial_dir, clone_cache)
+                else:
+                    work_dir = trial_dir
+                trial_budget = task.timeout_s if task.timeout_s is not None else trial_timeout_s
+                with use_bench_config(work_dir, overrides=overrides, endpoints=endpoints, model=model):
                     tr = run_trial(
                         task,
                         iteration,
                         t,
-                        max_turns,
-                        trial_dir,
-                        trial_timeout_s=trial_timeout_s,
+                        turn_budget,
+                        work_dir,
+                        trial_timeout_s=trial_budget,
                     )
                 task_rows.append(tr)
                 all_trials.append(tr)
@@ -246,6 +303,8 @@ def run_benchmark(
         results: dict[str, Any] = {
             "iteration": iteration,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "endpoint": ",".join(sorted(endpoints or {})) if endpoints else "mock-model",
+            "model": model or "mock-model",
             "max_turns": max_turns,
             "trial_timeout_s": trial_timeout_s,
             "iteration_timeout_s": iteration_timeout_s,
@@ -273,3 +332,26 @@ def _fmt(results: dict[str, Any]) -> str:
         f"mix infra    : {results['failure_mode_mix'].get('infra_aborted', 0)}",
     ]
     return "\n".join(lines)
+
+
+def _fmt_short(results: dict[str, Any]) -> str:
+    endpoint = results.get("endpoint", "mock-model")
+    model = results.get("model", "mock-model")
+    if results.get("dry_run"):
+        tasks = results.get("tasks") or []
+        kinds = {t["kind"] for t in tasks}
+        return (
+            f"DRY-RUN ok   : {len(tasks)} tasks ({', '.join(sorted(kinds))}) "
+            f"endpoint={endpoint} model={model} — manifest + isolated DB validated, no LLM calls"
+        )
+    return "\n".join(
+        [
+            f"iteration    : {results['iteration']}",
+            f"endpoint     : {endpoint}",
+            f"model        : {model}",
+            f"pass@1       : {results['pass@1']:.2%} ({results['passed_trials']}/{results['total_trials']})",
+            f"mix rollouts : {results['failure_mode_mix'].get('rollouts', 0)}",
+            f"mix passed   : {results['failure_mode_mix'].get('passed', 0)}",
+            f"mix infra    : {results['failure_mode_mix'].get('infra_aborted', 0)}",
+        ]
+    )

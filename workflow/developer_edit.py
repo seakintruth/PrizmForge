@@ -25,7 +25,7 @@ from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
 from workflow.edit_mode_selector import DEFAULT_FALLBACK_ORDER, MODE_DIFF, MODE_FULL_REPLACE, MODE_GUID, next_fallback_mode, select_edit_mode
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
-from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict
+from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict, reviewer_original_view
 from workflow.shell_developer import _fallback_order_for_targets
 
 
@@ -301,23 +301,27 @@ def run_developer_mutation(  # noqa: C901
     print(f"   🎯 Selected edit mode: {edit_method} ({mode_decision.reason})")
 
     print("   📝 Phase 2: Loading files...")
-    files_content: list[str] = []
+    # §13.4 — read each file once and build *both* mode views up front, then
+    # reuse across fallback re-queries (resending only instructions + the prior
+    # failure reason, never re-reading/re-serializing from the DB per attempt).
+    plain_views: list[str] = []
+    guid_views: list[str] = []
     for fpath in requested_files:
         try:
-            if edit_method == MODE_GUID:
-                file_formatted = format_file_with_guids(fpath)
-            else:
-                content = get_file_content_from_db(fpath)
-                file_formatted = f"```python {fpath}\n{content}\n```"
-            files_content.append(file_formatted)
-            print(f"      • {fpath} ({file_formatted.count(chr(10))} lines)")
+            content = get_file_content_from_db(fpath)
+            plain_views.append(f"```python {fpath}\n{content}\n```")
+            guid_views.append(format_file_with_guids(fpath))
+            print(f"      • {fpath} ({content.count(chr(10))} lines)")
         except Exception as e:
             print(f"      ⚠️  Failed to load {fpath}: {e}")
 
-    if not files_content:
+    if not (plain_views and guid_views):
         print("   ❌ No files loaded successfully")
         progress["edit_failures"] = progress.get("edit_failures", 0) + 1
         return {"status": "error", "message": "no file content"}
+
+    def _view_for(mode: str) -> list[str]:
+        return guid_views if mode == MODE_GUID else plain_views
 
     modes_tried: list[str] = []
     response = None
@@ -355,7 +359,7 @@ def run_developer_mutation(  # noqa: C901
         gen_prompt = _build_generation_prompt(
             instructions=clean_instructions,
             edit_method=edit_method,
-            files_content=files_content,
+            files_content=_view_for(edit_method),
             requested_files=requested_files,
             task_id=task_id,
             fallback_used=fallback_used,
@@ -461,6 +465,10 @@ def run_developer_mutation(  # noqa: C901
 
     original_content = get_file_content_from_db(target_file_path) or ""
 
+    # §13.4 — cap re-pasted file content to the changed regions for large files
+    # (region view built from any apply_diff op's hunks; full content otherwise).
+    diff_text = "\n".join(op.get("diff", "") for op in (data.get("operations") or []) if op.get("type") == "apply_diff")
+
     final_mode = data.get("_final_mode") or edit_method or validation.detected_mode or "unknown"
 
     reviewer_prompt = f"""You are the safety gate for a governed code-editing system.
@@ -473,7 +481,7 @@ def run_developer_mutation(  # noqa: C901
     ORIGINAL FILE CONTENT (before any change)
     --------------------------------------------------
     ```python
-    {original_content}
+    {reviewer_original_view(original_content, diff_text)}
     ```
 
     --------------------------------------------------
@@ -528,7 +536,8 @@ def run_developer_mutation(  # noqa: C901
         }
 
     print(f"   ✅ Reviewer approved proposal {proposal_id}")
-    update_proposal_status(proposal_id, "approved")
+    # reviewer agent_id=2 (developer=1); sets reviewed_at + reviewed_by_agent_id (§15.3)
+    update_proposal_status(proposal_id, "approved", reviewed_by_agent_id=2)
     publish_event("proposal.approved", source="reviewer", task_id=task_id, proposal_id=proposal_id)
     print("   📝 Materializing changes to disk...")
     snapshot_before_apply(proposal_id)

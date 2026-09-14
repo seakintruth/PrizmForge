@@ -1,10 +1,31 @@
 """Database helper functions"""
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from core.db import get_db_path as _get_db_path
 from core.db_connection import get_db_connection
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now, matching SQLite ``datetime('now')``/CURRENT_TIMESTAMP."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _utcnow_iso() -> str:
+    """Naive UTC ISO-8601 string for writes (normalized B5 — no local time)."""
+    return _utcnow().isoformat()
+
+
+def utcnow() -> datetime:
+    """Public naive-UTC now for DB writes (B5 UTC normalization)."""
+    return _utcnow()
+
+
+def utcnow_iso() -> str:
+    """Public naive-UTC ISO-8601 string for DB writes (B5 UTC normalization)."""
+    return _utcnow_iso()
+
 
 # Canonical review-taxonomy categories (mirrors the prioritizer prompt).
 _CANONICAL_CATEGORIES = (
@@ -181,7 +202,7 @@ def post_message(
             VALUES (?, ?, ?, ?, ?, ?, 0)
         """,
             (
-                datetime.now().isoformat(),
+                _utcnow_iso(),
                 from_agent,
                 to_agent,
                 content,
@@ -277,7 +298,7 @@ def save_conversation(
                 content,
                 raw_response or content,
                 parsed_decision,
-                datetime.now().isoformat(),
+                _utcnow_iso(),
             ),
         )
 
@@ -290,7 +311,7 @@ def create_task(task_id: str, description: str):
             INSERT OR REPLACE INTO tasks (id, description, status, started_at)
             VALUES (?, ?, 'in_progress', ?)
         """,
-            (task_id, description, datetime.now().isoformat()),
+            (task_id, description, _utcnow_iso()),
         )
 
 
@@ -317,7 +338,7 @@ def mark_task_status(task_id: str, status: str, reason: str = "") -> None:
             UPDATE tasks SET status = ?, completed_at = ?, result = ?
             WHERE id = ? AND status = 'in_progress'
             """,
-            (status, datetime.now().isoformat(), reason, task_id),
+            (status, _utcnow_iso(), reason, task_id),
         )
 
 
@@ -363,8 +384,8 @@ def save_agent_feedback(
     dup_key = normalize_feedback_message(message) if enabled else None
     with get_db_connection() as conn:
         if enabled:
-            now_iso = datetime.now().isoformat()
-            cutoff = (datetime.now() - timedelta(minutes=window_minutes)).isoformat()
+            now_iso = _utcnow_iso()
+            cutoff = (_utcnow() - timedelta(minutes=window_minutes)).isoformat()
             existing = conn.execute(
                 """
                 SELECT id FROM agent_feedback
@@ -401,7 +422,7 @@ def save_agent_feedback(
                 suggestion,
                 task_id,
                 file_event_id,
-                datetime.now().isoformat(),
+                _utcnow_iso(),
                 dup_key,
             ),
         )
@@ -455,7 +476,7 @@ def mark_feedback_addressed(feedback_ids: list[int], addressed_by: str):
         placeholders = ",".join("?" * len(feedback_ids))
         conn.execute(
             f"UPDATE agent_feedback SET addressed = 1, addressed_by = ?, addressed_at = ? WHERE id IN ({placeholders})",
-            [addressed_by, datetime.now().isoformat(), *feedback_ids],
+            [addressed_by, _utcnow_iso(), *feedback_ids],
         )
 
 
@@ -466,7 +487,7 @@ def backlog_metrics(conn, *, task_id: str | None = None) -> dict:
     ``stuck_ids`` (unaddressed items flagged stuck after repeated targeting).
     A ``task_id`` optionally scopes the unaddressed/stuck counts.
     """
-    hour_ago = (datetime.now() - timedelta(hours=1)).isoformat()
+    hour_ago = (_utcnow() - timedelta(hours=1)).isoformat()
     task_filter = " AND task_id = ?" if task_id else ""
     params: tuple = (task_id,) if task_id else ()
 
@@ -508,7 +529,7 @@ def age_feedback_backlog(
     """
     dismissed_low = 0
     trimmed_medium = 0
-    now = datetime.now()
+    now = _utcnow()
     cutoff = (now - timedelta(days=max_age_days_low)).isoformat()
 
     with get_db_connection() as conn:

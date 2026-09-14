@@ -158,10 +158,17 @@ def resolve_harness_prompt(
 
     if seed.is_file():
         text = seed.read_text(encoding="utf-8")
+        root = seed_root.resolve()
         for _depth in range(5):
 
             def inline(match: re.Match) -> str:
-                child = seed_root / match.group(1)
+                # §12.8: `{{include:...}}` resolves under the prompt root only —
+                # resolve + relative_to, and reject any `../` escape to "".
+                try:
+                    child = (root / match.group(1)).resolve()
+                    child.relative_to(root)
+                except (ValueError, OSError):
+                    return ""
                 return child.read_text(encoding="utf-8") if child.is_file() else ""
 
             replaced = _INCLUDE_RE.sub(inline, text)
@@ -279,6 +286,46 @@ Return JSON: {{"decision": "APPROVE"|"REJECT", "reason": "...", "suggestions": [
     return request_review_verdict(reviewer_prompt, task_id)
 
 
+def _proposal_touched_paths(proposal_data: dict[str, Any]) -> list[str]:
+    """Every path the proposed edit touches (§12.8): the top-level
+    ``target_file_path`` plus any per-operation ``target_file_path`` override in
+    the embedded developer payload."""
+    paths: list[str] = []
+    target = proposal_data.get("target_file_path")
+    if target:
+        paths.append(target)
+    try:
+        developer_output = proposal_data.get("developer_output")
+        if isinstance(developer_output, str):
+            import json as _json
+
+            payload = _json.loads(developer_output)
+        elif isinstance(developer_output, dict):
+            payload = developer_output
+        else:
+            payload = {}
+        for op in payload.get("operations") or []:
+            op_path = op.get("target_file_path") if isinstance(op, dict) else None
+            if op_path:
+                paths.append(op_path)
+    except Exception:
+        pass
+    return paths
+
+
+def validate_evolve_targets(
+    proposal_data: dict[str, Any],
+    *,
+    deleting: bool = False,
+) -> tuple[bool, str]:
+    """Guardrail: validate EVERY touched path, not just the primary target."""
+    for path in _proposal_touched_paths(proposal_data):
+        ok, reason = validate_evolve_target(path, deleting=deleting)
+        if not ok:
+            return False, f"{path}: {reason}"
+    return True, "ok"
+
+
 def run_evolve_iteration(
     iteration: int,
     *,
@@ -331,7 +378,7 @@ def run_evolve_iteration(
         res.status = "no_target"
         res.message = "proposer produced no target_file_path"
         return res
-    ok, reason = validate_evolve_target(target)
+    ok, reason = validate_evolve_targets(proposal_data)
     if not ok:
         res.status = "blocked"
         res.message = reason
@@ -388,13 +435,14 @@ def run_evolve_iteration(
         res.message = verdict.reason or "rejected by reviewer"
         return res
 
-    update_proposal_status(proposal_id, "approved")
+    update_proposal_status(proposal_id, "approved", reviewed_by_agent_id=2)
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)
     res.materialize_status = mat.get("status")
-    landed = mat.get("status") in ("success", "lint_failed", "git_failed")
+    landed = mat.get("status") == "success"
     if landed:
-        res.commit = _latest_commit_sha()
+        workspace = Path(get_config().get("project_directory", "."))
+        res.commit = _materialize_commit_sha(workspace, proposal_id)
         res.status = "applied"
         res.message = f"applied via proposal {proposal_id}"
         res.manifest_recorded = _record_edit_manifest(
@@ -436,13 +484,17 @@ def _record_edit_manifest(iteration: int, *, edit: dict[str, Any]) -> bool:
         return False
 
 
-def _latest_commit_sha() -> str | None:
-    """Best-effort HEAD sha of the workspace the evolve edit landed in."""
+def _materialize_commit_sha(workspace: Path, proposal_id: str) -> str | None:
+    """Bind a revert to the exact commit `materialize_proposal` tagged for the
+    proposal (§12.4) — the message carries ``proposal <id>[0:8]`` — rather than
+    ``git rev-parse HEAD``, which may point at unrelated commits that landed
+    since. Returns None when the commit cannot be traced: the caller must then
+    fall back to `undo_proposal`, never guess."""
     try:
-        project_dir = Path(get_config().get("project_directory", "."))
+        marker = proposal_id[:8]
         proc = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=project_dir,
+            ["git", "log", "-1", "--format=%H", "--grep", marker, "--", "."],
+            cwd=workspace,
             capture_output=True,
             text=True,
             timeout=15,
@@ -466,19 +518,34 @@ def run_evolve_reverts(
     workspace = Path(workspace or get_config().get("project_directory", "."))
     results: list[dict[str, Any]] = []
     for candidate in candidates:
-        action = candidate.get("action") or ""
+        sha = candidate.get("commit") or None
         if executor is not None:
             ok = bool(executor(candidate))
             detail = "injected executor"
-        elif action.startswith("git revert"):
-            sha = candidate.get("commit")
-            ok = bool(sha) and _git_revert(workspace, sha)
-            detail = f"git revert {sha}" if sha else "no commit recorded"
+        elif sha:
+            ok = _git_revert(workspace, sha)
+            detail = f"git revert {sha}"
         else:
-            ok = False
-            detail = "undo_proposal executor not wired"
+            # §12.4: missing/untraceable SHA → never guess a commit; fall back
+            # to `undo_proposal` on the recorded proposal id (the edit_id).
+            ok, detail = _try_undo_proposal(candidate.get("edit_id"))
         results.append({**candidate, "ok": ok, "detail": detail, "workspace": str(workspace)})
     return results
+
+
+def _try_undo_proposal(edit_id: Any) -> tuple[bool, str]:
+    """§12.4 undo fallback: roll back a governed edit via `undo_proposal`."""
+    try:
+        from file_editing.undo import undo_proposal
+
+        if not edit_id:
+            return False, "undo_proposal: no edit_id recorded"
+        result = undo_proposal(str(edit_id), write_disk=True)
+        if result.get("status") == "success":
+            return True, f"undo_proposal {edit_id}"
+        return False, f"undo_proposal failed ({result.get('status')}): {result.get('message')}"
+    except Exception as exc:
+        return False, f"undo_proposal raised: {exc}"
 
 
 def _git_revert(workspace: Path, sha: str) -> bool:

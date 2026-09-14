@@ -182,8 +182,11 @@ def edit_verdicts(prior_iter: int, cur_iter: int) -> list[dict[str, Any]]:
 
 
 def revert_candidates(prior_iter: int, cur_iter: int) -> list[dict[str, Any]]:
-    """§5.3 rollback rule: an edit is reverted when it confirms no predicted fix
-    AND a regression it flagged landed (or regressions outnumber confirms).
+    """§5.3/§12.4 rollback rule: an edit is reverted only when it confirms no
+    predicted fix (``confirms == 0``) AND a regression it explicitly flagged has
+    landed (``predicted_regressions ∩ regressions``). The iteration-global
+    ``regressions_outnumber`` heuristic is dropped: one unrelated flip must not
+    revert every zero-confirm edit.
 
     Returns the offending edits with the revert action (`git revert <commit>`
     on the harness workspace, or `undo_proposal` for governed edits).
@@ -194,20 +197,6 @@ def revert_candidates(prior_iter: int, cur_iter: int) -> list[dict[str, Any]]:
     edits = manifest.get("edits", []) if isinstance(manifest, dict) else []
     if not edits:
         return []
-
-    with get_db_connection() as conn:
-        flagged_rows = conn.execute(
-            """
-            SELECT fix_reg.value
-            FROM (
-                SELECT payload FROM harness_change_manifest WHERE iteration = ?
-            ) m,
-            json_each(m.payload -> 'edits') AS edit_json,
-            json_each(edit_json.value -> 'predicted_regressions') AS fix_reg
-            """,
-            (int(prior_iter),),
-        ).fetchall()
-    {r[0] for r in flagged_rows}
 
     cur_by_task = {o["task_id"]: o for o in load_task_outcomes(cur_iter)}
     prior_by_task = {o["task_id"]: o for o in load_task_outcomes(prior_iter)}
@@ -224,9 +213,8 @@ def revert_candidates(prior_iter: int, cur_iter: int) -> list[dict[str, Any]]:
         regressions = {tid for tid in set(cur_by_task) & set(prior_by_task) if prior_by_task[tid]["passed"] == 1 and cur_by_task[tid]["passed"] == 0}
         predicted_regressions = set(str(t) for t in (edit.get("predicted_regressions") or []))
         flagged_landed = bool(predicted_regressions & regressions)
-        regressions_outnumber = len(regressions) > confirms
 
-        if confirms == 0 and (flagged_landed or regressions_outnumber):
+        if confirms == 0 and flagged_landed:
             candidates.append(
                 {
                     "edit_id": edit_id,

@@ -146,7 +146,7 @@ def _apply_schema(conn: sqlite3.Connection, schema_sql: str) -> None:
                 raise
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 #: Tables every canonical DB must present to pass the honest gate. `init_db`
@@ -184,6 +184,7 @@ REQUIRED_TABLES = (
     "reporter_state",
     "resource_decisions",
     "resource_model_overrides",
+    "review_coverage",
     "rollouts",
     "task_outcomes",
     "tasks",
@@ -573,6 +574,22 @@ def init_db():
                 UNIQUE(agent_name, file_path)
             );
 
+            -- §16.1/§16.2 review coverage ledger: line-range receipts that a
+            -- reviewer actually saw (map-first peer review). A whole-file pass
+            -- is lines_lo=lines_hi=0 with a content_hash. The ledger drives the
+            -- coverage sweep + diagnostics; receipts are written only for
+            -- content served from the governed DB, never from guesswork.
+            CREATE TABLE IF NOT EXISTS review_coverage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_name TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                lines_lo INTEGER NOT NULL,
+                lines_hi INTEGER NOT NULL,
+                content_hash TEXT,
+                covered_at TEXT NOT NULL,
+                UNIQUE(agent_name, file_path, lines_lo, lines_hi)
+            );
+
             -- ============================================================
             -- Context Management and Archiving
             -- ============================================================
@@ -805,6 +822,7 @@ def init_db():
             -- Review tracking indexes
             CREATE INDEX IF NOT EXISTS idx_review_tracking_agent ON agent_review_tracking(agent_name);
             CREATE INDEX IF NOT EXISTS idx_review_tracking_file ON agent_review_tracking(file_path);
+            CREATE INDEX IF NOT EXISTS idx_review_coverage_agent ON review_coverage(agent_name, file_path, lines_hi);
 
             -- Health and reporting indexes
             CREATE INDEX IF NOT EXISTS idx_endpoint_health ON endpoint_health(endpoint_name);

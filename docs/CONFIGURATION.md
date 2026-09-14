@@ -35,7 +35,7 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | `background_agents_enabled` | bool | `true` | Product default: background analysis pool on |
 | `default_model` | string | optional | Fallback model reference (bare model id or `endpoint/model`) when no agent preference applies |
 | `default_endpoint` | string | optional | Name of default entry in `endpoints` |
-| `cli_mode` | object | optional | Interactive / unattended mode (see below) |
+| `cli_mode` | object | optional | Semi-attended / unattended mode (see below) |
 | `endpoints` | object | optional | Named HTTP LLM backends |
 | `fallback_settings` | object | optional | Cross-endpoint fallback policy |
 | `models` | object | optional | Model id → endpoint + generation params |
@@ -57,7 +57,7 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `mode` | string | `interactive` \| `semi_attended` \| `unattended` |
+| `mode` | string | `semi_attended` \| `unattended` (anything else falls back to `semi_attended`) |
 | `unattended` | object | Used when mode is unattended |
 
 ### `cli_mode.unattended`
@@ -202,9 +202,23 @@ Same keys. When present, they override the top-level defaults **for that endpoin
 |-----|------|-------------|
 | `enabled` | bool | |
 | `on_modification` | bool | Queue on file change |
-| `random_review` | bool | Random sample reviews |
+| `random_review` | bool | Random sample reviews. **Defaults off** (§16.1): peer review is map-first plus blast-radius on real changes. Kept as an explicit override for one release. |
 | `random_files_per_cycle` | int | |
 | `confidence_threshold` | number | Optional (e.g. deployment_validator) |
+
+---
+
+## `background_sweep`
+
+§16.2 long-horizon coverage ledger sweep. When `random_review` is off, the
+background pool periodically reviews the next uncovered chunk (≈80–120 lines)
+per reviewer agent so coverage grows while sources are stable. The sweep is
+paused during a foreground developer session.
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `enabled` | bool | Default `true`. Set `false` to disable in soak-only runs. |
+| `interval_seconds` | number | Sweep wake interval in seconds. Default `300`. |
 
 ---
 

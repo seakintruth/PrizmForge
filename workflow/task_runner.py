@@ -680,6 +680,7 @@ def run_task_cycle(  # noqa: C901
     time_box_minutes: int | None = None,
 ):
     """Run complete task cycle with orchestration"""
+    global _active_work_seconds
     config = get_config()
 
     if time_box_minutes is None:
@@ -767,16 +768,17 @@ def run_task_cycle(  # noqa: C901
             orchestrator_attempts = 0
             decision = None
 
-            # Reset active-work counter for this iteration
-            global _active_work_seconds
-            _active_work_seconds = 0.0
-
             elapsed_total = (time.time() - start_time) / 60
             time_remaining = (iteration_end - time.time()) / 60
 
+            # Print the previous iteration's active-work seconds, then reset.
+            # (Reset-before-print always showed 0.0 — §15.3.)
             print(f"\n{'=' * 60}")
             print(f"🔄 Iteration {current_turn}/{max_turns} | Elapsed: {elapsed_total:.1f}m | Work: {_active_work_seconds:.1f}s")
             print(f"{'=' * 60}\n")
+
+            # Reset active-work counter for this iteration
+            _active_work_seconds = 0.0
 
             while orchestrator_attempts < max_orchestrator_retries and not decision:
                 orchestrator_attempts += 1
