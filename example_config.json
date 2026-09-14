@@ -25,6 +25,14 @@
       ]
     }
   },
+  "evolve": {
+    "_comment_enabled": "Master switch for the harness‑evolution loop. Must stay false until the §12.8 enablement gate is satisfied (see TODO.md §12.8).",
+    "_comment_max_edits_per_iteration": "Upper bound on governed proposals per evolve iteration (default 1).",
+    "_comment_max_tokens_per_iteration": "Upper bound on tokenizer‑count consumption per iteration (default 0 = no cap).",
+    "enabled": false,
+    "max_edits_per_iteration": 1,
+    "max_tokens_per_iteration": 0
+  },
   "endpoints": {
     "openrouter": {
       "base_url": "https://openrouter.ai/api/v1/chat/completions",
