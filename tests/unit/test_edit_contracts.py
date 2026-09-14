@@ -7,9 +7,11 @@ survives proposal → approve → apply on a temp DB.
 
 from __future__ import annotations
 
+import itertools
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -534,6 +536,116 @@ class TestApplyContracts:
             )
 
     # -------------------------------------------------------------------
+    # §13.3 — diff strictness + find_replace regex/count contract
+    # -------------------------------------------------------------------
+    def test_find_replace_regex_applies(self, temp_db):
+        from file_editing.editing import apply_find_replace
+        from file_editing.writer import initialize_file_lines
+
+        initialize_file_lines("ops/re.py", "def foo(a):\n    return a + 1\n")
+
+        class _Op:
+            find = r"return a \+\s*\d+"
+            replace = "return a + 99"
+            regex = True
+            count = None
+
+        from file_editing.db import get_db_connection
+
+        with get_db_connection() as conn:
+            res = apply_find_replace(conn, 1, _Op())
+        assert res["status"] == "success"
+        assert res["replacements"] == 1
+        assert _content("ops/re.py") == "def foo(a):\n    return a + 99\n"
+
+    def test_find_replace_count_limits_replacements(self, temp_db):
+        from file_editing.editing import apply_find_replace
+        from file_editing.writer import initialize_file_lines
+
+        initialize_file_lines("ops/cnt.py", "x = 1\ny = 1\nz = 1\n")
+
+        class _Op:
+            find = "= 1\n"
+            replace = "= 2\n"
+            regex = False
+            count = 1
+
+        from file_editing.db import get_db_connection
+
+        with get_db_connection() as conn:
+            res = apply_find_replace(conn, 1, _Op())
+        assert res["status"] == "success"
+        assert res["replacements"] == 1
+        body = _content("ops/cnt.py")
+        assert body.count("= 2\n") == 1
+        assert body.count("= 1\n") == 2
+
+    def test_find_replace_count_zero(self, temp_db):
+        from file_editing.editing import apply_find_replace
+        from file_editing.writer import initialize_file_lines
+
+        initialize_file_lines("ops/zero.py", "a\nb\n")
+
+        class _Op:
+            find = "a"
+            replace = "A"
+            regex = False
+            count = 0
+
+        from file_editing.db import get_db_connection
+
+        with get_db_connection() as conn:
+            res = apply_find_replace(conn, 1, _Op())
+        assert res["status"] == "success"
+        assert res["replacements"] == 0
+        assert _content("ops/zero.py") == "a\nb\n"
+
+    def test_partial_context_diff_fails_loudly(self):
+        """§13.3 — a hunk whose context only matches after fuzzy resync must fail."""
+        from file_editing.editing import _apply_unified_diff
+
+        original_lines = ["one", "two", "three", "four"]
+        diff_lines = [
+            "--- a/f.py",
+            "+++ b/f.py",
+            "@@ -1,4 +1,4 @@",
+            " one",
+            "-wrong-context",
+            "+ONE",
+            " four",
+        ]
+        assert _apply_unified_diff(original_lines, diff_lines) is None
+
+    def test_wrong_hunk_count_fails(self):
+        from file_editing.editing import _apply_unified_diff
+
+        original_lines = ["a", "b"]
+        # Header claims 1 line consumed, but the hunk consumes 2 -> no reconstruction.
+        diff_lines = [
+            "@@ -1,1 +1,2 @@",
+            " a",
+            "-b",
+            "+B",
+        ]
+        assert _apply_unified_diff(original_lines, diff_lines) is None
+
+    def test_clean_diff_applies_strict(self):
+        from file_editing.editing import _apply_unified_diff
+
+        original_lines = ["hello", "world", "tail"]
+        diff_lines = [
+            "--- a/f.py",
+            "+++ b/f.py",
+            "@@ -1,3 +1,3 @@",
+            " hello",
+            "-world",
+            "+WORLD",
+            " tail",
+        ]
+        result = _apply_unified_diff(original_lines, diff_lines)
+        assert result == ["hello\n", "WORLD\n", "tail\n"]
+
+    # -------------------------------------------------------------------
     # §13.1 — atomic apply (all-or-nothing) + op-shape guard
     # -------------------------------------------------------------------
     def test_multi_op_failure_rolls_back_whole_proposal(self, temp_db, monkeypatch):
@@ -704,3 +816,64 @@ class TestApplyContracts:
         body = _content("ops/multi_line.py")
         assert "ab" in body
         assert "c" not in body
+
+
+class TestSortOrderRenumberStress:
+    """§13.8 — sort-order renumber stress (gap < MIN_GAP_THRESHOLD)."""
+
+    def test_tight_insert_sequence_triggers_clean_renumber(self, temp_db):
+        from file_editing.db import get_db_connection
+        from file_editing.editing import apply_insert_after
+        from file_editing.writer import initialize_file_lines
+
+        initialize_file_lines("ops/rn.py", "a\nb\nc\n")
+        guids = _guids("ops/rn.py")
+        mid_guid = guids[1]
+
+        with get_db_connection() as conn:
+            fid = conn.execute("SELECT file_id FROM files WHERE file_path = 'ops/rn.py'").fetchone()[0]
+
+            renumbered_at = None
+            for idx in range(40):
+                res = apply_insert_after(
+                    conn,
+                    fid,
+                    SimpleNamespace(after_guid=mid_guid, new_content=[f"x{idx}"]),
+                )
+                assert res["status"] == "success"
+
+                rows = conn.execute(
+                    "SELECT sort_order FROM file_lines WHERE file_id = ? AND is_deleted = 0 ORDER BY sort_order",
+                    (fid,),
+                ).fetchall()
+                orders = [r[0] for r in rows]
+                assert orders == sorted(orders)
+                assert len(set(orders)) == len(orders)
+                min_gap = min((b - a for a, b in itertools.pairwise(orders)), default=0.0)
+                if min_gap >= 1.0:
+                    renumbered_at = idx
+                    break
+
+            assert renumbered_at is not None, "repeated tight inserts never triggered renumber"
+
+        # Content order must survive the renumber intact.
+        assert _content("ops/rn.py") == "a\nb\n" + "".join(f"x{i}\n" for i in range(renumbered_at + 1)) + "c\n"
+
+
+class TestMergeRegions:
+    """§13.4 unit seam for reviewer region view merging."""
+
+    def test_merge_regions_joins_nearby_hunks(self):
+        from workflow.reviewer_gate import _merge_regions
+
+        merged = _merge_regions([(0, 2), (4, 5)], context=4)
+        # With context 4 the two regions overlap -> single merged region.
+        assert len(merged) == 1
+        assert merged[0][0] <= 0
+        assert merged[0][1] >= 5
+
+    def test_far_regions_stay_separate(self):
+        from workflow.reviewer_gate import _merge_regions
+
+        merged = _merge_regions([(0, 2), (100, 105)], context=4)
+        assert len(merged) == 2

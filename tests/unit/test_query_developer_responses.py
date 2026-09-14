@@ -325,3 +325,84 @@ def test_data_window_watermark_uses_normalized_record_timestamps(temp_db, capsys
     # tasks 05:30 (space) beats write-log 04:00 and event 05:01 -> proves the
     # space-separated stamp was normalized and compared as the newest.
     assert task_stamp_t[:19] in out
+
+
+def test_export_all_writes_one_csv_per_table(temp_db, tmp_path, capsys):
+    """--export-all mirrors the console: one <table>.csv per DB table."""
+    from core.db_connection import get_db_connection
+    from utils.query_developer_responses import export_all_tables_csv
+
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO tasks (id, description, status) VALUES ('t_exp', 'audit me', 'completed')")
+
+    out_dir = export_all_tables_csv(out_dir=tmp_path / "exp")
+    capsys.readouterr()
+    assert (out_dir / "tasks.csv").exists()
+    text = (out_dir / "tasks.csv").read_text(encoding="utf-8")
+    assert "t_exp" in text
+
+
+def test_export_task_scope_skips_tables_without_task_id(temp_db, tmp_path, capsys):
+    """Soak24 §15.2-A1: task-scoped export must NOT leak non-task tables.
+
+    token_log has no task_id column — it must be skipped loudly instead of
+    silently shipping every task's rows labelled '(all tasks)'.
+    """
+    from core.db_connection import get_db_connection
+    from utils.query_developer_responses import export_all_tables_csv
+
+    with get_db_connection() as conn:
+        conn.execute("CREATE TABLE audit_log (id INTEGER, task_id TEXT, note TEXT)")
+        conn.execute("INSERT INTO audit_log (id, task_id, note) VALUES (1, 't-x', 'keep')")
+        conn.execute("INSERT INTO audit_log (id, task_id, note) VALUES (2, 't-y', 'leak')")
+        conn.execute("INSERT INTO token_log (timestamp, tokens_used) VALUES (CURRENT_TIMESTAMP, 999)")
+
+    out_dir = export_all_tables_csv(task_id="t-x", out_dir=tmp_path / "exp")
+    out = capsys.readouterr().out
+
+    csv_files = {p.name for p in out_dir.glob("*.csv")}
+    assert "audit_log.csv" in csv_files
+    assert "token_log.csv" not in csv_files, "non-task table must be excluded under task scope"
+
+    audit = (out_dir / "audit_log.csv").read_text(encoding="utf-8")
+    assert "t-x" in audit
+    assert "t-y" not in audit
+
+    everything = "\n".join(p.read_text(encoding="utf-8") for p in out_dir.glob("*.csv"))
+    assert "999" not in everything, "token_log rows must never leak into a task-scoped export"
+
+    assert "token_log: no task_id column" in out
+    assert "excluded under task scope" in out
+
+
+def test_export_specific_tables_task_scope_and_allowlist(temp_db, tmp_path, capsys):
+    """--export-tables honors the task scope guard and the identifier allowlist."""
+    from core.db_connection import get_db_connection
+    from utils.query_developer_responses import export_specific_tables_csv
+
+    with get_db_connection() as conn:
+        conn.execute("CREATE TABLE audit_log (id INTEGER, task_id TEXT, note TEXT)")
+        conn.execute("INSERT INTO audit_log (id, task_id, note) VALUES (1, 't-x', 'keep')")
+        conn.execute("INSERT INTO audit_log (id, task_id, note) VALUES (2, 't-y', 'leak')")
+
+    out_dir = export_specific_tables_csv(
+        ["audit_log", "token_log", "nope; DROP TABLE audit_log;--", "missing_table"],
+        task_id="t-x",
+        out_dir=tmp_path / "exp",
+    )
+    out = capsys.readouterr().out
+
+    csv_files = {p.name for p in out_dir.glob("*.csv")}
+    assert csv_files == {"audit_log.csv"}
+
+    assert "invalid table name" in out.lower()
+    assert "token_log: no task_id column" in out
+    assert "missing_table: table not found" in out
+
+    audit = (out_dir / "audit_log.csv").read_text(encoding="utf-8")
+    assert "t-y" not in audit
+
+    # The hostile name must never have been executed against the schema.
+    with get_db_connection() as conn:
+        n = conn.execute("SELECT COUNT(*) FROM audit_log").fetchone()[0]
+    assert n == 2

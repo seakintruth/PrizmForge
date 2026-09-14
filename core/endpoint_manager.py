@@ -192,11 +192,27 @@ class EndpointHealth:
         except Exception as e:
             logger.warning(f"Failed to load endpoint health from DB: {e}")
 
-    def _save_to_db(self):
+    def _save_to_db(self, *, preserve_longest_latch: bool = False):
         if not self.endpoint_name:
             return
         try:
             with get_db_connection() as conn:
+                if preserve_longest_latch:
+                    # Soak §15.3: never let a shorter cooldown shrink an active
+                    # longer latch persisted by this or another process (a 300s
+                    # empty-body cooldown once clobbered a 4h 429 park). Expired
+                    # stored values are ignored so a fresh latch can take over.
+                    row = conn.execute(
+                        "SELECT unavailable_until FROM endpoint_health WHERE endpoint_name = ?",
+                        (self.endpoint_name,),
+                    ).fetchone()
+                    if row and row[0]:
+                        try:
+                            stored = datetime.fromisoformat(row[0])
+                        except ValueError:
+                            stored = None
+                        if stored is not None and stored > datetime.now() and (self.unavailable_until is None or stored > self.unavailable_until):
+                            self.unavailable_until = stored
                 conn.execute(
                     """
                     INSERT OR REPLACE INTO endpoint_health
@@ -261,8 +277,9 @@ class EndpointHealth:
         self.error_count += 1
         self.consecutive_failures += 1
 
+        now = datetime.now()
         if cooldown_seconds is not None:
-            self.unavailable_until = datetime.now() + timedelta(seconds=cooldown_seconds)
+            proposed = now + timedelta(seconds=cooldown_seconds)
         else:
             if cooldown_minutes is None:
                 if status == EndpointStatus.TOKEN_EXHAUSTED:
@@ -276,8 +293,15 @@ class EndpointHealth:
                 else:
                     cooldown_minutes = 5
 
-            self.unavailable_until = datetime.now() + timedelta(minutes=cooldown_minutes)
-        self._save_to_db()
+            proposed = now + timedelta(minutes=cooldown_minutes)
+
+        # Never let a shorter cooldown shrink an already active latch
+        # (Soak §15.3: a 300s empty-body cooldown once clobbered a 4h 429
+        # park on the persisted row). Status/counters still reflect the
+        # observed failure even when the latch is not extended.
+        if self.unavailable_until is None or proposed > self.unavailable_until:
+            self.unavailable_until = proposed
+        self._save_to_db(preserve_longest_latch=True)
         _sync_support_freeze()
 
 

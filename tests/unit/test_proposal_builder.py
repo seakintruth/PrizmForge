@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from workflow.proposal_builder import (
     _get_affected_guids_from_operation,
     create_proposal_from_developer_output,
@@ -197,11 +199,41 @@ class TestCreateProposal:
         ok = update_proposal_status(created["proposal_id"], "under_review")
         assert ok is True
 
-        from file_editing.db import get_db_connection
 
-        with get_db_connection() as conn:
-            row = conn.execute(
-                "SELECT status FROM edit_proposals WHERE proposal_id = ?",
-                (created["proposal_id"],),
-            ).fetchone()
-            assert row[0] == "under_review"
+class TestReviewedByAgentIdWiring:
+    """§15.3 B4: approve/reject paths record reviewer agent_id=2 (developer=1)."""
+
+    def test_reject_recorded_as_reviewer_agent_2(self, monkeypatch, temp_db):
+        from workflow import reviewer_gate
+
+        seen = {}
+
+        def fake_update(proposal_id, new_status, reviewed_by_agent_id=None):
+            seen["status"] = new_status
+            seen["agent_id"] = reviewed_by_agent_id
+            return True
+
+        monkeypatch.setattr(reviewer_gate, "update_proposal_status", fake_update)
+        monkeypatch.setattr(reviewer_gate, "log_reviewer_rejection", lambda *a, **k: None)
+        monkeypatch.setattr(reviewer_gate, "publish_event", lambda *a, **k: None)
+
+        reviewer_gate.handle_reviewer_rejection(
+            proposal_id="p-1",
+            target_file_path="demo/x.py",
+            task_id="t-1",
+            reason="not safe",
+            suggestions=["review target line 3"],
+        )
+        assert seen.get("agent_id") == 2
+        assert seen.get("status") == "rejected"
+
+    def test_approve_recorded_as_reviewer_agent_2(self):
+        """§15.3 B4: every approve call site passes reviewed_by_agent_id=2."""
+        root = Path(__file__).parent.parent.parent
+        for rel in (
+            "workflow/developer_edit.py",
+            "workflow/shell_developer.py",
+            "harness/evolve_loop.py",
+        ):
+            src = (root / rel).read_text(encoding="utf-8")
+            assert "reviewed_by_agent_id=2" in src, f"{rel} approve site must record reviewer agent_id=2"

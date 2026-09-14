@@ -642,6 +642,38 @@ run_query 33_model_health \
   "Model and endpoint health" \
   --model-health
 
+coverage_diagnostic() {
+  local dest="$EXPORT_DIR/34_coverage.txt"
+  mkdir -p "$EXPORT_DIR"
+  local snippet
+  snippet='import sqlite3, sys
+sys.path.insert(0, sys.argv[1])
+from core.review_feed import coverage_diagnostic, format_coverage_diagnostic
+stats = coverage_diagnostic(sqlite3.connect(sys.argv[2]))
+print(format_coverage_diagnostic(stats))'
+  if [[ "$NO_EXPORT" -eq 1 ]]; then
+    PYTHONPATH="$SOURCE_REPO" "$PYTHON_EXEC" -c "$snippet" "$SOURCE_REPO" "$DB_PATH"
+    return $?
+  fi
+  set +e
+  PYTHONPATH="$SOURCE_REPO" "$PYTHON_EXEC" -c "$snippet" "$SOURCE_REPO" "$DB_PATH" >"$dest" 2>&1
+  local rc=$?
+  set -u -o pipefail
+  echo "  $dest"
+  if [[ "$EXPORT_ONLY" -eq 0 ]]; then
+    cat "$dest"
+  fi
+  return "$rc"
+}
+
+echo
+echo "=================================================================================="
+echo "QUERY: Coverage ledger — % lines covered per agent (§16.2)"
+echo "=================================================================================="
+if ! coverage_diagnostic; then
+  echo "WARNING: coverage diagnostic failed; continuing." >&2
+fi
+
 echo
 echo "================================================================================"
 echo "Diagnostic complete."

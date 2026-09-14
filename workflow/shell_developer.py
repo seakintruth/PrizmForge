@@ -47,11 +47,18 @@ from core.db_connection import get_db_connection
 from core.db_helpers import post_message
 from core.events import publish_event
 from core.model_health import record_model_outcome
+from core.session_projection import (
+    build_structural_brief,
+    format_step_table_message,
+    maybe_compact_session,
+    project_step_table,
+    prune_messages,
+)
 from file_editing.undo import snapshot_before_apply
 from file_editing.writer import materialize_proposal
 from workflow import shell_protocol
 from workflow.proposal_builder import create_proposal_from_developer_output, update_proposal_status
-from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict
+from workflow.reviewer_gate import handle_reviewer_rejection, post_reviewer_suggestions, request_review_verdict, reviewer_original_view
 
 FINISH_TOKEN = shell_protocol.FINISH_TOKEN
 BASH_BLOCK_RE = shell_protocol.BASH_BLOCK_RE
@@ -411,7 +418,7 @@ def build_chat_prompt(
         header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
         body = header + task_block
     else:
-        table = json.dumps(steps, indent=2)
+        table = json.dumps(project_step_table(steps), indent=2)
         body = f"Steps executed so far:\n```json\n{table}\n```\n\n{task_block}"
     if target_path:
         body += f"\n\nTarget file: {target_path}\nFirst command must be:\nsed -n '1,80p' {target_path}"
@@ -796,6 +803,32 @@ def evidence_inject_message(marker: str = WORKSPACE_MARKER_DEFAULT) -> str:
 # =========================================================================
 # Worktree isolation
 # =========================================================================
+def run_shell_test(command: str, timeout: int, cwd: str | Path) -> tuple[int, str]:
+    """Run one test command in ``cwd`` (shlex-split argv, no shell).
+
+    Shared by :meth:`ShellWorktree.run_test_command` and the benchmark command
+    verifier (:mod:`harness.verify` §14.3) so unit tests never re-implement the
+    fork/exec semantics. Returns ``(exit_code, output)``; 124 = timed out, 127
+    = executable not found.
+    """
+    argv = shlex.split(command)
+    try:
+        proc = subprocess.run(
+            argv,
+            cwd=str(cwd),
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+        out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        return proc.returncode, out
+    except subprocess.TimeoutExpired:
+        return 124, f"[test command timed out after {timeout}s]"
+    except FileNotFoundError:
+        return 127, f"[test command not found: {argv[0] if argv else command}]"
+
+
 class ShellWorktree:
     """Disposable git worktree of the project for one developer session."""
 
@@ -956,22 +989,7 @@ class ShellWorktree:
             return 1, f"[command execution error: {e}]"
 
     def run_test_command(self, command: str, timeout: int) -> tuple[int, str]:
-        argv = shlex.split(command)
-        try:
-            proc = subprocess.run(
-                argv,
-                cwd=str(self.working_dir()),
-                capture_output=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-            )
-            out = ((proc.stdout or "") + (proc.stderr or "")).strip()
-            return proc.returncode, out
-        except subprocess.TimeoutExpired:
-            return 124, f"[test command timed out after {timeout}s]"
-        except FileNotFoundError:
-            return 127, f"[test command not found: {argv[0] if argv else command}]"
+        return run_shell_test(command, timeout, self.working_dir())
 
     def collect_changes(self) -> list[dict[str, Any]]:
         """Return [{path, status, new_content, diff}] for tracked+untracked changes.
@@ -1279,6 +1297,55 @@ class ShellDeveloperSession:
             time.sleep(backoff_s)
         return None
 
+    def _summarize_session(self, messages: list[dict], task_text: str) -> dict[str, Any]:
+        """Tool-less one-shot session compact (§16.3).
+
+        Only called when the window is near its reserve. A single raw chat
+        call (no tool schemas, no ``call_agent``) asks for a strict-JSON
+        brief; on any failure we fall back to the structural brief so a
+        compact never depends on the endpoint.
+        """
+        changed_paths: list[str] = []
+        for row in self.steps:
+            for p in row.get("changed") or []:
+                if p not in changed_paths:
+                    changed_paths.append(p)
+        fallback = build_structural_brief(task_text, len(self.steps))
+        fallback["files"] = changed_paths[:20]
+        prompt = (
+            "Compact this developer-agent session into a strict JSON object only (JSON, no fences, "
+            'no prose): {"goal": string, "files": [], "decisions": [], "blockers": [], '
+            '"next_command": string}. '
+            f"Task: {task_text[:600]}\n\nMost recent session:\n{str(messages)[-6000:]}"
+        )
+        try:
+            text, _tokens = call_endpoint(
+                [{"role": "user", "content": prompt}],
+                task_id=self.task_id,
+                agent_name="developer",
+                model=self.resolved_model or self.cfg.model,
+            )
+        except Exception:
+            text = ""
+        if text:
+            cleaned = text.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.strip("`")
+                if cleaned.startswith("json"):
+                    cleaned = cleaned[4:].lstrip()
+            try:
+                brief = json.loads(cleaned)
+                if isinstance(brief, dict) and ("goal" in brief or "decisions" in brief):
+                    brief.setdefault("goal", fallback["goal"])
+                    brief.setdefault("files", fallback["files"])
+                    brief.setdefault("decisions", fallback["decisions"])
+                    brief.setdefault("blockers", "")
+                    brief.setdefault("next_command", "")
+                    return brief
+            except Exception as e:
+                print(f"   ⚠️ Session-compact summary unparsable; using structural brief: {e}")
+        return fallback
+
     def _observation(self, exit_code: int, output: str, command: str | None = None, thought: str | None = None) -> dict:
         trimmed = output
         if len(trimmed) > self.cfg.max_output_chars:
@@ -1302,8 +1369,7 @@ class ShellDeveloperSession:
             if newly_changed and dtext:
                 row["diff"] = dtext[-4000:]
             self.steps.append(row)
-            table = json.dumps(self.steps, indent=2)
-            content = f"```json\n{table}\n```\n\nOutput the JSON object for the next step (step {len(self.steps) + 1}) awaiting execution:"
+            content = format_step_table_message(self.steps)
             return {"role": "user", "content": content}
         body = ""
         if command:
@@ -1672,6 +1738,27 @@ class ShellDeveloperSession:
                 task_id=self.task_id,
                 payload={"step_number": hb_step, "model_ref": self.resolved_model},
             )
+            # §16.3 session projection: never replay old stdout; a compact can
+            # only fire when the usable window is actually near its reserve.
+            try:
+                pruned = prune_messages(self.messages)
+                if pruned is not self.messages:
+                    self.messages = pruned
+                    self.result.messages = self.messages
+                compacted = maybe_compact_session(
+                    messages=self.messages,
+                    task_id=self.task_id,
+                    task_text=task_text,
+                    model_ref=self.resolved_model or self.cfg.model,
+                    steps_count=len(self.steps),
+                    summarize_cb=self._summarize_session,
+                )
+                if compacted is not self.messages:
+                    self.messages = compacted
+                    self.result.messages = self.messages
+                    print(f"   📦 Session compacted at step {len(self.steps)} (context reserve reached)")
+            except Exception as e:
+                print(f"   ⚠️  Session projection skipped: {e}")
             response = self._llm()
             r.n_model_calls += 1
             if not response:
@@ -2030,7 +2117,7 @@ def _gate_and_materialize(
 ORIGINAL FILE CONTENT (before any change)
 --------------------------------------------------
 ```python
-{original_content}
+{reviewer_original_view(original_content, diff_text)}
 ```
 
 --------------------------------------------------
@@ -2057,7 +2144,8 @@ Respond with ONLY valid JSON in this exact shape:
 Rules:
 - REJECT if the change removes large amounts of existing code without clear justification, or introduces obvious errors.
 - APPROVE only when the change is coherent and the resulting file would still be valid.
-- If the content above is marked [TRUNCATED], treat it as bounded (not corrupt); base your verdict on the full proposed content shown in the same section.
+- If the content above is marked [TRUNCATED] or [SNIPPED]/[REGION VIEW], treat it as bounded (not corrupt);
+  base your verdict on the full proposed content shown in the same section.
 """
 
     # Fail closed (shared with developer_edit - see workflow/reviewer_gate.py).
@@ -2082,7 +2170,7 @@ Rules:
         return "rejected", verdict.reason
 
     print(f"   ✅ Reviewer approved proposal {proposal_id}")
-    update_proposal_status(proposal_id, "approved")
+    update_proposal_status(proposal_id, "approved", reviewed_by_agent_id=2)
     publish_event("proposal.approved", source="reviewer", task_id=task_id, proposal_id=proposal_id)
     snapshot_before_apply(proposal_id)
     mat = materialize_proposal(proposal_id)

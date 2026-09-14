@@ -333,3 +333,126 @@ def test_export_specific_tables_task_id_filter(tmp_path, temp_db, capsys):
     text = (out / "audit.csv").read_text(encoding="utf-8")
     assert "t-a" in text
     assert "t-b" not in text
+
+
+class TestExportTaskScopeNoLeak:
+    """§15.2 A1: task-scoped export must never dump a non-task table full-scope."""
+
+    @staticmethod
+    def _make_no_task_id_table():
+        from core.db_connection import get_db_connection
+
+        with get_db_connection() as conn:
+            conn.execute("CREATE TABLE tags (id INTEGER, name TEXT)")
+            conn.execute("INSERT INTO tags (id, name) VALUES (1, 'all-tasks-row')")
+
+    def test_cmd_export_db_skips_table_without_task_id_loudly(self, tmp_path, temp_db, capsys):
+        self._make_no_task_id_table()
+        out = tmp_path / "exp"
+        cli_commands.cmd_export_db(output_dir=out, task_id="t-1")
+        text = capsys.readouterr().out
+        assert "not task-scoped" in text
+        assert not (out / "tags.csv").exists()
+
+    def test_cmd_export_specific_tables_skips_table_without_task_id(self, tmp_path, temp_db, capsys):
+        self._make_no_task_id_table()
+        out = tmp_path / "exp"
+        cli_commands.cmd_export_specific_tables(["tags"], output_dir=out, task_id="t-1")
+        text = capsys.readouterr().out
+        assert "not task-scoped" in text
+        assert not (out / "tags.csv").exists()
+
+    def test_cmd_export_db_full_scope_still_exports_without_task_id(self, tmp_path, temp_db, capsys):
+        self._make_no_task_id_table()
+        out = tmp_path / "exp"
+        cli_commands.cmd_export_db(output_dir=out, task_id=None)
+        capsys.readouterr()
+        assert (out / "tags.csv").exists()
+        assert "all-tasks-row" in (out / "tags.csv").read_text(encoding="utf-8")
+
+
+def test_cmd_show_prompt_null_prompt_does_not_crash(tmp_path, temp_db, capsys):
+    """§15.2 A3: a NULL prompt/response row must not crash len() formatting."""
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_responses_archive
+            (task_id, agent_name, prompt, response, parse_success, timestamp)
+            VALUES (?, ?, NULL, NULL, 0, '2026-01-01T00:00:00')
+            """,
+            ("t-null", "jr_reviewer"),
+        )
+
+    cli_commands.cmd_show_prompt("t-null")
+    out = capsys.readouterr().out
+    assert "NO PROMPT" in out
+    assert "NO RESPONSE" in out
+
+
+class TestCmdInitResyncPartialIndex:
+    """§15.2 A4: hash fast-path only skips when summaries + line index exist."""
+
+    @staticmethod
+    def _config(project_dir):
+        return {
+            "project_directory": str(project_dir),
+            "git": False,
+            "background_agents_enabled": False,
+        }
+
+    def test_cmd_init_resyncs_when_index_incomplete(self, tmp_path, monkeypatch, capsys, temp_db):
+        from core.db_connection import get_db_connection
+
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir(parents=True)
+        content = "print('hello')\n"
+        (project_dir / "sample.py").write_text(content, encoding="utf-8")
+
+        hash_ = cli_commands.compute_file_hash(content)
+        with get_db_connection() as conn:
+            conn.execute(
+                "INSERT INTO project_files (file_path, content, content_hash) VALUES (?, ?, ?)",
+                ("sample.py", content, hash_),
+            )
+
+        monkeypatch.setattr(cli_commands, "get_config", lambda: self._config(project_dir))
+        cli_commands.cmd_init()
+        capsys.readouterr()
+
+        with get_db_connection() as conn:
+            summary = conn.execute("SELECT 1 FROM file_summaries WHERE file_path = ?", ("sample.py",)).fetchone()
+            lines = conn.execute(
+                """
+                SELECT COUNT(*) FROM file_lines fl
+                JOIN files f ON f.file_id = fl.file_id
+                WHERE f.file_path = ? AND fl.is_deleted = 0
+                """,
+                ("sample.py",),
+            ).fetchone()
+        assert summary is not None, "partial index should be re-synced (file_summaries)"
+        assert lines and lines[0] > 0, "partial index should be re-synced (file_lines)"
+
+    def test_cmd_init_skips_fully_indexed_file(self, tmp_path, monkeypatch, capsys, temp_db):
+        from core.db_connection import get_db_connection
+
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir(parents=True)
+        content = "print('hello')\n"
+        (project_dir / "sample.py").write_text(content, encoding="utf-8")
+
+        # Let cmd_init build the full index once...
+        monkeypatch.setattr(cli_commands, "get_config", lambda: self._config(project_dir))
+        cli_commands.cmd_init()
+        capsys.readouterr()
+
+        # ...then second run must NOT re-sync (hash fast path preserved).
+        with get_db_connection() as conn:
+            before = conn.execute("SELECT content FROM project_files WHERE file_path = ?", ("sample.py",)).fetchone()
+        cli_commands.cmd_init()
+        capsys.readouterr()
+
+        with get_db_connection() as conn:
+            after = conn.execute("SELECT content FROM project_files WHERE file_path = ?", ("sample.py",)).fetchone()
+        assert before[0] == after[0] == content

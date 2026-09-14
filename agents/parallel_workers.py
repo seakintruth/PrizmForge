@@ -16,12 +16,27 @@ from agents.base import call_agent
 from agents.prioritizer_worker import get_prioritizer_worker
 from agents.reporter_worker import get_reporter_worker
 from agents.response_cleaner import clean_llm_response
-from agents.worker_utils import interruptible_sleep, support_frozen
+from agents.worker_utils import (
+    foreground_session_active,
+    interruptible_sleep,
+    support_frozen,
+)
 from core.config import get_config
 from core.db import get_db_path
-from core.db_helpers import is_praise_only_feedback, post_message, save_agent_feedback
-from core.file_operations import compute_file_hash, format_file_with_guids
+from core.db_helpers import is_praise_only_feedback, post_message, save_agent_feedback, utcnow_iso
+from core.file_operations import compute_file_hash
 from core.json_parser import parse_json_response
+from core.review_feed import (
+    MAX_LINES_PER_SLICE,
+    MAX_SLICES,
+    SliceSpec,
+    blast_radius_paths,
+    build_reviewer_map,
+    coverage_sweep_next,
+    extract_covered,
+    extract_need_files,
+    serve_need_files,
+)
 from file_editing.db import log_error
 
 
@@ -68,6 +83,7 @@ class BackgroundAgentPool:
         self.event_queue = queue.Queue()
         self.workers = []
         self.feeder_thread = None
+        self.sweep_thread = None
         self.running = False
         self.task_id = None
         self.recently_queued = {}
@@ -82,6 +98,11 @@ class BackgroundAgentPool:
         self.feeder_config = config.get("background_feeder", {}) or {}
         self.feeder_interval = self.feeder_config.get("interval_seconds", 30)
         self.base_feeder_interval = self.feeder_interval  # Store original
+
+        # §16.2: long-horizon coverage sweep runs when random_review is off,
+        # paused while a foreground (developer) session is active.
+        self.sweep_config = config.get("background_sweep", {}) or {}
+        self.sweep_interval = int(self.sweep_config.get("interval_seconds", 300))
 
         # Categorize agents by behavior
         self.modification_agents = []  # Review on every file change
@@ -174,11 +195,27 @@ class BackgroundAgentPool:
                 self.feeder_thread.start()
                 print(f"    Started continuous file feeder for {len(self.random_review_agents)} agent(s)")
 
+            # §16.2: coverage sweep keeps the ledger growing even with
+            # random_review off. It pauses itself while a foreground developer
+            # session is active (see _sweep_loop).
+            if self.modification_agents and self.sweep_config.get("enabled", True):
+                self.sweep_thread = threading.Thread(
+                    target=self._sweep_loop,
+                    daemon=True,
+                    name="coverage-sweep",
+                )
+                self.sweep_thread.start()
+                print(f"    Started coverage sweep (every {self.sweep_interval}s, paused during developer sessions)")
+
     def _join_workers_unlocked(self, timeout: float = 2.0) -> None:
-        """Join feeder + analysis workers. Caller must hold _state_lock."""
+        """Join feeder + sweep + analysis workers. Caller must hold _state_lock."""
         if self.feeder_thread is not None:
             self.feeder_thread.join(timeout=timeout)
             self.feeder_thread = None
+
+        if self.sweep_thread is not None:
+            self.sweep_thread.join(timeout=timeout)
+            self.sweep_thread = None
 
         for worker in self.workers:
             worker.join(timeout=timeout)
@@ -195,7 +232,7 @@ class BackgroundAgentPool:
         from agents.resource_controller_worker import get_resource_controller
 
         with self._state_lock:
-            if not self.running and not self.workers and self.feeder_thread is None:
+            if not self.running and not self.workers and self.feeder_thread is None and self.sweep_thread is None:
                 # Still stop support workers — they may have been started elsewhere
                 pass
             else:
@@ -324,15 +361,20 @@ class BackgroundAgentPool:
         return None
 
     def _queue_modified_files(self):
-        """Queue files modified since last review - only to modification_agents"""
+        """Queue files modified since last review + their blast radius (§16.1).
+
+        Each modified root is fed together with the depth-≤2 blast radius from
+        symbol_index (consumers/importers/tests) instead of a random sibling.
+        Roots keep priority 1; radius neighbors are queued at priority 2.
+        """
         try:
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
-            queued_count = 0
-
             max_files = int(self.agent_configs.get("initial_review_max_files", 5))
+            candidate_rows = conn.execute("SELECT file_path, content FROM project_files WHERE is_binary = 0").fetchall()
 
+            queued_count = 0
             for agent_name in self.modification_agents:
                 cursor.execute(
                     """
@@ -358,22 +400,71 @@ class BackgroundAgentPool:
 
                 modified_files = cursor.fetchall()
 
-                for file_data in modified_files:
-                    event = self._create_file_event(file_data, "modified_since_review", priority=1)
-                    self.event_queue.put(event)
+                fed_for_agent = 0
+                max_events_per_agent = max_files * 3
 
-                    with self._queue_lock:
-                        if agent_name in self.recently_queued:
-                            self.recently_queued[agent_name].add(file_data[0])
-                    queued_count += 1
+                for file_data in modified_files:
+                    if fed_for_agent >= max_events_per_agent:
+                        break
+
+                    root_path = file_data[0]
+                    try:
+                        radius_paths = blast_radius_paths(conn, root_path, candidates=candidate_rows, max_paths=5)
+                    except Exception as e:
+                        print(f"    Blast radius probe failed for {root_path}: {e}")
+                        radius_paths = [root_path]
+
+                    if not radius_paths:
+                        radius_paths = [root_path]
+
+                    for path in radius_paths:
+                        if fed_for_agent >= max_events_per_agent:
+                            break
+
+                        with self._queue_lock:
+                            tracking_set = self.recently_queued.get(agent_name)
+                            if tracking_set and path in tracking_set:
+                                continue
+
+                        event = self._file_event_for_path(cursor, path, root_path)
+                        if event is None:
+                            continue
+
+                        self.event_queue.put(event)
+                        with self._queue_lock:
+                            if tracking_set is None:
+                                tracking_set = BoundedSet()
+                                self.recently_queued[agent_name] = tracking_set
+                            tracking_set.add(path)
+                        queued_count += 1
+                        fed_for_agent += 1
 
             conn.close()
 
             if queued_count > 0:
-                print(f"    Queued {queued_count} modified file(s) for {len(self.modification_agents)} agent(s)")
+                print(f"    Queued {queued_count} modified/blast-radius file(s) for {len(self.modification_agents)} agent(s)")
 
         except Exception as e:
             print(f"    Error queuing modified files: {e}")
+
+    def _file_event_for_path(self, cursor, path: str, root_path: str) -> FileChangeEvent | None:
+        """Event row for a feed target; roots are ``modified_since_review``."""
+        row = cursor.execute(
+            """
+            SELECT
+                pf.file_path, pf.content, pf.content_hash, pf.last_modified,
+                pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
+            FROM project_files pf
+            LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
+            WHERE pf.file_path = ? AND pf.is_binary = 0
+            """,
+            (path,),
+        ).fetchone()
+        if row is None:
+            return None
+        if path == root_path:
+            return self._create_file_event(row, "modified_since_review", priority=1)
+        return self._create_file_event(row, "blast_radius", priority=2)
 
     def _file_feeder_loop(self):
         """Feed random files to agents that want them"""
@@ -585,10 +676,32 @@ class BackgroundAgentPool:
             self._process_file(agent_name, event)
 
     def _process_file(self, agent_name: str, event: FileChangeEvent):
-        """Process a file with an agent"""
+        """Process a file with an agent (map-first peer review, §16.1).
+
+        Phase 1 feeds the reviewer a compact structural **map** (≤80 rows from
+        ``file_summaries`` + ``file_symbols``) — never a full file body. If the
+        reviewer asks for content (``need_files``), Phase 2 serves those exact
+        slices from the governed DB and runs one confirm pass. Differences are
+        merged into a single feedback save; acknowledged ranges are written to
+        ``review_coverage`` by ``_record_coverage``.
+
+        Coverage-sweep events (§16.2) short-circuit to ``_process_sweep_chunk``.
+        """
 
         try:
-            file_formatted = format_file_with_guids(event.file_path)
+            sweep_spec = (event.metadata or {}).get("sweep_slice")
+            if sweep_spec:
+                self._process_sweep_chunk(agent_name, event, sweep_spec)
+                return
+
+            agent_config = self.agent_configs.get(agent_name, {})
+            model_override = agent_config.get("model")
+
+            conn = sqlite3.connect(get_db_path())
+            try:
+                project_map = build_reviewer_map(conn, focus_path=event.file_path)
+            finally:
+                conn.close()
 
             metadata_str = ""
             if event.metadata:
@@ -602,86 +715,47 @@ class BackgroundAgentPool:
 
             op_descriptions = {
                 "modified_since_review": "modified since your last review",
+                "blast_radius": "changed (this file is in the blast radius of a recent change)",
                 "random_review": "selected for periodic review",
                 "initial_review": "initial review",
                 "create": "newly created",
                 "modify": "just modified",
+                "forced_review": "selected for a forced review cycle",
             }
             operation_desc = op_descriptions.get(event.operation, event.operation)
 
-            prompt = f"""File {operation_desc}: {event.file_path}
-    {metadata_str}
-    {file_formatted}
-    Analyze and provide feedback in JSON format."""
+            v1_prompt = self._build_reviewer_prompt(event.file_path, operation_desc, metadata_str, project_map, context_block=None)
+            response1 = self._call_reviewer_with_retries(agent_name, event, v1_prompt, model_override)
+            if not response1:
+                self._mark_review_failed(agent_name, event)
+                return
 
-            agent_config = self.agent_configs.get(agent_name, {})
-            model_override = agent_config.get("model")
+            data1 = self._parse_review_json(response1)
+            if data1 is None:
+                self._mark_review_failed(agent_name, event)
+                return
 
-            max_attempts = 3
+            data1, response_final = self._serve_requested_slices(agent_name, event, data1, response1, model_override)
 
-            for attempt in range(1, max_attempts + 1):
-                if attempt == 1:
-                    full_prompt = prompt
-                elif attempt == 2:
-                    full_prompt = f"""{prompt}
-
-    CRITICAL: Your previous response was not valid JSON.
-
-    You MUST respond with ONLY valid JSON. No explanations, no markdown, no text outside the JSON.
-
-    Start with {{ and end with }}. Nothing before or after."""
-                else:
-                    full_prompt = """Your previous 2 responses failed JSON validation.
-
-    This is your FINAL attempt. Respond with ONLY this structure:
-
-    {
-    "findings": [
-        {"priority": "HIGH", "category": "bug", "message": "Issue here", "suggestion": "Fix here"}
-    ],
-    "summary": "Brief summary"
-    }
-
-    START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
-
-                if attempt > 1:
-                    print(f"    {agent_name}: Retry {attempt}/{max_attempts} with stricter prompt")
-
-                if attempt > 1:
-                    time.sleep(2)  # Brief backoff between format-retries
-
-                response = call_agent(
-                    agent_name,
-                    full_prompt,
-                    event.task_id,
-                    model_override=model_override,
-                    auto_resume=False,
-                )
-
-                if not response:
-                    # Empty response = endpoint/transport problem, not a JSON
-                    # formatting problem. Stricter prompts cannot help — soak
-                    # data showed 147 events burning all 3 attempts this way.
-                    print(f"    {agent_name}: Empty response (endpoint issue) — skipping format retries")
-                    time.sleep(20)
-                    break
-
-                cleaned_response = clean_llm_response(response, agent_name)
-
-                if cleaned_response:
-                    self._parse_and_save_feedback(agent_name, event, cleaned_response)
-                    self._update_review_tracking(agent_name, event)
+            cleaned = clean_llm_response(response_final, agent_name)
+            if cleaned:
+                if self._is_hollow_receipt(data1):
+                    print(f"    {agent_name}: hollow receipt (no findings and no covered) — refused (Qwen-style)")
+                    log_error(
+                        "MEDIUM",
+                        "parallel_workers",
+                        "hollow_receipt",
+                        f"{agent_name} returned neither findings nor covered for {event.file_path}; receipt refused",
+                        task_id=event.task_id,
+                        file_path=event.file_path,
+                    )
                     return
+                self._parse_and_save_feedback(agent_name, event, cleaned)
+                self._update_review_tracking(agent_name, event)
+                self._record_coverage(agent_name, event, data1)
+                return
 
-            print(f"    {agent_name}: Failed after {max_attempts} attempts")
-            log_error(
-                "HIGH",
-                "parallel_workers",
-                "json_validation",
-                f"{agent_name} failed JSON validation after {max_attempts} attempts",
-                task_id=event.task_id,
-                file_path=event.file_path,
-            )
+            self._mark_review_failed(agent_name, event)
 
         except Exception as e:
             print(f"    {agent_name} error on {event.file_path}: {e}")
@@ -693,6 +767,361 @@ class BackgroundAgentPool:
                 task_id=event.task_id,
                 file_path=event.file_path,
             )
+
+    @staticmethod
+    def _build_reviewer_prompt(
+        file_path: str,
+        operation_desc: str,
+        metadata_str: str,
+        project_map: str,
+        context_block: str | None,
+    ) -> str:
+        """Map-first reviewer prompt with the §16.1 JSON contract."""
+        need_files_cap = f"{MAX_SLICES} ranges of at most {MAX_LINES_PER_SLICE} lines each"
+        schema_hint = "start=end=0 means the WHOLE file was assessed"
+        prompt = f"""File {operation_desc}: {file_path}
+{metadata_str}
+{project_map}
+
+You are reviewing this target repository. The map above is STRUCTURAL ONLY —
+you have NOT seen any file bodies. Never fabricate file content you have not read.
+
+Respond with ONLY valid JSON:
+
+{{
+  "findings": [
+    {{
+      "priority": "HIGH|MEDIUM|LOW",
+      "category": "bug|security|perf|style|docs",
+      "file_path": "repo-relative path",
+      "line": 0,
+      "message": "what is wrong",
+      "suggestion": "how to fix"
+    }}
+  ],
+  "covered": [{{"file_path": "path", "start": 0, "end": 0}}],
+  "need_files": [{{"file_path": "path", "start": 1, "end": 120, "why": "reason"}}],
+  "summary": "brief summary"
+}}
+
+Rules:
+- "covered": 1-based inclusive line ranges you were able to assess. {schema_hint}.
+- "need_files": EXACT 1-based inclusive line windows you must READ to give
+  accurate findings. At most {need_files_cap}.
+- If you need no additional content, "need_files" MUST be [] — never invent
+  findings from the map alone.
+- Every finding must carry an explicit "file_path".
+"""
+        if context_block:
+            prompt += (
+                "\nBelow are the EXACT slices you requested. Read them now, "
+                "then re-emit the JSON with your final findings. "
+                '"need_files" must be [] in this final response.\n\n'
+                f"{context_block}\n"
+            )
+        return prompt
+
+    def _call_reviewer_with_retries(self, agent_name: str, event: FileChangeEvent, prompt: str, model_override: str | None) -> str | None:
+        """Call the reviewer with the existing 3-attempt format-retry scaffold.
+
+        Returns the last response string, or None when the endpoint returned
+        nothing (transport problem — stricter prompts cannot help).
+        """
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            if attempt == 1:
+                full_prompt = prompt
+            elif attempt == 2:
+                full_prompt = f"""{prompt}
+
+CRITICAL: Your previous response was not valid JSON.
+
+You MUST respond with ONLY valid JSON. No explanations, no markdown, no text outside the JSON.
+
+Start with {{ and end with }}. Nothing before or after."""
+            else:
+                full_prompt = """Your previous 2 responses failed JSON validation.
+
+This is your FINAL attempt. Respond with ONLY this structure:
+
+{
+  "findings": [
+    {"priority": "HIGH", "category": "bug", "file_path": "path", "message": "Issue here", "suggestion": "Fix here"}
+  ],
+  "covered": [{"file_path": "path", "start": 0, "end": 0}],
+  "need_files": [],
+  "summary": "Brief summary"
+}
+
+START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
+
+            if attempt > 1:
+                print(f"    {agent_name}: Retry {attempt}/{max_attempts} with stricter prompt")
+                time.sleep(2)  # Brief backoff between format-retries
+
+            response = call_agent(
+                agent_name,
+                full_prompt,
+                event.task_id,
+                model_override=model_override,
+                auto_resume=False,
+            )
+
+            if not response:
+                # Empty response = endpoint/transport problem, not a JSON
+                # formatting problem. Stricter prompts cannot help — soak data
+                # showed 147 events burning all 3 attempts this way.
+                print(f"    {agent_name}: Empty response (endpoint issue) — skipping format retries")
+                time.sleep(20)
+                return None
+
+            cleaned_response = clean_llm_response(response, agent_name)
+
+            if cleaned_response:
+                return cleaned_response
+
+        print(f"    {agent_name}: Failed after {max_attempts} attempts")
+        return None
+
+    @staticmethod
+    def _parse_review_json(response: str) -> dict | None:
+        return parse_json_response(response, expected_keys=None, strict=False)
+
+    def _serve_requested_slices(
+        self,
+        agent_name: str,
+        event: FileChangeEvent,
+        data: dict,
+        response1: str,
+        model_override: str | None,
+    ) -> tuple[dict, str]:
+        """Honor ``need_files`` from the map pass with one bounded confirm pass.
+
+        Returns ``(merged_data, response_text)``. When no slices are requested
+        (or nothing could be served), the phase-1 data/response is returned
+        unchanged.
+        """
+        specs = extract_need_files(data)
+        if not specs:
+            return data, response1
+
+        conn = sqlite3.connect(get_db_path())
+        try:
+            slices_block = serve_need_files(conn, specs)
+        finally:
+            conn.close()
+
+        if not slices_block:
+            print(f"    {agent_name}: need_files could not be served from the governed DB; using map pass")
+            return data, response1
+
+        confirm_prompt = self._build_reviewer_prompt(
+            event.file_path,
+            "target of this review cycle",
+            "",
+            "**Target repository map** (unchanged from map pass).",
+            context_block=slices_block,
+        )
+        print(f"    {agent_name}: serving {len(specs)} requested slice(s); running confirm pass")
+        response2 = self._call_reviewer_with_retries(agent_name, event, confirm_prompt, model_override)
+        if not response2:
+            print(f"    {agent_name}: confirm pass returned nothing; keeping map-pass findings")
+            return data, response1
+
+        data2 = self._parse_review_json(response2)
+        if data2 is None:
+            print(f"    {agent_name}: confirm pass failed JSON validation; keeping map-pass findings")
+            return data, response1
+
+        print(f"    {agent_name}: confirm pass merged ({len(data2.get('findings', []))} finding(s))")
+        return data2, response2
+
+    def _record_coverage(self, agent_name: str, event: FileChangeEvent, data: dict | None):
+        """Write §16.1/§16.2 coverage receipts to the review_coverage ledger."""
+        if not data:
+            return None
+        covered = extract_covered(data)
+        if not covered:
+            return None
+        try:
+            conn = sqlite3.connect(get_db_path())
+            ts = utcnow_iso()
+            for c in covered:
+                conn.execute(
+                    """
+                    INSERT INTO review_coverage
+                    (agent_name, file_path, lines_lo, lines_hi, content_hash, covered_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(agent_name, file_path, lines_lo, lines_hi) DO UPDATE SET
+                        content_hash = excluded.content_hash,
+                        covered_at = excluded.covered_at
+                    """,
+                    (agent_name, c.file_path, c.lines_lo, c.lines_hi, event.content_hash, ts),
+                )
+            conn.commit()
+            conn.close()
+            print(f"    {agent_name}: recorded {len(covered)} coverage receipt(s) to the ledger")
+        except Exception as e:
+            print(f"    Error recording reviewed coverage: {e}")
+        return None
+
+    @staticmethod
+    def _is_hollow_receipt(data) -> bool:
+        """§16.2: no findings AND no covered ranges = a content-free receipt.
+
+        Refuse it (Qwen-style ack) so the file stays due for a real review.
+        """
+        if not isinstance(data, dict):
+            return True
+        findings = data.get("findings")
+        if isinstance(findings, list) and findings:
+            return False
+        if extract_covered(data):
+            return False
+        return True
+
+    def _sweep_loop(self):
+        """Lowest-priority coverage sweep, paused during developer sessions."""
+        while self.running:
+            interruptible_sleep(self.sweep_interval, lambda: self.running)
+            if not self.running:
+                break
+            try:
+                self._sweep_cycle()
+            except Exception as e:
+                print(f"    Coverage sweep error: {e}")
+                interruptible_sleep(5, lambda: self.running)
+
+    def _sweep_cycle(self):
+        """Queue one next-uncovered chunk per reviewer agent (§16.2)."""
+        if foreground_session_active():
+            return
+        if not self.modification_agents:
+            return
+        conn = sqlite3.connect(get_db_path())
+        cursor = conn.cursor()
+        try:
+            for agent_name in self.modification_agents:
+                spec = coverage_sweep_next(conn, agent_name=agent_name)
+                if spec is None:
+                    continue
+                with self._queue_lock:
+                    tracking_set = self.recently_queued.get(agent_name)
+                    if tracking_set and spec.file_path in tracking_set:
+                        continue
+                event = self._sweep_event_for(cursor, spec)
+                if event is None:
+                    continue
+                self.event_queue.put(event)
+                with self._queue_lock:
+                    if tracking_set is None:
+                        tracking_set = BoundedSet()
+                        self.recently_queued[agent_name] = tracking_set
+                    tracking_set.add(spec.file_path)
+                print(f"    Coverage sweep: {agent_name} next chunk {spec.file_path} lines {spec.start}-{spec.end}")
+        finally:
+            conn.close()
+
+    def _sweep_event_for(self, cursor, spec: SliceSpec) -> FileChangeEvent | None:
+        """Event for a sweep chunk; content_hash is the file's current hash."""
+        row = cursor.execute(
+            """
+            SELECT
+                pf.file_path, pf.content, pf.content_hash, pf.last_modified,
+                pf.size_bytes, pf.file_type, fs.summary, fs.purpose, fs.line_count
+            FROM project_files pf
+            LEFT JOIN file_summaries fs ON pf.file_path = fs.file_path
+            WHERE pf.file_path = ? AND pf.is_binary = 0
+            """,
+            (spec.file_path,),
+        ).fetchone()
+        if row is None:
+            return None
+        event = self._create_file_event(row, "coverage_sweep", priority=4)
+        if not event.content:
+            event.content = "coverage_sweep"
+        event.metadata = dict(event.metadata or {})
+        event.metadata["sweep_slice"] = {
+            "file_path": spec.file_path,
+            "start": spec.start,
+            "end": spec.end,
+        }
+        return event
+
+    def _process_sweep_chunk(self, agent_name: str, event: FileChangeEvent, sweep_spec: dict):
+        """Review exactly one governed chunk (80-120 lines) and receipt it."""
+        try:
+            file_path = sweep_spec.get("file_path")
+            start, end = int(sweep_spec.get("start", 0)), int(sweep_spec.get("end", 0))
+            if not file_path or start <= 0 or end < start:
+                return
+            spec = SliceSpec(file_path=file_path, start=start, end=end, why="coverage sweep")
+
+            conn = sqlite3.connect(get_db_path())
+            try:
+                chunk_block = serve_need_files(conn, [spec])
+            finally:
+                conn.close()
+            if not chunk_block:
+                print(f"    {agent_name}: sweep chunk for {file_path} could not be served; skipping")
+                return
+
+            agent_config = self.agent_configs.get(agent_name, {})
+            model_override = agent_config.get("model")
+            prompt = (
+                f"Coverage sweep — review ONLY this exact chunk of {file_path}.\n\n"
+                f"{chunk_block}\n\n"
+                'List findings inside this chunk. If the chunk is fine, "findings" MUST be [].\n'
+                'Then re-emit the JSON with "covered" set to EXACTLY '
+                f'[{{"file_path": "{file_path}", "start": {start}, "end": {end}}}].\n'
+                '"need_files" MUST be []. Never mark ranges you did not read.\n\n'
+                "{\n"
+                '  "findings": [\n'
+                '    {"priority": "HIGH|MEDIUM|LOW", "category": "bug|security|perf|style|docs",\n'
+                '     "file_path": "' + file_path + '", "line": 0, "message": "...", "suggestion": "..."}\n'
+                "  ],\n"
+                f'  "covered": [{{"file_path": "{file_path}", "start": {start}, "end": {end}}}],\n'
+                '  "need_files": [],\n'
+                '  "summary": "..."\n'
+                "}"
+            )
+
+            response = self._call_reviewer_with_retries(agent_name, event, prompt, model_override)
+            if not response:
+                return
+            data = self._parse_review_json(response)
+            if data is None:
+                self._mark_review_failed(agent_name, event)
+                return
+            if self._is_hollow_receipt(data):
+                print(f"    {agent_name}: hollow sweep receipt (no findings, no covered) — refused")
+                return
+
+            self._parse_and_save_feedback(agent_name, event, response)
+            self._update_review_tracking(agent_name, event)
+            self._record_coverage(agent_name, event, data)
+
+        except Exception as e:
+            print(f"    {agent_name} error on sweep chunk {event.file_path}: {e}")
+            log_error(
+                "HIGH",
+                "parallel_workers",
+                "process_file",
+                f"{agent_name} exception: {e!s}",
+                task_id=event.task_id,
+                file_path=event.file_path,
+            )
+
+    def _mark_review_failed(self, agent_name: str, event: FileChangeEvent):
+        """Log the exhausted-attempts outcome once (json_validation)."""
+        log_error(
+            "HIGH",
+            "parallel_workers",
+            "json_validation",
+            f"{agent_name} failed JSON validation after 3 attempts",
+            task_id=event.task_id,
+            file_path=event.file_path,
+        )
 
     def _parse_and_save_feedback(self, agent_name: str, event: FileChangeEvent, response: str):
         """Parse response and save feedback"""

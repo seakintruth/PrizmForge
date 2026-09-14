@@ -4,12 +4,12 @@ import os
 import sqlite3
 import subprocess
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from core.content_safety import validate_source_content
+from core.db_helpers import utcnow_iso
 from utils.git_operations import git_commit
 
 from .db import get_db_connection, log_error, reconstruct_file_content
@@ -452,7 +452,221 @@ def recover_orphaned_applied() -> dict[str, Any]:
     return {"checked": len(orphans), "recovered": recovered, "failed": failed}
 
 
-def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
+def _capture_before_state(conn: sqlite3.Connection, affected_paths: set | list) -> dict[str, dict]:
+    """Snapshot content + id for every file the proposal will touch (§13.8)."""
+    before_state: dict[str, dict] = {}
+    for path in affected_paths:
+        fid = _get_or_create_file_id_short(conn, path)
+        content = reconstruct_file_content(conn, fid) or ""
+        before_state[path] = {
+            "file_id": fid,
+            "content": content,
+            "hash": _compute_hash(content),
+        }
+    return before_state
+
+
+def _ensure_applied(conn: sqlite3.Connection, proposal, proposal_id: str) -> dict[str, Any] | None:
+    """Apply the proposal in the DB if still pending; return its terminal result.
+
+    Write-log status reducer (§13.8): an apply outcome of ``conflicted`` /
+    ``error`` / ``failed`` is captured on the proposal and returned verbatim so
+    the caller stops before materializing anything. Returns None when applied
+    (or already applied).
+    """
+    if proposal["status"] == "applied":
+        return None
+    apply_result = apply_edit_proposal(proposal_id)
+    if apply_result.get("status") != "success":
+        terminal = apply_result.get("status") or "error"
+        if terminal not in ("conflicted", "error", "failed"):
+            terminal = "error"
+        try:
+            conn.execute(
+                "UPDATE edit_proposals SET status = ? WHERE proposal_id = ? AND status = 'approved'",
+                (terminal, proposal_id),
+            )
+        except Exception as e:
+            print(f"    ⚠️  Exception handled in writer.py: {e}")
+        return apply_result
+    return None
+
+
+def _materialize_one_file(
+    conn: sqlite3.Connection,
+    *,
+    target_path: str,
+    op_file_id: int,
+    before_entry: dict,
+    project_dir: Path,
+    proposal_id: str,
+    task_id,
+    precheck_allowed: bool,
+) -> dict[str, Any]:
+    """Write one affected file to disk, record its audit rows, run the ruff
+    pre-check and git commit, returning everything the caller must aggregate
+    (§13.8). Mutates only this file's rows; the caller owns status semantics."""
+    content_after = reconstruct_file_content(conn, op_file_id) or ""
+    hash_after = _compute_hash(content_after)
+
+    _deleted_row = conn.execute("SELECT is_deleted FROM files WHERE file_id = ?", (op_file_id,)).fetchone()
+    is_deleted = bool(_deleted_row[0] if _deleted_row else 0)
+
+    write_started_at = utcnow_iso()
+    if is_deleted:
+        res = _delete_file_from_disk(target_path, project_dir)
+    else:
+        res = write_file_to_disk(target_path, content_after, proposal_id)
+    write_completed_at = utcnow_iso()
+
+    out = {
+        "res": res,
+        "is_deleted": is_deleted,
+        "content_after": content_after,
+        "hash_after": hash_after,
+        "lint_failed": None,
+        "git_failed": None,
+        "symbol_refresh": None,
+    }
+
+    if res.get("status") != "success":
+        conn.execute(
+            "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
+            (proposal_id,),
+        )
+        conn.execute(
+            "INSERT INTO file_write_log (proposal_id, file_id, status, started_at, completed_at) VALUES (?, ?, 'error', ?, ?)",
+            (proposal_id, op_file_id, write_started_at, write_completed_at),
+        )
+        return out
+
+    # Normalize path against the configured project_directory.
+    # Prefer the absolute path returned by write_file_to_disk when
+    # available; otherwise force containment ourselves.
+    written_path = res.get("file_path") or target_path
+    try:
+        resolved_path = _resolve_contained_path(written_path, project_dir)
+        rel_path = str(resolved_path.relative_to(project_dir)).replace("\\", "/")
+    except ValueError as path_err:
+        log_error(
+            "MEDIUM",
+            "file_editing",
+            "path_normalize",
+            f"Could not normalize path inside project_directory: {path_err}",
+            proposal_id=proposal_id,
+        )
+        resolved_path = None
+        rel_path = None
+
+    # Refresh symbol index (only when we have a clean relative path) — deferred
+    # until the write transaction below has committed.
+    if rel_path and rel_path.endswith(".py"):
+        out["symbol_refresh"] = (rel_path, content_after)
+
+    # Update files table (skipped for deletions — row stays is_deleted)
+    if not is_deleted:
+        conn.execute(
+            "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
+            (op_file_id,),
+        )
+    write_log_status = "deleted" if is_deleted else "success"
+    conn.execute(
+        "INSERT INTO file_write_log (proposal_id, file_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, ?)",
+        (proposal_id, op_file_id, write_log_status, write_started_at, write_completed_at),
+    )
+
+    # Record the change in file_modifications
+    try:
+        conn.execute(
+            """
+            INSERT INTO file_modifications
+                (file_path, operation, content_before, content_after,
+                 content_hash_before, content_hash_after,
+                 changed_by, task_id, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+            """,
+            (
+                target_path,
+                "materialize",
+                before_entry["content"],
+                content_after,
+                before_entry["hash"],
+                hash_after,
+                "developer",
+                task_id,
+            ),
+        )
+    except Exception as e:
+        log_error(
+            "MEDIUM",
+            "file_editing",
+            "file_modifications",
+            f"Failed to record modification: {e}",
+            proposal_id=proposal_id,
+        )
+
+    # Optional in-process ruff pre-check (plan §7.2). Runs only while no
+    # earlier file in this proposal has already failed lint.
+    if precheck_allowed:
+        precheck = _run_ruff_precheck(resolved_path, project_dir, rel_path or target_path)
+        if precheck.get("attempted") and not precheck.get("ok"):
+            out["lint_failed"] = precheck
+            # Residual P5: a file whose write passed the ruff pre-check is NOT
+            # "success" — flip its write-log row so the audit trail carries the
+            # actual single status.
+            conn.execute(
+                "UPDATE file_write_log SET status = 'lint_failed' WHERE proposal_id = ? AND file_id = ?",
+                (proposal_id, op_file_id),
+            )
+
+    # Git add + commit using the structured git_commit() helper
+    if out["lint_failed"] is None and resolved_path is not None and rel_path is not None:
+        from core.config import get_config
+
+        git_message = f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"
+        commit_tag = get_config().get("git_commit_tag")
+        if commit_tag:
+            git_message += f" [{commit_tag}]"
+        git_result = git_commit(
+            rel_path,
+            git_message,
+            delete=is_deleted,
+        )
+        if not git_result.get("ok") and git_result.get("attempted"):
+            out["git_failed"] = git_result
+    return out
+
+
+def _combine_materialize_results(
+    write_results: list[dict],
+    lint_failed,
+    git_failed,
+    file_statuses: dict[str, str],
+    lint_failed_path: str | None,
+) -> tuple[str, dict[str, str], bool]:
+    """Status reducer (§13.8): one combined status from per-file write results,
+    honoring the single first-failure invariants for lint and git."""
+    overall_success = all(r.get("status") == "success" for r in write_results)
+    if not overall_success:
+        status = "error"
+    elif lint_failed is not None:
+        status = "lint_failed"
+    elif git_failed is not None:
+        status = "git_failed"
+    else:
+        status = "success"
+
+    if lint_failed_path is not None:
+        file_statuses[lint_failed_path] = "lint_failed"
+    # §13.2: name the genuinely-per-file outcome instead of hiding it inside
+    # the single status bin. Some files written + others not = partial.
+    partial_materialized = (bool(write_results) and status not in ("success", "error")) or (
+        status == "error" and any(r.get("status") == "success" for r in write_results)
+    )
+    return status, file_statuses, partial_materialized
+
+
+def materialize_proposal(proposal_id: str) -> dict[str, Any]:
     """
     Apply proposal (if needed), write ALL modified files in the proposal to disk,
     record the change in file_modifications, invalidate overlapping proposals,
@@ -473,44 +687,24 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         # 1. Capture BEFORE state for every file that will be touched
         # ------------------------------------------------------------------
         affected_paths = _proposal_affected_paths(proposal)
-
-        before_state: dict[str, dict] = {}
-        for path in affected_paths:
-            fid = _get_or_create_file_id_short(conn, path)
-            content = reconstruct_file_content(conn, fid) or ""
-            before_state[path] = {
-                "file_id": fid,
-                "content": content,
-                "hash": _compute_hash(content),
-            }
+        before_state = _capture_before_state(conn, affected_paths)
 
         # ------------------------------------------------------------------
         # 2. Apply the proposal in the database if not already applied
         # ------------------------------------------------------------------
-        if proposal["status"] != "applied":
-            apply_result = apply_edit_proposal(proposal_id)
-            if apply_result.get("status") != "success":
-                terminal = apply_result.get("status") or "error"
-                if terminal not in ("conflicted", "error", "failed"):
-                    terminal = "error"
-                try:
-                    conn.execute(
-                        "UPDATE edit_proposals SET status = ? WHERE proposal_id = ? AND status = 'approved'",
-                        (terminal, proposal_id),
-                    )
-                except Exception as e:
-                    print(f"    ⚠️  Exception handled in writer.py: {e}")
-                return apply_result
+        apply_result = _ensure_applied(conn, proposal, proposal_id)
+        if apply_result is not None:
+            return apply_result
 
         # ------------------------------------------------------------------
         # 3. Materialize each affected file to disk + record audit row
         # ------------------------------------------------------------------
-        write_results = []
-        file_statuses: dict[str, str] = {}
         task_id = proposal["task_id"] if "task_id" in proposal.keys() else None
         git_failed = None
         lint_failed = None
         lint_failed_path: str | None = None
+        write_results = []
+        file_statuses: dict[str, str] = {}
         # Symbol refreshes run AFTER the write transaction commits: refreshing
         # inside it opens a second writer against a connection that already
         # holds a RESERVED lock (multi-file materialize), busy-waits 30s,
@@ -518,161 +712,39 @@ def materialize_proposal(proposal_id: str) -> dict[str, Any]:  # noqa: C901
         symbol_refreshes: list[tuple[str, str]] = []
 
         for target_path in affected_paths:
-            op_file_id = before_state[target_path]["file_id"]
-            content_after = reconstruct_file_content(conn, op_file_id) or ""
-            hash_after = _compute_hash(content_after)
-
-            _deleted_row = conn.execute("SELECT is_deleted FROM files WHERE file_id = ?", (op_file_id,)).fetchone()
-            is_deleted = bool(_deleted_row[0] if _deleted_row else 0)
-
-            write_started_at = datetime.now().isoformat()
-            if is_deleted:
-                res = _delete_file_from_disk(target_path, project_dir)
-            else:
-                res = write_file_to_disk(target_path, content_after, proposal_id)
-            write_results.append(res)
-            file_statuses[target_path] = res.get("status", "error")
-            write_completed_at = datetime.now().isoformat()
-
-            if res.get("status") == "success":
-                # ----------------------------------------------------------
-                # Normalize path against the configured project_directory.
-                # Prefer the absolute path returned by write_file_to_disk
-                # when available; otherwise force containment ourselves.
-                # ----------------------------------------------------------
-                written_path = res.get("file_path") or target_path
-                try:
-                    resolved_path = _resolve_contained_path(written_path, project_dir)
-                    rel_path = str(resolved_path.relative_to(project_dir)).replace("\\", "/")
-                except ValueError as path_err:
-                    log_error(
-                        "MEDIUM",
-                        "file_editing",
-                        "path_normalize",
-                        f"Could not normalize path inside project_directory: {path_err}",
-                        proposal_id=proposal_id,
-                    )
-                    resolved_path = None
-                    rel_path = None
-
-                # Refresh symbol index (only when we have a clean relative path) —
-                # deferred until the write transaction below has committed.
-                if rel_path and rel_path.endswith(".py"):
-                    symbol_refreshes.append((rel_path, content_after))
-
-                # Update files table (skipped for deletions — row stays is_deleted)
-                if not is_deleted:
-                    conn.execute(
-                        "UPDATE files SET has_been_written_to_disk = 1, current_version = current_version + 1 WHERE file_id = ?",
-                        (op_file_id,),
-                    )
-                write_log_status = "deleted" if is_deleted else "success"
-                conn.execute(
-                    "INSERT INTO file_write_log (proposal_id, file_id, status, started_at, completed_at) VALUES (?, ?, ?, ?, ?)",
-                    (proposal_id, op_file_id, write_log_status, write_started_at, write_completed_at),
-                )
-
-                # ----------------------------------------------------------
-                # Record the change in file_modifications
-                # ----------------------------------------------------------
-                try:
-                    conn.execute(
-                        """
-                        INSERT INTO file_modifications
-                            (file_path, operation, content_before, content_after,
-                             content_hash_before, content_hash_after,
-                             changed_by, task_id, timestamp)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                        """,
-                        (
-                            target_path,
-                            "materialize",
-                            before_state[target_path]["content"],
-                            content_after,
-                            before_state[target_path]["hash"],
-                            hash_after,
-                            "developer",
-                            task_id,
-                        ),
-                    )
-                except Exception as e:
-                    log_error(
-                        "MEDIUM",
-                        "file_editing",
-                        "file_modifications",
-                        f"Failed to record modification: {e}",
-                        proposal_id=proposal_id,
-                    )
-
-                # ----------------------------------------------------------
-                # Optional in-process ruff pre-check (plan §7.2)
-                # ----------------------------------------------------------
-                precheck = {}
-                if lint_failed is None:
-                    precheck = _run_ruff_precheck(resolved_path, project_dir, rel_path or target_path)
-                    if precheck.get("attempted") and not precheck.get("ok"):
-                        lint_failed = precheck
-                        lint_failed_path = target_path
-                        # Residual P5: a file whose write passed the ruff
-                        # pre-check is NOT "success" — flip its write-log row so
-                        # the audit trail carries the actual single status.
-                        conn.execute(
-                            "UPDATE file_write_log SET status = 'lint_failed' WHERE proposal_id = ? AND file_id = ?",
-                            (proposal_id, op_file_id),
-                        )
-
-                # ----------------------------------------------------------
-                # Git add + commit using the structured git_commit() helper
-                # ----------------------------------------------------------
-                if lint_failed is None and resolved_path is not None and rel_path is not None:
-                    from core.config import get_config
-
-                    git_message = f"[PrizmForge] Agent edit via proposal {proposal_id[:8]}"
-                    commit_tag = get_config().get("git_commit_tag")
-                    if commit_tag:
-                        git_message += f" [{commit_tag}]"
-                    git_result = git_commit(
-                        rel_path,
-                        git_message,
-                        delete=is_deleted,
-                    )
-                    if not git_result.get("ok") and git_result.get("attempted"):
-                        # Keep the FIRST failure: a later file's success must
-                        # never clear an earlier hook failure (multi-file
-                        # proposals carry the failure to the caller).
-                        if git_failed is None:
-                            git_failed = git_result
-            else:
-                conn.execute(
-                    "UPDATE edit_proposals SET status = 'error' WHERE proposal_id = ?",
-                    (proposal_id,),
-                )
-                conn.execute(
-                    "INSERT INTO file_write_log (proposal_id, file_id, status, started_at, completed_at) VALUES (?, ?, 'error', ?, ?)",
-                    (proposal_id, op_file_id, write_started_at, write_completed_at),
-                )
+            before_entry = before_state[target_path]
+            op_file_id = before_entry["file_id"]
+            out = _materialize_one_file(
+                conn,
+                target_path=target_path,
+                op_file_id=op_file_id,
+                before_entry=before_entry,
+                project_dir=project_dir,
+                proposal_id=proposal_id,
+                task_id=task_id,
+                precheck_allowed=(lint_failed is None),
+            )
+            write_results.append(out["res"])
+            file_statuses[target_path] = out["res"].get("status", "error")
+            if out["lint_failed"] is not None:
+                lint_failed = out["lint_failed"]
+                lint_failed_path = target_path
+            if out["git_failed"] is not None and git_failed is None:
+                git_failed = out["git_failed"]
+            if out["symbol_refresh"] is not None:
+                symbol_refreshes.append(out["symbol_refresh"])
 
         # Invalidate overlapping proposals (existing logic)
         affected_guids_json = proposal["affected_line_guids"]
         affected = json.loads(affected_guids_json) if affected_guids_json else []
         invalidate_other_proposals(conn, proposal_id, affected)
 
-        overall_success = all(r.get("status") == "success" for r in write_results)
-        if not overall_success:
-            status = "error"
-        elif lint_failed is not None:
-            status = "lint_failed"
-        elif git_failed is not None:
-            status = "git_failed"
-        else:
-            status = "success"
-
-        if lint_failed_path is not None:
-            file_statuses[lint_failed_path] = "lint_failed"
-        # §13.2: name the genuinely-per-file outcome instead of hiding it inside
-        # the single status bin. Some files written + others not = partial.
-        partial_materialized = (bool(write_results) and status not in ("success", "error")) or (
-            status == "error" and any(r.get("status") == "success" for r in write_results)
+        status, file_statuses, partial_materialized = _combine_materialize_results(
+            write_results,
+            lint_failed,
+            git_failed,
+            file_statuses,
+            lint_failed_path,
         )
 
     # Log the hook failure AFTER the write transaction has committed: a

@@ -9,6 +9,7 @@ from agents.base import call_agent
 from agents.worker_utils import hold_while_foreground_session_active, interruptible_sleep
 from core.config import get_config
 from core.db_connection import get_db_connection
+from core.db_helpers import utcnow
 
 
 class ProjectReporterWorker:
@@ -97,7 +98,7 @@ class ProjectReporterWorker:
                 interruptible_sleep(60, lambda: self.running)
 
     def _should_generate_report(self) -> bool:
-        now = datetime.now()
+        now = utcnow()
 
         interval = self.config.get("interval_minutes", 60)
         if self.last_report_time is None:
@@ -172,7 +173,7 @@ class ProjectReporterWorker:
 
             self._record_report(report_path, report_data, response)
 
-            self.last_report_time = datetime.now()
+            self.last_report_time = utcnow()
             self._save_state()
 
             print(f"    ✅ Project report saved: {report_path}")
@@ -186,8 +187,8 @@ class ProjectReporterWorker:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            start_time = self.last_report_time or (datetime.now() - timedelta(hours=24))
-            end_time = datetime.now()
+            start_time = self.last_report_time or (utcnow() - timedelta(hours=24))
+            end_time = utcnow()
 
             cursor.execute(
                 """
@@ -289,7 +290,7 @@ class ProjectReporterWorker:
             "total_files_changed": len(set(m[0] for m in modifications)),
             "backlog_metrics": metrics,
             "run_metrics": run_metrics,
-            "trigger": ("time" if (datetime.now() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60 else "change"),
+            "trigger": ("time" if (utcnow() - start_time).total_seconds() >= self.config.get("interval_minutes", 60) * 60 else "change"),
         }
 
     def _build_prompt(self, data: dict) -> str:
@@ -337,7 +338,7 @@ Generate a human-readable project report for the period
 Please produce the full Markdown report following the exact structure defined in your system prompt."""
 
     def _save_report(self, response: str, data: dict) -> str:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+        timestamp = utcnow().strftime("%Y%m%d_%H%M")
         filename = f"project_report_{timestamp}.md"
 
         from core.config import get_config
@@ -388,7 +389,7 @@ Please produce the full Markdown report following the exact structure defined in
                                 "run_metrics": data.get("run_metrics") or {},
                             }
                         ),
-                        datetime.now().isoformat(),
+                        utcnow().isoformat(),
                         self.task_id,
                     ),
                 )

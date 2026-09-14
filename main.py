@@ -150,8 +150,6 @@ def main():  # noqa: C901
             print(f"  • {key}")
         print(f"\n✅ Valid endpoints: {', '.join(valid_endpoints)}")
         print()
-    else:
-        print(f"✅ API keys configured for {len(endpoints_config)} endpoint(s)")
 
     print(f"✅ API keys configured for {len(endpoints_config)} endpoint(s)")
 

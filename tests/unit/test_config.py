@@ -393,3 +393,27 @@ def test_validate_config_rejects_ambiguous_bare_id_without_prefix(tmp_path):
     cfg = _slashed_cfg(tmp_path)
     cfg["default_model"] = "backup/openai/gpt-4o"
     validate_config(cfg)
+
+
+class TestCliModeDocumentHonesty:
+    """§16.0: example_config.json + CONFIGURATION.md match CLIMode enum."""
+
+    _ROOT = Path(__file__).parent.parent.parent
+
+    def test_example_config_documentation_key(self):
+        cfg = json.loads((self._ROOT / "example_config.json").read_text(encoding="utf-8"))
+        cli = cfg["cli_mode"]
+        assert "_comment_mode" in cli, "cli_mode must document accepted values"
+        assert cli.get("mode") in ("semi_attended", "unattended")
+
+    def test_configuration_md_excludes_interactive(self):
+        md = (self._ROOT / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
+        # The word "interactive" must not appear as a valid mode in the
+        # cli_mode.mode row.
+        assert "`interactive`" not in md.split("## `cli_mode`")[1].split("\n\n", 1)[1].split("\n")[0]
+
+    def test_unknown_mode_falls_back_to_semi_attended(self):
+        from core.cli_modes import CLIMode, get_cli_mode_from_config
+
+        result = get_cli_mode_from_config({"cli_mode": {"mode": "totally_bogus"}})
+        assert result == CLIMode.SEMI_ATTENDED

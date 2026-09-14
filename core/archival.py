@@ -1,8 +1,7 @@
 """Context archival helpers"""
 
-from datetime import datetime
-
 from core.db_connection import get_db_connection
+from core.db_helpers import utcnow_iso
 
 
 def archive_raw_response(
@@ -42,7 +41,7 @@ def archive_raw_response(
                     response,
                     1 if parse_success else 0,
                     parse_error,
-                    datetime.now().isoformat(),
+                    utcnow_iso(),
                     model,
                     step_number,
                     response_format_status,

@@ -83,10 +83,29 @@ def cmd_init():  # noqa: C901
                         (rel_path_str,),
                     ).fetchone()
                     if existing and existing[0] == content_hash:
-                        indexed += 1
-                        if indexed % 50 == 0:
-                            print(f"  ✅ {indexed} files indexed...")
-                        continue
+                        # A4: a matching content_hash is only a fast path if the
+                        # rest of the index is present for this path — a partial
+                        # or cleared index would silently leave file_summaries /
+                        # files / file_lines rows missing forever.
+                        summary_ok = conn.execute(
+                            "SELECT 1 FROM file_summaries WHERE file_path = ?",
+                            (rel_path_str,),
+                        ).fetchone()
+                        lines_ok = conn.execute(
+                            """
+                            SELECT 1 FROM file_lines fl
+                            JOIN files f ON f.file_id = fl.file_id
+                            WHERE f.file_path = ? AND fl.is_deleted = 0
+                            LIMIT 1
+                            """,
+                            (rel_path_str,),
+                        ).fetchone()
+                        if summary_ok and lines_ok:
+                            indexed += 1
+                            if indexed % 50 == 0:
+                                print(f"  ✅ {indexed} files indexed...")
+                            continue
+                        print(f"  ♻️  {rel_path_str}: hash matches but index incomplete — re-syncing")
 
                     if sync_file_to_database(rel_path_str, content, conn=conn):
                         summary = generate_file_summary(rel_path_str, content)
@@ -326,9 +345,9 @@ def cmd_show_prompt(task_id: str, agent_name: str | None = None):
     for timestamp, agent, prompt, response, success in responses:
         print(f"\n⏰ {timestamp[:19]} | {agent} | {'✅' if success else '❌'}")
         print("-" * 60)
-        print(f"PROMPT ({len(prompt)} chars):")
-        print(prompt[:500])
-        if len(prompt) > 500:
+        print(f"PROMPT ({len(prompt) if prompt else 0} chars):")
+        print(prompt[:500] if prompt else "NO PROMPT")
+        if prompt and len(prompt) > 500:
             print(f"... +{len(prompt) - 500} more chars")
         print(f"\nRESPONSE ({len(response) if response else 0} chars):")
         print(response[:300] if response else "NO RESPONSE")
@@ -378,9 +397,19 @@ def cmd_export_db(output_dir: Path | None = None, task_id: str | None = None):
 
         for table_name in tables:
             try:
-                # Filter by task_id if supplied AND table has task_id column
+                if not _is_safe_table_name(table_name):
+                    print(f"  ⚠️  {table_name}: invalid table name — skipped")
+                    continue
+
                 ident = _quote_identifier(table_name)
-                if task_id and table_has_task_id(cursor, table_name):
+                has_task_col = table_has_task_id(cursor, table_name)
+                if task_id and not has_task_col:
+                    # A1: never silently export FULL scope under a task-scoped
+                    # export just because the table lacks a task_id column.
+                    print(f"  ⏭️  {table_name}: skipped (no task_id column; not task-scoped)")
+                    continue
+
+                if task_id and has_task_col:
                     query = f"SELECT * FROM {ident} WHERE task_id = ?"
                     cursor.execute(query, (task_id,))
                 else:
@@ -403,7 +432,7 @@ def cmd_export_db(output_dir: Path | None = None, task_id: str | None = None):
 
                 exported_count += 1
                 total_rows += len(rows)
-                scope_tag = f" (filtered: {task_id})" if (task_id and table_has_task_id(cursor, table_name)) else " (all tasks)"
+                scope_tag = f" (filtered: {task_id})" if (task_id and has_task_col) else " (all tasks)"
                 print(f"  ✅ {table_name}: {len(rows)} rows{scope_tag} → {csv_file.name}")
 
             except Exception as e:
@@ -424,6 +453,14 @@ def cmd_export_db(output_dir: Path | None = None, task_id: str | None = None):
 def _quote_identifier(name: str) -> str:
     """Double-quote a SQLite identifier and escape embedded quotes."""
     return '"' + str(name).replace('"', '""') + '"'
+
+
+_SAFE_IDENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+def _is_safe_table_name(name: str) -> bool:
+    """Allowlist table names for CSV filenames (no slashes / traversal)."""
+    return bool(_SAFE_IDENT_RE.match(name or ""))
 
 
 def table_has_task_id(cursor, table_name: str) -> bool:
@@ -482,8 +519,6 @@ def cmd_list_exports():
 
 def cmd_export_specific_tables(tables: list, output_dir: Path | None = None, task_id: str | None = None):
     """Export specific tables to CSV"""
-    identifier_re = re.compile(r"^[A-Za-z0-9_]+$")
-
     if output_dir is None:
         config = get_config()
         project_dir = Path(config.get("project_directory", "./project"))
@@ -508,7 +543,7 @@ def cmd_export_specific_tables(tables: list, output_dir: Path | None = None, tas
         total_rows = 0
 
         for table_name in tables:
-            if not identifier_re.match(table_name):
+            if not _is_safe_table_name(table_name):
                 print(f"  ⚠️  {table_name}: Invalid table name")
                 continue
             try:
@@ -525,7 +560,14 @@ def cmd_export_specific_tables(tables: list, output_dir: Path | None = None, tas
                     continue
 
                 ident = _quote_identifier(table_name)
-                if task_id and table_has_task_id(cursor, table_name):
+                has_task_col = table_has_task_id(cursor, table_name)
+                if task_id and not has_task_col:
+                    # A1: never silently export FULL scope under a task-scoped
+                    # export just because the table lacks a task_id column.
+                    print(f"  ⏭️  {table_name}: skipped (no task_id column; not task-scoped)")
+                    continue
+
+                if task_id and has_task_col:
                     query = f"SELECT * FROM {ident} WHERE task_id = ?"
                     cursor.execute(query, (task_id,))
                 else:

@@ -28,7 +28,7 @@ from agents.parallel_workers import get_agent_pool
 from core.config import get_config
 from core.db import get_db_path
 from core.db_connection import get_db_connection
-from core.db_helpers import post_message
+from core.db_helpers import post_message, utcnow
 from core.token_budget import TokenBudget
 
 
@@ -226,7 +226,7 @@ class HeuristicOptimizer:
         try:
             with get_db_connection() as conn:
                 for name, profile in self.agent_profiles.items():
-                    profile.last_updated = datetime.now().isoformat()
+                    profile.last_updated = utcnow().isoformat()
                     profile_json = json.dumps(profile.to_dict())
 
                     conn.execute(
@@ -730,7 +730,7 @@ class ResourceControllerWorker:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                ten_min_ago = (datetime.now() - timedelta(minutes=10)).isoformat()
+                ten_min_ago = (utcnow() - timedelta(minutes=10)).isoformat()
 
                 cursor.execute(
                     """
@@ -757,7 +757,7 @@ class ResourceControllerWorker:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                one_min_ago = (datetime.now() - timedelta(minutes=1)).isoformat()
+                one_min_ago = (utcnow() - timedelta(minutes=1)).isoformat()
 
                 cursor.execute(
                     """
@@ -781,7 +781,7 @@ class ResourceControllerWorker:
             with get_db_connection() as conn:
                 cursor = conn.cursor()
 
-                one_min_ago = (datetime.now() - timedelta(minutes=1)).isoformat()
+                one_min_ago = (utcnow() - timedelta(minutes=1)).isoformat()
 
                 cursor.execute(
                     """
@@ -892,7 +892,7 @@ class ResourceControllerWorker:
                             (agent_name, override_model, applied_at)
                             VALUES (?, ?, ?)
                             """,
-                            (agent, model_ref, datetime.now().isoformat()),
+                            (agent, model_ref, utcnow().isoformat()),
                         )
         except Exception as e:
             print(f"    ⚠️  Failed to store model overrides: {e}")
@@ -964,7 +964,7 @@ Recommendation: {self._get_recommendation(decision)}"""
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
-                        datetime.now().isoformat(),
+                        utcnow().isoformat(),
                         self.task_id,
                         decision.level,
                         state.budget_percentage,
@@ -1058,7 +1058,7 @@ Recommendation: {self._get_recommendation(decision)}"""
         """Check if throttling is currently temporarily disabled."""
         if self.throttling_disabled_until is None:
             return False
-        return datetime.now() < self.throttling_disabled_until
+        return utcnow() < self.throttling_disabled_until
 
     def temporarily_disable_throttling(self, duration_seconds: int = 30):
         """
@@ -1067,7 +1067,7 @@ Recommendation: {self._get_recommendation(decision)}"""
         This is useful when we want background agents to run aggressively
         for one cycle (e.g. when orchestrator yields control).
         """
-        self.throttling_disabled_until = datetime.now() + timedelta(seconds=duration_seconds)
+        self.throttling_disabled_until = utcnow() + timedelta(seconds=duration_seconds)
         print(f"    🔓 Throttling temporarily disabled for {duration_seconds} seconds")
 
 
