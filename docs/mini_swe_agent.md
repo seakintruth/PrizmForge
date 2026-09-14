@@ -4,9 +4,9 @@ This document expands the README's [Governed Editing](../README.md) section into
 guide for the **shell developer** (`developer.implementation = "shell"`): how to
 enable it, what a session does, and how to operate it safely on a target repo.
 
-It is a **current‑behavior** document — the shell developer shipped and stabilized
-across review, cold‑start, and soak rounds. Open follow‑ups live in
-[`docs/ROADMAP_TODO.md`](ROADMAP_TODO.md) §3 (mini‑swe agent open items); the
+It is a **current-behavior** document — the shell developer shipped and stabilized
+across review, cold-start, and soak rounds. Open follow-ups live in
+[`docs/ROADMAP_TODO.md`](ROADMAP_TODO.md) §3 (mini-swe agent open items); the
 authoritative `config.json` schema is [`docs/CONFIGURATION.md`](CONFIGURATION.md).
 
 ---

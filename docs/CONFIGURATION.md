@@ -51,6 +51,14 @@ Validation runs at load (`core.config.validate_config`). Invalid types raise `Va
 | `feedback` | object | optional | Backlog aging |
 | `content_safety` | object | optional | Binary / extension guards |
 
+## `evolve`
+
+| Key | Type | Default / required | Description |
+|-----|------|--------------------|-------------|
+| `enabled` | bool | `false` | Master switch for the harness-evolution loop. Must stay `false` until the §12.8 enablement gate is satisfied (see TODO.md §12.8).
+| `max_edits_per_iteration` | int | `1` | Upper bound on governed proposals per evolve iteration.
+| `max_tokens_per_iteration` | int | `0` | Upper bound on tokenizer-count consumption per iteration (`0` = no cap).
+
 ---
 
 ## `cli_mode`
