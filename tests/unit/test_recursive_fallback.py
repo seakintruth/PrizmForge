@@ -225,9 +225,64 @@ def test_both_locked_does_not_infinite_loop(call_env, capfd):
     assert tokens == 0
     assert len(mgr.fallback_calls) <= 4
     assert mgr.max_depth < 12
-    assert sleeps and all(30 <= s <= 120 for s in sleeps)
+    # §15.4: latch-aware sleep — the 400s latch is crossed up to the default
+    # 600s ceiling instead of re-polling every 120s.
+    assert sleeps and all(30 <= s <= 600 for s in sleeps)
     assert any(o.get("kind") == "no_alternate_endpoint" for o in outcomes)
     assert "No alternate endpoints available" in capfd.readouterr().out
+
+
+def test_no_alternate_sleep_respects_latch_and_config(call_env, capfd):
+    """§15.4: sleep crosses the real latch time, bounded by a configurable max.
+
+    Default ceiling is 600s (§15.4: 120s re-polls burned the whole unattended
+    window when everything was latched for hours). An operator can shrink it
+    via ``fallback_settings.no_alternate_max_sleep_seconds``; the 30s floor
+    still holds.
+    """
+    base = call_env
+    a = _Ep("gemini", available=False, status="rate_limited")
+    b = _Ep("beta_company", available=False, status="rate_limited")
+    a.health._wait = 4000
+    b.health._wait = 4000
+    mgr = _PingPongManager(a, b)
+    sleeps: list[float] = []
+    default_cfg = dict(base.get_config())
+    default_cfg.update({"fallback_settings": {"enabled": True}})
+
+    def config_with(settings):
+        cfg = dict(default_cfg)
+        cfg["fallback_settings"] = settings
+        return cfg
+
+    # 4000s latch with the default 600s ceiling → sleep capped at 600.
+    with patch.object(base, "get_endpoint_manager", lambda: mgr):
+        with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: None):
+            with patch("agents.base.post_json", side_effect=AssertionError("latched endpoints must not call the API")):
+                with patch("time.sleep", side_effect=sleeps.append):
+                    base.call_endpoint([{"role": "user", "content": "hi"}], model="gemini/model-a")
+    assert sleeps and max(sleeps) == 600
+
+    # Operator shrinks the ceiling to 60s → the 4000s latch sleeps 60s, not 600.
+    sleeps.clear()
+    with patch.object(base, "get_endpoint_manager", lambda: mgr):
+        with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: None):
+            with patch("agents.base.post_json", side_effect=AssertionError("latched endpoints must not call the API")):
+                with patch.object(base, "get_config", lambda: config_with({"no_alternate_max_sleep_seconds": 60})):
+                    with patch("time.sleep", side_effect=sleeps.append):
+                        base.call_endpoint([{"role": "user", "content": "hi"}], model="gemini/model-a")
+    assert sleeps and max(sleeps) == 60
+
+    # A configured ceiling below the 30s floor never goes below the floor.
+    sleeps.clear()
+    tiny = config_with({"no_alternate_max_sleep_seconds": 5})
+    with patch.object(base, "get_endpoint_manager", lambda: mgr):
+        with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: None):
+            with patch("agents.base.post_json", side_effect=AssertionError("latched endpoints must not call the API")):
+                with patch.object(base, "get_config", lambda: tiny):
+                    with patch("time.sleep", side_effect=sleeps.append):
+                        base.call_endpoint([{"role": "user", "content": "hi"}], model="gemini/model-a")
+    assert sleeps and min(sleeps) >= 30
 
 
 def test_budget_ping_pong_cannot_exceed_depth(call_env):

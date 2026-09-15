@@ -111,6 +111,7 @@ config typo.
 |-----|------|-------------|
 | `enabled` | bool | Enable endpoint failover |
 | `max_fallback_attempts` | int | Attempts across endpoints |
+| `no_alternate_max_sleep_seconds` | int | Ceiling (seconds) for the no-alternate recheck when every endpoint is latched (§15.4). Default 600. Sleep crosses the real latch instead of re-polling every 120s; floor 30s. |
 | `cooldown_on_exhaustion_minutes` | number | |
 | `cooldown_on_lock_minutes` | number | API key lock |
 | `cooldown_on_rate_limit_minutes` | number | |

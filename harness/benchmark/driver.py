@@ -197,6 +197,7 @@ def run_benchmark(
     iteration_timeout_s: float | None = None,
     endpoints: dict[str, Any] | None = None,
     model: str | None = None,
+    config_overrides: dict[str, Any] | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Run the benchmark; returns the aggregated results dict (also persisted).
@@ -207,8 +208,9 @@ def run_benchmark(
     leakage of agent-created files). ``trial_timeout_s`` / ``iteration_timeout_s``
     bound a hung run; the config is swapped to a hermetic bench config for the
     duration — or, when ``endpoints`` / ``model`` are given, to a live config
-    (§13.7/§14.6). ``dry_run`` validates the manifest + an isolated DB without
-    any LLM calls.
+    (§13.7/§14.6). ``config_overrides`` layers a caller-controlled config
+    overlay on every trial (used by §12.6 attribution swaps). ``dry_run``
+    validates the manifest + an isolated DB without any LLM calls.
     """
     base = Path(project_dir) if project_dir else prepare_workspace(Path("."))
     bench_dir = prepare_workspace(base)
@@ -265,14 +267,16 @@ def run_benchmark(
                     capped = True
                     break
                 trial_dir = prepare_workspace(bench_dir)
-                overrides = None
+                ov = dict(config_overrides or {})
                 if task.is_terminal:
-                    overrides = {"developer": {"implementation": "shell", "task_scope": "strict"}}
+                    dev = dict(ov.get("developer") or {})
+                    dev.update({"implementation": "shell", "task_scope": "strict"})
+                    ov["developer"] = dev
                     work_dir = materialize_terminal_task(task, trial_dir, clone_cache)
                 else:
                     work_dir = trial_dir
                 trial_budget = task.timeout_s if task.timeout_s is not None else trial_timeout_s
-                with use_bench_config(work_dir, overrides=overrides, endpoints=endpoints, model=model):
+                with use_bench_config(work_dir, overrides=ov or None, endpoints=endpoints, model=model):
                     tr = run_trial(
                         task,
                         iteration,

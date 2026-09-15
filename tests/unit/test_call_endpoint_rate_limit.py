@@ -252,7 +252,7 @@ def test_local_latch_skip_prints_dump_without_calling_api(call_endpoint_env, cap
     assert "Last HTTP dump from when this latch was set:" not in out
     assert "body: prior" not in out
     assert answer is None
-    assert sleeps[0] == 120  # 272s wait clamped to the 30..120 backoff window
+    assert sleeps[0] == 272  # §15.4: sleep crosses the real 272s latch (≤ 600s default ceiling)
 
 
 class _LatchesAfterFailureHealth(SimpleNamespace):
@@ -694,7 +694,7 @@ def test_skip_path_all_parked_sleeps_bounded_backoff(call_endpoint_env, capfd):
             answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
 
     assert answer is None
-    assert sleeps[0] == 120
+    assert sleeps[0] == 300  # §15.4: crosses the real 300s latch (≤ 600s default ceiling)
     out = capfd.readouterr().out
     assert "LOCAL health latch" in out
     assert "No alternate endpoints available" in out
@@ -898,7 +898,8 @@ def test_502_falls_back_after_retries_exhausted(call_endpoint_env, capfd):
 
 def test_concurrent_agents_observe_shared_latch_bound_backoff(call_endpoint_env, capfd):
     """While a 503 latch (~590s) is active, another agent observes the shared
-    latch and sleeps a bounded backoff, not the full remaining wait."""
+    latch and sleeps once across the remaining wait (≤ the 600s §15.4 ceiling),
+    not a hot-loop poll."""
     base = call_endpoint_env
     fake = _FakeEndpoint()
     fake.health = SimpleNamespace(
@@ -918,7 +919,7 @@ def test_concurrent_agents_observe_shared_latch_bound_backoff(call_endpoint_env,
             answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
 
     assert answer is None
-    assert sleeps == [120]  # 590s remaining clamped to the 30..120 window
+    assert sleeps == [590]  # §15.4: 590s remaining crosses the latch (≤ 600s default ceiling)
     assert "LOCAL health latch" in capfd.readouterr().out
 
 

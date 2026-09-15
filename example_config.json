@@ -96,8 +96,10 @@
   },
   "default_endpoint": "openrouter",
   "fallback_settings": {
+    "_comment_no_alternate_max_sleep_seconds": "Ceiling (seconds) for the no-alternate recheck sleep when every endpoint is latched (§15.4). Default 600: the sleep crosses the real latch instead of re-polling every 120s, so a long quota park doesn't burn the whole unattended window as idle polls. Floor is 30s.",
     "enabled": true,
-    "max_fallback_attempts": 2
+    "max_fallback_attempts": 2,
+    "no_alternate_max_sleep_seconds": 600
   },
   "retry_after": {
     "honor": true,

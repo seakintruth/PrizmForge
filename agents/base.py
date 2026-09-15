@@ -191,13 +191,30 @@ def _resolve_fallback(endpoint_mgr, endpoint, seen: set[str]):
     return fallback
 
 
+#: Floor for the no-alternate sleep (an endpoint latch may already be open).
+NO_ALTERNATE_MIN_SLEEP = 30
+#: Default ceiling for the no-alternate sleep (§15.4: 120s re-polls burned the
+#: entire unattended window when everything was latched for hours; sleep across
+#: the real latch instead, capped so a config fix is picked up within a bounded
+#: number of rechecks). Tunable via ``fallback_settings.no_alternate_max_sleep_seconds``.
+NO_ALTERNATE_DEFAULT_MAX_SLEEP = 600
+
+
 def _bounded_no_alternate_sleep(endpoint) -> None:
-    wait_time = 30
+    wait_time = NO_ALTERNATE_MIN_SLEEP
     try:
         wait_time = int(endpoint.health.time_until_available())
     except Exception:
-        wait_time = 30
-    backoff_s = min(max(wait_time, 30), 120)
+        wait_time = NO_ALTERNATE_MIN_SLEEP
+    max_sleep = NO_ALTERNATE_DEFAULT_MAX_SLEEP
+    try:
+        fs = get_config().get("fallback_settings") or {}
+        configured = fs.get("no_alternate_max_sleep_seconds")
+        if configured is not None:
+            max_sleep = max(int(configured), NO_ALTERNATE_MIN_SLEEP)
+    except Exception:
+        max_sleep = NO_ALTERNATE_DEFAULT_MAX_SLEEP
+    backoff_s = min(max(wait_time, NO_ALTERNATE_MIN_SLEEP), max_sleep)
     print(f"   ❌ No alternate endpoints available — recheck in {backoff_s}s")
     time.sleep(backoff_s)
 
