@@ -445,8 +445,27 @@ def test_run_injects_symbol_context_when_symbol_map_enabled(tmp_path, temp_db):
         joined = "\n".join(user)
         assert "greet@2" in joined
         assert ".PrizmForge/indexes/index_symbols.md" in joined
+        # Regression (Soak31 review): with a known target symbol line the first
+        # command must start the read at the definition line, not force line 1.
+        assert "sed -n '2,+40p' app.py" in joined
+        assert "sed -n '1,80p' app.py" not in joined
         map_file = wt.working_dir() / ".PrizmForge/indexes/index_symbols.md"
         assert map_file.exists()
+    finally:
+        wt.cleanup()
+
+
+def test_run_symbol_context_keeps_head_read_when_no_symbols(tmp_path, temp_db):
+    # No file_symbols rows for the target (empty DB) -> no symbol line known,
+    # so the opening-read fallback stays the plain head read.
+    root = _repo(tmp_path / "repo")
+    session, wt, _state = _real_session(root, ["```bash\nfalse\n```"])
+    try:
+        result = session.run("fix the greet function in app.py")
+        user = [m["content"] for m in result.messages if m.get("role") == "user"]
+        joined = "\n".join(user)
+        assert "sed -n '1,80p' app.py" in joined
+        assert "greet@2" not in joined
     finally:
         wt.cleanup()
 

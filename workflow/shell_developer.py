@@ -217,7 +217,7 @@ class ShellDeveloperConfig:
             task_scope=str(cfg.get("task_scope", "auto") or "auto"),
             explore_step_cap=int(cfg.get("explore_step_cap", 12) or 12),
             echo_stdout=_config_bool(cfg, "echo_stdout", True),
-            symbol_map=bool(cfg.get("symbol_map", True)),
+            symbol_map=_config_bool(cfg, "symbol_map", True),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
             print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
@@ -373,6 +373,41 @@ def build_instance_prompt(task_text: str, *, explore_note: bool = False, discove
     return base
 
 
+def _primary_symbol_line(target_path: str | None) -> int | None:
+    """Lowest (first) symbol definition line in the target file, else None.
+
+    Feeds the mandatory first read: when a target symbol line is known the
+    session's opening command becomes `sed -n '{line},+40p'` instead of the
+    Soak31 top-down `sed -n '1,80p'` (sed 1,80 -> cat -> sed 80,120 ...).
+    Never raises; DB unavailability or a symbol-less target yields None and the
+    plain head-read fallback stays in effect.
+    """
+    if not target_path:
+        return None
+    try:
+        from core.symbol_index import fetch_symbol_rows
+
+        rows = fetch_symbol_rows(file_paths=[str(target_path)]) or []
+    except Exception:
+        rows = []
+    lines = [r.get("lineno") for r in rows if isinstance(r.get("lineno"), int)]
+    return min(lines) if lines else None
+
+
+def build_first_read_command(target_path: str | None, symbol_line: int | None) -> str:
+    """The session's mandatory opening read, symbol-aware.
+
+    `sed -n '{line},+40p' {target}` starts at the target's definition line when
+    the symbol index knows one; otherwise the plain head read `sed -n '1,80p'`
+    is the fallback (no symbols -> nothing better to anchor on).
+    """
+    if target_path and symbol_line:
+        return f"sed -n '{symbol_line},+40p' {target_path}"
+    if target_path:
+        return f"sed -n '1,80p' {target_path}"
+    return ""
+
+
 def build_symbol_context_block(target_path: str | None, *, map_path: str = "") -> str:
     """Symbol-index context for the shell developer's first prompt.
 
@@ -451,6 +486,7 @@ def build_inspect_prompt(
     explore_note: bool = False,
     discovery_note: str = "",
     symbol_context: str = "",
+    symbol_line: int | None = None,
 ) -> str:
     listing = (evidence.get("output_excerpt") or "").strip()
     header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
@@ -460,7 +496,7 @@ def build_inspect_prompt(
             f"{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
             f"{symbol_context}\n"
             "Reply with exactly one closed bash block or ```edit block. First command must be:\n"
-            f"sed -n '1,80p' {target_path}"
+            f"{build_first_read_command(target_path, symbol_line)}"
         )
     return (
         f"{header}{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
@@ -529,6 +565,7 @@ def build_chat_prompt(
     explore_note: bool = False,
     discovery_note: str = "",
     symbol_context: str = "",
+    symbol_line: int | None = None,
 ) -> str:
     """Build the chat-mode user prompt: JSON table of past steps + the next-row
     instruction. Mirrors build_inspect_prompt but asks the model to complete the
@@ -542,7 +579,7 @@ def build_chat_prompt(
         table = json.dumps(project_step_table(steps), indent=2)
         body = f"Steps executed so far:\n```json\n{table}\n```\n\n{task_block}"
     if target_path:
-        body += f"\n\nTarget file: {target_path}\nFirst command must be:\nsed -n '1,80p' {target_path}"
+        body += f"\n\nTarget file: {target_path}\nFirst command must be:\n{build_first_read_command(target_path, symbol_line)}"
     if symbol_context:
         body += f"\n\n{symbol_context}"
     body += (
@@ -1839,7 +1876,9 @@ class ShellDeveloperSession:
                 }
             )
         symbol_context = ""
+        symbol_line = None
         if self.cfg.symbol_map:
+            symbol_line = _primary_symbol_line(self.target_path)
             symbol_context = build_symbol_context_block(
                 self.target_path,
                 map_path=write_worktree_symbol_map(self.wt),
@@ -1857,6 +1896,7 @@ class ShellDeveloperSession:
                         explore_note=self.cfg.fiability == "exploratory",
                         discovery_note=self.discovery_note,
                         symbol_context=symbol_context,
+                        symbol_line=symbol_line,
                     ),
                 }
             )
@@ -1872,6 +1912,7 @@ class ShellDeveloperSession:
                         explore_note=self.cfg.fiability == "exploratory",
                         discovery_note=self.discovery_note,
                         symbol_context=symbol_context,
+                        symbol_line=symbol_line,
                     ),
                 }
             )

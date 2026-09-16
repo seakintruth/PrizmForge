@@ -762,4 +762,61 @@ def test_from_config_symbol_map_defaults_true_and_parses(monkeypatch):
         "get_config",
         lambda: {"shell_developer": {"symbol_map": "false"}},
     )
-    assert sd.ShellDeveloperConfig.from_config().symbol_map is True
+    assert sd.ShellDeveloperConfig.from_config().symbol_map is False
+
+
+def test_from_config_symbol_map_tolerates_string_truthy(monkeypatch):
+    for raw in ("true", "yes", "on", "1"):
+        monkeypatch.setattr(sd, "get_config", lambda raw=raw: {"shell_developer": {"symbol_map": raw}})
+        assert sd.ShellDeveloperConfig.from_config().symbol_map is True
+
+
+# =========================================================================
+# Symbol-aware opening read (Soak31 review: no forced line-1 head read)
+# =========================================================================
+def test_build_first_read_command_symbol_aware():
+    assert sd.build_first_read_command("app.py", 65) == "sed -n '65,+40p' app.py"
+    assert sd.build_first_read_command("app.py", None) == "sed -n '1,80p' app.py"
+    assert sd.build_first_read_command(None, 65) == ""
+
+
+def test_inspect_prompt_does_not_force_line1_when_symbol_known():
+    prompt = sd.build_inspect_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+        symbol_line=65,
+    )
+    assert "sed -n '65,+40p' app.py" in prompt
+    assert "sed -n '1,80p'" not in prompt
+
+
+def test_inspect_prompt_keeps_head_read_without_symbol_line():
+    prompt = sd.build_inspect_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+    )
+    assert "sed -n '1,80p' app.py" in prompt
+
+
+def test_chat_prompt_does_not_force_line1_when_symbol_known():
+    prompt = sd.build_chat_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+        [],
+        symbol_line=72,
+    )
+    assert "sed -n '72,+40p' app.py" in prompt
+    assert "sed -n '1,80p'" not in prompt
+
+
+def test_chat_prompt_keeps_head_read_without_symbol_line():
+    prompt = sd.build_chat_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+        [],
+    )
+    assert "sed -n '1,80p' app.py" in prompt
