@@ -300,3 +300,188 @@ def test_exploratory_cap_and_note(tmp_path):
         assert any("exploration task" in c for c in user)
     finally:
         wt.cleanup()
+
+
+def test_no_progress_stall_skipped_for_exploratory_session(tmp_path):
+    # Soak30: a "review the TODOs" exploration session read 10 files with zero
+    # writes and died on no_progress_stall_limit=10 before it could decide there
+    # was nothing to change. Exploratory sessions must read freely; the thinned
+    # step budget is the only cap.
+    root = _repo(tmp_path / "repo")
+    script = [
+        "```bash\nsed -n '1,3p' app.py\n```",
+        "```bash\ngrep return app.py\n```",
+        "```bash\nls app.py\n```",
+        f"{FINISH}\nInspected; no safe change.",
+    ]
+    session, wt, _state = _real_session(
+        root,
+        script,
+        step_limit=8,
+        no_change_stall_limit=6,
+        no_progress_stall_limit=2,
+        fiability="exploratory",
+    )
+    try:
+        result = session.run("Review app.py")
+        assert result.exit_status == "Finished"
+        assert "NoProgress" not in result.summary
+    finally:
+        wt.cleanup()
+
+
+def test_no_progress_stall_still_fires_for_mutation_session(tmp_path):
+    # The Soak18 discovery-loop guard stays for mutation sessions: novel
+    # no-change steps accumulate and exit "NoProgress".
+    root = _repo(tmp_path / "repo")
+    script = [
+        "```bash\nsed -n '1,3p' app.py\n```",
+        "```bash\ngrep return app.py\n```",
+        "```bash\nls app.py\n```",
+    ]
+    session, wt, _state = _real_session(
+        root,
+        script,
+        step_limit=8,
+        no_change_stall_limit=6,
+        no_progress_stall_limit=2,
+        fiability="targeted",
+    )
+    try:
+        result = session.run("Review app.py")
+        assert result.exit_status == "NoProgress"
+    finally:
+        wt.cleanup()
+
+
+def test_exploratory_counts_every_third_step_toward_caps(tmp_path):
+    # Exploratory sessions count every third step toward the mutate budget, so
+    # step_limit=4 tolerates all 10 raw probes (ceil(10/3)=4) before
+    # LimitsExceeded; a 1:1 mutation session would have died at raw step 4.
+    root = _repo(tmp_path / "repo")
+    script = [f"```bash\necho probe{i}\n```" for i in range(10)]
+    session, wt, _state = _real_session(
+        root,
+        script,
+        step_limit=4,
+        no_change_stall_limit=0,
+        no_progress_stall_limit=0,
+        fiability="exploratory",
+    )
+    try:
+        result = session.run("Review app.py")
+        assert result.exit_status == "LimitsExceeded"
+        assert result.mutate_calls == 10  # raw, not thinned
+    finally:
+        wt.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Symbol-index feed (Soak31): inline target symbols + worktree map file
+# ---------------------------------------------------------------------------
+def test_build_symbol_context_block_inlines_target_symbols(temp_db):
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute(
+            "INSERT INTO file_symbols (file_path, kind, name, qualname, lineno, updated_at) VALUES"
+            "('core/session_projection.py', 'function', '_trim', '_trim', 65, 'x'),"
+            "('core/session_projection.py', 'function', '_one_line_result', '_one_line_result', 72, 'x')"
+        )
+    block = sd.build_symbol_context_block("core/session_projection.py")
+    assert "_trim@65" in block
+    assert "_one_line_result@72" in block
+    assert "core/session_projection.py" in block
+
+
+def test_build_symbol_context_block_points_at_map(tmp_path):
+    block = sd.build_symbol_context_block("app.py", map_path=".PrizmForge/indexes/index_symbols.md")
+    assert ".PrizmForge/indexes/index_symbols.md" in block
+    assert "grep" in block
+
+
+def test_build_symbol_context_block_tolerates_missing_db():
+    assert sd.build_symbol_context_block("nope.py") == ""
+
+
+def test_write_worktree_symbol_map_writes_greppable_map(tmp_path, temp_db):
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO file_symbols (file_path, kind, name, qualname, lineno, updated_at) VALUES('app.py', 'function', 'greet', 'greet', 2, 'x')")
+    root = _repo(tmp_path / "repo")
+    wt = sd.ShellWorktree(root, parent_dir=str(root.parent))
+    wt.create()
+    try:
+        rel = sd.write_worktree_symbol_map(wt)
+        assert rel == ".PrizmForge/indexes/index_symbols.md"
+        text = (wt.working_dir() / rel).read_text()
+        assert "path | kind | qualname | lineno" in text
+        assert "app.py | function | greet | 2" in text
+    finally:
+        wt.cleanup()
+
+
+def test_write_worktree_symbol_map_empty_db_returns_empty(tmp_path):
+    root = _repo(tmp_path / "repo")
+    wt = sd.ShellWorktree(root, parent_dir=str(root.parent))
+    wt.create()
+    try:
+        assert sd.write_worktree_symbol_map(wt) == ""
+    finally:
+        wt.cleanup()
+
+
+def test_run_injects_symbol_context_when_symbol_map_enabled(tmp_path, temp_db):
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO file_symbols (file_path, kind, name, qualname, lineno, updated_at) VALUES('app.py', 'function', 'greet', 'greet', 2, 'x')")
+    root = _repo(tmp_path / "repo")
+    session, wt, _state = _real_session(root, ["```bash\nfalse\n```"])
+    try:
+        result = session.run("fix the greet function in app.py")
+        user = [m["content"] for m in result.messages if m.get("role") == "user"]
+        joined = "\n".join(user)
+        assert "greet@2" in joined
+        assert ".PrizmForge/indexes/index_symbols.md" in joined
+        # Regression (Soak31 review): with a known target symbol line the first
+        # command must start the read at the definition line, not force line 1.
+        assert "sed -n '2,+40p' app.py" in joined
+        assert "sed -n '1,80p' app.py" not in joined
+        map_file = wt.working_dir() / ".PrizmForge/indexes/index_symbols.md"
+        assert map_file.exists()
+    finally:
+        wt.cleanup()
+
+
+def test_run_symbol_context_keeps_head_read_when_no_symbols(tmp_path, temp_db):
+    # No file_symbols rows for the target (empty DB) -> no symbol line known,
+    # so the opening-read fallback stays the plain head read.
+    root = _repo(tmp_path / "repo")
+    session, wt, _state = _real_session(root, ["```bash\nfalse\n```"])
+    try:
+        result = session.run("fix the greet function in app.py")
+        user = [m["content"] for m in result.messages if m.get("role") == "user"]
+        joined = "\n".join(user)
+        assert "sed -n '1,80p' app.py" in joined
+        assert "greet@2" not in joined
+    finally:
+        wt.cleanup()
+
+
+def test_run_skips_symbol_context_when_symbol_map_disabled(tmp_path, temp_db):
+    from core.db_connection import get_db_connection
+
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO file_symbols (file_path, kind, name, qualname, lineno, updated_at) VALUES('app.py', 'function', 'greet', 'greet', 2, 'x')")
+    root = _repo(tmp_path / "repo")
+    session, wt, _state = _real_session(root, ["```bash\nfalse\n```"], symbol_map=False)
+    try:
+        result = session.run("fix the greet function in app.py")
+        user = [m["content"] for m in result.messages if m.get("role") == "user"]
+        joined = "\n".join(user)
+        assert "greet@2" not in joined
+        assert ".PrizmForge/indexes/index_symbols.md" not in joined
+    finally:
+        wt.cleanup()

@@ -73,6 +73,40 @@ FULL_REPLACE_MAX_LINES = 200
 SHELL_PROMOTE_MAX_DIFF_LINES = 80
 INSPECT_STEP_CAP = 40  # extra budget; does not burn step_limit (mutate budget)
 
+#: Operator-console echo: how much of a command's stdout to print live. Long
+#: unattended sessions are watchable without flooding the terminal with a
+#: 6k-char ``cat`` of a whole file.
+ECHO_MAX_LINES = 30
+ECHO_MAX_LINE_CHARS = 220
+ECHO_MAX_COMMAND_CHARS = 200
+
+
+def _config_bool(cfg: dict[str, Any], key: str, default: bool) -> bool:
+    """Parse a config boolean tolerantly (`true` / `yes` / `on` / `1`)."""
+    value = cfg.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _echo_console_block(output: str) -> str:
+    """Bound a command's stdout for the operator console (line + length caps).
+
+    Shows the first ``ECHO_MAX_LINES`` lines (each capped at
+    ``ECHO_MAX_LINE_CHARS``) with an explicit note when lines were hidden; the
+    model still receives the full ``max_output_chars`` view in the observation.
+    """
+    lines = output.splitlines()
+    if not lines or not output.strip():
+        return ""
+    shown = [f"        {line[:ECHO_MAX_LINE_CHARS]}" for line in lines[:ECHO_MAX_LINES]]
+    hidden = len(lines) - ECHO_MAX_LINES
+    if hidden > 0:
+        shown.append(f"        … [{hidden} more lines, {len(output)} chars]")
+    return "\n".join(shown)
+
 
 def _fallback_order_for_targets(
     fallback_order: list[str],
@@ -139,12 +173,22 @@ class ShellDeveloperConfig:
     # circled the tree with novel grep/cat steps forever (no_change_stall_limit
     # only counted repeated/failing actions). 0 disables.
     no_progress_stall_limit: int = 10
+    # Operator console echo: when True, each executed shell command and its
+    # (bounded) stdout are printed live so a long unattended developer session
+    # is watchable instead of silent until the session exit line.
+    echo_stdout: bool = True
     # Task-fiability pre-flight. "auto": an untargeted task ("review the
     # TODO list") gets its step_limit capped to explore_step_cap so it cannot
     # burn a full session hunting a file. "strict": an untargeted task
     # short-circuits before any LLM call.
     task_scope: str = "auto"
     explore_step_cap: int = 12
+    # Feed the shell developer the project symbol index: a repo-wide
+    # (path | kind | qualname | lineno) map is materialized inside the worktree
+    # at .PrizmForge/indexes/index_symbols.md and the seed-target file's symbols
+    # are inlined into the first prompt, so reads start at definition lines
+    # instead of file top. False disables both.
+    symbol_map: bool = True
     # Internal: computed by the turn entry point (not read from config) so the
     # prompt can tell the model when the task is exploratory, not mutation-led.
     fiability: str = "targeted"  # "targeted" | "exploratory"
@@ -172,6 +216,8 @@ class ShellDeveloperConfig:
             no_progress_stall_limit=int(cfg.get("no_progress_stall_limit", 10) or 10),
             task_scope=str(cfg.get("task_scope", "auto") or "auto"),
             explore_step_cap=int(cfg.get("explore_step_cap", 12) or 12),
+            echo_stdout=_config_bool(cfg, "echo_stdout", True),
+            symbol_map=_config_bool(cfg, "symbol_map", True),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
             print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
@@ -327,12 +373,120 @@ def build_instance_prompt(task_text: str, *, explore_note: bool = False, discove
     return base
 
 
+def _primary_symbol_line(target_path: str | None) -> int | None:
+    """Lowest (first) symbol definition line in the target file, else None.
+
+    Feeds the mandatory first read: when a target symbol line is known the
+    session's opening command becomes `sed -n '{line},+40p'` instead of the
+    Soak31 top-down `sed -n '1,80p'` (sed 1,80 -> cat -> sed 80,120 ...).
+    Never raises; DB unavailability or a symbol-less target yields None and the
+    plain head-read fallback stays in effect.
+    """
+    if not target_path:
+        return None
+    try:
+        from core.symbol_index import fetch_symbol_rows
+
+        rows = fetch_symbol_rows(file_paths=[str(target_path)]) or []
+    except Exception:
+        rows = []
+    lines = [r.get("lineno") for r in rows if isinstance(r.get("lineno"), int)]
+    return min(lines) if lines else None
+
+
+def build_first_read_command(target_path: str | None, symbol_line: int | None) -> str:
+    """The session's mandatory opening read, symbol-aware.
+
+    `sed -n '{line},+40p' {target}` starts at the target's definition line when
+    the symbol index knows one; otherwise the plain head read `sed -n '1,80p'`
+    is the fallback (no symbols -> nothing better to anchor on).
+    """
+    if target_path and symbol_line:
+        return f"sed -n '{symbol_line},+40p' {target_path}"
+    if target_path:
+        return f"sed -n '1,80p' {target_path}"
+    return ""
+
+
+def build_symbol_context_block(target_path: str | None, *, map_path: str = "") -> str:
+    """Symbol-index context for the shell developer's first prompt.
+
+    When a repo-wide symbol map was materialized in the worktree, points the
+    model at it (path | kind | qualname | lineno rows) for greppable lookup. When
+    the seed resolved a target file, inlines that file's symbols with their
+    exact definition lines so the first read starts at the target symbol's line
+    instead of file top (Soak31: sed 1,80 -> cat whole file -> sed 80,120 ->
+    sed 55,105 to locate one two-line function). Never raises; DB unavailability
+    collapses to no context.
+    """
+    parts: list[str] = []
+    if map_path:
+        parts.append(
+            f"A repo-wide symbol map (path | kind | qualname | lineno) is at `{map_path}`. "
+            "Use grep on it to locate definition lines before reading files, then sed from "
+            "that line instead of reading from the top of the file."
+        )
+    if target_path:
+        target = str(target_path)
+        try:
+            from core.symbol_index import fetch_symbol_rows
+
+            rows = fetch_symbol_rows(file_paths=[target]) or []
+        except Exception:
+            rows = []
+        if rows:
+            syms = ", ".join(f"{r.get('name')}@{r.get('lineno')}" for r in rows[:40])
+            parts.append(f"Target file symbols ({target}): {syms}. Start your first read at the target symbol's line, not at line 1.")
+    return "\n".join(parts)
+
+
+def write_worktree_symbol_map(
+    worktree: Any,
+    *,
+    max_rows: int = 20000,
+) -> str:
+    """Materialize the project symbol index inside the worktree for grep lookup.
+
+    Writes `.PrizmForge/indexes/index_symbols.md` (one `path | kind | qualname |
+    lineno` row per symbol) from the governed `file_symbols` table so the shell
+    developer can find definition lines for any file, not just the seed target.
+    Returns the relative map path on success, "" on any failure (never raises).
+    The `.PrizmForge` directory is git-ignored so the map never marks the
+    worktree dirty or leaks into governed edits.
+    """
+    rel = ".PrizmForge/indexes/index_symbols.md"
+    try:
+        from core.symbol_index import fetch_symbol_rows
+
+        rows = fetch_symbol_rows(path_prefix="", limit=max_rows) or []
+        if not rows:
+            return ""
+        lines = [f"{r.get('file_path')} | {r.get('kind')} | {r.get('qualname')} | {r.get('lineno')}" for r in rows]
+        cwd = None
+        if worktree is not None:
+            try:
+                cwd = Path(worktree.working_dir())
+            except Exception:
+                cwd = None
+        if cwd is None:
+            return ""
+        target = cwd / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        header = "# Project symbol index (auto-generated for the shell developer)\n# rows: path | kind | qualname | lineno\n"
+        target.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
+        return rel
+    except Exception:
+        return ""
+
+
 def build_inspect_prompt(
     task_text: str,
     evidence: dict[str, Any],
     target_path: str | None,
     explore_note: bool = False,
     discovery_note: str = "",
+    symbol_context: str = "",
+    symbol_line: int | None = None,
 ) -> str:
     listing = (evidence.get("output_excerpt") or "").strip()
     header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
@@ -340,11 +494,13 @@ def build_inspect_prompt(
         return (
             f"{header}Target file: {target_path}\n\n"
             f"{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
+            f"{symbol_context}\n"
             "Reply with exactly one closed bash block or ```edit block. First command must be:\n"
-            f"sed -n '1,80p' {target_path}"
+            f"{build_first_read_command(target_path, symbol_line)}"
         )
     return (
         f"{header}{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
+        f"{symbol_context}\n"
         "Reply with exactly one closed bash block or ```edit block. Inspect the relevant files first."
     )
 
@@ -408,6 +564,8 @@ def build_chat_prompt(
     steps: list[dict[str, Any]],
     explore_note: bool = False,
     discovery_note: str = "",
+    symbol_context: str = "",
+    symbol_line: int | None = None,
 ) -> str:
     """Build the chat-mode user prompt: JSON table of past steps + the next-row
     instruction. Mirrors build_inspect_prompt but asks the model to complete the
@@ -421,7 +579,9 @@ def build_chat_prompt(
         table = json.dumps(project_step_table(steps), indent=2)
         body = f"Steps executed so far:\n```json\n{table}\n```\n\n{task_block}"
     if target_path:
-        body += f"\n\nTarget file: {target_path}\nFirst command must be:\nsed -n '1,80p' {target_path}"
+        body += f"\n\nTarget file: {target_path}\nFirst command must be:\n{build_first_read_command(target_path, symbol_line)}"
+    if symbol_context:
+        body += f"\n\n{symbol_context}"
     body += (
         "\n\nOutput the JSON object for the next step (an edit action or a "
         "command — never both in one row; step " + str((steps[-1]["step"] if steps else 0) + 1) + ") awaiting execution:"
@@ -1460,11 +1620,41 @@ class ShellDeveloperSession:
                 return max(remaining_s, 1)
         return timeout
 
+    def _echo_shell_step(self, *, command: str, exit_code: int, output: str) -> None:
+        """Print one executed shell step live to the operator console (§15.4)."""
+        if not self.cfg.echo_stdout:
+            return
+        step = self.result.n_model_calls
+        head = command[:ECHO_MAX_COMMAND_CHARS]
+        if len(command) > ECHO_MAX_COMMAND_CHARS:
+            head += "…"
+        if exit_code != 0:
+            head += f"   (exit {exit_code})"
+        print(f"   💻 [step {step}] $ {head}")
+        block = _echo_console_block(output)
+        if block:
+            print(block)
+
     def _run_worktree_command(self, command: str) -> tuple[int, str]:
         """Run a bash command in the worktree and count it as an executed command."""
         exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
         self.result.commands_executed += 1
+        self._echo_shell_step(command=command, exit_code=exit_code, output=output)
         return exit_code, output
+
+    def _budget_steps(self, raw_steps: int) -> int:
+        """Effective step count for cap checks.
+
+        In exploratory sessions only every third executed step counts toward the
+        caps, so a read-only review gets ~3x the room before
+        ``explore_step_cap`` / ``INSPECT_STEP_CAP`` fire (Soak30: a
+        discovery-heavy "review the TODOs" session burned its stall + step
+        ceilings without reading enough of the tree). Mutation sessions always
+        count 1:1.
+        """
+        if self.cfg.fiability != "exploratory":
+            return raw_steps
+        return (raw_steps + 2) // 3
 
     def _guard_step_limits(self, command: str | None) -> bool:
         """Count one executed model step and enforce the Soak6 budget split.
@@ -1472,18 +1662,19 @@ class ShellDeveloperSession:
         Inspection commands (`sed -n`, `grep`, `ls`, git log/diff/status, ...)
         run against INSPECT_STEP_CAP; everything else (edits, writes, python)
         burns the `step_limit` mutate budget. Returns True when a limit was
-        reached and the session should break.
+        reached and the session should break. Exploratory sessions count every
+        third step toward the caps (see ``_budget_steps``).
         """
         r = self.result
         if command is not None and is_inspect_command(command):
             r.inspect_calls += 1
         else:
             r.mutate_calls += 1
-        if self.cfg.step_limit > 0 and r.mutate_calls >= self.cfg.step_limit:
+        if self.cfg.step_limit > 0 and self._budget_steps(r.mutate_calls) >= self.cfg.step_limit:
             r.exit_status = "LimitsExceeded"
             r.summary = f"mutate step limit ({self.cfg.step_limit}) reached"
             return True
-        if r.inspect_calls >= INSPECT_STEP_CAP:
+        if self._budget_steps(r.inspect_calls) >= INSPECT_STEP_CAP:
             r.exit_status = "LimitsExceeded"
             r.summary = f"inspect step cap ({INSPECT_STEP_CAP}) reached"
             return True
@@ -1540,7 +1731,9 @@ class ShellDeveloperSession:
         - no_progress_stall_limit: ANY no-change step, novel or not, so a
           discovery loop circling the tree with fresh greps also terminates
           instead of burning to the step limit (Soak18).
-        Any worktree change resets both streaks."""
+        Any worktree change resets both streaks. Exploratory sessions are
+        exempt from no-progress stall — they are expected to read without
+        writing until the explore_step_cap budget is reached."""
         if self.cfg.no_change_stall_limit <= 0 and self.cfg.no_progress_stall_limit <= 0:
             return False
         change_lines, _dtext = _worktree_change_state(self.wt)
@@ -1555,7 +1748,10 @@ class ShellDeveloperSession:
             self._no_change_steps += 1
             if self.cfg.no_change_stall_limit > 0 and self._no_change_steps >= self.cfg.no_change_stall_limit:
                 return True
-        if self.cfg.no_progress_stall_limit > 0:
+        # no_progress_stall is for mutation loops that get stuck discovering;
+        # explicit exploration tasks (fiability=exploratory) should read freely
+        # until their (thinned) step budget caps them.
+        if self.cfg.no_progress_stall_limit > 0 and self.cfg.fiability != "exploratory":
             self._no_progress_steps += 1
             if self._no_progress_steps >= self.cfg.no_progress_stall_limit:
                 return True
@@ -1679,6 +1875,14 @@ class ShellDeveloperSession:
                     "output": excerpt,
                 }
             )
+        symbol_context = ""
+        symbol_line = None
+        if self.cfg.symbol_map:
+            symbol_line = _primary_symbol_line(self.target_path)
+            symbol_context = build_symbol_context_block(
+                self.target_path,
+                map_path=write_worktree_symbol_map(self.wt),
+            )
         if self.chat_mode:
             self.messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
             self.messages.append(
@@ -1691,6 +1895,8 @@ class ShellDeveloperSession:
                         self.steps,
                         explore_note=self.cfg.fiability == "exploratory",
                         discovery_note=self.discovery_note,
+                        symbol_context=symbol_context,
+                        symbol_line=symbol_line,
                     ),
                 }
             )
@@ -1705,6 +1911,8 @@ class ShellDeveloperSession:
                         self.target_path,
                         explore_note=self.cfg.fiability == "exploratory",
                         discovery_note=self.discovery_note,
+                        symbol_context=symbol_context,
+                        symbol_line=symbol_line,
                     ),
                 }
             )
@@ -1718,8 +1926,9 @@ class ShellDeveloperSession:
                 break
             # Hard model-call safety ceiling (mutate budget + inspect cap). The
             # real budget split is enforced per-step in _guard_step_limits; this
-            # only bounds pathological loops that never run a command.
-            if self.cfg.step_limit > 0 and r.n_model_calls >= self.cfg.step_limit + INSPECT_STEP_CAP:
+            # only bounds pathological loops that never run a command. Exploratory
+            # sessions count every third call (see _budget_steps).
+            if self.cfg.step_limit > 0 and self._budget_steps(r.n_model_calls) >= self.cfg.step_limit + INSPECT_STEP_CAP:
                 r.exit_status = "LimitsExceeded"
                 r.summary = f"model-call safety ceiling ({self.cfg.step_limit + INSPECT_STEP_CAP}) reached"
                 break
@@ -1787,6 +1996,11 @@ class ShellDeveloperSession:
                 # quoting. Takes priority over any co-present bash command.
                 action = f"```edit {edit['path'] if edit.get('path') else '?'}```"
                 exit_code, output = self._apply_edit_payload(edit)
+                if self.cfg.echo_stdout:
+                    print(f"   💻 [step {r.n_model_calls}] {action}" + (f"   (exit {exit_code})" if exit_code != 0 else ""))
+                    block = _echo_console_block(output)
+                    if block:
+                        print(block)
                 self.result.target_inspected = True
                 self._record_model_health(ok=True, kind="command_executed")
                 self._record_model_health(ok=exit_code == 0, kind="command_success")
@@ -1959,6 +2173,11 @@ class ShellDeveloperSession:
             code, output = self.wt.run_test_command(self.cfg.test_command, self.cfg.test_timeout_seconds)
             r.test_exit_code = code
             r.test_output = output[-self.cfg.max_output_chars :]
+            if self.cfg.echo_stdout and output.strip():
+                print(f"   ⚙️  Verification (exit {code}):")
+                block = _echo_console_block(output)
+                if block:
+                    print(block)
         self._record_model_health(ok=r.exit_status == "Finished", kind="session_outcome")
         return r
 

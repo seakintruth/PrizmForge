@@ -111,6 +111,7 @@ config typo.
 |-----|------|-------------|
 | `enabled` | bool | Enable endpoint failover |
 | `max_fallback_attempts` | int | Attempts across endpoints |
+| `no_alternate_max_sleep_seconds` | int | Ceiling (seconds) for the no-alternate recheck when every endpoint is latched (§15.4). Default 600. Sleep crosses the real latch instead of re-polling every 120s; floor 30s. |
 | `cooldown_on_exhaustion_minutes` | number | |
 | `cooldown_on_lock_minutes` | number | API key lock |
 | `cooldown_on_rate_limit_minutes` | number | |
@@ -294,6 +295,12 @@ Settings for `developer.implementation = "shell"`.
 | `on_test_failure` | string | `discard` | `discard` (fail closed) or `propose_anyway` when verification exits non-zero; invalid values fall back to `discard` with a warning |
 | `model` | string\|null | null | Model override; falls back to orchestrator decision then `default_model` |
 | `worktree_parent` | string | "" | Parent dir for worktree scratch (default: system temp) |
+| `no_change_stall_limit` | int | 6 | Consecutive no-change steps where the action repeated an already-run command or exited non-zero end the session as `Stalled`; `0` disables |
+| `no_progress_stall_limit` | int | 10 | ANY no-change step, novel or not, ends the session as `NoProgress` after this many (Soak18 discovery-loop guard); `0` disables. Skipped for exploratory (untargeted) tasks |
+| `task_scope` | string | `auto` | `auto` = untargeted tasks run as exploration capped to `explore_step_cap`; `strict` = untargeted tasks skip the shell session before any LLM call |
+| `explore_step_cap` | int | 12 | Step budget for untargeted (exploratory) tasks when `task_scope=auto` (counted every third step, i.e. ~3× the raw commands) |
+| `echo_stdout` | bool | true | Echo each executed shell command + its line-capped stdout to the operator console live, so a long unattended developer session is watchable; `false` keeps the console quiet (model observation and DB/trajectory record unaffected) |
+| `symbol_map` | bool | true | Feed the project symbol index to the shell developer: materialize a repo-wide `path \| kind \| qualname \| lineno` map at `.PrizmForge/indexes/index_symbols.md` inside the worktree and inline the seed target file's symbols (name@line) into the first prompt, so reads start at definition lines instead of file top |
 
 Behavior notes:
 

@@ -646,3 +646,177 @@ def test_feedback_addressed_only_for_materialized_files(shell_env, isolated_proj
         rows = {r[0]: r[1] for r in conn.execute("SELECT id, addressed FROM agent_feedback").fetchall()}
     assert rows[fb_app] == 1
     assert rows[fb_other] == 0
+
+
+# =========================================================================
+# §15.4 operator console echo (echo_stdout)
+# =========================================================================
+def test_from_config_echo_stdout_parse(monkeypatch):
+    def cfg_with(value):
+        return {"shell_developer": {"echo_stdout": value}}
+
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with(True))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with("false"))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is False
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with("on"))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with(None))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+    monkeypatch.setattr(sd, "get_config", lambda: {})
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+
+
+def test_from_config_no_progress_stall_limit_parse(monkeypatch):
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"no_progress_stall_limit": 23}})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 23
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"no_progress_stall_limit": "0"}})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 0
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"no_progress_stall_limit": None}})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 10
+    monkeypatch.setattr(sd, "get_config", lambda: {})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 10
+
+
+# =========================================================================
+# Exploratory-session budget (Soak30: every-third capping + stall exemption)
+# =========================================================================
+def test_budget_steps_ceil_third_in_exploratory():
+    cfg = sd.ShellDeveloperConfig()
+    session = object.__new__(sd.ShellDeveloperSession)
+    session.cfg = cfg
+    cfg.fiability = "exploratory"
+    assert [session._budget_steps(n) for n in (0, 1, 2, 3, 4, 6, 9, 10)] == [0, 1, 1, 1, 2, 2, 3, 4]
+    cfg.fiability = "targeted"
+    assert [session._budget_steps(n) for n in (1, 2, 9)] == [1, 2, 9]
+
+
+def test_echo_stdout_prints_command_and_output(shell_env, capsys):
+    shell_env["state"]["llm_script"] = [
+        "```bash\nprintf 'PROBE=1\\n' >> app.py && echo shell-echo-marker\n```",
+        f"{sd.FINISH_TOKEN}\nLooked around.",
+    ]
+    result = sd.run_shell_developer_turn(
+        task_id="T-echo-on",
+        instructions="Look around",
+        user_command="Look around",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+    assert result["status"] == "success", result
+    out = capsys.readouterr().out
+    assert "💻 [step 1] $ printf 'PROBE=1" in out
+    assert "shell-echo-marker" in out
+    assert "Session exit:" in out
+
+
+def test_echo_stdout_disabled_keeps_console_quiet(shell_env, monkeypatch, capsys):
+    shell_env["state"]["llm_script"] = [
+        "```bash\nprintf 'PROBE=2\\n' >> app.py && echo shell-echo-marker\n```",
+        f"{sd.FINISH_TOKEN}\nLooked around.",
+    ]
+    quiet = {"shell_developer": {"echo_stdout": False}}
+    monkeypatch.setattr(sd, "get_config", lambda: quiet)
+    result = sd.run_shell_developer_turn(
+        task_id="T-echo-off",
+        instructions="Look around",
+        user_command="Look around",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+    assert result["status"] == "success", result
+    out = capsys.readouterr().out
+    assert "💻" not in out
+    assert "shell-echo-marker" not in out
+
+
+def test_echo_console_block_truncates_long_output():
+    output = "".join(f"line {i}\n" for i in range(sd.ECHO_MAX_LINES + 25))
+    block = sd._echo_console_block(output)
+    assert f"line {sd.ECHO_MAX_LINES - 1}" in block
+    assert "line " + str(sd.ECHO_MAX_LINES) not in block
+    assert f"[{25} more lines" in block
+    # Empty output renders nothing (exit-code-only steps stay one-liners).
+    assert sd._echo_console_block("") == ""
+    assert sd._echo_console_block("\n\n") == ""
+
+
+# =========================================================================
+# Symbol-index feed config (Soak31)
+# =========================================================================
+def test_from_config_symbol_map_defaults_true_and_parses(monkeypatch):
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {}})
+    assert sd.ShellDeveloperConfig.from_config().symbol_map is True
+
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"symbol_map": False}})
+    assert sd.ShellDeveloperConfig.from_config().symbol_map is False
+
+    monkeypatch.setattr(
+        sd,
+        "get_config",
+        lambda: {"shell_developer": {"symbol_map": "false"}},
+    )
+    assert sd.ShellDeveloperConfig.from_config().symbol_map is False
+
+
+def test_from_config_symbol_map_tolerates_string_truthy(monkeypatch):
+    for raw in ("true", "yes", "on", "1"):
+        monkeypatch.setattr(sd, "get_config", lambda raw=raw: {"shell_developer": {"symbol_map": raw}})
+        assert sd.ShellDeveloperConfig.from_config().symbol_map is True
+
+
+# =========================================================================
+# Symbol-aware opening read (Soak31 review: no forced line-1 head read)
+# =========================================================================
+def test_build_first_read_command_symbol_aware():
+    assert sd.build_first_read_command("app.py", 65) == "sed -n '65,+40p' app.py"
+    assert sd.build_first_read_command("app.py", None) == "sed -n '1,80p' app.py"
+    assert sd.build_first_read_command(None, 65) == ""
+
+
+def test_inspect_prompt_does_not_force_line1_when_symbol_known():
+    prompt = sd.build_inspect_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+        symbol_line=65,
+    )
+    assert "sed -n '65,+40p' app.py" in prompt
+    assert "sed -n '1,80p'" not in prompt
+
+
+def test_inspect_prompt_keeps_head_read_without_symbol_line():
+    prompt = sd.build_inspect_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+    )
+    assert "sed -n '1,80p' app.py" in prompt
+
+
+def test_chat_prompt_does_not_force_line1_when_symbol_known():
+    prompt = sd.build_chat_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+        [],
+        symbol_line=72,
+    )
+    assert "sed -n '72,+40p' app.py" in prompt
+    assert "sed -n '1,80p'" not in prompt
+
+
+def test_chat_prompt_keeps_head_read_without_symbol_line():
+    prompt = sd.build_chat_prompt(
+        "fix greet",
+        {"output_excerpt": ""},
+        "app.py",
+        [],
+    )
+    assert "sed -n '1,80p' app.py" in prompt
