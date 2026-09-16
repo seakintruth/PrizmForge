@@ -183,6 +183,12 @@ class ShellDeveloperConfig:
     # short-circuits before any LLM call.
     task_scope: str = "auto"
     explore_step_cap: int = 12
+    # Feed the shell developer the project symbol index: a repo-wide
+    # (path | kind | qualname | lineno) map is materialized inside the worktree
+    # at .PrizmForge/indexes/index_symbols.md and the seed-target file's symbols
+    # are inlined into the first prompt, so reads start at definition lines
+    # instead of file top. False disables both.
+    symbol_map: bool = True
     # Internal: computed by the turn entry point (not read from config) so the
     # prompt can tell the model when the task is exploratory, not mutation-led.
     fiability: str = "targeted"  # "targeted" | "exploratory"
@@ -211,6 +217,7 @@ class ShellDeveloperConfig:
             task_scope=str(cfg.get("task_scope", "auto") or "auto"),
             explore_step_cap=int(cfg.get("explore_step_cap", 12) or 12),
             echo_stdout=_config_bool(cfg, "echo_stdout", True),
+            symbol_map=bool(cfg.get("symbol_map", True)),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
             print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
@@ -366,12 +373,84 @@ def build_instance_prompt(task_text: str, *, explore_note: bool = False, discove
     return base
 
 
+def build_symbol_context_block(target_path: str | None, *, map_path: str = "") -> str:
+    """Symbol-index context for the shell developer's first prompt.
+
+    When a repo-wide symbol map was materialized in the worktree, points the
+    model at it (path | kind | qualname | lineno rows) for greppable lookup. When
+    the seed resolved a target file, inlines that file's symbols with their
+    exact definition lines so the first read starts at the target symbol's line
+    instead of file top (Soak31: sed 1,80 -> cat whole file -> sed 80,120 ->
+    sed 55,105 to locate one two-line function). Never raises; DB unavailability
+    collapses to no context.
+    """
+    parts: list[str] = []
+    if map_path:
+        parts.append(
+            f"A repo-wide symbol map (path | kind | qualname | lineno) is at `{map_path}`. "
+            "Use grep on it to locate definition lines before reading files, then sed from "
+            "that line instead of reading from the top of the file."
+        )
+    if target_path:
+        target = str(target_path)
+        try:
+            from core.symbol_index import fetch_symbol_rows
+
+            rows = fetch_symbol_rows(file_paths=[target]) or []
+        except Exception:
+            rows = []
+        if rows:
+            syms = ", ".join(f"{r.get('name')}@{r.get('lineno')}" for r in rows[:40])
+            parts.append(f"Target file symbols ({target}): {syms}. Start your first read at the target symbol's line, not at line 1.")
+    return "\n".join(parts)
+
+
+def write_worktree_symbol_map(
+    worktree: Any,
+    *,
+    max_rows: int = 20000,
+) -> str:
+    """Materialize the project symbol index inside the worktree for grep lookup.
+
+    Writes `.PrizmForge/indexes/index_symbols.md` (one `path | kind | qualname |
+    lineno` row per symbol) from the governed `file_symbols` table so the shell
+    developer can find definition lines for any file, not just the seed target.
+    Returns the relative map path on success, "" on any failure (never raises).
+    The `.PrizmForge` directory is git-ignored so the map never marks the
+    worktree dirty or leaks into governed edits.
+    """
+    rel = ".PrizmForge/indexes/index_symbols.md"
+    try:
+        from core.symbol_index import fetch_symbol_rows
+
+        rows = fetch_symbol_rows(path_prefix="", limit=max_rows) or []
+        if not rows:
+            return ""
+        lines = [f"{r.get('file_path')} | {r.get('kind')} | {r.get('qualname')} | {r.get('lineno')}" for r in rows]
+        cwd = None
+        if worktree is not None:
+            try:
+                cwd = Path(worktree.working_dir())
+            except Exception:
+                cwd = None
+        if cwd is None:
+            return ""
+        target = cwd / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        header = "# Project symbol index (auto-generated for the shell developer)\n# rows: path | kind | qualname | lineno\n"
+        target.write_text(header + "\n".join(lines) + "\n", encoding="utf-8")
+        return rel
+    except Exception:
+        return ""
+
+
 def build_inspect_prompt(
     task_text: str,
     evidence: dict[str, Any],
     target_path: str | None,
     explore_note: bool = False,
     discovery_note: str = "",
+    symbol_context: str = "",
 ) -> str:
     listing = (evidence.get("output_excerpt") or "").strip()
     header = f"Workspace listing (already executed, exit 0):\n{listing}\n\n"
@@ -379,11 +458,13 @@ def build_inspect_prompt(
         return (
             f"{header}Target file: {target_path}\n\n"
             f"{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
+            f"{symbol_context}\n"
             "Reply with exactly one closed bash block or ```edit block. First command must be:\n"
             f"sed -n '1,80p' {target_path}"
         )
     return (
         f"{header}{build_instance_prompt(task_text, explore_note=explore_note, discovery_note=discovery_note)}\n"
+        f"{symbol_context}\n"
         "Reply with exactly one closed bash block or ```edit block. Inspect the relevant files first."
     )
 
@@ -447,6 +528,7 @@ def build_chat_prompt(
     steps: list[dict[str, Any]],
     explore_note: bool = False,
     discovery_note: str = "",
+    symbol_context: str = "",
 ) -> str:
     """Build the chat-mode user prompt: JSON table of past steps + the next-row
     instruction. Mirrors build_inspect_prompt but asks the model to complete the
@@ -461,6 +543,8 @@ def build_chat_prompt(
         body = f"Steps executed so far:\n```json\n{table}\n```\n\n{task_block}"
     if target_path:
         body += f"\n\nTarget file: {target_path}\nFirst command must be:\nsed -n '1,80p' {target_path}"
+    if symbol_context:
+        body += f"\n\n{symbol_context}"
     body += (
         "\n\nOutput the JSON object for the next step (an edit action or a "
         "command — never both in one row; step " + str((steps[-1]["step"] if steps else 0) + 1) + ") awaiting execution:"
@@ -1754,6 +1838,12 @@ class ShellDeveloperSession:
                     "output": excerpt,
                 }
             )
+        symbol_context = ""
+        if self.cfg.symbol_map:
+            symbol_context = build_symbol_context_block(
+                self.target_path,
+                map_path=write_worktree_symbol_map(self.wt),
+            )
         if self.chat_mode:
             self.messages.append({"role": "system", "content": CHAT_SYSTEM_PROMPT})
             self.messages.append(
@@ -1766,6 +1856,7 @@ class ShellDeveloperSession:
                         self.steps,
                         explore_note=self.cfg.fiability == "exploratory",
                         discovery_note=self.discovery_note,
+                        symbol_context=symbol_context,
                     ),
                 }
             )
@@ -1780,6 +1871,7 @@ class ShellDeveloperSession:
                         self.target_path,
                         explore_note=self.cfg.fiability == "exploratory",
                         discovery_note=self.discovery_note,
+                        symbol_context=symbol_context,
                     ),
                 }
             )

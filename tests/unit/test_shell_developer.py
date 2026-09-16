@@ -745,3 +745,21 @@ def test_echo_console_block_truncates_long_output():
     # Empty output renders nothing (exit-code-only steps stay one-liners).
     assert sd._echo_console_block("") == ""
     assert sd._echo_console_block("\n\n") == ""
+
+
+# =========================================================================
+# Symbol-index feed config (Soak31)
+# =========================================================================
+def test_from_config_symbol_map_defaults_true_and_parses(monkeypatch):
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {}})
+    assert sd.ShellDeveloperConfig.from_config().symbol_map is True
+
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"symbol_map": False}})
+    assert sd.ShellDeveloperConfig.from_config().symbol_map is False
+
+    monkeypatch.setattr(
+        sd,
+        "get_config",
+        lambda: {"shell_developer": {"symbol_map": "false"}},
+    )
+    assert sd.ShellDeveloperConfig.from_config().symbol_map is True

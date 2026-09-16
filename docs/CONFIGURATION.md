@@ -300,6 +300,7 @@ Settings for `developer.implementation = "shell"`.
 | `task_scope` | string | `auto` | `auto` = untargeted tasks run as exploration capped to `explore_step_cap`; `strict` = untargeted tasks skip the shell session before any LLM call |
 | `explore_step_cap` | int | 12 | Step budget for untargeted (exploratory) tasks when `task_scope=auto` (counted every third step, i.e. ~3× the raw commands) |
 | `echo_stdout` | bool | true | Echo each executed shell command + its line-capped stdout to the operator console live, so a long unattended developer session is watchable; `false` keeps the console quiet (model observation and DB/trajectory record unaffected) |
+| `symbol_map` | bool | true | Feed the project symbol index to the shell developer: materialize a repo-wide `path \| kind \| qualname \| lineno` map at `.PrizmForge/indexes/index_symbols.md` inside the worktree and inline the seed target file's symbols (name@line) into the first prompt, so reads start at definition lines instead of file top |
 
 Behavior notes:
 
