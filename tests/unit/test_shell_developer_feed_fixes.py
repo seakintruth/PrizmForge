@@ -300,3 +300,77 @@ def test_exploratory_cap_and_note(tmp_path):
         assert any("exploration task" in c for c in user)
     finally:
         wt.cleanup()
+
+
+def test_no_progress_stall_skipped_for_exploratory_session(tmp_path):
+    # Soak30: a "review the TODOs" exploration session read 10 files with zero
+    # writes and died on no_progress_stall_limit=10 before it could decide there
+    # was nothing to change. Exploratory sessions must read freely; the thinned
+    # step budget is the only cap.
+    root = _repo(tmp_path / "repo")
+    script = [
+        "```bash\nsed -n '1,3p' app.py\n```",
+        "```bash\ngrep return app.py\n```",
+        "```bash\nls app.py\n```",
+        f"{FINISH}\nInspected; no safe change.",
+    ]
+    session, wt, _state = _real_session(
+        root,
+        script,
+        step_limit=8,
+        no_change_stall_limit=6,
+        no_progress_stall_limit=2,
+        fiability="exploratory",
+    )
+    try:
+        result = session.run("Review app.py")
+        assert result.exit_status == "Finished"
+        assert "NoProgress" not in result.summary
+    finally:
+        wt.cleanup()
+
+
+def test_no_progress_stall_still_fires_for_mutation_session(tmp_path):
+    # The Soak18 discovery-loop guard stays for mutation sessions: novel
+    # no-change steps accumulate and exit "NoProgress".
+    root = _repo(tmp_path / "repo")
+    script = [
+        "```bash\nsed -n '1,3p' app.py\n```",
+        "```bash\ngrep return app.py\n```",
+        "```bash\nls app.py\n```",
+    ]
+    session, wt, _state = _real_session(
+        root,
+        script,
+        step_limit=8,
+        no_change_stall_limit=6,
+        no_progress_stall_limit=2,
+        fiability="targeted",
+    )
+    try:
+        result = session.run("Review app.py")
+        assert result.exit_status == "NoProgress"
+    finally:
+        wt.cleanup()
+
+
+def test_exploratory_counts_every_third_step_toward_caps(tmp_path):
+    # Exploratory sessions count every third step toward the mutate budget, so
+    # step_limit=4 tolerates all 10 raw probes (ceil(10/3)=4) before
+    # LimitsExceeded; a 1:1 mutation session would have died at raw step 4.
+    root = _repo(tmp_path / "repo")
+    script = [f"```bash\necho probe{i}\n```" for i in range(10)]
+    session, wt, _state = _real_session(
+        root,
+        script,
+        step_limit=4,
+        no_change_stall_limit=0,
+        no_progress_stall_limit=0,
+        fiability="exploratory",
+    )
+    try:
+        result = session.run("Review app.py")
+        assert result.exit_status == "LimitsExceeded"
+        assert result.mutate_calls == 10  # raw, not thinned
+    finally:
+        wt.cleanup()

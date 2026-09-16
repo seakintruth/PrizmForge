@@ -667,6 +667,30 @@ def test_from_config_echo_stdout_parse(monkeypatch):
     assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
 
 
+def test_from_config_no_progress_stall_limit_parse(monkeypatch):
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"no_progress_stall_limit": 23}})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 23
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"no_progress_stall_limit": "0"}})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 0
+    monkeypatch.setattr(sd, "get_config", lambda: {"shell_developer": {"no_progress_stall_limit": None}})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 10
+    monkeypatch.setattr(sd, "get_config", lambda: {})
+    assert sd.ShellDeveloperConfig.from_config().no_progress_stall_limit == 10
+
+
+# =========================================================================
+# Exploratory-session budget (Soak30: every-third capping + stall exemption)
+# =========================================================================
+def test_budget_steps_ceil_third_in_exploratory():
+    cfg = sd.ShellDeveloperConfig()
+    session = object.__new__(sd.ShellDeveloperSession)
+    session.cfg = cfg
+    cfg.fiability = "exploratory"
+    assert [session._budget_steps(n) for n in (0, 1, 2, 3, 4, 6, 9, 10)] == [0, 1, 1, 1, 2, 2, 3, 4]
+    cfg.fiability = "targeted"
+    assert [session._budget_steps(n) for n in (1, 2, 9)] == [1, 2, 9]
+
+
 def test_echo_stdout_prints_command_and_output(shell_env, capsys):
     shell_env["state"]["llm_script"] = [
         "```bash\nprintf 'PROBE=1\\n' >> app.py && echo shell-echo-marker\n```",

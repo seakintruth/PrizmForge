@@ -1521,24 +1521,39 @@ class ShellDeveloperSession:
         self._echo_shell_step(command=command, exit_code=exit_code, output=output)
         return exit_code, output
 
+    def _budget_steps(self, raw_steps: int) -> int:
+        """Effective step count for cap checks.
+
+        In exploratory sessions only every third executed step counts toward the
+        caps, so a read-only review gets ~3x the room before
+        ``explore_step_cap`` / ``INSPECT_STEP_CAP`` fire (Soak30: a
+        discovery-heavy "review the TODOs" session burned its stall + step
+        ceilings without reading enough of the tree). Mutation sessions always
+        count 1:1.
+        """
+        if self.cfg.fiability != "exploratory":
+            return raw_steps
+        return (raw_steps + 2) // 3
+
     def _guard_step_limits(self, command: str | None) -> bool:
         """Count one executed model step and enforce the Soak6 budget split.
 
         Inspection commands (`sed -n`, `grep`, `ls`, git log/diff/status, ...)
         run against INSPECT_STEP_CAP; everything else (edits, writes, python)
         burns the `step_limit` mutate budget. Returns True when a limit was
-        reached and the session should break.
+        reached and the session should break. Exploratory sessions count every
+        third step toward the caps (see ``_budget_steps``).
         """
         r = self.result
         if command is not None and is_inspect_command(command):
             r.inspect_calls += 1
         else:
             r.mutate_calls += 1
-        if self.cfg.step_limit > 0 and r.mutate_calls >= self.cfg.step_limit:
+        if self.cfg.step_limit > 0 and self._budget_steps(r.mutate_calls) >= self.cfg.step_limit:
             r.exit_status = "LimitsExceeded"
             r.summary = f"mutate step limit ({self.cfg.step_limit}) reached"
             return True
-        if r.inspect_calls >= INSPECT_STEP_CAP:
+        if self._budget_steps(r.inspect_calls) >= INSPECT_STEP_CAP:
             r.exit_status = "LimitsExceeded"
             r.summary = f"inspect step cap ({INSPECT_STEP_CAP}) reached"
             return True
@@ -1595,7 +1610,9 @@ class ShellDeveloperSession:
         - no_progress_stall_limit: ANY no-change step, novel or not, so a
           discovery loop circling the tree with fresh greps also terminates
           instead of burning to the step limit (Soak18).
-        Any worktree change resets both streaks."""
+        Any worktree change resets both streaks. Exploratory sessions are
+        exempt from no-progress stall — they are expected to read without
+        writing until the explore_step_cap budget is reached."""
         if self.cfg.no_change_stall_limit <= 0 and self.cfg.no_progress_stall_limit <= 0:
             return False
         change_lines, _dtext = _worktree_change_state(self.wt)
@@ -1610,7 +1627,10 @@ class ShellDeveloperSession:
             self._no_change_steps += 1
             if self.cfg.no_change_stall_limit > 0 and self._no_change_steps >= self.cfg.no_change_stall_limit:
                 return True
-        if self.cfg.no_progress_stall_limit > 0:
+        # no_progress_stall is for mutation loops that get stuck discovering;
+        # explicit exploration tasks (fiability=exploratory) should read freely
+        # until their (thinned) step budget caps them.
+        if self.cfg.no_progress_stall_limit > 0 and self.cfg.fiability != "exploratory":
             self._no_progress_steps += 1
             if self._no_progress_steps >= self.cfg.no_progress_stall_limit:
                 return True
@@ -1773,8 +1793,9 @@ class ShellDeveloperSession:
                 break
             # Hard model-call safety ceiling (mutate budget + inspect cap). The
             # real budget split is enforced per-step in _guard_step_limits; this
-            # only bounds pathological loops that never run a command.
-            if self.cfg.step_limit > 0 and r.n_model_calls >= self.cfg.step_limit + INSPECT_STEP_CAP:
+            # only bounds pathological loops that never run a command. Exploratory
+            # sessions count every third call (see _budget_steps).
+            if self.cfg.step_limit > 0 and self._budget_steps(r.n_model_calls) >= self.cfg.step_limit + INSPECT_STEP_CAP:
                 r.exit_status = "LimitsExceeded"
                 r.summary = f"model-call safety ceiling ({self.cfg.step_limit + INSPECT_STEP_CAP}) reached"
                 break
