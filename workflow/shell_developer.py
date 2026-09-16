@@ -73,6 +73,40 @@ FULL_REPLACE_MAX_LINES = 200
 SHELL_PROMOTE_MAX_DIFF_LINES = 80
 INSPECT_STEP_CAP = 40  # extra budget; does not burn step_limit (mutate budget)
 
+#: Operator-console echo: how much of a command's stdout to print live. Long
+#: unattended sessions are watchable without flooding the terminal with a
+#: 6k-char ``cat`` of a whole file.
+ECHO_MAX_LINES = 30
+ECHO_MAX_LINE_CHARS = 220
+ECHO_MAX_COMMAND_CHARS = 200
+
+
+def _config_bool(cfg: dict[str, Any], key: str, default: bool) -> bool:
+    """Parse a config boolean tolerantly (`true` / `yes` / `on` / `1`)."""
+    value = cfg.get(key, default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _echo_console_block(output: str) -> str:
+    """Bound a command's stdout for the operator console (line + length caps).
+
+    Shows the first ``ECHO_MAX_LINES`` lines (each capped at
+    ``ECHO_MAX_LINE_CHARS``) with an explicit note when lines were hidden; the
+    model still receives the full ``max_output_chars`` view in the observation.
+    """
+    lines = output.splitlines()
+    if not lines or not output.strip():
+        return ""
+    shown = [f"        {line[:ECHO_MAX_LINE_CHARS]}" for line in lines[:ECHO_MAX_LINES]]
+    hidden = len(lines) - ECHO_MAX_LINES
+    if hidden > 0:
+        shown.append(f"        … [{hidden} more lines, {len(output)} chars]")
+    return "\n".join(shown)
+
 
 def _fallback_order_for_targets(
     fallback_order: list[str],
@@ -139,6 +173,10 @@ class ShellDeveloperConfig:
     # circled the tree with novel grep/cat steps forever (no_change_stall_limit
     # only counted repeated/failing actions). 0 disables.
     no_progress_stall_limit: int = 10
+    # Operator console echo: when True, each executed shell command and its
+    # (bounded) stdout are printed live so a long unattended developer session
+    # is watchable instead of silent until the session exit line.
+    echo_stdout: bool = True
     # Task-fiability pre-flight. "auto": an untargeted task ("review the
     # TODO list") gets its step_limit capped to explore_step_cap so it cannot
     # burn a full session hunting a file. "strict": an untargeted task
@@ -172,6 +210,7 @@ class ShellDeveloperConfig:
             no_progress_stall_limit=int(cfg.get("no_progress_stall_limit", 10) or 10),
             task_scope=str(cfg.get("task_scope", "auto") or "auto"),
             explore_step_cap=int(cfg.get("explore_step_cap", 12) or 12),
+            echo_stdout=_config_bool(cfg, "echo_stdout", True),
         )
         if instance.on_test_failure not in ("discard", "propose_anyway"):
             print(f"   ⚠️ shell_developer.on_test_failure={instance.on_test_failure!r} is invalid; using 'discard' (fail closed)")
@@ -1460,10 +1499,26 @@ class ShellDeveloperSession:
                 return max(remaining_s, 1)
         return timeout
 
+    def _echo_shell_step(self, *, command: str, exit_code: int, output: str) -> None:
+        """Print one executed shell step live to the operator console (§15.4)."""
+        if not self.cfg.echo_stdout:
+            return
+        step = self.result.n_model_calls
+        head = command[:ECHO_MAX_COMMAND_CHARS]
+        if len(command) > ECHO_MAX_COMMAND_CHARS:
+            head += "…"
+        if exit_code != 0:
+            head += f"   (exit {exit_code})"
+        print(f"   💻 [step {step}] $ {head}")
+        block = _echo_console_block(output)
+        if block:
+            print(block)
+
     def _run_worktree_command(self, command: str) -> tuple[int, str]:
         """Run a bash command in the worktree and count it as an executed command."""
         exit_code, output = self.wt.run_command(command, self._effective_command_timeout())
         self.result.commands_executed += 1
+        self._echo_shell_step(command=command, exit_code=exit_code, output=output)
         return exit_code, output
 
     def _guard_step_limits(self, command: str | None) -> bool:
@@ -1787,6 +1842,11 @@ class ShellDeveloperSession:
                 # quoting. Takes priority over any co-present bash command.
                 action = f"```edit {edit['path'] if edit.get('path') else '?'}```"
                 exit_code, output = self._apply_edit_payload(edit)
+                if self.cfg.echo_stdout:
+                    print(f"   💻 [step {r.n_model_calls}] {action}" + (f"   (exit {exit_code})" if exit_code != 0 else ""))
+                    block = _echo_console_block(output)
+                    if block:
+                        print(block)
                 self.result.target_inspected = True
                 self._record_model_health(ok=True, kind="command_executed")
                 self._record_model_health(ok=exit_code == 0, kind="command_success")
@@ -1959,6 +2019,11 @@ class ShellDeveloperSession:
             code, output = self.wt.run_test_command(self.cfg.test_command, self.cfg.test_timeout_seconds)
             r.test_exit_code = code
             r.test_output = output[-self.cfg.max_output_chars :]
+            if self.cfg.echo_stdout and output.strip():
+                print(f"   ⚙️  Verification (exit {code}):")
+                block = _echo_console_block(output)
+                if block:
+                    print(block)
         self._record_model_health(ok=r.exit_status == "Finished", kind="session_outcome")
         return r
 

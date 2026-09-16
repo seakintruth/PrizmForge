@@ -295,6 +295,7 @@ Settings for `developer.implementation = "shell"`.
 | `on_test_failure` | string | `discard` | `discard` (fail closed) or `propose_anyway` when verification exits non-zero; invalid values fall back to `discard` with a warning |
 | `model` | string\|null | null | Model override; falls back to orchestrator decision then `default_model` |
 | `worktree_parent` | string | "" | Parent dir for worktree scratch (default: system temp) |
+| `echo_stdout` | bool | true | Echo each executed shell command + its line-capped stdout to the operator console live, so a long unattended developer session is watchable; `false` keeps the console quiet (model observation and DB/trajectory record unaffected) |
 
 Behavior notes:
 

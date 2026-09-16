@@ -646,3 +646,78 @@ def test_feedback_addressed_only_for_materialized_files(shell_env, isolated_proj
         rows = {r[0]: r[1] for r in conn.execute("SELECT id, addressed FROM agent_feedback").fetchall()}
     assert rows[fb_app] == 1
     assert rows[fb_other] == 0
+
+
+# =========================================================================
+# §15.4 operator console echo (echo_stdout)
+# =========================================================================
+def test_from_config_echo_stdout_parse(monkeypatch):
+    def cfg_with(value):
+        return {"shell_developer": {"echo_stdout": value}}
+
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with(True))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with("false"))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is False
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with("on"))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+    monkeypatch.setattr(sd, "get_config", lambda: cfg_with(None))
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+    monkeypatch.setattr(sd, "get_config", lambda: {})
+    assert sd.ShellDeveloperConfig.from_config().echo_stdout is True
+
+
+def test_echo_stdout_prints_command_and_output(shell_env, capsys):
+    shell_env["state"]["llm_script"] = [
+        "```bash\nprintf 'PROBE=1\\n' >> app.py && echo shell-echo-marker\n```",
+        f"{sd.FINISH_TOKEN}\nLooked around.",
+    ]
+    result = sd.run_shell_developer_turn(
+        task_id="T-echo-on",
+        instructions="Look around",
+        user_command="Look around",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+    assert result["status"] == "success", result
+    out = capsys.readouterr().out
+    assert "💻 [step 1] $ printf 'PROBE=1" in out
+    assert "shell-echo-marker" in out
+    assert "Session exit:" in out
+
+
+def test_echo_stdout_disabled_keeps_console_quiet(shell_env, monkeypatch, capsys):
+    shell_env["state"]["llm_script"] = [
+        "```bash\nprintf 'PROBE=2\\n' >> app.py && echo shell-echo-marker\n```",
+        f"{sd.FINISH_TOKEN}\nLooked around.",
+    ]
+    quiet = {"shell_developer": {"echo_stdout": False}}
+    monkeypatch.setattr(sd, "get_config", lambda: quiet)
+    result = sd.run_shell_developer_turn(
+        task_id="T-echo-off",
+        instructions="Look around",
+        user_command="Look around",
+        conversation_context=[],
+        model_choice=None,
+        progress={"edit_failures": 0},
+        decision={},
+        current_turn=1,
+    )
+    assert result["status"] == "success", result
+    out = capsys.readouterr().out
+    assert "💻" not in out
+    assert "shell-echo-marker" not in out
+
+
+def test_echo_console_block_truncates_long_output():
+    output = "".join(f"line {i}\n" for i in range(sd.ECHO_MAX_LINES + 25))
+    block = sd._echo_console_block(output)
+    assert f"line {sd.ECHO_MAX_LINES - 1}" in block
+    assert "line " + str(sd.ECHO_MAX_LINES) not in block
+    assert f"[{25} more lines" in block
+    # Empty output renders nothing (exit-code-only steps stay one-liners).
+    assert sd._echo_console_block("") == ""
+    assert sd._echo_console_block("\n\n") == ""
