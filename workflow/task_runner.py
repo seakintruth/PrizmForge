@@ -247,6 +247,16 @@ def _dispatch_developer(
         )
         if mut.get("status") not in ("success", "rejected"):
             print(f"   ⚠️  Shell developer status: {mut.get('status')} {mut.get('message', '')}")
+            # Soak32 (§19.2): never start the legacy structured developer (Phase-2
+            # "Generating edit (mode=…)") when the shell worktree already staged a
+            # compilable diff that produced governed proposals. A second model-
+            # authored edit overwrites the compiled tree and fabricates a syntax
+            # story the reviewer then rejects. Surface the shell outcome instead.
+            if mut.get("proposal_ids"):
+                print("   ⚠️  Shell worktree already spawned governed proposals; skipping legacy developer fallback")
+                mut.setdefault("fallback_skipped", True)
+                mut.setdefault("fallback_skipped_reason", "shell_proposals_exist")
+                return mut
             # Fallback bridge: a shell/chat-table session that did not carry the
             # turn to success or reviewer rejection re-disperses to the legacy
             # structured EditPayload developer in the SAME turn — but only when a

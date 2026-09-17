@@ -287,6 +287,80 @@ def test_turn_success_materializes_approved_proposal(shell_env, isolated_project
     assert "[TRUNCATED: content exceeds" not in prompt
 
 
+def test_soak32_turn_overcap_module_produces_hunk_proposal(shell_env, isolated_project, monkeypatch):
+    # Soak32 §19.1/§19.2 end-to-end: the worktree edits a 200+ line module via
+    # the ```edit primitive, FINISHes, and the turn promotes exactly ONE governed
+    # proposal from the git-diff hunk (apply_diff) — NOT a full_replace and NOT a
+    # second legacy developer call.
+    project = Path(isolated_project["project"])
+    core = project / "core"
+    core.mkdir(exist_ok=True)
+    target = core / "session_projection.py"
+    filler = "".join(f"def _fill{num}():\n    return {num}  # {num:04d}\n\n" for num in range(100))
+    target.write_text("def _trim(self):\n    value = self.raw\n    return value\n\ndef _one_line_result(self):\n    return self.result.one_line\n\n" + filler)
+    subprocess.run(["git", "add", "-A"], cwd=str(project), capture_output=True)
+    commit = subprocess.run(["git", "commit", "-qm", "add session_projection module"], cwd=str(project), capture_output=True)
+    assert commit.returncode == 0, commit.stderr
+
+    # Seed the governed store exactly as project indexing would, so the
+    # apply_diff hunk can reconstruct base content for the reviewer/materialize.
+    from file_editing.writer import initialize_file_lines
+
+    seeded = initialize_file_lines("core/session_projection.py", target.read_text())
+    assert seeded["status"] == "success", seeded
+
+    edit_trim = (
+        "```edit core/session_projection.py\n"
+        "mode: replace\n"
+        "OLD:\n"
+        "def _trim(self):\n"
+        "    value = self.raw\n"
+        "NEW:\n"
+        "def _trim(self):\n"
+        '    """Docstring for _trim."""\n'
+        "    value = self.raw\n"
+        "```"
+    )
+    edit_one_line = (
+        "```edit core/session_projection.py\n"
+        "mode: replace\n"
+        "OLD:\n"
+        "def _one_line_result(self):\n"
+        "    return self.result.one_line\n"
+        "NEW:\n"
+        "def _one_line_result(self):\n"
+        '    """Docstring for _one_line_result."""\n'
+        "    return self.result.one_line\n"
+        "```"
+    )
+    shell_env["state"]["llm_script"] = [edit_trim, edit_one_line, f"{sd.FINISH_TOKEN}\nAdded docstrings to both defs."]
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-soak32-1",
+        instructions="Add docstrings to _trim and _one_line_result in core/session_projection.py",
+        user_command="Add docstrings to _trim and _one_line_result in core/session_projection.py",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    assert result["status"] == "success", result
+    assert len(result["proposal_ids"]) == 1, result  # one proposal, no invalid_operation/empty_operations re-dispatch
+    assert result["session_exit"] == "Finished"
+    assert progress["files_modified"] == 1
+    agent_name, prompt = shell_env["state"]["reviewer_prompts"][0]
+    assert agent_name == "reviewer"
+    # §19.3: the reviewer sees the uniform diff hunk of the worktree, not a
+    # model-authored whole-file body.
+    assert "PROPOSED UNIFIED DIFF" in prompt
+    assert "PROPOSED FULL CONTENT" not in prompt
+    assert '"""Docstring for _trim."""' in prompt
+    assert '"""Docstring for _one_line_result."""' in prompt
+
+
 def test_gate_presents_full_content_for_full_replace(shell_env):
     # A full-replace of a large file must reach the reviewer as complete proposed
     # content, never as a unified diff cut mid-token (which previously caused

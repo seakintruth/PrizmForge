@@ -640,3 +640,46 @@ class TestDispatchDeveloperFallback:
         assert len(shell_calls) == 1
         assert len(edit_calls) == 0
         assert result["status"] == "success"
+
+    def test_shell_error_with_proposals_skips_legacy_fallback(self, mock_minimal_config, monkeypatch):
+        # Soak32 §19.2: when the shell worktree already staged a compilable diff
+        # that produced governed proposals, the legacy structured developer must
+        # NOT overwrite it in the same turn — even though the overall shell status
+        # reads "error" (e.g. a mixed gate). The reviewer already saw the hunk.
+        from workflow import task_runner
+
+        mock_minimal_config["developer"] = {"implementation": "shell"}
+
+        def fake_shell(**kwargs):
+            return {
+                "status": "error",
+                "message": "mixed gate: one hunk applied, one rejected",
+                "session_exit": "Finished",
+                "commands_executed": 4,
+                "evidence_ok": True,
+                "proposal_ids": ["p_worktree_hunk"],
+            }
+
+        edit_calls = []
+
+        def fake_edit(**kwargs):
+            edit_calls.append(kwargs)
+            return {"status": "success"}
+
+        monkeypatch.setattr("workflow.shell_developer.run_shell_developer_turn", fake_shell)
+        monkeypatch.setattr("workflow.task_runner.run_developer_mutation", fake_edit)
+
+        result = task_runner._dispatch_developer(
+            task_id="t-soak32",
+            instructions="add docstrings to core/session_projection.py",
+            user_command="add docstrings to core/session_projection.py",
+            decision={},
+            conversation_context=[],
+            model_choice=None,
+            progress={},
+            current_turn=1,
+        )
+        assert len(edit_calls) == 0  # no "Generating edit (mode=…)" phase-2
+        assert result["status"] == "error"
+        assert result["fallback_skipped"] is True
+        assert result["fallback_skipped_reason"] == "shell_proposals_exist"
