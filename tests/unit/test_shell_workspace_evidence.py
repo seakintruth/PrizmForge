@@ -6,7 +6,11 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from workflow import shell_developer as sd
+
+pytestmark = pytest.mark.serial
 
 EVIDENCE_REPLY = "```bash\npwd && git rev-parse --show-toplevel && ls -la\n```"
 A1_FINISH_WITHOUT_BASH = "FINISH_EDIT_SESSION\nworkflow/__init__.py does not exist. The repository appears to be empty. Please upload the files."
