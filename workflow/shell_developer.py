@@ -2320,6 +2320,23 @@ def _gate_and_materialize(
     is_full_replace = len(ops) == 1 and ops[0].get("type") == "full_replace"
     new_content = ops[0].get("new_content", "") if is_full_replace else ""
 
+    # §19.3: give the gate the PROPOSED content so a syntax-called REJECT is
+    # checked against ast.parse of what the edit would actually produce — not a
+    # fabricated claim about the pre-change file (Soak32 `310f7ae6`). full_replace
+    # carries the body directly; apply_diff/find_replace apply the op to the
+    # original to derive it (fail-closed: only pass content we could compute).
+    proposed_content: str | None = None
+    if is_full_replace:
+        proposed_content = new_content or None
+    else:
+        from file_editing.editing import _apply_unified_diff
+
+        try:
+            applied = _apply_unified_diff(original_content.splitlines(keepends=True), diff_text.splitlines(keepends=True))
+            proposed_content = "".join(applied) if applied is not None else None
+        except Exception:
+            proposed_content = None
+
     # Option B: never split a token mid-word; truncate on a newline boundary and
     # mark the cut explicitly so the reviewer can tell truncated-from-bounded.
     if is_full_replace and new_content:
@@ -2381,7 +2398,7 @@ Rules:
     # or unparseable verdict must REJECT, never auto-approve. A ``None``
     # transport failure and a semantic REJECT are never retried; only one
     # same-prompt retry is allowed on an empty/unparseable verdict.
-    verdict = request_review_verdict(reviewer_prompt, task_id)
+    verdict = request_review_verdict(reviewer_prompt, task_id, proposed_content=proposed_content)
     # residual P10: count actual plays (the gate may retry once internally)
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + verdict.calls_used
     post_reviewer_suggestions(proposal_id, task_id, verdict.suggestions)

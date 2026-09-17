@@ -361,6 +361,83 @@ def test_soak32_turn_overcap_module_produces_hunk_proposal(shell_env, isolated_p
     assert '"""Docstring for _one_line_result."""' in prompt
 
 
+def test_soak32_310f7ae6_fabricated_syntax_reject_does_not_block(shell_env, isolated_project, monkeypatch):
+    # §19.3 regression (Soak32 `310f7ae6`): the worktree diff ast.parses, but the
+    # reviewer invented a syntax failure (`text or "")`) and rejected. The gate
+    # must check the PROPOSED content against ast.parse, treat the disproven
+    # claim as invalid reviewer JSON, and retry once — not permanently reject a
+    # compilable hunk on a fabricated syntax story.
+    import json as _json
+
+    project = Path(isolated_project["project"])
+    core = project / "core"
+    core.mkdir(exist_ok=True)
+    target = core / "session_projection.py"
+    filler = "".join(f"def _fill{num}():\n    return {num}  # {num:04d}\n\n" for num in range(100))
+    target.write_text("def _trim(self):\n    value = self.raw\n    return value\n\ndef _one_line_result(self):\n    return self.result.one_line\n\n" + filler)
+    subprocess.run(["git", "add", "-A"], cwd=str(project), capture_output=True)
+    commit = subprocess.run(["git", "commit", "-qm", "add session_projection module"], cwd=str(project), capture_output=True)
+    assert commit.returncode == 0, commit.stderr
+    from file_editing.writer import initialize_file_lines
+
+    seeded = initialize_file_lines("core/session_projection.py", target.read_text())
+    assert seeded["status"] == "success", seeded
+
+    edit_trim = (
+        "```edit core/session_projection.py\n"
+        "mode: replace\n"
+        "OLD:\n"
+        "def _trim(self):\n"
+        "    value = self.raw\n"
+        "NEW:\n"
+        "def _trim(self):\n"
+        '    """Docstring for _trim."""\n'
+        "    value = self.raw\n"
+        "```"
+    )
+    shell_env["state"]["llm_script"] = [
+        edit_trim,
+        f"{sd.FINISH_TOKEN}\nAdded a docstring to _trim.",
+    ]
+
+    reviewer_calls = []
+
+    def fake_call_agent(agent_name, prompt, task_id, *args, **kwargs):
+        reviewer_calls.append(agent_name)
+        if agent_name != "reviewer":
+            return "APPROVE"
+        if len(reviewer_calls) == 1:
+            return _json.dumps(
+                {
+                    "decision": "REJECT",
+                    "reason": 'Syntax error: the file cannot be parsed — `text or "")` broken string near _trim.',
+                    "suggestions": [],
+                }
+            )
+        return _json.dumps({"decision": "APPROVE", "reason": "hunk parses cleanly", "suggestions": []})
+
+    monkeypatch.setattr("agents.base.call_agent", fake_call_agent)
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-soak32-310f7ae6",
+        instructions="Add a docstring to _trim in core/session_projection.py",
+        user_command="Add a docstring to _trim in core/session_projection.py",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    # The fabricated syntax claim must NOT block materialize.
+    assert result["status"] == "success", result
+    assert len(result["proposal_ids"]) == 1, result
+    assert progress["files_modified"] == 1
+    # The gate retried the disproven claim once and approved the real hunk.
+    assert sum(1 for a in reviewer_calls if a == "reviewer") == 2
+
+
 def test_gate_presents_full_content_for_full_replace(shell_env):
     # A full-replace of a large file must reach the reviewer as complete proposed
     # content, never as a unified diff cut mid-token (which previously caused
