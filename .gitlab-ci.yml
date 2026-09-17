@@ -85,8 +85,9 @@ test:normal:
       fi
   script:
     - chmod +x utils/run_tests.sh
-    # --batched keeps @pytest.mark.serial at -j 1; parallel batches use -j 2
-    - ./utils/run_tests.sh --normal --batched -j 2 --timeout 30
+    # --batched keeps @pytest.mark.serial at -j 1; -j 1 for the whole run until
+    # the serial-marker worktree tests are on main (then back to -j 2)
+    - ./utils/run_tests.sh --normal --batched -j 1 --timeout 30
   artifacts:
     when: always
     paths:

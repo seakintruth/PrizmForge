@@ -6,7 +6,11 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from workflow import shell_developer as sd
+
+pytestmark = pytest.mark.serial
 
 FINISH = sd.FINISH_TOKEN
 

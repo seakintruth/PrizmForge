@@ -55,6 +55,9 @@ DURATIONS_N=50
 SERIAL_PATHS=(
   "tests/unit/test_hardening.py"
   "tests/unit/test_task_runner.py"
+  "tests/unit/test_shell_developer.py"
+  "tests/unit/test_shell_developer_feed_fixes.py"
+  "tests/unit/test_shell_workspace_evidence.py"
 )
 
 show_help() {
@@ -158,16 +161,22 @@ ensure_pytest_plugins() {
 ensure_pytest_plugins
 
 # Run pytest with stdout+stderr written to log_file, then echo the log to the
-# terminal. Avoids `cmd | tee` pipe buffering / PIPESTATUS quirks on MSYS.
+# terminal. On CI the output is teed live (dots + the currently-running test
+# stream into the job log, so a hang names its culprit; artifacts still get the
+# same file). Locally avoids `cmd | tee` pipe buffering / PIPESTATUS quirks.
 run_pytest_capture() {
   local log_file="$1"
   shift
   set +e
-  "$@" >"$log_file" 2>&1
-  local rc=$?
+  if [[ "${CI:-}" == "true" ]]; then
+    "$@" 2>&1 | tee "$log_file"
+    local rc=${PIPESTATUS[0]}
+  else
+    "$@" >"$log_file" 2>&1
+    local rc=$?
+    cat "$log_file" || true
+  fi
   set -e
-  # Always surface the log on the controlling terminal (even on failure).
-  cat "$log_file" || true
   return "$rc"
 }
 
@@ -184,7 +193,11 @@ run_pytest_once() {
   fi
   local timeout_args=()
   if [[ -n "$PER_TEST_TIMEOUT" && "$PER_TEST_TIMEOUT" != "0" ]]; then
-    timeout_args=(--timeout="$PER_TEST_TIMEOUT" --timeout-method=thread)
+    local timeout_method="thread"
+    if [[ "${CI:-}" == "true" || "$(uname -s)" == "Linux" ]]; then
+      timeout_method="signal"
+    fi
+    timeout_args=(--timeout="$PER_TEST_TIMEOUT" --timeout-method="$timeout_method")
   fi
   echo ""
   echo "============================================================"
@@ -253,7 +266,11 @@ run_single_invocation() {
   fi
   local timeout_args=()
   if [[ -n "$PER_TEST_TIMEOUT" && "$PER_TEST_TIMEOUT" != "0" ]]; then
-    timeout_args=(--timeout="$PER_TEST_TIMEOUT" --timeout-method=thread)
+    local timeout_method="thread"
+    if [[ "${CI:-}" == "true" || "$(uname -s)" == "Linux" ]]; then
+      timeout_method="signal"
+    fi
+    timeout_args=(--timeout="$PER_TEST_TIMEOUT" --timeout-method="$timeout_method")
   fi
   local log_file="${REPORT_DIR}/pytest-${TEST_MODE}-${STAMP}.log"
   local duration_file="${REPORT_DIR}/test-durations-${TEST_MODE}-${STAMP}.json"

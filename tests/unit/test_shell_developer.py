@@ -15,6 +15,8 @@ import pytest
 
 from workflow import shell_developer as sd
 
+pytestmark = pytest.mark.serial
+
 
 # =========================================================================
 # Pure helpers
@@ -413,11 +415,16 @@ def test_finish_with_final_command_defers_then_finishes(shell_env, isolated_proj
 # =========================================================================
 # W1 (soak recompute): early-exit sessions must still materialize WIP edits
 # =========================================================================
-def test_early_exit_step_limit_materializes_wip_changes(shell_env, isolated_project):
-    # Every reply is a bash command and never a FINISH token → the session is
-    # stopped by the step limit with edits parked in the worktree. W1: those
-    # edits must still go through the reviewer gate and materialize, and the
-    # real exit status ("LimitsExceeded") comes back so the loop-guard sees it.
+def test_early_exit_step_limit_materializes_wip_changes(shell_env, isolated_project, monkeypatch):
+    from core.config import get_config
+
+    cfg = get_config()
+    sh = dict(cfg.get("developer", {}).get("shell_developer", {}) or {})
+    sh["step_limit"] = 2
+    sh["task_scope"] = "auto"
+    sh["no_progress_stall_limit"] = 0
+    monkeypatch.setitem(cfg.setdefault("developer", {}), "shell_developer", sh)
+
     shell_env["state"]["llm_script"] = [
         "Touch app.py only.\n```bash\nprintf 'VALUE = 42\\n' > app.py\n```",
     ]
@@ -425,12 +432,12 @@ def test_early_exit_step_limit_materializes_wip_changes(shell_env, isolated_proj
     progress = {"edit_failures": 0}
     result = sd.run_shell_developer_turn(
         task_id="T-shell-w1",
-        instructions="Set VALUE to 42",
-        user_command="Set VALUE to 42",
+        instructions="Set VALUE to 42 in app.py",  # path → targeted, not exploratory
+        user_command="Set VALUE to 42 in app.py",
         conversation_context=[],
         model_choice=None,
         progress=progress,
-        decision={},
+        decision={"target_file": "app.py"},  # drop if your decision schema uses another key
         current_turn=1,
     )
 
