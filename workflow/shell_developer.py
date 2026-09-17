@@ -2217,9 +2217,11 @@ def change_to_operation(change: dict[str, Any], *, exit_status: str = "") -> dic
     """Map one collected change into an EditPayload operation dict (or None to skip).
 
     Soak6: a shell session must never promote an unbounded/truncated whole-file
-    replace to the governed reviewer. `M` changes are only promotable when the
-    proposed content stays under FULL_REPLACE_MAX_LINES and the diff stays under
-    SHELL_PROMOTE_MAX_DIFF_LINES — and a `LimitsExceeded` session is never the
+    replace to the governed reviewer. Soak32 (§19.1): on a file over the
+    full_replace line cap, `M` is promoted as the git-diff hunk of just that
+    path (apply_diff), never as full_replace of the whole module. A bounded
+    small-file `M` stays full_replace; an empty diff after normalize is a no-op
+    (not an unsupported change); and a `LimitsExceeded` session is never the
     vehicle for a promotion that just handed the reviewer a cut payload.
     """
     status = change.get("status")
@@ -2240,14 +2242,21 @@ def change_to_operation(change: dict[str, Any], *, exit_status: str = "") -> dic
         }
     if status == "M":
         bounded = line_count <= FULL_REPLACE_MAX_LINES and diff_lines <= SHELL_PROMOTE_MAX_DIFF_LINES
-        if exit_status == "LimitsExceeded" and not bounded:
-            return None  # drop; do not hand reviewer a huge replace born of a capped session
-        if not bounded:
-            return None
+        if bounded:
+            return {
+                "type": "full_replace",
+                "new_content": content,
+                "rationale": f"Full replace (shell session, {line_count} lines, {diff_lines} diff lines)",
+            }
+        # Soak32 (§19.1): over the line cap — govern the worktree diff of this
+        # path only. The git diff is authoritative for the changed span; a
+        # compiled worktree diff is promotable even after an early-exit session.
+        if not diff_text.strip():
+            return None  # empty diff after normalize → no-op, caller logs as no-op
         return {
-            "type": "full_replace",
-            "new_content": content,
-            "rationale": f"Full replace (shell session, {line_count} lines, {diff_lines} diff lines)",
+            "type": "apply_diff",
+            "diff": diff_text,
+            "rationale": f"Diff hunk (shell session, {line_count}-line file, {diff_lines} changed lines)",
         }
     if status == "D":
         return {"type": "delete_file", "target_file_path": path, "rationale": "Delete file (shell developer session)"}
@@ -2440,7 +2449,10 @@ def _gate_and_materialize_changes(
     for change in changes:
         op = change_to_operation(change, exit_status=result.exit_status)
         if op is None:
-            print(f"   ⚠️ Skipping unsupported change ({change.get('status')}): {change.get('path')}")
+            if change.get("status") == "M" and not (change.get("diff") or "").strip():
+                print(f"   ⚪ No-op change (empty diff after normalize): {change.get('path')}")
+            else:
+                print(f"   ⚠️ Skipping unsupported change ({change.get('status')}): {change.get('path')}")
             continue
 
         payload_dict = {

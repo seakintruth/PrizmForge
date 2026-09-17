@@ -59,6 +59,51 @@ def test_change_to_operation_mapping():
     assert sd.change_to_operation({"status": "S", "path": "big.bin"}) is None
 
 
+def test_large_file_m_change_promotes_hunk_not_full_replace(git_project, tmp_path):
+    # Soak32 §19.1: a 180+ line file (over FULL_REPLACE_MAX_LINES) must never be
+    # promoted as full_replace; the worktree git-diff hunk is the payload instead.
+    import ast
+
+    big = git_project / "big.py"
+    orig = "def _trim(self):\n    value = self.raw\n    return value\n\n" + "".join(f"def fn{num}():\n    return {num}  # {num:04d}\n\n" for num in range(120))
+    big.write_text(orig)
+    subprocess.run(["git", "add", "-A"], cwd=str(git_project), capture_output=True)
+    commit = subprocess.run(["git", "commit", "-qm", "add big module"], cwd=str(git_project), capture_output=True)
+    assert commit.returncode == 0, commit.stderr
+
+    wt = sd.ShellWorktree(git_project, parent_dir=str(tmp_path / "scratch"))
+    cwd = wt.create()
+    try:
+        edited = (cwd / "big.py").read_text().replace("    value = self.raw\n", '    """Docstring for _trim."""\n    value = self.raw\n')
+        (cwd / "big.py").write_text(edited)
+
+        (changes,) = wt.collect_changes()
+        assert changes["path"] == "big.py"
+        assert changes["status"] == "M"
+
+        op = sd.change_to_operation(changes)
+        assert op is not None
+        assert op["type"] == "apply_diff", op  # diff hunk, never full_replace
+        assert "target_file_path" not in op and "new_content" not in op
+
+        # The hunk applies cleanly back onto the base and the result parses.
+        from file_editing.editing import _apply_unified_diff
+
+        applied = _apply_unified_diff(orig.splitlines(keepends=True), (op["diff"] or "").splitlines(keepends=True))
+        assert applied is not None, f"diff was: {op['diff']!r}"
+        ast.parse("".join(applied))
+        assert '"""Docstring for _trim."""' in "".join(applied)
+    finally:
+        wt.cleanup()
+
+
+def test_empty_diff_large_m_is_noop_not_unsupported():
+    # Soak32 §19.1: an empty normalized diff on an over-cap M has nothing to
+    # promote — it is a no-op, and the caller must not treat it as unsupported.
+    op = sd.change_to_operation({"status": "M", "path": "big.py", "new_content": "x\n" * 250, "diff": "   \n"})
+    assert op is None
+
+
 def test_bounded_keeps_short_text_untouched():
     assert sd._bounded("hello world", 100) == "hello world"
 
