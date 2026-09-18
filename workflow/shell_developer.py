@@ -268,6 +268,8 @@ RESPONSE FORMAT — REQUIRED:
 - Otherwise think briefly, then emit EXACTLY ONE bash command inside a single ```bash fenced block. \
 It will be executed with the project copy as the working directory.
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
+- On POSIX (Linux/macOS) prefer `python3` over `python`: bare `python` may be
+  missing (exit 127), and a wasted step is a wasted step. Same for `pip3` vs `pip`.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
 - When the task is fully done and verified, reply with {finish_token} as the first line \
 followed by a short summary of what changed. Do not emit a bash block or edit block in that final reply.
@@ -541,6 +543,8 @@ RESPONSE FORMAT — REQUIRED:
       "summary": null
     }}
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
+- On POSIX (Linux/macOS) prefer `python3` over `python`: bare `python` may be
+  missing (exit 127), and a wasted step is a wasted step. Same for `pip3` vs `pip`.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
 - When the task is fully done and verified, emit instead:
     {{
@@ -2217,9 +2221,11 @@ def change_to_operation(change: dict[str, Any], *, exit_status: str = "") -> dic
     """Map one collected change into an EditPayload operation dict (or None to skip).
 
     Soak6: a shell session must never promote an unbounded/truncated whole-file
-    replace to the governed reviewer. `M` changes are only promotable when the
-    proposed content stays under FULL_REPLACE_MAX_LINES and the diff stays under
-    SHELL_PROMOTE_MAX_DIFF_LINES — and a `LimitsExceeded` session is never the
+    replace to the governed reviewer. Soak32 (§19.1): on a file over the
+    full_replace line cap, `M` is promoted as the git-diff hunk of just that
+    path (apply_diff), never as full_replace of the whole module. A bounded
+    small-file `M` stays full_replace; an empty diff after normalize is a no-op
+    (not an unsupported change); and a `LimitsExceeded` session is never the
     vehicle for a promotion that just handed the reviewer a cut payload.
     """
     status = change.get("status")
@@ -2240,14 +2246,21 @@ def change_to_operation(change: dict[str, Any], *, exit_status: str = "") -> dic
         }
     if status == "M":
         bounded = line_count <= FULL_REPLACE_MAX_LINES and diff_lines <= SHELL_PROMOTE_MAX_DIFF_LINES
-        if exit_status == "LimitsExceeded" and not bounded:
-            return None  # drop; do not hand reviewer a huge replace born of a capped session
-        if not bounded:
-            return None
+        if bounded:
+            return {
+                "type": "full_replace",
+                "new_content": content,
+                "rationale": f"Full replace (shell session, {line_count} lines, {diff_lines} diff lines)",
+            }
+        # Soak32 (§19.1): over the line cap — govern the worktree diff of this
+        # path only. The git diff is authoritative for the changed span; a
+        # compiled worktree diff is promotable even after an early-exit session.
+        if not diff_text.strip():
+            return None  # empty diff after normalize → no-op, caller logs as no-op
         return {
-            "type": "full_replace",
-            "new_content": content,
-            "rationale": f"Full replace (shell session, {line_count} lines, {diff_lines} diff lines)",
+            "type": "apply_diff",
+            "diff": diff_text,
+            "rationale": f"Diff hunk (shell session, {line_count}-line file, {diff_lines} changed lines)",
         }
     if status == "D":
         return {"type": "delete_file", "target_file_path": path, "rationale": "Delete file (shell developer session)"}
@@ -2311,6 +2324,23 @@ def _gate_and_materialize(
     is_full_replace = len(ops) == 1 and ops[0].get("type") == "full_replace"
     new_content = ops[0].get("new_content", "") if is_full_replace else ""
 
+    # §19.3: give the gate the PROPOSED content so a syntax-called REJECT is
+    # checked against ast.parse of what the edit would actually produce — not a
+    # fabricated claim about the pre-change file (Soak32 `310f7ae6`). full_replace
+    # carries the body directly; apply_diff/find_replace apply the op to the
+    # original to derive it (fail-closed: only pass content we could compute).
+    proposed_content: str | None = None
+    if is_full_replace:
+        proposed_content = new_content or None
+    else:
+        from file_editing.editing import _apply_unified_diff
+
+        try:
+            applied = _apply_unified_diff(original_content.splitlines(keepends=True), diff_text.splitlines(keepends=True))
+            proposed_content = "".join(applied) if applied is not None else None
+        except Exception:
+            proposed_content = None
+
     # Option B: never split a token mid-word; truncate on a newline boundary and
     # mark the cut explicitly so the reviewer can tell truncated-from-bounded.
     if is_full_replace and new_content:
@@ -2372,7 +2402,7 @@ Rules:
     # or unparseable verdict must REJECT, never auto-approve. A ``None``
     # transport failure and a semantic REJECT are never retried; only one
     # same-prompt retry is allowed on an empty/unparseable verdict.
-    verdict = request_review_verdict(reviewer_prompt, task_id)
+    verdict = request_review_verdict(reviewer_prompt, task_id, proposed_content=proposed_content)
     # residual P10: count actual plays (the gate may retry once internally)
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + verdict.calls_used
     post_reviewer_suggestions(proposal_id, task_id, verdict.suggestions)
@@ -2440,7 +2470,10 @@ def _gate_and_materialize_changes(
     for change in changes:
         op = change_to_operation(change, exit_status=result.exit_status)
         if op is None:
-            print(f"   ⚠️ Skipping unsupported change ({change.get('status')}): {change.get('path')}")
+            if change.get("status") == "M" and not (change.get("diff") or "").strip():
+                print(f"   ⚪ No-op change (empty diff after normalize): {change.get('path')}")
+            else:
+                print(f"   ⚠️ Skipping unsupported change ({change.get('status')}): {change.get('path')}")
             continue
 
         payload_dict = {

@@ -90,6 +90,22 @@ class BackgroundAgentPool:
         self._queue_lock = threading.Lock()  # protects recently_queued
         self._state_lock = threading.Lock()  # protects running/workers/feeder/filter
         self.active_agents_filter = None  # None = all active
+        # Soak §19.4: free-tier posture — while the active task has not yet
+        # materialized a file (files_modified == 0), the random feeder and
+        # coverage sweep pause so a 50-call day is not burned by hollow
+        # reviews before the proposal lands. set_active_agents([]) already
+        # silences the feedback workers; this gates the feeder/sweep too.
+        self.feeder_paused = False
+        # Soak §19.4: hollow-receipt refusal ledger — (agent_name, file_path,
+        # content_hash) triples refused once. Feeders skip them until the file
+        # content changes (new hash), so the same file is never retried in the
+        # same cycle: one refuse row, next file.
+        self._hollow_refused: set[tuple[str, str, str]] = set()
+        # Soak §19.4: free-tier pause-until-materialize snapshot stack. One
+        # entry = the active_agents_filter captured when the pause began, so a
+        # resume restores exactly the prior stance (even one set by the
+        # resource controller) instead of blindly re-enabling everything.
+        self._free_tier_pause_stack: list = []
 
         # Load agent configurations from config
         config = get_config()
@@ -430,6 +446,13 @@ class BackgroundAgentPool:
                         if event is None:
                             continue
 
+                        # Soak §19.4: a file refused earlier this cycle (hollow
+                        # receipt at the current hash) is not re-fed until its
+                        # content changes — don't burn the free-tier day on a
+                        # reviewer that already said "nothing found".
+                        if self._is_hollow_refused(agent_name, path, event.content_hash):
+                            continue
+
                         self.event_queue.put(event)
                         with self._queue_lock:
                             if tracking_set is None:
@@ -502,6 +525,9 @@ class BackgroundAgentPool:
     def _feed_random_files(self):
         """Feed random files to agents with random_review=true"""
         try:
+            if self.feeder_paused:
+                print("    Random feeder paused (free-tier posture); skipping cycle")
+                return
             conn = sqlite3.connect(get_db_path())
             cursor = conn.cursor()
 
@@ -547,17 +573,27 @@ class BackgroundAgentPool:
 
                     available_files = [f for f in all_files if f[0] not in tracking_set]
 
-                    if not available_files:
+                # Soak §19.4: skip files refused this cycle (hollow receipt at
+                # the current hash) so the random feeder moves to the next file
+                # instead of re-picking the same refusal. Evaluated outside the
+                # queue lock (non-reentrant); fall-back wrap-around re-applies
+                # the same refusal filter afterwards.
+                if not available_files:
+                    with self._queue_lock:
                         if agent_name in self.recently_queued:
                             self.recently_queued[agent_name].clear()
-                        available_files = all_files
+                    available_files = all_files
+                available_files = [f for f in available_files if not self._is_hollow_refused(agent_name, f[0], f[2])]
+                if not available_files:
+                    continue
 
-                    selected_files = random.sample(available_files, min(files_per_cycle, len(available_files)))
+                selected_files = random.sample(available_files, min(files_per_cycle, len(available_files)))
 
-                    for file_data in selected_files:
-                        event = self._create_file_event(file_data, "random_review", priority=7)
-                        self.event_queue.put(event)
-                        if agent_name in self.recently_queued:
+                for file_data in selected_files:
+                    event = self._create_file_event(file_data, "random_review", priority=7)
+                    self.event_queue.put(event)
+                    if agent_name in self.recently_queued:
+                        with self._queue_lock:
                             self.recently_queued[agent_name].add(file_data[0])
 
             print(f"    Fed random files to {len(self.random_review_agents)} agent(s)")
@@ -741,6 +777,7 @@ class BackgroundAgentPool:
             if cleaned:
                 if self._is_hollow_receipt(data1):
                     print(f"    {agent_name}: hollow receipt (no findings and no covered) — refused (Qwen-style)")
+                    self._mark_hollow_refused(agent_name, event.file_path, event.content_hash)
                     log_error(
                         "MEDIUM",
                         "parallel_workers",
@@ -980,6 +1017,18 @@ START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
             return False
         return True
 
+    def _mark_hollow_refused(self, agent_name: str, file_path: str, content_hash: str | None):
+        """Soak §19.4: record ONE refuse row so the same file is not retried
+        in the same cycle. Keyed on content_hash so a materialized edit (new
+        hash) makes the file eligible again."""
+        with self._queue_lock:
+            self._hollow_refused.add((agent_name, file_path, content_hash or ""))
+        print(f"    {agent_name}: refuse row recorded for {file_path} (same-cycle retry suppressed)")
+
+    def _is_hollow_refused(self, agent_name: str, file_path: str, content_hash: str | None) -> bool:
+        with self._queue_lock:
+            return (agent_name, file_path, content_hash or "") in self._hollow_refused
+
     def _sweep_loop(self):
         """Lowest-priority coverage sweep, paused during developer sessions."""
         while self.running:
@@ -996,6 +1045,9 @@ START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
         """Queue one next-uncovered chunk per reviewer agent (§16.2)."""
         if foreground_session_active():
             return
+        if self.feeder_paused:
+            print("    Coverage sweep paused (free-tier posture); skipping cycle")
+            return
         if not self.modification_agents:
             return
         conn = sqlite3.connect(get_db_path())
@@ -1009,6 +1061,11 @@ START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
                     tracking_set = self.recently_queued.get(agent_name)
                     if tracking_set and spec.file_path in tracking_set:
                         continue
+                # Soak §19.4: skip files refused this cycle (hollow receipt at
+                # the current hash) — coverage sweep must not re-target the file
+                # that just produced "no findings and no covered".
+                if self._is_hollow_refused(agent_name, spec.file_path, self._current_hash_for(conn, spec.file_path)):
+                    continue
                 event = self._sweep_event_for(cursor, spec)
                 if event is None:
                     continue
@@ -1021,6 +1078,17 @@ START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
                 print(f"    Coverage sweep: {agent_name} next chunk {spec.file_path} lines {spec.start}-{spec.end}")
         finally:
             conn.close()
+
+    def _current_hash_for(self, conn, file_path: str) -> str | None:
+        row = (
+            conn.cursor()
+            .execute(
+                "SELECT content_hash FROM project_files WHERE file_path = ? AND is_binary = 0",
+                (file_path,),
+            )
+            .fetchone()
+        )
+        return row[0] if row else None
 
     def _sweep_event_for(self, cursor, spec: SliceSpec) -> FileChangeEvent | None:
         """Event for a sweep chunk; content_hash is the file's current hash."""
@@ -1095,6 +1163,7 @@ START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
                 return
             if self._is_hollow_receipt(data):
                 print(f"    {agent_name}: hollow sweep receipt (no findings, no covered) — refused")
+                self._mark_hollow_refused(agent_name, event.file_path, event.content_hash)
                 return
 
             self._parse_and_save_feedback(agent_name, event, response)
@@ -1268,6 +1337,44 @@ START YOUR RESPONSE WITH { RIGHT NOW. NO OTHER TEXT."""
             self.base_feeder_interval = float(interval)
             self.feeder_interval = float(interval)
         print(f"    Feeder interval adjusted to {interval}s")
+
+    def set_feeder_paused(self, paused: bool):
+        """Soak §19.4: stop the random feeder + coverage sweep while on the
+        free-tier before the first file materializes (files_modified == 0).
+
+        Feedback *workers* are already silenced by ``set_active_agents([])``;
+        this stops the periodic loops that would otherwise keep enqueueing
+        hollow-review events and burning the free-tier day's quota before the
+        shell worktree produces a proposal.
+        """
+        with self._state_lock:
+            self.feeder_paused = bool(paused)
+        print(f"    {'Pausing' if paused else 'Resuming'} random feeder / coverage sweep (free-tier posture)")
+
+    def set_free_tier_pause(self, paused: bool):
+        """Soak §19.4: pause feedback agents + random feeder + sweep until the
+        active task materializes its first file (files_modified == 0).
+
+        Idempotent: the first ``paused=True`` snapshots the current
+        ``active_agents_filter``; every subsequent ``paused=True`` is a no-op;
+        the matching ``paused=False`` restores exactly that snapshot (however
+        many agent turns later the first file lands).
+        """
+        with self._state_lock:
+            if paused and len(self._free_tier_pause_stack) == 0:
+                self._free_tier_pause_stack.append(self.active_agents_filter)
+            elif not paused and len(self._free_tier_pause_stack) > 0:
+                previous = self._free_tier_pause_stack.pop()
+            else:
+                return
+        if paused:
+            self.set_active_agents([])
+            self.set_feeder_paused(True)
+            print("   🛑 Free-tier posture: feedback agents + feeder paused until the first file materializes")
+        else:
+            self.set_active_agents(previous)
+            self.set_feeder_paused(False)
+            print("   ✅ First file materialized: background feedback agents + feeder resumed")
 
     def set_active_agents(self, active_agents: list[str] | None):
         """
