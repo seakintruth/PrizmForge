@@ -514,6 +514,90 @@ def test_400_generic_not_session_still_falls_through(call_endpoint_env):
     assert outcomes and outcomes[0]["kind"] == "unexpected_error"
 
 
+# ---- Soak §19.4: opencode FreeTierError-class 403s are permanent (park + fall back)
+def test_403_free_tier_is_permanent_park(call_endpoint_env, capfd):
+    """An opencode ``FreeTierError`` 403 latches MISCONFIGURED long (permanent
+    for the soak), records kind 'free_tier', never retries, prints that the
+    opencode CLI still works, and falls back immediately."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    scripted = [
+        _resp(
+            403,
+            {"error": {"type": "FreeTierError", "message": "free tier is not supported over HTTP"}},
+        )
+    ]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(
+                base,
+                "record_model_outcome",
+                lambda model_ref, endpoint=None, **kw: outcomes.append({"model": model_ref, "endpoint": endpoint, **kw}),
+            ):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked == [(EndpointStatus.MISCONFIGURED, 240, None)]
+    assert outcomes and outcomes[0]["kind"] == "free_tier"
+    assert outcomes[0]["endpoint"] == "primary"
+    out = capfd.readouterr().out
+    assert "FreeTierError (403)" in out
+    assert "opencode CLI can still be used" in out
+
+
+def test_403_free_tier_prose_body_also_parks(call_endpoint_env):
+    """Free-form 403 prose ('free tier') classifies the same way as the JSON
+    shape, so wrapping a zen body in a plain message cannot dodge the park."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    scripted = [_resp(403, {"error": {"message": "not available on the free tier"}})]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({**kw})):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert health.parked[0][0] == EndpointStatus.MISCONFIGURED
+    assert outcomes[0]["kind"] == "free_tier"
+
+
+def test_403_generic_not_free_tier_still_falls_through(call_endpoint_env):
+    """A 403 with no FreeTier signature keeps the existing generic-403 behavior
+    (unexpected/request error), NOT the permanent MISCONFIGURED park."""
+    base = call_endpoint_env
+    health = _RecordingHealth()
+    fake = _FakeEndpoint()
+    fake.health = health
+    manager = _FakeManager()
+    manager.endpoints = {"primary": fake}
+    outcomes: list[dict] = []
+    resp = _resp(403, {"error": {"message": "forbidden"}})
+
+    def _raise(*a):
+        raise RuntimeError("HTTP 403: forbidden")
+
+    resp.raise_for_status = _raise
+    scripted = [resp]
+    with patch.object(base, "get_endpoint_manager", lambda: manager):
+        with patch("agents.base.post_json", side_effect=scripted):
+            with patch.object(base, "record_model_outcome", lambda model_ref, endpoint=None, **kw: outcomes.append({**kw})):
+                answer, _ = base.call_endpoint([{"role": "user", "content": "hi"}], model="mock-model")
+
+    assert answer is None
+    assert all(s != EndpointStatus.MISCONFIGURED for s, *_ in health.parked)
+    assert outcomes and outcomes[0]["kind"] == "unexpected_error"
+
+
 def test_429_quota_short_reset_sleeps_to_reset_then_retries(call_endpoint_env, capfd):
     """Remaining==0 with Reset within 60s sleeps the remaining wait instead of parking."""
     base = call_endpoint_env

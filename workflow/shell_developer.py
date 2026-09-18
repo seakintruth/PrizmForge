@@ -268,6 +268,8 @@ RESPONSE FORMAT — REQUIRED:
 - Otherwise think briefly, then emit EXACTLY ONE bash command inside a single ```bash fenced block. \
 It will be executed with the project copy as the working directory.
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
+- On POSIX (Linux/macOS) prefer `python3` over `python`: bare `python` may be
+  missing (exit 127), and a wasted step is a wasted step. Same for `pip3` vs `pip`.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
 - When the task is fully done and verified, reply with {finish_token} as the first line \
 followed by a short summary of what changed. Do not emit a bash block or edit block in that final reply.
@@ -541,6 +543,8 @@ RESPONSE FORMAT — REQUIRED:
       "summary": null
     }}
 - Use commands to inspect files, apply edits, and run the project's tests or linters.
+- On POSIX (Linux/macOS) prefer `python3` over `python`: bare `python` may be
+  missing (exit 127), and a wasted step is a wasted step. Same for `pip3` vs `pip`.
 - Prefer small, verifiable steps. After editing, run relevant tests to check your work.
 - When the task is fully done and verified, emit instead:
     {{

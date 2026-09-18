@@ -507,3 +507,188 @@ class TestCoverageSweepLedger:
         assert is_hollow({"findings": [{"file_path": "a.py", "message": "x" * 20}]}) is False
         assert is_hollow(None) is True
         assert is_hollow("junk") is True
+
+
+class TestSoak194FreeTierHollowPosture:
+    """Soak §19.4: hollow receipts are refused once per (agent, file, hash) and
+    the same file is never re-fed in the same cycle; free-tier pauses keep the
+    feedback agents + feeder silent until the first file materializes."""
+
+    def _pool(self):
+        from agents.parallel_workers import BackgroundAgentPool
+
+        pool = BackgroundAgentPool.__new__(BackgroundAgentPool)
+        pool._queue_lock = __import__("threading").Lock()
+        pool._state_lock = __import__("threading").Lock()
+        pool._hollow_refused = set()
+        pool._free_tier_pause_stack = []
+        pool.active_agents_filter = None
+        pool.feeder_paused = False
+        pool.modification_agents = ["jr_reviewer"]
+        pool.random_review_agents = []
+        pool.recently_queued = {}
+        pool.agent_configs = {}
+        return pool
+
+    def test_hollow_refusal_is_recorded_once(self):
+        pool = self._pool()
+        pool._mark_hollow_refused("jr_reviewer", "a.py", "hash-1")
+        assert pool._is_hollow_refused("jr_reviewer", "a.py", "hash-1") is True
+        assert pool._is_hollow_refused("jr_reviewer", "a.py", "hash-1") is True  # idempotent
+        # A changed file (new hash) is eligible again.
+        assert pool._is_hollow_refused("jr_reviewer", "a.py", "hash-2") is False
+        # A different agent is not blocked by another agent's refusal.
+        assert pool._is_hollow_refused("security_reviewer", "a.py", "hash-1") is False
+
+    def test_free_tier_pause_snapshots_and_restores(self):
+        pool = self._pool()
+        pool.active_agents_filter = {"jr_reviewer"}
+        calls = {"set_active": [], "feeder": []}
+
+        def fake_set_active(filter_):
+            calls["set_active"].append(filter_)
+            pool.active_agents_filter = set(filter_) if isinstance(filter_, (list, set)) else None
+
+        def fake_feeder(paused):
+            calls["feeder"].append(paused)
+            pool.feeder_paused = paused
+
+        pool.set_active_agents = fake_set_active
+        pool.set_feeder_paused = fake_feeder
+
+        pool.set_free_tier_pause(True)
+        assert calls["set_active"] == [[]]
+        assert calls["feeder"] == [True]
+        # Idempotent: repeated pauses don't re-snapshot.
+        pool.set_free_tier_pause(True)
+        assert len(calls["set_active"]) == 1
+
+        pool.set_free_tier_pause(False)
+        assert calls["set_active"][-1] == {"jr_reviewer"}
+        assert calls["feeder"] == [True, False]
+        # Stack is empty: a redundant resume is a no-op.
+        pool.set_free_tier_pause(False)
+        assert len(calls["set_active"]) == 2
+
+    def test_free_tier_pause_all_resume_all_with_none_filter(self):
+        pool = self._pool()
+        calls = []
+
+        def fake_set_active(filter_):
+            calls.append(filter_)
+
+        pool.set_active_agents = fake_set_active
+        pool.set_feeder_paused = lambda paused: calls.append(f"feeder:{paused}")
+
+        pool.set_free_tier_pause(True)
+        assert calls[0] == []
+        pool.set_free_tier_pause(False)
+        assert calls[2] is None  # original filter was None -> resume-all
+
+    def test_feeder_paused_silences_random_feed_and_sweep(self, temp_db):
+        conn = _connect()
+        _seed_files(
+            conn,
+            [
+                ("a.py", "# a\n" * 20, "hash-a", "2026-01-01T00:00:00", 20, "py", False),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        pool = self._pool()
+        pool.task_id = "t_hollow"
+        pool.random_review_agents = ["jr_reviewer"]
+        pool.agent_configs = {"jr_reviewer": {"random_files_per_cycle": 5}}
+        pool.feeder_config = {"files_per_agent_default": 5}
+        pool.base_feeder_interval = 30.0
+        pool.feeder_interval = 30.0
+        pool.recently_queued = {}
+        pool._sweep_cycle = lambda: (_ for _ in ()).throw(AssertionError("sweep ran while paused"))
+        pool.event_queue = __import__("queue").Queue()
+
+        pool.set_feeder_paused(True)
+        pool._feed_random_files()
+        assert pool.event_queue.qsize() == 0
+        pool.set_feeder_paused(False)
+
+    def test_random_feeder_skips_refused_files(self, temp_db, monkeypatch):
+        conn = _connect()
+        _seed_files(
+            conn,
+            [
+                ("a.py", "# a\n" * 20, "hash-a", "2026-01-01T00:00:00", 20, "py", False),
+                ("b.py", "# b\n" * 20, "hash-b", "2026-01-01T00:00:00", 20, "py", False),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+        from agents.parallel_workers import BoundedSet
+
+        pool = self._pool()
+        pool.task_id = "t_hollow"
+        pool.random_review_agents = ["jr_reviewer"]
+        pool.agent_configs = {"jr_reviewer": {"random_files_per_cycle": 5}}
+        pool.feeder_config = {"files_per_agent_default": 5}
+        pool.base_feeder_interval = 30.0
+        pool.feeder_interval = 30.0
+        pool.recently_queued = {"jr_reviewer": BoundedSet(max_size=1000)}
+
+        class _FakeQueue:
+            def __init__(self):
+                self.items = []
+
+            def put(self, item):
+                self.items.append(item)
+
+            def qsize(self):
+                return len(self.items)
+
+        pool.event_queue = _FakeQueue()
+
+        # Pre-refuse a.py: the feeder must pick b.py only.
+        pool._mark_hollow_refused("jr_reviewer", "a.py", "hash-a")
+        pool._feed_random_files()
+        assert [e.file_path for e in pool.event_queue.items] == ["b.py"]
+
+
+class TestSoak194SyncFreeTierPause:
+    def test_sync_pauses_when_zero_files_modified(self, monkeypatch):
+        from workflow import task_runner as tr
+
+        calls = []
+        fake_pool = type("FakePool", (), {"set_free_tier_pause": lambda self, p: calls.append(p)})()
+
+        def fake_get_config():
+            return {"background_agents": {"pause_until_first_materialize": True}}
+
+        monkeypatch.setattr(tr, "get_config", fake_get_config)
+        tr._sync_free_tier_pause(fake_pool, {"files_modified": 0})
+        assert calls == [True]
+
+    def test_sync_resumes_after_first_materialize(self, monkeypatch):
+        from workflow import task_runner as tr
+
+        calls = []
+        fake_pool = type("FakePool", (), {"set_free_tier_pause": lambda self, p: calls.append(p)})()
+
+        def fake_get_config():
+            return {"background_agents": {"pause_until_first_materialize": True}}
+
+        monkeypatch.setattr(tr, "get_config", fake_get_config)
+        tr._sync_free_tier_pause(fake_pool, {"files_modified": 1})
+        assert calls == [False]
+
+    def test_sync_noop_when_flag_off(self, monkeypatch):
+        from workflow import task_runner as tr
+
+        called = []
+        fake_pool = type("FakePool", (), {"set_free_tier_pause": lambda self, p: called.append(p)})()
+
+        def fake_get_config():
+            return {"background_agents": {"pause_until_first_materialize": False}}
+
+        monkeypatch.setattr(tr, "get_config", fake_get_config)
+        tr._sync_free_tier_pause(fake_pool, {"files_modified": 0})
+        assert called == []

@@ -423,13 +423,39 @@ def _ensure_pool_started(
     have no start() to guard against.
     """
     if agent_pool is None or not hasattr(agent_pool, "start"):
+        _sync_free_tier_pause(agent_pool, progress)
         return
     if getattr(agent_pool, "running", False):
+        _sync_free_tier_pause(agent_pool, progress)
         return
     if progress.get("materialize_successes", 0) == 0 and current_turn < pool_start_after_turns:
+        _sync_free_tier_pause(agent_pool, progress)
         return
     print("   🌱 Deferred background pool start: task is productive, spawning workers")
     agent_pool.start(task_id)
+    _sync_free_tier_pause(agent_pool, progress)
+
+
+def _sync_free_tier_pause(agent_pool: Any, progress: dict) -> None:
+    """Soak §19.4: while ``files_modified == 0`` for the active task, pause the
+    feedback agents + random feeder + coverage sweep (free-tier posture).
+
+    Config-gated by ``background_agents.pause_until_first_materialize`` so a
+    50-call free-tier day is spent on the developer's proposal, not hollow
+    jr/security reviews. The pool snapshots its prior filter and restores it
+    exactly when the first file lands.
+    """
+    try:
+        config = get_config()
+        bg = config.get("background_agents", {}) or {}
+        if not bg.get("pause_until_first_materialize", False):
+            return
+        if agent_pool is None or not hasattr(agent_pool, "set_free_tier_pause"):
+            return
+        files_modified = int(progress.get("files_modified", 0) or 0)
+        agent_pool.set_free_tier_pause(files_modified == 0)
+    except Exception as e:
+        print(f"   ⚠️  Free-tier pause sync failed: {e}")
 
 
 class NetworkBusyLoopGuard:
