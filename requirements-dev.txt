@@ -16,7 +16,7 @@ pytest-xdist>=3.8.0
 # Code quality (recommended)
 # Floors match constrained mirrors (e.g. Advana Nexus); CI may resolve newer.
 black>=24.4.2
-flake8>=7.3.0
+flake8>=7.4.1
 isort>=7.0.0
 
 # Lint / fast fixer
