@@ -7,7 +7,7 @@ post-mortems, and acceptance evidence live in **git history** (`git log`,
 merged PRs #108–#128) and `docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`.
 Do not paste shipped checklists back into this tracker.
 
-**Last updated:** 2026-09-14
+**Last updated:** 2026-09-16
 
 ## How to use this file
 
@@ -23,6 +23,7 @@ Do not paste shipped checklists back into this tracker.
 
 | Section | Priority | Why |
 |---|---|---|
+| **§19 Soak32 worktree→proposal** | **do now** | Shell already edits; collect-changes skips `M` on ≥180-line files and a second LLM overwrites a compiled tree. Free-tier soaks die on that hole plus hollow background calls. |
 | **§14.6 live-run gate** | **next** | §14.1–§14.5 + §13.7 shipped on `main`; the last open §14 item is a real `--live` endpoint run on the crafted terminal set (needs working endpoints) |
 | **§12.6 attribution** | **after §14.6** | `harness/attribution.py` scaffolded (branch); exercise a live single-component swap once the loop round-trips |
 | §15.4 ops posture | **operator** | Code half (latch-aware no-alternate sleep) shipped; operator must add a paid/company endpoint or shorten the unattended window |
@@ -43,10 +44,14 @@ Do not paste shipped checklists back into this tracker.
   crafted terminal tasks, and `--live` endpoint/model injection).
   Do not point `project_directory` at the main working clone if you flip
   `evolve.enabled`.
-- **Next (do):** **§14.6 live-run gate** — mock/deterministic runs are
-  green on the terminal set; run real `--live` trials (deterministic
-  ordering, iteration-labeled results) to complete §13.7 and let §12.5
-  consume terminal verdicts. Then §12.6 attribution (`harness/attribution.py`
+- **Next (do):** **§19 Soak32 worktree→proposal** — `collect_changes` skips
+  `M` on ≥180-line files and a second LLM overwrites a compiled tree; make
+  `M` over the full_replace cap become a hunk (`find_replace`/`diff` on the
+  changed span), gate the worktree diff on `Finished`+compile, and cut the
+  hollow free-tier background calls. Then **§14.6 live-run gate** — run real
+  `--live` trials on the terminal set (deterministic ordering,
+  iteration-labeled results) to complete §13.7 and let §12.5 consume
+  terminal verdicts; then §12.6 attribution (`harness/attribution.py`
   scaffolded; exercise it on a live swap). §14.7 stays gated on Board
   approval.
 - **Soak24:** first approve→materialize since Soak8 (`b4041e15` on
@@ -465,7 +470,6 @@ for non-quota 429/503.
 
 ---
 
-```markdown
 ## 18. Soak16 / w-10 — apply quality only (rest already shipped)
 
 **Priority:** next on the working branch. §12–§17 are **done**; do not
@@ -615,13 +619,144 @@ On the working branch, after 18.1–18.2 tests green:
 4. Optional 2h soak (Gemini-only, new seed or empty if finalize is
    already on `main`): unique `(path, span)` applied ≥ 1; no ID 32/54
    comment churn; 18.3 checks pass or bugs filed on §13.4/§17.
-```
+
+---
+
+## 19. Soak32 — worktree edit never becomes a proposal
+
+**Priority:** **do now** (blocks every named-file soak on free tier)  
+**Last soak:** Soak32 / 2026-09-16, seed “docstrings on `_trim` / `_one_line_result` in `core/session_projection.py`”  
+**Evidence:** target
+`PrizmForge-Soak/Soak32-target/PrizmForge/.PrizmForge/shell_trajectories/`
+(`task_001-turn1-20260917T013338Z.json`, `task_001-turn2-20260917T014247Z.json`);
+proposal `310f7ae6-dc84-4dd4-ac14-c1642699d767`.
+
+PR #136 (symbol-first read, live `💻` echo) worked. The mutation path still
+does not land a file that the shell already compiled.
+
+### 19.0 What Soak32 already proved (do not re-diagnose)
+
+- Seed named a file + two symbols → session was **targeted**, first command
+  `sed -n '60,+40p'` (not `sed 1,80` / `cat`).
+- After botched `sed -i` (orphan strings *above* `def`), step 11 ` ```edit `
+  put docstrings **inside** both functions. Step 12 listing + later
+  `python3 -m py_compile` were valid.
+- Session exit `Finished` after 16 calls. Worktree had the edit.
+- Then: `Skipping unsupported change (M): core/session_projection.py` →
+  shell status `error` → `Skipping full_replace fallback (180+ line
+  target)` ×2 → **legacy** developer `find_replace` / `guid` / accidental
+  `full_replace` of the 388-line file.
+- Reviewer rejected `310f7ae6` for a syntax story (`text or "")`, stray
+  `.`) that was **not** the compiled worktree. Governed tree stayed
+  docstring-less.
+- Turn 2: fresh worktree, no WIP, pytest 16 passed, `NoProgress` after 10
+  no-write steps — stall is correct; the follow-on guid/find_replace LLM
+  is not.
+- Background jr/security hollow receipts + prioritizer exhausted OpenRouter
+  free **50/day** (~9 min wall). OpenCode HTTP **403 FreeTierError**
+  (“only from within OpenCode”). Process parked 14400s. Token line
+  `19.9M / 20M` is **remaining**, not burned.
+
+### 19.1 Implement — worktree `M` ≥180 lines → hunk, not full_replace
+
+`change_to_operation` / collect-changes today: `M` ⇒ `full_replace` or
+skip. `FULL_REPLACE_MAX_LINES` / 180-line skip is correct; the missing
+branch is the soak killer.
+
+- [ ] If `status == "M"` and the file is over the full_replace line cap,
+      build a governed op from `git diff` of that path only:
+      prefer `find_replace` (unique old/new hunk) or `diff` / `guid` on
+      the changed span ±20 lines. **Never** `full_replace` the module.
+- [ ] If the diff is empty after normalize, treat as no-op (not
+      `unsupported`).
+- [ ] Unit: worktree `M` on a ≥180-line file with a two-line docstring
+      insert → payload is `find_replace` or `diff`, target path only,
+      `ast.parse` of the applied result succeeds. Assert no
+      `full_replace` and no second `call_endpoint` developer.
+
+### 19.2 Implement — `Finished` + compile + diff gates the worktree
+
+- [ ] After `SessionResult.exit_status == "Finished"` (and after
+      `LimitsExceeded` with WIP, same as W1): if
+      `commands_executed >= 1` and `collect_changes()` is non-empty,
+      run `_gate_and_materialize` on the **hunk from 19.1**.
+- [ ] Do **not** set shell status `error` solely because `M` was too
+      large for full_replace.
+- [ ] Do **not** start `workflow/developer_edit.py` / Phase-2 “Generating
+      edit (mode=…)” when the shell worktree already has a compilable
+      diff for the seed path.
+- [ ] Unit: fixture = Soak32 turn-1 worktree (docstrings inside both
+      defs). `run_shell_developer_turn` (mocked LLM that FINISH after
+      the known ` ```edit `) creates one proposal, no
+      `invalid_operation` / `empty_operations` developer call.
+
+### 19.3 Implement — reviewer sees the worktree, not a rewritten file
+
+- [ ] Reviewer prompt for a shell-sourced proposal is the bounded
+      changed region (`reviewer_original_view` / proposed hunk), not a
+      model-authored `full_replace` body.
+- [ ] Reject reasons that cite syntax must be checked against
+      `ast.parse` of the **proposed** content. If parse succeeds, a
+      “syntax error” verdict is fail-closed as invalid reviewer JSON
+      (same family as non-JSON reject), not as a true reject.
+- [ ] Soak32 `310f7ae6` is the regression fixture: reject text claimed
+      `text or "")` while worktree compiled — must not block
+      materialize when 19.1/19.2 produce the hunk.
+
+### 19.4 Implement — free-tier and OpenCode posture
+
+- [ ] Unattended fallback: do **not** call `opencode` HTTP
+      (`FreeTierError` / `MissingSessionID` are permanent on zen).
+      Park that endpoint; print that OpenCode CLI can still work.
+- [ ] While `files_modified == 0` for the active task, pause jr_reviewer
+      / security_reviewer / random feeder (backlog already does this
+      mid-session; do it **before** the first developer dispatch on
+      free-tier / when `X-RateLimit-Remaining` is low).
+- [ ] Hollow receipt (`no findings and no covered`) must not retry the
+      same file in the same cycle (one refuse row, next file).
+- [ ] `python` vs `python3`: shell prompt or wrapper should prefer
+      `python3` on POSIX so exit-127 does not burn a step. Nice-to-have,
+      not a soak blocker.
+
+### 19.5 Out of scope / do not “fix” here
+
+- Do not raise `FULL_REPLACE_MAX_LINES` to sneak 388-line files through.
+- Do not disable the 180-line skip.
+- Do not treat two company keys as one quota.
+- Do not copy `.PrizmForge` across soaks.
+- Do not merge trajectory-only soak branches.
+- §14.6 live bench and §12.6 attribution stay behind a working endpoint;
+  Soak32 did not unblock them.
+
+### 19.6 Acceptance
+
+Hotfix soak, same seed (named file + two functions), one live endpoint:
+
+1. First read is symbol-anchored (`sed` at `_trim` line, not file top).
+2. After a successful ` ```edit ` / compile, **one** proposal is created
+   from the worktree hunk; no legacy `Generating edit (mode=find_replace)`
+   in that turn.
+3. Reviewer either approves that hunk or rejects on a real hunk issue —
+   not a syntax claim against a file that `ast.parse`s.
+4. `file_write_log` has a row for `core/session_projection.py` (or the
+   seed path). Turn 2 does not start from a clean file with the same seed
+   still open.
+5. OpenCode is not POSTed after OpenRouter daily 429. Hollow jr/security
+   loops do not consume the rest of a 50-call day before the proposal
+   lands.
+
+### 19.7 Priority row (drop into the table at the top)
+
+| Section | Priority | Why |
+|---|---|---|
+| **§19 Soak32 worktree→proposal** | **do now** | Shell already edits; collect-changes skips `M` on ≥180-line files and a second LLM overwrites a compiled tree. Free-tier soaks die on that hole plus hollow background calls. |
 
 ## Implementation sequence (open work only)
 
 | Order | Work item | Exit criterion |
 |---:|---|---|
-| 1 | §14.6 live-run gate (mock → live; folds §13.7 `--live`) | Comparable pass@1 on the crafted terminal set; §12.5 consumes verdicts → unblocks §12.4 |
-| 2 | §12.6 attribution exercise (harness/attribution.py scaffolded) | A single-component swap changes measured pass@1; `H_best <- H_t` tracked |
-| 3 | §15.4 operator half — add a paid/company endpoint or shorten `cli_mode.unattended.max_duration_hours` | Unattended window does real work; no long idle no-alternate polling |
-| 4 | §14.7 TB translation seam (gated) | Board gate opens §12.7 out-of-scope; TB tasks translate or fail loudly |
+| 1 | **§19 Soak32 worktree→proposal** (worktree `M` ≥180 lines → hunk) + 19.4 free-tier posture | Shell `M` becomes `find_replace`/`diff` on the changed span; reviewer sees the compiled hunk; no legacy full_replace/developer overwrite; one proposal lands for the seed path |
+| 2 | §14.6 live-run gate (mock → live; folds §13.7 `--live`) | Comparable pass@1 on the crafted terminal set; §12.5 consumes verdicts → unblocks §12.4 |
+| 3 | §12.6 attribution exercise (harness/attribution.py scaffolded) | A single-component swap changes measured pass@1; `H_best <- H_t` tracked |
+| 4 | §15.4 operator half — add a paid/company endpoint or shorten `cli_mode.unattended.max_duration_hours` | Unattended window does real work; no long idle no-alternate polling |
+| 5 | §14.7 TB translation seam (gated) | Board gate opens §12.7 out-of-scope; TB tasks translate or fail loudly |

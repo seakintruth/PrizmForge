@@ -87,6 +87,37 @@ _SESSION_MISSING_PATTERNS = (
     re.compile(r"session\s+(?:id|identifier|token)?\s*(?:missing|not\s+found|does\s+not\s+exist|invalid)", re.IGNORECASE),
 )
 
+# Soak §19.4: opencode's zen front-end rejects free-tier HTTP access with
+# "FreeTierError" — permanent for the soak (a bounded daily quota the operator
+# cannot extend), so park the endpoint instead of retrying/falling back to it
+# and burning the rest of the day. The opencode *CLI* is unaffected.
+_FREE_TIER_PATTERNS = (
+    re.compile(r"freetiererror", re.IGNORECASE),
+    re.compile(r"free\s*-?\s*tier", re.IGNORECASE),
+    re.compile(r"not\s+available\s+on\s+the\s+free", re.IGNORECASE),
+)
+
+
+def _is_free_tier_error(resp, error_data: dict | None) -> bool:
+    """True for FreeTierError-class 403 bodies (Soak §19.4).
+
+    opencode wraps quota exhaustion behind a 403 whose body carries an
+    ``error.type`` of ``FreeTierError``. Match the reported type/code/message
+    plus the raw body so both the JSON error shape and free-form prose are
+    caught.
+    """
+    text = " ".join(
+        str(part)
+        for part in (
+            (error_data or {}).get("type"),
+            (error_data or {}).get("code"),
+            (error_data or {}).get("message"),
+            getattr(resp, "text", "") or "",
+        )
+        if part
+    )
+    return any(pattern.search(text) for pattern in _FREE_TIER_PATTERNS)
+
 
 def _is_session_missing_error(resp, error_data: dict | None) -> bool:
     """True for MissingSessionID-class 400 bodies (Soak17 §11.2).
@@ -826,6 +857,35 @@ def call_endpoint(  # noqa: C901
                     endpoint_mgr,
                     seen,
                     announce="→ Endpoint misconfigured. Falling back to {name}/{model}",
+                    reason=EndpointStatus.MISCONFIGURED.value,
+                )
+
+            # ============= HANDLE 403 FREE-TIER (OPencode) =============
+            # Soak §19.4: opencode's zen adapter returns FreeTierError 403 for
+            # HTTP access on the free tier — a permanent state for the soak,
+            # not a transient rate limit. Park the endpoint long, do NOT retry
+            # it (each attempt would only consume account quota), and fall back.
+            # The opencode CLI remains a viable operator channel.
+            if resp.status_code == 403 and _is_free_tier_error(resp, error_data):
+                print(
+                    f"💸 {endpoint.name} returned FreeTierError (403) — free-tier HTTP is not available; "
+                    f"parking {MISCONFIGURED_COOLDOWN_MINUTES}m instead of retrying."
+                )
+                print("   ℹ️  The opencode CLI can still be used (opencode CLI works independently of this endpoint).")
+                endpoint.health.mark_failure(EndpointStatus.MISCONFIGURED, cooldown_minutes=MISCONFIGURED_COOLDOWN_MINUTES)
+                record_model_outcome(f"{endpoint.name}/{model_name}", endpoint.name, ok=False, kind="free_tier")
+                return _fallback_to_alternate(
+                    messages,
+                    max_tokens,
+                    temperature,
+                    retry_count,
+                    task_id,
+                    agent_name,
+                    endpoint,
+                    model_name,
+                    endpoint_mgr,
+                    seen,
+                    announce="→ Endpoint parked (free-tier 403). Falling back to {name}/{model}",
                     reason=EndpointStatus.MISCONFIGURED.value,
                 )
 

@@ -59,6 +59,51 @@ def test_change_to_operation_mapping():
     assert sd.change_to_operation({"status": "S", "path": "big.bin"}) is None
 
 
+def test_large_file_m_change_promotes_hunk_not_full_replace(git_project, tmp_path):
+    # Soak32 §19.1: a 180+ line file (over FULL_REPLACE_MAX_LINES) must never be
+    # promoted as full_replace; the worktree git-diff hunk is the payload instead.
+    import ast
+
+    big = git_project / "big.py"
+    orig = "def _trim(self):\n    value = self.raw\n    return value\n\n" + "".join(f"def fn{num}():\n    return {num}  # {num:04d}\n\n" for num in range(120))
+    big.write_text(orig)
+    subprocess.run(["git", "add", "-A"], cwd=str(git_project), capture_output=True)
+    commit = subprocess.run(["git", "commit", "-qm", "add big module"], cwd=str(git_project), capture_output=True)
+    assert commit.returncode == 0, commit.stderr
+
+    wt = sd.ShellWorktree(git_project, parent_dir=str(tmp_path / "scratch"))
+    cwd = wt.create()
+    try:
+        edited = (cwd / "big.py").read_text().replace("    value = self.raw\n", '    """Docstring for _trim."""\n    value = self.raw\n')
+        (cwd / "big.py").write_text(edited)
+
+        (changes,) = wt.collect_changes()
+        assert changes["path"] == "big.py"
+        assert changes["status"] == "M"
+
+        op = sd.change_to_operation(changes)
+        assert op is not None
+        assert op["type"] == "apply_diff", op  # diff hunk, never full_replace
+        assert "target_file_path" not in op and "new_content" not in op
+
+        # The hunk applies cleanly back onto the base and the result parses.
+        from file_editing.editing import _apply_unified_diff
+
+        applied = _apply_unified_diff(orig.splitlines(keepends=True), (op["diff"] or "").splitlines(keepends=True))
+        assert applied is not None, f"diff was: {op['diff']!r}"
+        ast.parse("".join(applied))
+        assert '"""Docstring for _trim."""' in "".join(applied)
+    finally:
+        wt.cleanup()
+
+
+def test_empty_diff_large_m_is_noop_not_unsupported():
+    # Soak32 §19.1: an empty normalized diff on an over-cap M has nothing to
+    # promote — it is a no-op, and the caller must not treat it as unsupported.
+    op = sd.change_to_operation({"status": "M", "path": "big.py", "new_content": "x\n" * 250, "diff": "   \n"})
+    assert op is None
+
+
 def test_bounded_keeps_short_text_untouched():
     assert sd._bounded("hello world", 100) == "hello world"
 
@@ -240,6 +285,157 @@ def test_turn_success_materializes_approved_proposal(shell_env, isolated_project
     assert "VALUE = 42" in prompt
     # Small files fit the cap: complete content, no truncation marker line.
     assert "[TRUNCATED: content exceeds" not in prompt
+
+
+def test_soak32_turn_overcap_module_produces_hunk_proposal(shell_env, isolated_project, monkeypatch):
+    # Soak32 §19.1/§19.2 end-to-end: the worktree edits a 200+ line module via
+    # the ```edit primitive, FINISHes, and the turn promotes exactly ONE governed
+    # proposal from the git-diff hunk (apply_diff) — NOT a full_replace and NOT a
+    # second legacy developer call.
+    project = Path(isolated_project["project"])
+    core = project / "core"
+    core.mkdir(exist_ok=True)
+    target = core / "session_projection.py"
+    filler = "".join(f"def _fill{num}():\n    return {num}  # {num:04d}\n\n" for num in range(100))
+    target.write_text("def _trim(self):\n    value = self.raw\n    return value\n\ndef _one_line_result(self):\n    return self.result.one_line\n\n" + filler)
+    subprocess.run(["git", "add", "-A"], cwd=str(project), capture_output=True)
+    commit = subprocess.run(["git", "commit", "-qm", "add session_projection module"], cwd=str(project), capture_output=True)
+    assert commit.returncode == 0, commit.stderr
+
+    # Seed the governed store exactly as project indexing would, so the
+    # apply_diff hunk can reconstruct base content for the reviewer/materialize.
+    from file_editing.writer import initialize_file_lines
+
+    seeded = initialize_file_lines("core/session_projection.py", target.read_text())
+    assert seeded["status"] == "success", seeded
+
+    edit_trim = (
+        "```edit core/session_projection.py\n"
+        "mode: replace\n"
+        "OLD:\n"
+        "def _trim(self):\n"
+        "    value = self.raw\n"
+        "NEW:\n"
+        "def _trim(self):\n"
+        '    """Docstring for _trim."""\n'
+        "    value = self.raw\n"
+        "```"
+    )
+    edit_one_line = (
+        "```edit core/session_projection.py\n"
+        "mode: replace\n"
+        "OLD:\n"
+        "def _one_line_result(self):\n"
+        "    return self.result.one_line\n"
+        "NEW:\n"
+        "def _one_line_result(self):\n"
+        '    """Docstring for _one_line_result."""\n'
+        "    return self.result.one_line\n"
+        "```"
+    )
+    shell_env["state"]["llm_script"] = [edit_trim, edit_one_line, f"{sd.FINISH_TOKEN}\nAdded docstrings to both defs."]
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-soak32-1",
+        instructions="Add docstrings to _trim and _one_line_result in core/session_projection.py",
+        user_command="Add docstrings to _trim and _one_line_result in core/session_projection.py",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    assert result["status"] == "success", result
+    assert len(result["proposal_ids"]) == 1, result  # one proposal, no invalid_operation/empty_operations re-dispatch
+    assert result["session_exit"] == "Finished"
+    assert progress["files_modified"] == 1
+    agent_name, prompt = shell_env["state"]["reviewer_prompts"][0]
+    assert agent_name == "reviewer"
+    # §19.3: the reviewer sees the uniform diff hunk of the worktree, not a
+    # model-authored whole-file body.
+    assert "PROPOSED UNIFIED DIFF" in prompt
+    assert "PROPOSED FULL CONTENT" not in prompt
+    assert '"""Docstring for _trim."""' in prompt
+    assert '"""Docstring for _one_line_result."""' in prompt
+
+
+def test_soak32_310f7ae6_fabricated_syntax_reject_does_not_block(shell_env, isolated_project, monkeypatch):
+    # §19.3 regression (Soak32 `310f7ae6`): the worktree diff ast.parses, but the
+    # reviewer invented a syntax failure (`text or "")`) and rejected. The gate
+    # must check the PROPOSED content against ast.parse, treat the disproven
+    # claim as invalid reviewer JSON, and retry once — not permanently reject a
+    # compilable hunk on a fabricated syntax story.
+    import json as _json
+
+    project = Path(isolated_project["project"])
+    core = project / "core"
+    core.mkdir(exist_ok=True)
+    target = core / "session_projection.py"
+    filler = "".join(f"def _fill{num}():\n    return {num}  # {num:04d}\n\n" for num in range(100))
+    target.write_text("def _trim(self):\n    value = self.raw\n    return value\n\ndef _one_line_result(self):\n    return self.result.one_line\n\n" + filler)
+    subprocess.run(["git", "add", "-A"], cwd=str(project), capture_output=True)
+    commit = subprocess.run(["git", "commit", "-qm", "add session_projection module"], cwd=str(project), capture_output=True)
+    assert commit.returncode == 0, commit.stderr
+    from file_editing.writer import initialize_file_lines
+
+    seeded = initialize_file_lines("core/session_projection.py", target.read_text())
+    assert seeded["status"] == "success", seeded
+
+    edit_trim = (
+        "```edit core/session_projection.py\n"
+        "mode: replace\n"
+        "OLD:\n"
+        "def _trim(self):\n"
+        "    value = self.raw\n"
+        "NEW:\n"
+        "def _trim(self):\n"
+        '    """Docstring for _trim."""\n'
+        "    value = self.raw\n"
+        "```"
+    )
+    shell_env["state"]["llm_script"] = [
+        edit_trim,
+        f"{sd.FINISH_TOKEN}\nAdded a docstring to _trim.",
+    ]
+
+    reviewer_calls = []
+
+    def fake_call_agent(agent_name, prompt, task_id, *args, **kwargs):
+        reviewer_calls.append(agent_name)
+        if agent_name != "reviewer":
+            return "APPROVE"
+        if len(reviewer_calls) == 1:
+            return _json.dumps(
+                {
+                    "decision": "REJECT",
+                    "reason": 'Syntax error: the file cannot be parsed — `text or "")` broken string near _trim.',
+                    "suggestions": [],
+                }
+            )
+        return _json.dumps({"decision": "APPROVE", "reason": "hunk parses cleanly", "suggestions": []})
+
+    monkeypatch.setattr("agents.base.call_agent", fake_call_agent)
+
+    progress = {"edit_failures": 0}
+    result = sd.run_shell_developer_turn(
+        task_id="T-soak32-310f7ae6",
+        instructions="Add a docstring to _trim in core/session_projection.py",
+        user_command="Add a docstring to _trim in core/session_projection.py",
+        conversation_context=[],
+        model_choice=None,
+        progress=progress,
+        decision={},
+        current_turn=1,
+    )
+
+    # The fabricated syntax claim must NOT block materialize.
+    assert result["status"] == "success", result
+    assert len(result["proposal_ids"]) == 1, result
+    assert progress["files_modified"] == 1
+    # The gate retried the disproven claim once and approved the real hunk.
+    assert sum(1 for a in reviewer_calls if a == "reviewer") == 2
 
 
 def test_gate_presents_full_content_for_full_replace(shell_env):

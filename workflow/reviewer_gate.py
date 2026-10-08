@@ -13,6 +13,8 @@ Prompt construction stays with each caller because the evidence differs
 
 from __future__ import annotations
 
+import ast
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -26,6 +28,10 @@ from workflow.proposal_builder import update_proposal_status
 _DEFAULT_REJECT_EMPTY = "Reviewer unavailable (empty response) - failing closed"
 _DEFAULT_REJECT_PARSE = "Reviewer response could not be parsed - failing closed"
 _DEFAULT_REJECT_DECISION = "Reviewer response missing a valid decision - failing closed"
+
+_SYNTAX_CLAIM_RE = re.compile(
+    r"(?i)\b(?:syntax\w*|parse\w*|indent\w*|ast\.parse|compil\w*)\b",
+)
 
 
 @dataclass
@@ -96,10 +102,44 @@ def parse_reviewer_verdict(reviewer_response: Any) -> ReviewerVerdict:
     )
 
 
+def _syntax_claim_in_reason(reason: str) -> bool:
+    """True when a reviewer REJECT reason cites a syntax/parse/compile problem."""
+    return bool(_SYNTAX_CLAIM_RE.search(reason or ""))
+
+
+def _demote_false_syntax_reject(verdict: ReviewerVerdict, proposed_content: str | None) -> ReviewerVerdict:
+    """§19.3 — a REJECT that blames syntax must be checked against the PROPOSED
+    content, not believed at face value.
+
+    Soak32 `310f7ae6`: the reviewer rejected on a fabricated syntax story
+    ("text or \"\")") while the worktree actually compiled. When a semantic
+    REJECT's reason cites syntax/parse and ``ast.parse`` of the proposed content
+    SUCCEEDS, the claim is disproven — fail closed as invalid reviewer JSON (the
+    same family as a non-JSON response: retryable infra reject), NOT as a true
+    reject. A genuine syntax defect keeps its semantic REJECT.
+    """
+    if not verdict.rejected or verdict.infra_reject:
+        return verdict
+    if not proposed_content or not _syntax_claim_in_reason(verdict.reason):
+        return verdict
+    try:
+        ast.parse(proposed_content)
+    except SyntaxError:
+        return verdict  # genuine defect: keep the semantic reject as-is
+    verdict.decision = "REJECT"
+    verdict.infra_reject = True
+    verdict.suggestions = []
+    verdict.reason = (
+        f"Reviewer cited a syntax/parse problem but the proposed content parses cleanly — invalid verdict, failing closed ({_DEFAULT_REJECT_PARSE})"
+    )
+    return verdict
+
+
 def request_review_verdict(
     reviewer_prompt: str,
     task_id: str,
     *,
+    proposed_content: str | None = None,
     max_attempts: int = 2,
 ) -> ReviewerVerdict:
     """Invoke the gate reviewer with ONE same-prompt retry on transient failures.
@@ -118,11 +158,11 @@ def request_review_verdict(
     from agents.base import call_agent
 
     response = call_agent("reviewer", reviewer_prompt, task_id)
-    verdict = parse_reviewer_verdict(response)
+    verdict = _demote_false_syntax_reject(parse_reviewer_verdict(response), proposed_content)
     if verdict.rejected and verdict.infra_reject and response is not None and max_attempts > 1:
         print("   🔁 Reviewer returned a transient (empty/unparseable) verdict — retrying once")
         response = call_agent("reviewer", reviewer_prompt, task_id)
-        verdict = parse_reviewer_verdict(response)
+        verdict = _demote_false_syntax_reject(parse_reviewer_verdict(response), proposed_content)
         verdict.calls_used = 2  # residual P10: count plays as reviewer_calls
     return verdict
 

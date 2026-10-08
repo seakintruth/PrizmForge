@@ -384,3 +384,71 @@ class TestRequestReviewRetry:
 
         retried, calls = self._run(monkeypatch, ["", '{"decision": "APPROVE", "reason": "recovered"}'])
         assert len(calls) == 2 and retried.calls_used == 2
+
+
+# ---------------------------------------------------------------------------
+# §19.3: fabricated syntax claims must not block a compilable hunk
+# ---------------------------------------------------------------------------
+
+
+class TestSyntaxClaimValidation:
+    """Soak32 `310f7ae6`: a semantic REJECT that blames syntax is checked
+    against ``ast.parse`` of the PROPOSED content. A disproven claim fails
+    closed as invalid reviewer JSON (retryable infra reject), never as a true
+    reject; a genuine defect keeps its semantic REJECT."""
+
+    PARSEABLE = 'value = _trim(self.raw) or "text"\n'
+
+    def test_parseable_content_demotes_false_syntax_reject(self, monkeypatch):
+        from workflow.reviewer_gate import request_review_verdict
+
+        plans = [
+            lambda: '{"decision": "REJECT", "reason": "SyntaxError: text or \\"\\" invalid string near _trim", "suggestions": []}',
+            lambda: '{"decision": "APPROVE", "reason": "parses cleanly"}',
+        ]
+
+        def fake_call_agent(agent_name, prompt, task_id, *a, **k):
+            return plans.pop(0)()
+
+        monkeypatch.setattr("agents.base.call_agent", fake_call_agent)
+        verdict = request_review_verdict("review", "t_syntax", proposed_content=self.PARSEABLE)
+
+        # The disproven syntax claim did not become a true reject: the gate
+        # retried once and the compilable hunk was approved.
+        assert verdict.decision == "APPROVE"
+        assert not verdict.rejected
+
+    def test_genuine_syntax_defect_keeps_semantic_reject(self, monkeypatch):
+        from workflow.reviewer_gate import request_review_verdict
+
+        calls = []
+
+        def fake_call_agent(agent_name, prompt, task_id, *a, **k):
+            calls.append(1)
+            return '{"decision": "REJECT", "reason": "invalid syntax at line 3: missing )", "suggestions": []}'
+
+        monkeypatch.setattr("agents.base.call_agent", fake_call_agent)
+        verdict = request_review_verdict("review", "t_realsyntax", proposed_content="def broken(:\n    pass\n")
+
+        assert verdict.decision == "REJECT"
+        assert not verdict.infra_reject  # a real defect is never retried
+        assert len(calls) == 1
+
+    def test_false_syntax_claim_persisting_is_fail_closed_after_retry(self, monkeypatch):
+        # Two identical fabricated syntax claims: the first is retried once, then
+        # fail-closed as an infra reject — never recorded as a true reject.
+        from workflow.reviewer_gate import request_review_verdict
+
+        calls = []
+
+        def fake_call_agent(agent_name, prompt, task_id, *a, **k):
+            calls.append(1)
+            return '{"decision": "REJECT", "reason": "syntax error in _trim", "suggestions": []}'
+
+        monkeypatch.setattr("agents.base.call_agent", fake_call_agent)
+        verdict = request_review_verdict("review", "t_persist", proposed_content=self.PARSEABLE)
+
+        assert verdict.decision == "REJECT"
+        assert verdict.infra_reject  # invalid reviewer JSON family
+        assert "parses cleanly" in verdict.reason
+        assert len(calls) == 2

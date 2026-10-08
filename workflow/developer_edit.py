@@ -511,7 +511,31 @@ def run_developer_mutation(  # noqa: C901
     # verdict REJECTs. The historical APPROVE default is removed. One
     # same-prompt retry is allowed on an empty/unparseable verdict; a ``None``
     # transport failure and a semantic REJECT are never retried.
-    verdict = request_review_verdict(reviewer_prompt, task_id)
+    # §19.3: derive the proposed content (full_replace body, or ops applied to
+    # the original) so the gate can disprove fabricated syntax claims.
+    proposed_content: str | None = None
+    ops = data.get("operations") or []
+    full_repl = [op for op in ops if op.get("type") == "full_replace"]
+    if full_repl:
+        proposed_content = full_repl[0].get("new_content") or None
+    elif ops:
+        try:
+            from file_editing.editing import _apply_unified_diff
+
+            candidate = original_content
+            for op in ops:
+                body = (op.get("diff") or "").splitlines(keepends=True)
+                applied = _apply_unified_diff(candidate.splitlines(keepends=True), body)
+                if applied is None:
+                    proposed_content = None
+                    break
+                candidate = "".join(applied)
+            else:
+                proposed_content = candidate
+        except Exception:
+            proposed_content = None
+
+    verdict = request_review_verdict(reviewer_prompt, task_id, proposed_content=proposed_content)
     # residual P10: count actual plays (the gate may retry once internally)
     progress["reviewer_calls"] = progress.get("reviewer_calls", 0) + verdict.calls_used
     post_reviewer_suggestions(proposal_id, task_id, verdict.suggestions)

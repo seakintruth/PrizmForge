@@ -157,6 +157,8 @@
   },
   "_background_agents_note": "random_review defaults OFF (§16.1): peer review is map-first plus blast-radius on real changes. Set random_review: true to enable the periodic random pick-a-file feeder as an explicit override.",
   "background_agents": {
+    "pause_until_first_materialize": false,
+    "_pause_note": "§19.4 free-tier posture: when true, feedback agents + random feeder + coverage sweep stay paused until the active task materializes its first file (files_modified > 0), so a 50-call free-tier day is spent on the proposal, not hollow jr/security reviews.",
     "jr_reviewer": {
       "enabled": true,
       "on_modification": true,
