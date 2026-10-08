@@ -7,7 +7,7 @@
 # Floor is 9.0.3: some constrained environments cannot install >9.0.3 yet.
 # Unconstrained hosts / CI may still resolve a newer 9.x.
 pytest>=9.0.3
-pytest-mock>=3.15.1
+pytest-mock>=3.16.0
 
 # Optional: parallel / timeout plugins (not required)
 pytest-timeout>=2.4.0
