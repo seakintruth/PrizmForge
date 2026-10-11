@@ -8,7 +8,7 @@ for proposal / edit lifecycle observability.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from core.db_connection import get_db_connection
@@ -44,7 +44,7 @@ def publish_event(
                 """,
                 (
                     task_id,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                     event_type,
                     source,
                     json.dumps(payload or {}),
