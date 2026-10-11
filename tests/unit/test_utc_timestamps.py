@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from core.db_helpers import utcnow, utcnow_iso
@@ -29,7 +29,7 @@ def test_utcnow_is_naive_utc():
     n = utcnow()
     assert n.tzinfo is None
     # Within a few seconds of true UTC wall time.
-    drift = abs((datetime.now(timezone.utc).replace(tzinfo=None) - n).total_seconds())
+    drift = abs((datetime.now(UTC).replace(tzinfo=None) - n).total_seconds())
     assert drift < 5
 
 
@@ -37,7 +37,7 @@ def test_utcnow_iso_round_trips_utc():
     iso = utcnow_iso()
     parsed = datetime.fromisoformat(iso)
     assert parsed.tzinfo is None
-    drift = abs((datetime.now(timezone.utc).replace(tzinfo=None) - parsed).total_seconds())
+    drift = abs((datetime.now(UTC).replace(tzinfo=None) - parsed).total_seconds())
     assert drift < 5
 
 

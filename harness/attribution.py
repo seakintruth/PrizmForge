@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -144,7 +144,7 @@ def run_attribution(
 
     record: dict[str, Any] = {
         "iteration": iteration,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": datetime.now(UTC).isoformat(),
         "harness_tag": fingerprint.get("harness_tag"),
         "prompt_hash": fingerprint.get("prompt_hash"),
         "model": model or baseline.get("model"),
