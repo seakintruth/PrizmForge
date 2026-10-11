@@ -14,7 +14,7 @@ Prompt construction stays with each caller because the evidence differs
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from core.db_connection import get_db_connection
@@ -239,7 +239,7 @@ def log_reviewer_rejection(
                     target_file_path,
                     f"Proposal {proposal_id} REJECTED: {reason}",
                     "; ".join(str(s) for s in suggestions) if suggestions else None,
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
     except Exception as e:  # feedback logging must never break the gate
