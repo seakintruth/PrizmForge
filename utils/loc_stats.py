@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import statistics
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -369,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root).resolve() if args.root else REPO_ROOT
     out_path = Path(args.out).resolve() if args.out else (root / "report" / "loc_stats.md")
-    generated = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    generated = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     rows = _collect(root)
     markdown = _render(rows, root=root, top_n=max(1, args.top), generated=generated)
@@ -379,7 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     written = [out_path]
 
     if not args.no_stamp:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
         stamped = out_path.with_name(f"{out_path.stem}-{stamp}{out_path.suffix}")
         stamped.write_text(markdown, encoding="utf-8")
         written.append(stamped)
