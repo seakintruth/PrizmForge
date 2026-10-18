@@ -20,7 +20,7 @@ import argparse
 import json
 import sys
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -181,7 +181,7 @@ def produce_corpus(
         (analysis_dir / f"{task_id}.md").write_text(render_analysis_md(task_id, report), encoding="utf-8")
 
     verdicts = _trial_task_ids(results, iteration)
-    generated_at = datetime.now(timezone.utc).isoformat()
+    generated_at = datetime.now(UTC).isoformat()
 
     (runs_path / "overview.md").write_text(render_overview_md(iteration, reports, verdicts), encoding="utf-8")
     (runs_path / "index.json").write_text(
