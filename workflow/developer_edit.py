@@ -11,7 +11,7 @@ Primary entry: run_developer_mutation(...)
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from agents.base import call_agent
@@ -561,7 +561,7 @@ def run_developer_mutation(  # noqa: C901
                     SET addressed = 1, addressed_by = 'developer', addressed_at = ?
                     WHERE id = ?
                     """,
-                    (datetime.now(timezone.utc).isoformat(), fb_id),
+                    (datetime.now(UTC).isoformat(), fb_id),
                 )
 
     return {
