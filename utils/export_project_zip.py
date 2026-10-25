@@ -57,7 +57,7 @@ import argparse
 import subprocess
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 SKIP_DIR_NAMES = {
@@ -190,7 +190,7 @@ def export_zip(
         "report_files": report_count,
         "bytes": size,
         "root": str(project_root),
-        "when": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "when": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
 
 

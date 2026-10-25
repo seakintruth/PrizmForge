@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -177,7 +177,7 @@ def create_rollout(
                     fp.get("harness_tag") or "unknown",
                     fp.get("prompt_hash") or "",
                     (fp.get("model") or "")[:200],
-                    datetime.now(timezone.utc).isoformat(),
+                    datetime.now(UTC).isoformat(),
                 ),
             )
             return int(cur.lastrowid)
@@ -298,7 +298,7 @@ def finalize_rollout(
 
     terminal = db_status or task_status
     rollout_status = _TASK_STATUS_TO_ROLLOUT.get(terminal, "failed")
-    completed_at = datetime.now(timezone.utc).isoformat()
+    completed_at = datetime.now(UTC).isoformat()
     infra_abort = 0
     infra_reason = ""
     if rollout_status in _ABORTABLE_STATUSES:
