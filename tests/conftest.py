@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -106,7 +106,7 @@ def _duration_report_path() -> Path:
     batch = os.environ.get("PRIZMFORGE_BATCH_NAME", "").strip() or "session"
     stamp = os.environ.get("PRIZMFORGE_REPORT_STAMP", "").strip()
     if not stamp:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
     reports = PROJECT_ROOT / ".PrizmForge" / "reports"
     return reports / f"test-durations-{batch}-{stamp}.json"
 
@@ -164,7 +164,7 @@ def pytest_sessionfinish(session, exitstatus) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict = {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "generated_at": datetime.now(UTC).isoformat(),
             "exitstatus": int(exitstatus),
             "batch": os.environ.get("PRIZMFORGE_BATCH_NAME", "session"),
             "count": len(records),
