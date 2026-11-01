@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -223,7 +223,7 @@ def run_benchmark(
             return {
                 "iteration": iteration,
                 "dry_run": True,
-                "created_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(UTC).isoformat(),
                 "endpoint": ",".join(sorted(endpoints or {})) if endpoints else "mock-model",
                 "model": model or "mock-model",
                 "tasks": [
@@ -306,7 +306,7 @@ def run_benchmark(
         mix = failure_mode_mix(iteration)
         results: dict[str, Any] = {
             "iteration": iteration,
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_at": datetime.now(UTC).isoformat(),
             "endpoint": ",".join(sorted(endpoints or {})) if endpoints else "mock-model",
             "model": model or "mock-model",
             "max_turns": max_turns,

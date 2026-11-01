@@ -13,7 +13,7 @@ Nothing in this module writes to the database.
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from core.db import get_db_path
@@ -40,7 +40,7 @@ def _normalize_ts(value: str | None) -> datetime | None:
         dt = datetime.fromisoformat(value)
     except (TypeError, ValueError):
         return None
-    return dt.astimezone(timezone.utc)
+    return dt.astimezone(UTC)
 
 
 def _local_naive(dt: datetime) -> datetime:
@@ -54,7 +54,7 @@ def _age_seconds(value: str | None, now: datetime) -> int | None:
     dt = _normalize_ts(value)
     if dt is None:
         return None
-    now_u = now.astimezone(timezone.utc)
+    now_u = now.astimezone(UTC)
     return max(int((now_u - dt).total_seconds()), 0)
 
 
@@ -63,7 +63,7 @@ def _remaining_seconds(value: str | None, now: datetime) -> int | None:
     dt = _normalize_ts(value)
     if dt is None:
         return None
-    now_u = now.astimezone(timezone.utc)
+    now_u = now.astimezone(UTC)
     return max(int((dt - now_u).total_seconds()), 0)
 
 
@@ -77,7 +77,7 @@ def snapshot(db_path: str | None = None, now: datetime | None = None) -> dict[st
     Returns tasks (recent 20), endpoint latches, open-feedback backlog summary,
     token spend (window + total), and the recent model-outcome health window.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     out: dict[str, Any] = {
         "tasks": [],
         "endpoints": [],
@@ -198,7 +198,7 @@ def developer_session_live(task_id: str, db_path: str | None = None, now: dateti
     event supersedes it — i.e. the operator sees a model call actually waiting
     on the endpoint, not the last logged result.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     out: dict[str, Any] = {
         "task_id": task_id,
         "steps": 0,
