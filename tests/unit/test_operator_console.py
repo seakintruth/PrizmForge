@@ -14,7 +14,7 @@ Covers:
 from __future__ import annotations
 
 import subprocess
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from core import operator_view as ov
@@ -107,7 +107,7 @@ def test_snapshot_spend_window_counts_recent_tokens(temp_db):
     """Soak22: window cutoff must be now - window, counted in naive-local."""
     from core.db_connection import get_db_connection
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent = (datetime.now() - timedelta(hours=1)).isoformat()
     old = (datetime.now() - timedelta(hours=5)).isoformat()
     future = (datetime.now() + timedelta(hours=1)).isoformat()
@@ -128,7 +128,7 @@ def test_snapshot_latch_countdown_is_remaining_not_age(temp_db):
     """Soak22: unavailable_in_s = seconds until unlatched (not seconds since)."""
     from core.db_connection import get_db_connection
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     in_future = (datetime.now() + timedelta(seconds=300)).isoformat()
     expired = (datetime.now() - timedelta(seconds=60)).isoformat()
     with get_db_connection() as conn:
@@ -171,8 +171,8 @@ def test_task_trace_returns_steps_and_events(temp_db):
 def test_developer_session_live_in_flight_detection(temp_db):
     from core.db_connection import get_db_connection
 
-    old = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
-    fresh = datetime.now(timezone.utc).isoformat()
+    old = (datetime.now(UTC) - timedelta(minutes=5)).isoformat()
+    fresh = datetime.now(UTC).isoformat()
     with get_db_connection() as conn:
         conn.execute(
             "INSERT INTO agent_responses_archive (task_id, agent_name, prompt, response, parse_success, "
@@ -190,7 +190,7 @@ def test_developer_session_live_in_flight_detection(temp_db):
     assert live["last_command"] == "cat app.py"
 
     # A completed command after the marker supersedes the in-flight state.
-    after = datetime.now(timezone.utc).isoformat()
+    after = datetime.now(UTC).isoformat()
     with get_db_connection() as conn:
         conn.execute(
             "INSERT INTO events (task_id, ts, type, source, payload_json) VALUES ('tc', ?, 'shell_command_executed', 'developer', '{\"exit_code\": 0}')",

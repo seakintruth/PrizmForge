@@ -35,7 +35,7 @@ import subprocess
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -2204,7 +2204,7 @@ class ShellDeveloperSession:
                 "test_exit_code": self.result.test_exit_code,
                 "test_output_tail": self.result.test_output[-2000:],
             },
-            "finished_at": datetime.now(timezone.utc).isoformat(),
+            "finished_at": datetime.now(UTC).isoformat(),
             "messages": self.messages,
             "last_extra": {k: v for k, v in last.items() if k != "content"},
         }
@@ -2806,7 +2806,7 @@ def _mark_feedback_addressed(addressing_ids: list[Any], materialized_paths: set[
                     SET addressed = 1, addressed_by = 'developer', addressed_at = ?
                     WHERE id = ?
                     """,
-                    (datetime.now(timezone.utc).isoformat(), fb_id),
+                    (datetime.now(UTC).isoformat(), fb_id),
                 )
 
 
@@ -2817,7 +2817,7 @@ def _save_trajectory(task_id: str, current_turn: int, session: ShellDeveloperSes
 
         out_dir = Path(get_db_path()).parent / "shell_trajectories"
         out_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         path = out_dir / f"{task_id}-turn{current_turn}-{stamp}.json"
         path.write_text(json.dumps(session.serialize(), indent=2))
         print(f"   🧾 Trajectory saved: {path}")
