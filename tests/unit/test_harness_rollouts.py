@@ -8,7 +8,7 @@ recording hooked into the task runner.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -26,7 +26,7 @@ def _ts_after(task_id: str, seconds: int) -> str:
     row = latest_rollout(task_id)
     assert row is not None
     start = datetime.fromisoformat(row["created_at"])
-    tzinfo = start.tzinfo or timezone.utc
+    tzinfo = start.tzinfo or UTC
     now = datetime.now(tzinfo)
     if (now - start).total_seconds() < 60:
         start = start - timedelta(seconds=3600)
@@ -306,7 +306,7 @@ class TestInfraAbortNaiveAware:
     def test_aware_window_with_naive_latch_detects_abort(self):
         from harness.fingerprint import classify_infra_abort
 
-        end_aware = datetime(2026, 9, 10, 23, 0, 0, tzinfo=timezone.utc)
+        end_aware = datetime(2026, 9, 10, 23, 0, 0, tzinfo=UTC)
         start_aware = end_aware - timedelta(hours=1)
         end_local = end_aware.astimezone().replace(tzinfo=None)
         self._seed_endpoint("ep-naive-future", "rate_limited", end_local + timedelta(hours=2))
@@ -319,7 +319,7 @@ class TestInfraAbortNaiveAware:
     def test_aware_window_with_expired_naive_latch_is_not_abort(self):
         from harness.fingerprint import classify_infra_abort
 
-        end_aware = datetime(2026, 9, 10, 23, 0, 0, tzinfo=timezone.utc)
+        end_aware = datetime(2026, 9, 10, 23, 0, 0, tzinfo=UTC)
         start_aware = end_aware - timedelta(hours=1)
         end_local = end_aware.astimezone().replace(tzinfo=None)
         self._seed_endpoint("ep-naive-past", "rate_limited", end_local - timedelta(minutes=5))

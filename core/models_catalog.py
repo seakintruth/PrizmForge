@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -198,7 +198,7 @@ def fetch_catalog(
         proxies = {k: v for k, v in proxy.items() if k in ("http", "https") and v}
 
     catalog: dict[str, Any] = {
-        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "fetched_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "endpoints": {},
     }
     for ep_name, ep_cfg in (config.get("endpoints") or {}).items():
