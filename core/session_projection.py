@@ -28,7 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from core.context_manager import get_context_manager
@@ -254,7 +254,7 @@ def upsert_context_checkpoint(
     Task checkpoints are never stacked: the second compact of the same task
     updates the same anchored row instead of appending another.
     """
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     with get_db_connection() as conn:
         row = conn.execute(
             "SELECT id FROM archived_context WHERE task_id = ? ORDER BY id LIMIT 1",

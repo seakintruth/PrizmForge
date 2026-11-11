@@ -15,6 +15,7 @@ tests lock the writer status semantics.
 from __future__ import annotations
 
 import json
+from datetime import UTC
 
 import pytest
 
@@ -208,13 +209,13 @@ class TestFileIdRules:
 
 class TestBacklogDrain:
     def test_git_hook_critical_drains_before_high(self, git_config_env, temp_db):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from core.db_connection import get_db_connection
         from workflow.backlog import apply_backlog_overrides, fetch_top_feedback
 
         task_id = "bl_githook"
-        iso = datetime.now(timezone.utc).isoformat()
+        iso = datetime.now(UTC).isoformat()
         with get_db_connection() as conn:
             conn.execute(
                 "INSERT INTO agent_feedback (agent_name, file_path, priority, category, message, task_id, addressed, timestamp) "
@@ -240,13 +241,13 @@ class TestBacklogDrain:
         assert "pre-commit hook failure" in out["instructions"]
 
     def test_multiple_critical_rows_pick_newest_unaddressed(self, git_config_env, temp_db):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from core.db_connection import get_db_connection
         from workflow.backlog import fetch_top_feedback
 
         task_id = "bl_multi"
-        base = datetime.now(timezone.utc)
+        base = datetime.now(UTC)
         with get_db_connection() as conn:
             for i in (0, 1):
                 conn.execute(
