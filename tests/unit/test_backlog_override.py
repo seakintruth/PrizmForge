@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -26,7 +26,7 @@ def _seed_feedback(conn, task_id: str, n: int, priority: str = "HIGH"):
                 f"issue {i}",
                 f"fix {i}",
                 task_id,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             ),
         )
 
@@ -90,7 +90,7 @@ def test_critical_sorted_first(temp_db):
             (agent_name, file_path, priority, category, message, task_id, addressed, timestamp)
             VALUES ('a', 'low.py', 'LOW', 'x', 'low', ?, 0, ?)
             """,
-            (task_id, datetime.now(timezone.utc).isoformat()),
+            (task_id, datetime.now(UTC).isoformat()),
         )
         conn.execute(
             """
@@ -98,7 +98,7 @@ def test_critical_sorted_first(temp_db):
             (agent_name, file_path, priority, category, message, task_id, addressed, timestamp)
             VALUES ('a', 'crit.py', 'CRITICAL', 'x', 'crit', ?, 0, ?)
             """,
-            (task_id, datetime.now(timezone.utc).isoformat()),
+            (task_id, datetime.now(UTC).isoformat()),
         )
         top = fetch_top_feedback(conn, task_id)
         out = apply_backlog_overrides(

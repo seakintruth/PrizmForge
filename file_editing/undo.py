@@ -11,7 +11,7 @@ the governed store and unlinked from disk instead of being recreated empty.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -70,7 +70,7 @@ def snapshot_before_apply(proposal_id: str) -> dict[str, Any]:
                 INSERT OR REPLACE INTO proposal_snapshots (proposal_id, file_path, content_before, created_at)
                 VALUES (?, ?, ?, ?)
                 """,
-                (proposal_id, path, content, datetime.now(timezone.utc).isoformat()),
+                (proposal_id, path, content, datetime.now(UTC).isoformat()),
             )
         return {"status": "success", "file_paths": sorted(paths), "files": len(paths)}
 

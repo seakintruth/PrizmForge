@@ -1,7 +1,7 @@
 """Database helper functions"""
 
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from core.db import get_db_path as _get_db_path
 from core.db_connection import get_db_connection
@@ -9,7 +9,7 @@ from core.db_connection import get_db_connection
 
 def _utcnow() -> datetime:
     """Naive UTC now, matching SQLite ``datetime('now')``/CURRENT_TIMESTAMP."""
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 def _utcnow_iso() -> str:

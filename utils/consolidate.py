@@ -55,6 +55,7 @@ import ast
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import UTC
 from pathlib import Path
 
 IGNORED_DIRS = {
@@ -535,9 +536,9 @@ def consolidate_project(  # noqa: C901
 
 def _generation_stamp() -> str:
     """UTC timestamp line for generated index/report files."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def discover_project_root(start: str | None = None) -> str:

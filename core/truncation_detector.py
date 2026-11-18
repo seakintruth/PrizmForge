@@ -6,10 +6,10 @@ Detects incomplete LLM responses and requests continuation
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class TruncationType(str, Enum):
+class TruncationType(StrEnum):
     """Type of truncation detected"""
 
     NONE = "none"
