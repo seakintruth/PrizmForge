@@ -1,142 +1,169 @@
 # prizmforge-pi-governance
 
 **Status:** design sketch (not implemented)
-**Date:** 2026-11-22
+**Date:** 2026-11-23
 **Proposed package name:** `prizmforge-pi-governance`
+**Supersedes:** the human-approval-centric sketch merged in PR #160. Human review happens only before merge, not on every change.
 
-A TypeScript [Pi](https://docs.pi.dev/latest/extensions) extension that overlays PrizmForge's governed-mutation intent onto the Pi coding agent: collect writes as proposals, require a fail-closed verdict, then materialize, log, and undo. It is a governance overlay, not a port of the PrizmForge runtime.
+A TypeScript [Pi](https://docs.pi.dev/latest/extensions) overlay that ports PrizmForge's *unattended* governed loop onto the Pi coding agent: a long-running orchestrator drives a developer agent and several independent reviewer agents. Reviewer agents, not a human, must fail-closed agree before work progresses. The only human step is reviewing the pull request before merge. Agents never merge.
 
 ## 1. Goal
 
-Give a Pi session a hard gate in front of repository mutation that is recognizably PrizmForge:
+Run for hours with no stdin, the way PrizmForge's unattended closed loop does today (`docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md`, `workflow/`, `agents/`, `workflow/reviewer_gate.py`):
 
-- The model may explore freely (reads, and non-mutating inspection).
-- Intended file changes are captured as a **proposal**, not applied immediately.
-- A **human or second-model verdict** must explicitly `APPROVE` before materialization.
-- Missing, unparseable, or unavailable verdicts **REJECT** (fail closed), including when there is no UI.
-- Sensitive paths (`.env`, `.git`, secrets, and similar) are hard-denied.
-- Every proposal lifecycle event is written to an append-only session audit log.
-- An approved, applied proposal can be undone from a pre-apply snapshot (file bytes, with optional git restore).
+- A sequential mutation path: orchestrator → developer (branch or worktree) → proposal → **multi-agent reviewer gate** → tests/CI → commit on the branch → open or update a PR → next item.
+- Several independent reviewer agents (separate Pi sessions or subagents, different models or prompts, **read-only tools**) must agree before a proposal proceeds.
+- Gates **block by default**. A missing, unparseable, or unclear verdict is a `REJECT`. Nothing auto-approves. Rejected work returns to the developer with the reviewers' comments.
+- The loop covers security scans, maintenance and dependency upkeep, lint and test fixes, and small feature improvements, drawn from a backlog.
+- Automatic safety rails — path denies, sandbox, audit log, token budgets, stall limits, tests and CI — run without a human in the loop.
+- A human reviews the PR and merges it, or does not. That is the only required human gate.
 
 ## 2. Non-goals
 
-This extension will **not**:
+This design will **not**:
 
-- Reimplement PrizmForge's multi-agent orchestrator, background worker pool, resource controller, token budgets, or unattended closed-loop scheduler.
-- Reproduce the line-GUID `file_lines` database, structured `EditPayload` schema, or `agents.db`.
-- Provide OS isolation by itself. Hooks are policy. Real sandboxing is composed from an existing Pi package or a container/VM.
-- Replace Pi, or require operators to abandon Pi's built-in tools for all work.
-- Automatically start a fleet of analysis subagents (compose [pi-subagents](https://pi.dev/packages/pi-subagents) later if wanted).
+- Stop for per-change human approval, `ctx.ui.confirm` prompts, or a required `/approve` step. Those are optional overrides, off by default.
+- Let agents merge to the default branch, or push to `main` / `master`.
+- Reimplement PrizmForge's SQLite `file_lines` / `EditPayload` / `agents.db` schema. The *loop and gate* transfer; the storage does not have to.
+- Treat hooks as OS isolation. Compose a sandbox package, and for enclave or self-edit work run Pi in a container/VM.
+- Make reviewer "read-only" a prompt convention only. Tool access must be enforced.
+- Require an interactive TUI. The default run is headless.
 
-## 3. Mapping PrizmForge controls to Pi hooks
+## 3. Mapping PrizmForge controls to Pi
 
 | PrizmForge control | Pi mechanism | Fit |
 | --- | --- | --- |
-| Reviewer safety gate before disk writes | `pi.on("tool_call")` returns `{ block: true, reason }` until `/approve`; `ctx.ui.confirm` / `ctx.ui.select` for humans; `ctx.modelRegistry.complete` / `streamSimple` for a second model | Feasible |
-| Fail closed on empty or unparseable reviewer output | Same policy as `workflow/reviewer_gate.py`: only an explicit `APPROVE` applies; everything else rejects. No UI → block | Feasible |
-| Path containment under repo root | Resolve `event.input.path` against `ctx.cwd` (and a configured root); block escapes | Feasible |
-| Hard-deny secrets / caches (`.env`, `.git`, `api_key.json`, …) | `tool_call` deny list on `write` / `edit` / `read`, plus bash-path checks where practical | Feasible |
-| Binary / installer rejection | Inspect proposed bytes on write/edit before queueing | Feasible (MVP or shortly after) |
-| Mutation audit log | `pi.appendEntry("prizmforge-proposal", data)` (custom entries are not sent to the LLM) | Feasible |
-| Proposal undo / pre-apply snapshot | File pre-images always; optional `pi.exec("git", ["restore", …])` for tracked files | Partial |
-| Optimistic concurrency (content hashes) and overlapping-proposal invalidation | Hash at queue time; re-check at apply; mark siblings stale | Phase 2 |
-| Background agents with no write rights | Out of scope; optional later via subagents with write tools deactivated (`pi.setActiveTools`) | Partial, later |
-| Disposable git worktree developer sessions | Out of scope for MVP | Not in MVP |
-| Hooks as an OS sandbox | Not possible. Extensions run in-process with Pi's permissions ([Run Pi safely](https://docs.pi.dev/latest/security)) | Not feasible alone |
+| Unattended closed loop (no stdin, hours-long) | Host orchestrator using the [SDK](https://docs.pi.dev/latest/sdk) (`createAgentSession`, `session.prompt`) and/or [RPC / print / JSON modes](https://docs.pi.dev/latest/cli-integration) (`pi --mode rpc`, `pi --print`, `pi --mode json`) | Feasible |
+| Orchestrator decides next agent (`developer` / `background` / `complete`) | Host loop that starts or prompts child sessions; must not let the developer self-approve | Feasible |
+| Developer works in a disposable git worktree | Orchestrator creates a branch and `git worktree` via `pi.exec` (no shell) or a host `git` call; developer session `cwd` is that worktree | Feasible |
+| Structured proposal, then reviewer gate | Buffer developer `write`/`edit` (and mutating `bash`) as a proposal; do not materialize until the reviewer panel agrees | Feasible |
+| Fail-closed reviewer (`workflow/reviewer_gate.py`) | Each reviewer returns strict JSON `APPROVE`/`REJECT`; empty, non-JSON, unknown, or failed calls are `REJECT` | Feasible |
+| Several analysis agents with no write rights (`jr_reviewer`, `security_reviewer`, …) | Independent reviewer sessions/subagents with `write`/`edit` deactivated and `tool_call` hard-blocks; different models or prompts | Feasible, with enforcement |
+| Background findings → prioritizer → backlog | Orchestrator-owned backlog (security, maintenance, deps, lint/tests, small features). A full prioritizer port is later | Partial in MVP |
+| Tests as a fail-closed verify gate | Run `test_command` after reviewer agreement; non-zero exit discards or returns the proposal | Feasible |
+| Git commit on success; hook failure becomes developer feedback | `pi.exec("git", …)` in the worktree; never `merge` or `gh pr merge` | Feasible |
+| Human reviews only at merge | Agents open or update a PR on the branch; they cannot merge | Feasible (`gh` / API via the host; exact tool is an open question) |
+| Path containment; secrets never served | `tool_call` hard-denies on `.env`, `.git`, `api_key.json`, `~/.ssh`, and paths outside the worktree/repo root | Feasible |
+| Append-only mutation log | `pi.appendEntry("prizmforge-proposal", data)` plus a host-level run log | Feasible |
+| Token budgets, stall / no-progress latch, duration cap | Orchestrator enforces `max_tokens_*`, `max_duration_hours`, and a re-arming stall latch (network failures are neutral, as in PrizmForge) | Feasible |
+| OS sandbox | Compose [pi-permission-modes](https://pi.dev/packages/pi-permission-modes) or [@gotgenes/pi-permission-system](https://pi.dev/packages/@gotgenes/pi-permission-system) plus a sandbox package | Compose, not rewrite |
+| Optimistic concurrency and overlapping-proposal invalidation | Hash at queue time; re-check at apply | Phase 2 |
+| Hooks as a security boundary | Not possible. Extensions run in-process with Pi's permissions ([Run Pi safely](https://docs.pi.dev/latest/security)) | Not feasible alone |
 
 ## 4. Architecture
 
-Compose three layers rather than writing a new permission engine:
+```
+Host orchestrator  (Node/Bun SDK and/or RPC client; no TUI)
+    │
+    ├─ backlog: security, maintenance/deps, lint+tests, small features
+    ├─ budgets, stall latch, duration cap
+    │
+    ├─ developer session   (worktree/branch; write tools allowed only there)
+    │     └─ tool_call buffers mutations as a proposal
+    │
+    ├─ reviewer panel      (N independent sessions or subagents)
+    │     ├─ security reviewer     (read-only tools, model/prompt A)
+    │     ├─ correctness reviewer  (read-only tools, model/prompt B)
+    │     └─ …maintainability / tests, as configured
+    │           all required verdicts must be explicit APPROVE
+    │           any REJECT or invalid verdict → back to developer
+    │
+    ├─ test_command / CI gate
+    ├─ commit on the branch; open or update PR
+    └─ agents never merge
+```
 
-1. **Policy and OS sandbox (existing package).** Prefer [pi-permission-modes](https://pi.dev/packages/pi-permission-modes): allow/ask/deny, protected paths, and an OS sandbox for in-project `bash` (`bubblewrap` / `sandbox-exec` / Windows sandbox-runtime). Alternatively compose [@gotgenes/pi-permission-system](https://pi.dev/packages/@gotgenes/pi-permission-system) with a sandbox package such as [pi-sandbox](https://pi.dev/packages/pi-sandbox).
-2. **Custom extension (`prizmforge-pi-governance`).** Owns the proposal buffer, verdict, commands, audit log, and undo.
-3. **Host isolation (operator).** For enclave or self-edit work, still run Pi in a container/VM as Pi's own security docs recommend. The extension does not replace that.
+Three layers, plus a host:
 
-**Recommended default composition:** run permission-modes in a sandboxed mode that does **not** prompt on every in-project `write`/`edit` (for example Build), so this extension is the only write gate. Keep permission-modes hard-denies for `.git` / `.env` / privilege escalation, and keep in-project `bash` OS-sandboxed. Double-prompting is an integration risk; see Open questions.
+1. **Host orchestrator.** A small TypeScript program is the PrizmForge orchestrator analogue. It should use the documented SDK (`createAgentSession`) for in-process control and/or RPC (`pi --mode rpc`, `RpcClient.promptAndWait()`) when child isolation is wanted. Print or JSON mode fits one-shot reviewer jobs. TUI-only extension UI is unavailable or degraded outside interactive mode; the design must not depend on it.
+2. **Policy and OS sandbox (existing package).** Prefer pi-permission-modes in a sandboxed, non-prompting in-project mode (for example Build), or the gotgenes permission system plus a sandbox package. This extension is the proposal gate; the sandbox is the bash backstop. Double-prompting must not occur, because there is no operator to answer prompts.
+3. **Custom extension (`prizmforge-pi-governance`).** Loaded in developer and reviewer sessions. In the developer session it buffers writes into proposals and denies forbidden paths. In reviewer sessions it enforces read-only tools and a strict verdict schema. It records audit entries and will not run `git merge`, `git push` to protected branches, or `gh pr merge`.
 
-Handler order is extension load order. `tool_call` handlers can block; earlier handlers' mutations to `event.input` are visible to later ones. Load the sandbox/policy package first, then this extension.
+**Recommended default composition:** sandbox/policy package first, then this extension, then an orchestrator that drives [pi-subagents](https://pi.dev/packages/pi-subagents) (scout / worker / reviewer roles) where they help. [pi-advisor-flow](https://pi.dev/packages/pi-advisor-flow) may supply an extra non-mutating opinion; it is not a substitute for the required reviewer panel, and its gates stay automatic.
 
-## 5. Custom extension design
+Project trust in non-interactive modes will not show a prompt. Unattended runs need `--approve`, a saved `/trust` decision, or an explicit `defaultProjectTrust` so project extensions load predictably. Use `--no-approve` only when project-local extensions must stay unloaded. See [Run Pi safely](https://docs.pi.dev/latest/security).
 
-### 5.1 `tool_call` interception
+## 5. The unattended loop
 
-Subscribe to `tool_call` (fires after `tool_execution_start`, before the tool runs; **can block**). Narrow with `isToolCallEventType` from `@earendil-works/pi-coding-agent`.
+Mirrors PrizmForge's sequential path, with a *panel* of reviewers instead of a single reviewer agent:
 
-Documented built-in tools to handle:
+1. Orchestrator picks the next backlog item (seed tasks, then findings from security/maintenance/lint/test reviewers).
+2. It creates or reuses a topic branch and a disposable worktree. The developer session's `cwd` is that worktree.
+3. The developer agent works. `write` / `edit` (and mutating `bash`) are queued as a proposal, not applied to the operator's primary tree. Applying inside the worktree after a passing gate is allowed; escaping the worktree is not.
+4. The orchestrator starts the configured reviewer agents **in parallel**, each a separate session or subagent, each with a different model and/or system prompt, each with write tools removed.
+5. Every required reviewer must return a parseable `{ "decision": "APPROVE" | "REJECT", "reason": "...", "suggestions": [] }`. Aggregation is fail-closed: one `REJECT`, timeout, crash, empty body, or unknown decision rejects the whole proposal. There is no default quorum that can outvote a required rejecter.
+6. On reject, comments are posted back to the developer session (`pi.sendMessage` / `sendUserMessage` with a documented delivery mode) and the developer revises. Cycle caps prevent infinite retry (see stall limits).
+7. On agreement, run `test_command`. Non-zero exit is fail-closed (PrizmForge's `on_test_failure: discard` analogue) unless config explicitly says otherwise.
+8. On test success, commit on the branch (hooks captured; hook failure becomes developer feedback, not a silent skip). Open or update a PR targeting the default branch. **Stop.** Do not merge.
+9. Repeat until the duration cap, budget, empty backlog (if configured), or stall latch says to stop.
 
-- `write` and `edit` — always intercept. Official `protected-paths.ts` reads `event.input.path`. Queue the intended mutation and `return { block: true, reason }` so the built-in tool does not write.
-- `bash` — inspect `event.input.command`. Hard-deny obvious escapes and writes into denied paths when they can be parsed. Mutating commands that cannot be proven read-only should be blocked or queued as a proposal, not executed. Command parsing will be imperfect; the OS sandbox layer is the backstop.
-- `read` — do not queue; optionally hard-deny reads of secret paths so contents never enter the prompt.
+Work types in the default backlog: security findings, dependency and maintenance upkeep, lint and test failures, and small scoped features. Large or ambiguous work stays out of the unattended loop until a seed task or a human-authored issue describes it.
 
-`user_bash` (`!` / `!!`) is a separate event and is **not** gated by default: it is the operator's own shell. This is a documented gap (the same choice `pi-agent-modes` makes). An optional config flag may warn or block later.
+## 6. Custom extension design
 
-**Known limit (documented by Pi):** `pi.setActiveTools()` does not stop tools with `codemode` or `deferred` exposure from being called from codemode scripts. Do not treat "hide `write`/`edit`" as sufficient. Interception on `tool_call` remains the authority.
+### 6.1 `tool_call` interception
 
-### 5.2 Write buffer (proposal)
+Subscribe to `tool_call` (can block). Narrow with `isToolCallEventType` from `@earendil-works/pi-coding-agent`.
 
-A proposal is an in-memory record, also persisted with `pi.appendEntry` so it survives `/reload` and session restart:
+- **Developer session:** intercept `write` and `edit` (official examples use `event.input.path`). Queue the intended mutation. Intercept `bash`; hard-deny escapes and writes outside the worktree or into denied paths; queue or block other mutations. Exact `write`/`edit` fields beyond `path` are **unverified** — persist the typed `event.input`.
+- **Reviewer session:** `write` and `edit` always `{ block: true, reason }`. `bash` only if it can be shown read-only; otherwise block. Do not rely on `pi.setActiveTools` alone: tools with `codemode` or `deferred` exposure can remain callable after tools are hidden (documented).
+- **All sessions:** hard-deny merges and default-branch promotion (`git merge`, `git pull` into protected branches, `gh pr merge`, and equivalents) even if a model tries them via `bash`.
 
-- `id`, `status` (`pending` / `approved` / `rejected` / `applied` / `undone` / `conflicted` / `needs_revalidation`)
-- target paths, a stored snapshot of the intended tool name + input, and a pre-image of the files if they exist
-- timestamps and the verdict (`human` or `model`, reason text)
+`user_bash` (`!` / `!!`) should not appear in unattended mode. If it does, block it under the same path and merge denials.
 
-MVP stores whatever `event.input` contained. Exact `write`/`edit` field names beyond `path` are **unverified** in the public examples (only `path` is shown). Implementation should narrow with `isToolCallEventType` and persist the typed input, not assume a `contents` field name.
+### 6.2 Reviewer panel (the actual gate)
 
-On `/approve`, the extension materializes the stored change itself (path-checked file writes). There is no documented Pi API to "replay" a blocked tool call; do not invent one. Use `withFileMutationQueue()` when applying from a tool path so applies participate in Pi's per-file queue. Whether that helper is valid inside a **command** handler is **unverified** — if it is not, apply through a small internal helper and note the race with concurrent built-in edits.
+Reviewers are independent Pi sessions or pi-subagents, not a human dialog.
 
-### 5.3 Verdict (human or second model), fail closed
+- Each reviewer gets the diff, the task, test output if any, and a strict verdict schema.
+- Required reviewers are listed in config. All required agents must `APPROVE`.
+- Different models or prompts are a hard recommendation; same-model rubber-stamping is a known weakness (see threat model).
+- pi-subagents ships a `reviewer` role, but stock review is by convention and does not start automatically. This design *drives* those (or equivalent) sessions and *enforces* read-only tools. Per-agent permission YAML in [@gotgenes/pi-subagents](https://pi.dev/packages/@gotgenes/pi-subagents) may help; treat stock enforcement as **unverified**.
+- Verdict parsing follows `workflow/reviewer_gate.py`: only an explicit, case-insensitive `APPROVE` in a parseable decision object proceeds.
 
-Config selects `human`, `model`, or `human_then_model`.
+Headless reviewer jobs can be `pi --print` / `--mode json` (one-shot) or RPC/SDK (long-lived). `session.prompt()` in the SDK resolves when the run finishes. In RPC, a successful `prompt` response is not completion; wait for `agent_settled` (or use `RpcClient.promptAndWait()`).
 
-- **Human:** `ctx.ui.select` or `ctx.ui.confirm`. If `!ctx.hasUI`, block and reject. Official `permission-gate.ts` already fail-closes without a UI.
-- **Model:** resolve a reviewer with `ctx.modelRegistry.find(provider, id)` and call `ctx.modelRegistry.complete(model, context, options)` or `streamSimple(...)`. The exact `context` argument shape is **unverified** (the docs name the methods but do not show a full call). Prompt the reviewer for strict JSON `{ "decision": "APPROVE" | "REJECT", "reason": "..." }`. Only a parseable, explicit `APPROVE` applies. Empty, non-JSON, unknown, or failed calls `REJECT`, matching `workflow/reviewer_gate.py`.
-- Same-model reviews should be configurable (default: allowed, but warn). `ctx.signal` should be passed when the call happens during a turn.
+### 6.3 Commands (observability and optional override)
 
-### 5.4 Hard path denies
+Unattended runs must not block on commands. Register with `pi.registerCommand`:
 
-Always deny, with no prompt, writes (and optionally reads) whose resolved path is outside the project root or matches a deny list. Defaults:
+| Command | Default in unattended | Role |
+| --- | --- | --- |
+| `/status`, `/proposals` | On | Show loop state, pending proposals, last verdicts. |
+| `/pause`, `/resume`, `/stop` | On | Operator control of the host loop; not a per-diff review. |
+| `/approve [id]`, `/reject [id]` | **Off** (`commands.humanOverride: false`) | Optional override if an operator is watching. Not part of the default path. |
 
-- `.env`, `.env.*`
-- `.git/`
-- `api_key.json`, `**/.ssh/**`, `**/.aws/**`
-- `**/node_modules/**` (write deny; read may stay allowed)
+### 6.4 Hard path denies, audit, budgets, stall
 
-Resolve against `ctx.cwd`, follow the path as far as is practical, and compare the real path to the repo root. Symlink escape is a residual risk; the OS sandbox and running Pi in a container are the real boundary.
+Same automatic rails as the previous sketch, now without a human prompt path:
 
-### 5.5 Commands
+- Deny writes (and secret reads) under `.env`, `.git/`, `api_key.json`, `**/.ssh/**`, `**/.aws/**`, and any path outside the worktree or repo root.
+- `pi.appendEntry("prizmforge-proposal", …)` on queue, verdict, apply, test failure, commit, PR open, and reject-to-developer. Restore on `session_start`. The host should keep a run-level log as well, because reviewer sessions may not share one session file.
+- Token and duration caps from config, analogous to `resource_controller.max_tokens_per_day`, `token_budget.max_tokens_per_4h`, and `cli_mode.unattended.max_duration_hours`.
+- Stall latch: only *finished, zero-change* developer turns accumulate; transport/format failures are neutral and the latch re-arms (PrizmForge Operator Principle #1 / no-progress guard). A cap on reject-revise cycles per task is required.
 
-Register with `pi.registerCommand` (documented):
+Undo of a materialized worktree change, if needed, is automatic snapshot restore on test/hook failure, not a human `/undo` gate. File pre-images are authoritative; `git restore --source=HEAD` may be used for tracked files that matched `HEAD`. `git stash push` alone is not sufficient on a clean tree.
 
-| Command | Behavior |
-| --- | --- |
-| `/proposals` | List pending and recent proposals (id, paths, status). |
-| `/approve [id]` | Fail-closed verdict already obtained or implied by the operator; snapshot; materialize; append audit entry. Default to the latest pending id. |
-| `/reject [id]` | Mark rejected, feed the reason back (notify, and optionally `pi.sendMessage` so the model can adapt). |
-| `/undo [id]` | Restore the pre-apply git stash or file snapshot for an applied proposal. |
+### 6.5 Opening a PR, never merging
 
-### 5.6 Audit log
+After a passing test gate and commit, the host opens or updates a pull request against the default branch. The exact implementation (`gh pr create`, a documented git/host API, or an extension tool) is an **open question**; do not invent a Pi PR API. Whatever is used, merge commands are hard-denied in `tool_call` and in the orchestrator.
 
-`pi.appendEntry("prizmforge-proposal", { ... })` on create, approve, reject, apply, apply-failure, and undo. Custom entries do not enter LLM context. Restore state in `session_start` by walking `ctx.sessionManager.getEntries()`.
+## 7. Config schema (proposed)
 
-### 5.7 Undo
-
-On approve, **before** materialize, always copy pre-images of the target paths into a session-private snapshot (create vs. modify vs. delete recorded). That snapshot is the authoritative undo source. `git stash push` alone is **not** sufficient: on a clean tree it no-ops or errors and would not capture committed file state.
-
-When `undo.strategy` is `git_restore` and `cwd` is a git work tree, also record whether each path matched `HEAD`. Undo then prefers `pi.exec("git", ["restore", "--source=HEAD", "--", ...paths], { cwd })` for those tracked files, and otherwise writes the file snapshot back. `pi.exec` runs **without a shell** (documented). If git is missing or the path was untracked, use the file snapshot.
-
-Undo requires an explicit proposal id (same rule as PrizmForge's `undo_proposal`).
-
-## 6. Config schema (proposed)
-
-This is **this extension's** config, not a Pi built-in. Delivery vehicle (settings file vs. package config) is an open question.
+This is **this extension's** (and orchestrator's) config, not a Pi built-in.
 
 ```json
 {
+  "mode": "unattended",
   "reviewer": {
-    "mode": "human",
-    "model": { "provider": "", "id": "" },
-    "failClosedWithoutUi": true
+    "required": [
+      { "name": "security", "model": { "provider": "", "id": "" }, "prompt": "security_reviewer" },
+      { "name": "correctness", "model": { "provider": "", "id": "" }, "prompt": "jr_reviewer" }
+    ],
+    "failClosed": true,
+    "timeoutSeconds": 300
   },
+  "commands": { "humanOverride": false },
   "paths": {
     "projectRoot": ".",
     "denyWrite": [".env", ".env.*", ".git/", "api_key.json", "**/.ssh/**", "**/.aws/**", "**/node_modules/**"],
@@ -146,65 +173,74 @@ This is **this extension's** config, not a Pi built-in. Delivery vehicle (settin
     "disallowBinaryContent": true,
     "blockedExtensions": [".exe", ".dll", ".msi"]
   },
-  "buffer": {
-    "interceptWriteEdit": true,
-    "queueMutatingBash": true
+  "loop": {
+    "workTypes": ["security", "maintenance", "dependencies", "lint_tests", "small_features"],
+    "testCommand": "python -m pytest tests/ -x -q",
+    "onTestFailure": "discard",
+    "maxDurationHours": 8,
+    "maxRevisionsPerItem": 3,
+    "maxTokensPerDay": 0,
+    "maxTokensPer4h": 0
   },
-  "undo": { "strategy": "git_restore" },
-  "gateUserBash": false
+  "git": {
+    "branchPrefix": "pf/",
+    "useWorktree": true,
+    "openPullRequest": true,
+    "allowMerge": false
+  }
 }
 ```
 
-`reviewer.mode` is `"human"` | `"model"` | `"human_then_model"`. `undo.strategy` is `"git_restore"` (file snapshot plus `git restore` when paths matched HEAD) or `"file_snapshot"`.
+`mode` may be `"unattended"` (default) or `"interactive"` (optional `/approve` override enabled). `onTestFailure` is `"discard"` | `"propose_anyway"`; default `"discard"`.
 
-## 7. Phased milestones
+## 8. Phased milestones
 
 **MVP**
 
-- `tool_call` interception for `write` / `edit` (always) and mutating `bash` (best effort).
-- Proposal buffer + `/proposals`, `/approve`, `/reject`, `/undo`.
-- Human or second-model verdict; no UI or bad verdict → reject.
-- Hard path denies as above.
-- `appendEntry` audit + restore on `session_start`.
-- Undo from pre-apply file snapshots, with optional `git restore` for tracked files.
-- Compose with pi-permission-modes (or gotgenes + sandbox); document the recommended mode.
+- Headless orchestrator (SDK and/or RPC) running the loop with no per-change human prompts.
+- Developer session in a branch/worktree; mutations buffered as proposals.
+- At least two required, independent, read-only reviewer agents; fail-closed agreement; rejects return to the developer.
+- `test_command` gate; commit on the branch; open or update a PR; merge denied.
+- Hard path denies, audit log, composed sandbox, duration/token/stall limits.
+- Backlog covering security, maintenance/deps, lint/tests, and small features (even if prioritization is simple).
 
 **Phase 2**
 
-- Content-hash (or equivalent digest) captured when the proposal is queued; re-check immediately before apply; mark `conflicted` on mismatch.
-- Invalidate or flag `needs_revalidation` for other pending proposals that touch the same paths.
-- Content-safety binary rejection on proposed payloads (if not already in MVP).
+- Content-hash checks at apply time; invalidate overlapping pending proposals.
+- Richer backlog prioritization (critical security first, dedupe, backpressure).
+- Tightening of reviewer tool policy and CI integration (wait on a PR check, still no merge).
+- Content-safety binary rejection if not already in MVP.
 
 **Later (optional)**
 
-- Git worktree isolation for a developer-style session.
-- Optional read-only reviewer subagent.
-- Tighter bash parsing, or refusing unsandboxed bash entirely.
+- Fuller parity with PrizmForge background workers (researcher, tech writer, deployment validator) as read-only feeders.
+- Worktree cleanup and run resume across orchestrator restarts.
 
-## 8. Threat model and limits
+## 9. Threat model and limits
 
-Treat model-generated tool calls as untrusted. This extension reduces accidental or prompt-injected writes to a repo; it does **not** create a security boundary.
+Unattended multi-agent mutation raises the stakes. Rails are automatic; they are not a substitute for isolation or for a human merge review.
 
-- The extension runs **inside the Pi process** with the operator's OS permissions. A buggy or malicious extension, or any unsandboxed child, can bypass hooks.
-- `tool_call` hooks do not constrain unsandboxed `bash` that evades the parser (wrappers, `bash -c`, unexpected tools). Compose an OS sandbox and/or run Pi in a container.
-- `user_bash` is ungated by default.
-- `codemode` / `deferred` tools may remain callable after `setActiveTools` hides `write`/`edit`.
-- File tools themselves are not OS-sandboxed by permission-modes (only the model's `bash` tool is); policy hooks plus this buffer are what govern `write`/`edit`.
-- A second-model reviewer can be prompt-injected by the same untrusted tree it is asked to judge. Prefer a human verdict for high-risk or self-edit work, and review a copy of the repo rather than `main`.
-- Audit logs in the session file may contain paths, snippets, and reasons; treat session export as sensitive.
+- Extensions and the SDK host run with the operator's OS permissions. Hooks are policy, not a sandbox. Compose OS sandboxing and/or a container, especially for self-edit.
+- A developer `bash` that evades the parser can leave the worktree. Change sets outside the worktree must not be collected (same known limitation as PrizmForge's shell developer).
+- Reviewer agents can be prompt-injected by the tree they review. Mitigations: more than one independent model or prompt, fail-closed parsing, tests/CI, and a human merge review. Do not let a developer model approve its own work.
+- `setActiveTools` is insufficient against `codemode` / `deferred` tools; `tool_call` remains authoritative.
+- Project trust and extension loading must be decided non-interactively (`--approve` / saved trust). A wrong trust decision can load or skip project extensions silently.
+- Agents must not merge. Deny merge commands even if a reviewer panel has approved the diff.
+- Session and host logs may contain diffs and secrets-adjacent paths; treat exports as sensitive.
+- Budget and stall limits prevent runaway spend and infinite revise loops; they do not detect a wrong-but-well-formed approval.
 
-## 9. Open questions
+## 10. Open questions
 
-1. How should permission-modes (or the gotgenes gate) be configured so this extension owns write approval without double prompts?
-2. Should mutating `bash` be queued as a proposal, or simply denied until the operator uses `/approve` on file proposals only?
-3. What is the exact `write`/`edit` input schema, and the exact `modelRegistry.complete(model, context, options)` `context` shape, in the Pi version we target?
-4. Is `withFileMutationQueue()` safe to call from a slash-command handler?
-5. Where does extension config live (`~/.pi/agent/`, project `.pi/`, or package settings)?
-6. Should `/reject` inject a steer message into the session (`pi.sendMessage`) by default?
+1. SDK in-process vs. RPC child processes for the developer and each reviewer — isolation vs. simplicity. A mixed approach (RPC for the developer, print/JSON for reviewers) may be enough for MVP.
+2. How to open PRs portably (`gh`, SCM API, or something already in a Pi package) without inventing an API.
+3. How reliably stock pi-subagents can enforce read-only tools vs. needing our `tool_call` policy (or the gotgenes fork).
+4. Whether required reviewers are always unanimous, or a later config may allow optional (non-blocking) reviewers alongside required ones. MVP is unanimous among *required* reviewers.
+5. How permission-modes should be configured so it never prompts in unattended runs.
+6. Where config lives (`~/.pi/agent/`, project `.pi/`, or a host file next to the orchestrator).
 
-## 10. TypeScript skeletons
+## 11. TypeScript skeletons
 
-APIs below are taken from the [Pi Extensions](https://docs.pi.dev/latest/extensions) docs and official examples. Anything unverified is marked.
+APIs below are taken from the [Extensions](https://docs.pi.dev/latest/extensions), [SDK](https://docs.pi.dev/latest/sdk), and [CLI integration](https://docs.pi.dev/latest/cli-integration) docs. Anything unverified is marked.
 
 ```typescript
 import {
@@ -213,103 +249,98 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 export default function (pi: ExtensionAPI) {
+  const role = loadRole(); // "developer" | "reviewer" | "orchestrator-host"
+
   pi.on("session_start", async (_event, ctx) => {
+    if (role === "reviewer") {
+      const active = pi.getActiveTools().filter(
+        (name) => name !== "write" && name !== "edit",
+      );
+      pi.setActiveTools(active);
+    }
     for (const entry of ctx.sessionManager.getEntries()) {
       if (entry.type === "custom" && entry.customType === "prizmforge-proposal") {
-        // Reconstruct the in-memory proposal list from entry.data
+        // Reconstruct proposal state from entry.data
       }
     }
   });
 
   pi.on("tool_call", async (event, ctx) => {
+    if (isMergeAttempt(event)) {
+      return { block: true, reason: "Agents never merge" };
+    }
+
     if (isToolCallEventType("write", event) || isToolCallEventType("edit", event)) {
-      // event.input.path is used this way in official protected-paths.ts
-      const path = event.input.path as string;
-      if (isHardDenied(path, ctx.cwd)) {
-        return { block: true, reason: `Path "${path}" is protected` };
+      const path = event.input.path as string; // as in official protected-paths.ts
+      if (role === "reviewer" || isHardDenied(path, ctx.cwd)) {
+        return { block: true, reason: `Blocked write to ${path}` };
       }
       queueProposal(event.toolName, event.input);
       pi.appendEntry("prizmforge-proposal", { path, status: "pending" });
-      if (!ctx.hasUI) {
-        return {
-          block: true,
-          reason: "No UI for approval; failing closed",
-        };
-      }
-      return { block: true, reason: "Queued as a proposal; use /proposals" };
+      return { block: true, reason: "Queued for the reviewer panel" };
     }
 
-    if (isToolCallEventType("bash", event)) {
-      const command = event.input.command; // typed as { command: string; timeout?: number }
-      if (looksLikeDeniedPathWrite(command)) {
-        return { block: true, reason: "bash would touch a protected path" };
+    if (isToolCallEventType("bash", event) && role === "reviewer") {
+      if (!isProvenReadOnly(event.input.command)) {
+        return { block: true, reason: "Reviewers cannot run mutating bash" };
       }
     }
     return undefined;
   });
 
-  pi.registerCommand("proposals", {
-    description: "List governed file-change proposals",
+  pi.registerCommand("status", {
+    description: "Show unattended loop and proposal status",
     handler: async (_args, ctx) => {
-      ctx.ui.notify(formatProposalList(), "info");
+      ctx.ui.notify(formatStatus(), "info");
     },
   });
-
-  pi.registerCommand("approve", {
-    description: "Approve and materialize a pending proposal",
-    handler: async (args, ctx) => {
-      const id = (args || "").trim() || latestPendingId();
-      // Always snapshot pre-images first, then materialize.
-      // No documented "replay tool call" API — write the stored bytes yourself.
-      await snapshotPreImages(id, ctx.cwd);
-      await materializeProposal(id, ctx.cwd);
-      // Optional git-backed undo for tracked files that matched HEAD:
-      // await pi.exec("git", ["restore", "--source=HEAD", "--", ...paths], { cwd: ctx.cwd });
-      pi.appendEntry("prizmforge-proposal", { id, status: "applied" });
-    },
-  });
-
-  pi.registerCommand("reject", {
-    description: "Reject a pending proposal",
-    handler: async (args, ctx) => {
-      ctx.ui.notify(`Rejected ${args || "latest"}`, "info");
-    },
-  });
-
-  pi.registerCommand("undo", {
-    description: "Restore the pre-apply snapshot for a proposal",
-    handler: async (args, ctx) => {
-      ctx.ui.notify(`Undo ${args || ""}`.trim(), "info");
-    },
-  });
-}
-
-// Second-model verdict — method names are documented; argument shape is not fully shown.
-async function modelVerdict(
-  ctx: { modelRegistry: { find: Function; complete: Function } },
-  provider: string,
-  id: string,
-  prompt: string,
-) {
-  const model = ctx.modelRegistry.find(provider, id);
-  if (!model) return { decision: "REJECT", reason: "Reviewer model not found" };
-  // UNVERIFIED: exact `context` / `options` types for complete().
-  const message = await ctx.modelRegistry.complete(model, /* context */ prompt, {});
-  return parseApproveOrReject(message); // anything other than explicit APPROVE → REJECT
 }
 ```
 
-`parseApproveOrReject` and helpers such as `isHardDenied` are this design's, not Pi APIs.
+Host orchestrator sketch (SDK is documented; wiring of N reviewers is this design's):
 
-## 11. References
+```typescript
+import { createAgentSession } from "@earendil-works/pi-coding-agent";
+
+// In-process host. For a process boundary, use RpcClient and
+// `pi --mode rpc` instead; wait for agent_settled, not the prompt ack.
+const { session: developer } = await createAgentSession({ cwd: worktreePath });
+try {
+  await developer.prompt(taskPrompt);
+  const verdicts = await runReviewerPanel(proposal); // each reviewer fail-closed
+  if (!allRequiredApproved(verdicts)) {
+    await developer.prompt(`Revise; reviewers rejected:\n${format(verdicts)}`);
+    return;
+  }
+  // Host runs test_command, then git commit on the branch.
+  // UNVERIFIED: exact host API for opening a PR. Do not merge.
+} finally {
+  developer.dispose();
+}
+```
+
+Second-model reviewer via the registry (method names documented; argument shape is not fully shown):
+
+```typescript
+const model = ctx.modelRegistry.find(provider, id);
+if (!model) return { decision: "REJECT", reason: "Reviewer model not found" };
+// UNVERIFIED: exact `context` / `options` types for complete().
+const message = await ctx.modelRegistry.complete(model, /* context */ prompt, {});
+return parseApproveOrReject(message); // anything but explicit APPROVE → REJECT
+```
+
+`parseApproveOrReject`, `runReviewerPanel`, and path helpers are this design's, not Pi APIs. Prefer separate reviewer *sessions* over a single in-process `complete()` call so tool policy and prompts stay isolated; `complete()` is a fallback for a narrow verdict, not the panel itself.
+
+## 12. References
 
 - Pi Extensions: <https://docs.pi.dev/latest/extensions>
 - Run Pi safely: <https://docs.pi.dev/latest/security>
-- Upstream extensions doc: <https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/docs/extensions.md>
-- Official examples (`permission-gate.ts`, `protected-paths.ts`): <https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions>
+- CLI integration (print, JSON, RPC): <https://docs.pi.dev/latest/cli-integration>
+- RPC mode: <https://docs.pi.dev/latest/rpc>
+- SDK: <https://docs.pi.dev/latest/sdk>
+- Official examples: <https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent/examples/extensions>
 - pi-permission-modes: <https://pi.dev/packages/pi-permission-modes>
 - @gotgenes/pi-permission-system: <https://pi.dev/packages/@gotgenes/pi-permission-system>
-- pi-sandbox: <https://pi.dev/packages/pi-sandbox>
-- pi-advisor-flow (optional later reviewer): <https://pi.dev/packages/pi-advisor-flow>
-- pi-subagents (optional later): <https://pi.dev/packages/pi-subagents>
-- PrizmForge governed editing and reviewer gate: [README.md](../../README.md), [docs/architecture.md](../architecture.md), `workflow/reviewer_gate.py`
+- pi-subagents: <https://pi.dev/packages/pi-subagents>
+- pi-advisor-flow: <https://pi.dev/packages/pi-advisor-flow>
+- PrizmForge unattended loop and gate: [docs/UNATTENDED_CLOSED_LOOP_CAPABILITIES.md](../UNATTENDED_CLOSED_LOOP_CAPABILITIES.md), [docs/architecture.md](../architecture.md), `workflow/reviewer_gate.py`, `agents/orchestrator.py`, `workflow/task_runner.py`
